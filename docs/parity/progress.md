@@ -136,15 +136,15 @@ without writing one (`REQ-TRAJOPT-001`).
 WP-07.1: **partial** — `src/stm.rs` integrates deterministic two-body
 variational equations with a state-transition matrix and validates the STM
 against finite-difference and complex-step columns; `src/shooting.rs` seeds
-and evaluates fixed-duration M-segment continuity defects with a block-
-bidiagonal `[STM_i, -I]` Jacobian, appends soft exterior-penalty rows for
-node state-component boxes plus radius/speed path norms, and
-`MultipleShootingCorrector` performs damped fixed-endpoint interior-node
-correction with honest non-convergence reporting plus fixed-initial terminal-
-condition correction and a trybuild no-surface-coordinate tripwire
-(`REQ-TRAJOPT-002`). Missing: the control/free-time part of the full free
-vector, cross-tier regression tolerance table, and qbar/q-alpha vehicle path
-mappings.
+and evaluates M-segment continuity defects with a block-bidiagonal
+`[STM_i, -I]` Jacobian, reports duration-sensitivity columns, appends soft
+exterior-penalty rows for node state-component boxes plus radius/speed path
+norms, and `MultipleShootingCorrector` performs damped fixed-endpoint
+interior-node correction with honest non-convergence reporting plus fixed-
+initial terminal-condition correction, free-duration terminal correction, and
+a trybuild no-surface-coordinate tripwire (`REQ-TRAJOPT-002`). Missing: the
+control part of the full free vector, cross-tier regression tolerance table,
+and qbar/q-alpha vehicle path mappings.
 WP-07.2 … WP-07.6: **not started**.
 
 ### 08 — Environment, gravity & frames
@@ -364,8 +364,7 @@ verifier, or capture logic.
 2. **Start the two unstarted Phase-A gates:** WP-01.1 (spatial-vector tree)
    and WP-08.1 (tesseral gravity) — they block most of Phase B/C (02, 06,
    07 closed-loop quality).
-3. **Finish WP-07.1** (multiple-shooting controls/free-time solve,
-   cross-tier tolerance table, and qbar/q-alpha vehicle path mappings) or use
-   the implemented WP-07.0 runner-backed corrector as the prerequisite for
-   WP-19.2.
+3. **Finish WP-07.1** (multiple-shooting control solve, cross-tier tolerance
+   table, and qbar/q-alpha vehicle path mappings) or use the implemented
+   WP-07.0 runner-backed corrector as the prerequisite for WP-19.2.
 4. WP-15.1 (plume state) is newly unblocked by 05's chamber/nozzle state.

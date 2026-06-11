@@ -147,15 +147,17 @@ against):
   variational propagator that integrates state plus 6x6 STM with fixed-step RK4
   and validates the STM against central-difference and complex-step columns. It
   is a sensitivity path only; it adds no target vocabulary.
-- `src/shooting.rs` — a fixed-duration M-segment multiple-shooting continuity
-  evaluator. It seeds dynamically consistent two-body nodes, reports stacked
-  defects `phi_i(x_i) - x_{i+1}`, and builds the row-major block-bidiagonal
-  Jacobian `[STM_i, -I]`. `MultipleShootingCorrector` adds the first solve
-  loop by holding endpoints fixed and applying damped Gauss-Newton corrections
-  to interior nodes through that STM Jacobian, and now also supports a
-  fixed-initial-state terminal-condition correction mode using the closed
-  `TerminalCondition` equality vocabulary. `MultipleShootingSoftConstraint`
-  appends signed exterior-penalty rows for Cartesian state-component boxes plus
+- `src/shooting.rs` — an M-segment multiple-shooting continuity evaluator. It
+  seeds dynamically consistent two-body nodes, reports stacked defects
+  `phi_i(x_i) - x_{i+1}`, builds the row-major block-bidiagonal Jacobian
+  `[STM_i, -I]`, and now also reports duration-sensitivity columns
+  `dc_i/dt_i = f(phi_i)`. `MultipleShootingCorrector` adds the first solve loop
+  by holding endpoints fixed and applying damped Gauss-Newton corrections to
+  interior nodes through that STM Jacobian; it also supports fixed-initial-state
+  terminal-condition correction using the closed `TerminalCondition` equality
+  vocabulary, including a free-duration variant that solves downstream node
+  states and segment times together. `MultipleShootingSoftConstraint` appends
+  signed exterior-penalty rows for Cartesian state-component boxes plus
   radius/speed norm path limits; qbar/q-alpha vehicle path mappings remain
   future work. This is traced by `REQ-TRAJOPT-002`, including a downstream
   compile-fail tripwire that refuses surface-coordinate fields on the multiple-
@@ -204,13 +206,13 @@ against):
 **Summary maturity:** WP-07.0 is implemented: the differential corrector now has
 T0 offline two-body and scenario-backed apogee CLI I-load paths; WP-07.1 has a
 partial STM, multiple-shooting continuity, and fixed-endpoint interior-node
-correction substrate, fixed-initial terminal-condition correction, and a
-no-surface-coordinate compile-fail tripwire; the closed terminal-condition
-vocabulary still holds; a Clarabel SOCP epigraph smoke test, a forward
-propagator, and a PEG-style closed-loop ascent reference exist. No
-multiple-shooting control/free-time solve, NLP transcription, pseudospectral
-method, LCvx/SCvx horizon problem, closed-loop wiring of an optimized reference,
-or indirect cross-check exists.
+correction substrate, fixed-initial terminal-condition correction, soft
+node/path penalties, free-duration terminal correction, and a no-surface-
+coordinate compile-fail tripwire; the closed terminal-condition vocabulary
+still holds; a Clarabel SOCP epigraph smoke test, a forward propagator, and a
+PEG-style closed-loop ascent reference exist. No multiple-shooting control solve,
+NLP transcription, pseudospectral method, LCvx/SCvx horizon problem, closed-loop
+wiring of an optimized reference, or indirect cross-check exists.
 
 ---
 
@@ -743,15 +745,17 @@ gates green and answers the §3 per-PR checklist.
 - **implementation_status:** partial. `src/stm.rs` integrates deterministic
   two-body variational equations with a state-transition matrix and verifies
   the STM against complex-step sensitivities, and
-  `src/shooting.rs` evaluates fixed-duration M-segment continuity defects plus
-  a block-bidiagonal `[STM_i, -I]` Jacobian. `MultipleShootingCorrector` now
-  performs damped fixed-endpoint interior-node correction and reports honest
-  non-convergence for inconsistent endpoints; it also performs fixed-initial
-  terminal-condition correction against closed `TerminalCondition` equality
-  residuals. A trybuild UI test proves the public multiple-shooting node surface
-  cannot carry target latitude/longitude fields. Remaining acceptance work: the
-  control/free-time part of the full free vector, T0 cross-tier regression
-  tolerance table, and qbar/q-alpha vehicle path mappings.
+  `src/shooting.rs` evaluates M-segment continuity defects plus a block-
+  bidiagonal `[STM_i, -I]` Jacobian and duration-sensitivity columns.
+  `MultipleShootingCorrector` now performs damped fixed-endpoint interior-node
+  correction and reports honest non-convergence for inconsistent endpoints; it
+  also performs fixed-initial terminal-condition correction against closed
+  `TerminalCondition` equality residuals, including a free-duration variant
+  that solves downstream nodes and segment times together. A trybuild UI test
+  proves the public multiple-shooting node surface cannot carry target
+  latitude/longitude fields. Remaining acceptance work: the control part of the
+  full free vector, T0 cross-tier regression tolerance table, and qbar/q-alpha
+  vehicle path mappings.
 - **goal:** Robust ascent-to-orbit reference generation that reuses the existing
   physics propagator, replacing the single-shooting limitation with block-
   bidiagonal continuity defects and an STM-based Jacobian.

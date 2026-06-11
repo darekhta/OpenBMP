@@ -43,6 +43,12 @@ pub struct MultipleShootingContinuityReport {
     /// Columns are grouped as `[x_0, x_1, ..., x_M]`, six variables per node.
     /// Each continuity block contains `[STM_i, -I]`.
     pub jacobian: Vec<f64>,
+    /// Row-major Jacobian of `defects` with respect to segment durations.
+    ///
+    /// Columns are grouped as `[dt_0, dt_1, ..., dt_{M-1}]`. For the
+    /// autonomous two-body dynamics used here, the active segment column is the
+    /// terminal state derivative `f(phi_i(x_i))`.
+    pub duration_jacobian: Vec<f64>,
     /// Euclidean norm of [`Self::defects`].
     pub defect_norm: f64,
     /// Number of propagated segments.
@@ -201,6 +207,29 @@ pub struct MultipleShootingTargetCorrection {
     /// Corrected node sequence. The first node is held fixed.
     pub nodes: Vec<MultipleShootingNode>,
     /// Final continuity report for [`Self::nodes`].
+    pub continuity_report: MultipleShootingContinuityReport,
+    /// Final soft-constraint residual report.
+    pub soft_constraint_report: MultipleShootingSoftConstraintReport,
+    /// Final terminal-condition residual at the last node.
+    pub terminal_residual: TerminalResidual,
+    /// Euclidean norm of continuity defects, soft-constraint residuals, and
+    /// terminal residual components.
+    pub residual_norm: f64,
+    /// Number of Gauss-Newton iterations taken.
+    pub iterations: usize,
+    /// Whether the stacked residual norm reached the configured tolerance.
+    pub converged: bool,
+}
+
+/// Result of a fixed-initial-state free-duration terminal-condition solve.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultipleShootingFreeDurationTargetCorrection {
+    /// Corrected node sequence. The first node is held fixed.
+    pub nodes: Vec<MultipleShootingNode>,
+    /// Corrected segment durations, in seconds.
+    pub segment_durations_s: Vec<f64>,
+    /// Final continuity report for [`Self::nodes`] and
+    /// [`Self::segment_durations_s`].
     pub continuity_report: MultipleShootingContinuityReport,
     /// Final soft-constraint residual report.
     pub soft_constraint_report: MultipleShootingSoftConstraintReport,
@@ -382,6 +411,113 @@ impl MultipleShootingCorrector {
         Ok(report.into_correction(nodes, iterations, true))
     }
 
+    /// Correct downstream nodes and segment durations to satisfy a terminal condition.
+    ///
+    /// The initial node is held fixed. Segment durations are part of the free
+    /// vector and are kept finite and non-negative during correction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrajoptError`] when the configuration or mesh is invalid, the
+    /// terminal condition is not a supported equality condition, propagation
+    /// fails, or the damped normal equations are singular.
+    pub fn solve_two_body_terminal_condition_with_free_durations(
+        &self,
+        condition: &TerminalCondition,
+        initial_nodes: &[MultipleShootingNode],
+        segment_durations_s: &[f64],
+        step_s: f64,
+        mu_m3_s2: f64,
+    ) -> Result<MultipleShootingFreeDurationTargetCorrection, TrajoptError> {
+        self.solve_two_body_terminal_condition_with_free_durations_and_soft_constraints(
+            condition,
+            initial_nodes,
+            segment_durations_s,
+            step_s,
+            mu_m3_s2,
+            &[],
+        )
+    }
+
+    /// Correct downstream nodes and segment durations with soft path/box residuals.
+    ///
+    /// This is the first free-time T1 solve surface: downstream Cartesian node
+    /// states and every segment duration are solved together, while the initial
+    /// node and terminal-condition vocabulary remain fixed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrajoptError`] when the configuration, mesh, terminal
+    /// condition, or soft-constraint definitions are invalid, propagation
+    /// fails, or the damped normal equations are singular.
+    pub fn solve_two_body_terminal_condition_with_free_durations_and_soft_constraints(
+        &self,
+        condition: &TerminalCondition,
+        initial_nodes: &[MultipleShootingNode],
+        segment_durations_s: &[f64],
+        step_s: f64,
+        mu_m3_s2: f64,
+        soft_constraints: &[MultipleShootingSoftConstraint],
+    ) -> Result<MultipleShootingFreeDurationTargetCorrection, TrajoptError> {
+        self.validate_config()?;
+        if matches!(condition, TerminalCondition::MaximizePayloadMass) {
+            return Err(TrajoptError::InvalidPayload {
+                reason: "multiple shooting terminal correction targets constraints, \
+                         not the payload-mass objective",
+            });
+        }
+        if initial_nodes.len() < 2 {
+            return Err(TrajoptError::InvalidPayload {
+                reason: "free-duration terminal multiple shooting requires at least one segment",
+            });
+        }
+        let mut nodes = initial_nodes.to_vec();
+        let mut durations = segment_durations_s.to_vec();
+        let mut report = evaluate_two_body_free_duration_terminal_targeting(
+            condition,
+            &nodes,
+            &durations,
+            step_s,
+            mu_m3_s2,
+            self.finite_difference_step,
+            soft_constraints,
+        )?;
+        let mut iterations = 0;
+
+        while report.residual_norm > self.defect_tolerance {
+            if iterations >= self.max_iterations {
+                return Ok(report.into_correction(nodes, durations, iterations, false));
+            }
+            let step = gauss_newton_step(
+                &report.jacobian,
+                &report.residuals,
+                report.residuals.len(),
+                report.free_variable_count,
+                self.levenberg_marquardt_damping,
+            )?;
+            apply_free_node_and_duration_step(
+                &mut nodes,
+                1,
+                &mut durations,
+                &step,
+                self.max_step_norm,
+            )?;
+
+            iterations += 1;
+            report = evaluate_two_body_free_duration_terminal_targeting(
+                condition,
+                &nodes,
+                &durations,
+                step_s,
+                mu_m3_s2,
+                self.finite_difference_step,
+                soft_constraints,
+            )?;
+        }
+
+        Ok(report.into_correction(nodes, durations, iterations, true))
+    }
+
     fn validate_config(&self) -> Result<(), TrajoptError> {
         if !self.defect_tolerance.is_finite() || self.defect_tolerance < 0.0 {
             return Err(TrajoptError::InvalidPayload {
@@ -418,6 +554,17 @@ struct TerminalTargetingReport {
     free_state_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct FreeDurationTerminalTargetingReport {
+    continuity_report: MultipleShootingContinuityReport,
+    soft_constraint_report: MultipleShootingSoftConstraintReport,
+    terminal_residual: TerminalResidual,
+    residuals: Vec<f64>,
+    jacobian: Vec<f64>,
+    residual_norm: f64,
+    free_variable_count: usize,
+}
+
 impl TerminalTargetingReport {
     fn into_correction(
         self,
@@ -427,6 +574,27 @@ impl TerminalTargetingReport {
     ) -> MultipleShootingTargetCorrection {
         MultipleShootingTargetCorrection {
             nodes,
+            continuity_report: self.continuity_report,
+            soft_constraint_report: self.soft_constraint_report,
+            terminal_residual: self.terminal_residual,
+            residual_norm: self.residual_norm,
+            iterations,
+            converged,
+        }
+    }
+}
+
+impl FreeDurationTerminalTargetingReport {
+    fn into_correction(
+        self,
+        nodes: Vec<MultipleShootingNode>,
+        segment_durations_s: Vec<f64>,
+        iterations: usize,
+        converged: bool,
+    ) -> MultipleShootingFreeDurationTargetCorrection {
+        MultipleShootingFreeDurationTargetCorrection {
+            nodes,
+            segment_durations_s,
             continuity_report: self.continuity_report,
             soft_constraint_report: self.soft_constraint_report,
             terminal_residual: self.terminal_residual,
@@ -477,6 +645,7 @@ pub fn evaluate_two_body_multiple_shooting(
     let defect_count = segment_count * 6;
     let mut defects = vec![0.0_f64; defect_count];
     let mut jacobian = vec![0.0_f64; defect_count * free_state_count];
+    let mut duration_jacobian = vec![0.0_f64; defect_count * segment_count];
 
     for (segment_index, &duration_s) in segment_durations_s.iter().enumerate() {
         let propagation = propagate_two_body_variational(
@@ -493,6 +662,13 @@ pub fn evaluate_two_body_multiple_shooting(
             &mut defects,
             &mut jacobian,
         );
+        insert_segment_duration_jacobian(
+            segment_index,
+            &propagation,
+            mu_m3_s2,
+            segment_count,
+            &mut duration_jacobian,
+        )?;
     }
     let defect_norm = defects
         .iter()
@@ -502,6 +678,7 @@ pub fn evaluate_two_body_multiple_shooting(
     Ok(MultipleShootingContinuityReport {
         defects,
         jacobian,
+        duration_jacobian,
         defect_norm,
         segment_count,
         free_state_count,
@@ -596,10 +773,16 @@ fn evaluate_two_body_terminal_targeting(
     residuals.extend_from_slice(&terminal_residual.components);
 
     let mut jacobian = vec![0.0_f64; residual_count * free_state_count];
-    insert_downstream_continuity_jacobian(&continuity_report, &mut jacobian, free_state_count)?;
+    insert_downstream_continuity_jacobian(
+        &continuity_report,
+        &mut jacobian,
+        free_state_count,
+        free_state_count,
+    )?;
     insert_soft_constraint_jacobian(
         &soft_constraint_report,
         continuity_residual_count,
+        free_state_count,
         free_state_count,
         &mut jacobian,
     )?;
@@ -610,6 +793,7 @@ fn evaluate_two_body_terminal_targeting(
         mu_m3_s2,
         finite_difference_step,
         continuity_residual_count + soft_residual_count,
+        free_state_count,
         free_state_count,
         &mut jacobian,
     )?;
@@ -627,6 +811,88 @@ fn evaluate_two_body_terminal_targeting(
         jacobian,
         residual_norm,
         free_state_count,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_two_body_free_duration_terminal_targeting(
+    condition: &TerminalCondition,
+    nodes: &[MultipleShootingNode],
+    segment_durations_s: &[f64],
+    step_s: f64,
+    mu_m3_s2: f64,
+    finite_difference_step: f64,
+    soft_constraints: &[MultipleShootingSoftConstraint],
+) -> Result<FreeDurationTerminalTargetingReport, TrajoptError> {
+    let continuity_report =
+        evaluate_two_body_multiple_shooting(nodes, segment_durations_s, step_s, mu_m3_s2)?;
+    let terminal_state = nodes[nodes.len() - 1].state;
+    let terminal_residual = terminal_residual_for_state(condition, terminal_state, mu_m3_s2)?;
+    let continuity_residual_count = continuity_report.defects.len();
+    let soft_constraint_report =
+        evaluate_multiple_shooting_soft_constraints(nodes, 1, soft_constraints)?;
+    let soft_residual_count = soft_constraint_report.residuals.len();
+    let terminal_residual_count = terminal_residual.components.len();
+    let free_state_count = (nodes.len() - 1) * 6;
+    let duration_count = segment_durations_s.len();
+    let free_variable_count = free_state_count + duration_count;
+    if soft_constraint_report.free_state_count != free_state_count {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft-constraint free-state count is inconsistent",
+        });
+    }
+    let residual_count = continuity_residual_count + soft_residual_count + terminal_residual_count;
+
+    let mut residuals = Vec::with_capacity(residual_count);
+    residuals.extend_from_slice(&continuity_report.defects);
+    residuals.extend_from_slice(&soft_constraint_report.residuals);
+    residuals.extend_from_slice(&terminal_residual.components);
+
+    let mut jacobian = vec![0.0_f64; residual_count * free_variable_count];
+    insert_downstream_continuity_jacobian(
+        &continuity_report,
+        &mut jacobian,
+        free_state_count,
+        free_variable_count,
+    )?;
+    insert_continuity_duration_jacobian(
+        &continuity_report,
+        free_state_count,
+        free_variable_count,
+        &mut jacobian,
+    )?;
+    insert_soft_constraint_jacobian(
+        &soft_constraint_report,
+        continuity_residual_count,
+        free_state_count,
+        free_variable_count,
+        &mut jacobian,
+    )?;
+    insert_terminal_residual_jacobian(
+        condition,
+        terminal_state,
+        &terminal_residual.components,
+        mu_m3_s2,
+        finite_difference_step,
+        continuity_residual_count + soft_residual_count,
+        free_state_count,
+        free_variable_count,
+        &mut jacobian,
+    )?;
+
+    let residual_norm = residuals
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    Ok(FreeDurationTerminalTargetingReport {
+        continuity_report,
+        soft_constraint_report,
+        terminal_residual,
+        residuals,
+        jacobian,
+        residual_norm,
+        free_variable_count,
     })
 }
 
@@ -661,6 +927,7 @@ fn insert_downstream_continuity_jacobian(
     report: &MultipleShootingContinuityReport,
     jacobian: &mut [f64],
     free_state_count: usize,
+    free_variable_count: usize,
 ) -> Result<(), TrajoptError> {
     if report.free_state_count != free_state_count + 6 {
         return Err(TrajoptError::InvalidPayload {
@@ -669,8 +936,28 @@ fn insert_downstream_continuity_jacobian(
     }
     for row in 0..report.defects.len() {
         for column in 0..free_state_count {
-            jacobian[row * free_state_count + column] =
+            jacobian[row * free_variable_count + column] =
                 report.jacobian[row * report.free_state_count + column + 6];
+        }
+    }
+    Ok(())
+}
+
+fn insert_continuity_duration_jacobian(
+    report: &MultipleShootingContinuityReport,
+    duration_col_offset: usize,
+    free_variable_count: usize,
+    jacobian: &mut [f64],
+) -> Result<(), TrajoptError> {
+    if report.duration_jacobian.len() != report.defects.len() * report.segment_count {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "terminal multiple shooting duration-Jacobian shape is inconsistent",
+        });
+    }
+    for row in 0..report.defects.len() {
+        for segment_index in 0..report.segment_count {
+            jacobian[row * free_variable_count + duration_col_offset + segment_index] =
+                report.duration_jacobian[row * report.segment_count + segment_index];
         }
     }
     Ok(())
@@ -680,6 +967,7 @@ fn insert_soft_constraint_jacobian(
     report: &MultipleShootingSoftConstraintReport,
     row_offset: usize,
     free_state_count: usize,
+    free_variable_count: usize,
     jacobian: &mut [f64],
 ) -> Result<(), TrajoptError> {
     if report.free_state_count != free_state_count {
@@ -689,7 +977,7 @@ fn insert_soft_constraint_jacobian(
     }
     for row in 0..report.constraint_count {
         for column in 0..free_state_count {
-            jacobian[(row_offset + row) * free_state_count + column] =
+            jacobian[(row_offset + row) * free_variable_count + column] =
                 report.jacobian[row * free_state_count + column];
         }
     }
@@ -705,6 +993,7 @@ fn insert_terminal_residual_jacobian(
     finite_difference_step: f64,
     row_offset: usize,
     free_state_count: usize,
+    free_variable_count: usize,
     jacobian: &mut [f64],
 ) -> Result<(), TrajoptError> {
     let terminal_col_offset = free_state_count - 6;
@@ -725,7 +1014,7 @@ fn insert_terminal_residual_jacobian(
             });
         }
         for row in 0..residual_count {
-            jacobian[(row_offset + row) * free_state_count + terminal_col_offset + column] =
+            jacobian[(row_offset + row) * free_variable_count + terminal_col_offset + column] =
                 (perturbed_residual.components[row] - base_components[row]) / step;
         }
     }
@@ -898,6 +1187,42 @@ fn insert_segment_defect(
     }
 }
 
+fn insert_segment_duration_jacobian(
+    segment_index: usize,
+    propagation: &TwoBodyVariationalPropagation,
+    mu_m3_s2: f64,
+    segment_count: usize,
+    duration_jacobian: &mut [f64],
+) -> Result<(), TrajoptError> {
+    let derivative = two_body_state_derivative(propagation.terminal_state, mu_m3_s2)?;
+    let row_offset = segment_index * 6;
+    for row in 0..6 {
+        duration_jacobian[(row_offset + row) * segment_count + segment_index] = derivative[row];
+    }
+    Ok(())
+}
+
+fn two_body_state_derivative(
+    state: TwoBodyCartesianState,
+    mu_m3_s2: f64,
+) -> Result<[f64; 6], TrajoptError> {
+    let radius_m = norm3(state.position_eci_m);
+    if radius_m <= f64::EPSILON {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "two-body duration derivative state radius is degenerate",
+        });
+    }
+    let inv_r3 = 1.0 / (radius_m * radius_m * radius_m);
+    Ok([
+        state.velocity_eci_m_s[0],
+        state.velocity_eci_m_s[1],
+        state.velocity_eci_m_s[2],
+        -mu_m3_s2 * state.position_eci_m[0] * inv_r3,
+        -mu_m3_s2 * state.position_eci_m[1] * inv_r3,
+        -mu_m3_s2 * state.position_eci_m[2] * inv_r3,
+    ])
+}
+
 fn interior_free_state_count(
     report: &MultipleShootingContinuityReport,
 ) -> Result<usize, TrajoptError> {
@@ -1028,6 +1353,53 @@ fn apply_free_node_step(
     Ok(())
 }
 
+fn apply_free_node_and_duration_step(
+    nodes: &mut [MultipleShootingNode],
+    first_free_node_index: usize,
+    durations: &mut [f64],
+    step: &[f64],
+    max_step_norm: f64,
+) -> Result<(), TrajoptError> {
+    let free_node_count = nodes.len().saturating_sub(first_free_node_index);
+    let free_state_count = free_node_count * 6;
+    if step.len() != free_state_count + durations.len() {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "free-duration multiple shooting correction step dimension is inconsistent",
+        });
+    }
+    let mut norm_squared = 0.0_f64;
+    for &value in step {
+        norm_squared += value * value;
+    }
+    let norm = norm_squared.sqrt();
+    let mut scale = if max_step_norm.is_finite() && norm > max_step_norm && norm > 0.0 {
+        max_step_norm / norm
+    } else {
+        1.0
+    };
+    for (duration, delta) in durations.iter().zip(step[free_state_count..].iter()) {
+        if *delta < 0.0 {
+            scale = scale.min((0.5 * *duration / -*delta).max(0.0));
+        }
+    }
+    for (node_index, node) in nodes[first_free_node_index..].iter_mut().enumerate() {
+        let mut state = node.state.to_array();
+        for component in 0..6 {
+            state[component] += scale * step[node_index * 6 + component];
+        }
+        node.state = TwoBodyCartesianState::from_array(state)?;
+    }
+    for (duration, delta) in durations.iter_mut().zip(step[free_state_count..].iter()) {
+        *duration += scale * *delta;
+        if !duration.is_finite() || *duration < 0.0 {
+            return Err(TrajoptError::InvalidPayload {
+                reason: "free-duration multiple shooting produced an invalid segment duration",
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1047,6 +1419,7 @@ mod tests {
         assert_eq!(report.free_state_count, 24);
         assert_eq!(report.defects.len(), 18);
         assert_eq!(report.jacobian.len(), 18 * 24);
+        assert_eq!(report.duration_jacobian.len(), 18 * 3);
         assert!(report.defect_norm < 1.0e-8, "{report:?}");
         Ok(())
     }
@@ -1090,6 +1463,38 @@ mod tests {
             })
             .count();
         assert_eq!(nonzero_outside_blocks, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn duration_jacobian_matches_finite_difference_columns() -> Result<(), TrajoptError> {
+        let initial =
+            TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let durations = [40.0, 50.0];
+        let nodes =
+            seed_two_body_multiple_shooting_nodes(initial, &durations, 5.0, WGS84_MU_M3_S2)?;
+        let report = evaluate_two_body_multiple_shooting(&nodes, &durations, 5.0, WGS84_MU_M3_S2)?;
+        let step_s = 1.0e-4;
+
+        for segment_index in 0..durations.len() {
+            let mut perturbed_durations = durations;
+            perturbed_durations[segment_index] += step_s;
+            let perturbed = evaluate_two_body_multiple_shooting(
+                &nodes,
+                &perturbed_durations,
+                5.0,
+                WGS84_MU_M3_S2,
+            )?;
+            for row in 0..report.defects.len() {
+                let actual = (perturbed.defects[row] - report.defects[row]) / step_s;
+                let expected = report.duration_jacobian[row * report.segment_count + segment_index];
+                let tolerance = 1.0e-3 * (1.0 + expected.abs());
+                assert!(
+                    (actual - expected).abs() < tolerance,
+                    "segment {segment_index}, row {row}: actual {actual}, expected {expected}"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1322,6 +1727,58 @@ mod tests {
         for (corrected, truth_value) in corrected_terminal.iter().zip(truth_terminal.iter()) {
             assert!((corrected - truth_value).abs() < 1.0e-6);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn free_duration_terminal_corrector_restores_total_time() -> Result<(), TrajoptError> {
+        let initial =
+            TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let truth_durations = [40.0, 40.0];
+        let initial_durations = [45.0, 45.0];
+        let truth =
+            seed_two_body_multiple_shooting_nodes(initial, &truth_durations, 5.0, WGS84_MU_M3_S2)?;
+        let seed = seed_two_body_multiple_shooting_nodes(
+            initial,
+            &initial_durations,
+            5.0,
+            WGS84_MU_M3_S2,
+        )?;
+        let terminal = truth[truth.len() - 1].state;
+        let condition = TerminalCondition::RendezvousState {
+            position_eci_m: terminal.position_eci_m,
+            velocity_eci_m_s: terminal.velocity_eci_m_s,
+        };
+        let corrector = MultipleShootingCorrector {
+            defect_tolerance: 1.0e-6,
+            max_iterations: 12,
+            ..MultipleShootingCorrector::default()
+        };
+
+        let correction = corrector.solve_two_body_terminal_condition_with_free_durations(
+            &condition,
+            &seed,
+            &initial_durations,
+            5.0,
+            WGS84_MU_M3_S2,
+        )?;
+
+        assert!(correction.converged, "{correction:?}");
+        assert!(correction.iterations > 0);
+        assert!(correction.residual_norm < corrector.defect_tolerance);
+        assert!(correction.continuity_report.defect_norm < corrector.defect_tolerance);
+        assert!(correction.terminal_residual.norm < corrector.defect_tolerance);
+        assert_eq!(correction.nodes[0], seed[0]);
+        let corrected_total_time = correction.segment_durations_s.iter().sum::<f64>();
+        let truth_total_time = truth_durations.iter().sum::<f64>();
+        assert!((corrected_total_time - truth_total_time).abs() < 1.0e-5);
+        assert!(
+            correction
+                .segment_durations_s
+                .iter()
+                .zip(initial_durations.iter())
+                .any(|(corrected, initial)| (corrected - initial).abs() > 0.1)
+        );
         Ok(())
     }
 

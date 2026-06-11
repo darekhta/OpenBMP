@@ -219,7 +219,7 @@ verification = ["V-TRAJOPT-001"]
 [[requirements]]
 id = "REQ-TRAJOPT-002"
 title = "The trajectory optimizer exposes an STM multiple-shooting substrate"
-statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator with complex-step column verification, a fixed-duration multiple-shooting continuity evaluator whose defects and Jacobian are block-bidiagonal, soft box/path exterior-penalty rows for node state components and state norms, a damped fixed-endpoint interior-node corrector, and a fixed-initial-state terminal-condition corrector that targets only the closed TerminalCondition equality vocabulary, reports non-convergence honestly, and remains independent of any surface-coordinate target vocabulary."
+statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator with complex-step column verification, a multiple-shooting continuity evaluator whose defects and state Jacobian are block-bidiagonal and whose segment-duration sensitivity columns are verified, soft box/path exterior-penalty rows for node state components and state norms, a damped fixed-endpoint interior-node corrector, and fixed-initial-state terminal-condition correctors, including a free-duration variant, that target only the closed TerminalCondition equality vocabulary, report non-convergence honestly, and remain independent of any surface-coordinate target vocabulary."
 verification = ["V-TRAJOPT-002"]
 
 [[requirements]]
@@ -1464,6 +1464,8 @@ contains = [
   "propagate_two_body_complex",
   "seed_two_body_multiple_shooting_nodes",
   "evaluate_two_body_multiple_shooting",
+  "duration_jacobian",
+  "MultipleShootingFreeDurationTargetCorrection",
   "MultipleShootingSoftConstraint",
   "MultipleShootingSoftConstraintKind",
   "evaluate_multiple_shooting_soft_constraints",
@@ -1471,11 +1473,14 @@ contains = [
   "MultipleShootingTargetCorrection",
   "solve_two_body_fixed_endpoint_continuity",
   "solve_two_body_terminal_condition",
+  "solve_two_body_terminal_condition_with_free_durations",
   "terminal_residual_from_cartesian",
   "continuity_jacobian_has_block_bidiagonal_shape",
+  "duration_jacobian_matches_finite_difference_columns",
   "fixed_endpoint_corrector_restores_perturbed_interior_nodes",
   "fixed_endpoint_corrector_reports_non_convergence_for_inconsistent_endpoint",
   "terminal_condition_corrector_restores_perturbed_rendezvous_mesh",
+  "free_duration_terminal_corrector_restores_total_time",
   "terminal_condition_corrector_reports_non_convergence_for_incompatible_target",
   "soft_constraints_report_box_and_path_penalty_rows",
   "terminal_condition_solver_reports_soft_constraint_residuals",
