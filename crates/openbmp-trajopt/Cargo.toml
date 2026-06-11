@@ -25,6 +25,7 @@ thiserror       = { workspace = true }
 
 [dev-dependencies]
 num-complex = { workspace = true, features = ["std"] }
+toml        = { workspace = true }
 
 [lints]
 workspace = true

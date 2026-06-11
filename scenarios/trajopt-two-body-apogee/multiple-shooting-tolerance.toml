@@ -1,0 +1,58 @@
+# Cross-tier tolerance table for WP-07.1.
+#
+# The case compares the T0 single-shooting two-body apogee driver against the
+# T1 STM multiple-shooting corrector on the same synthetic WGS84 point-mass
+# orbit. T0 first solves for the perigee tangential speed that reaches the
+# target apogee. T1 then starts from that corrected state, solves a perturbed
+# three-segment mesh back to the same T0 terminal rendezvous state, and gates
+# the resulting terminal and continuity deltas.
+
+case       = "trajopt-two-body-apogee-cross-tier"
+source     = "Synthetic WGS84 point-mass cross-tier regression; see scenarios/trajopt-two-body-apogee/provenance.md."
+validation = "validated-toy"
+
+[problem]
+initial_radius_m = 6_778_000.0
+target_apogee_radius_m = 7_578_000.0
+initial_tangential_speed_m_s = 7_668.635675197651
+coast_duration_s = 120.0
+step_s = 10.0
+segment_durations_s = [40.0, 40.0, 40.0]
+residual_tolerance = 1.0e-9
+max_iterations = 20
+
+[[metric]]
+name = "t0_corrected_tangential_speed_m_s"
+expected = 7_879.409633225764
+absolute_tolerance = 1.0e-3
+relative_tolerance = 1.0e-10
+
+[[metric]]
+name = "t0_apogee_residual_norm_m"
+expected = 0.0
+absolute_tolerance = 1.0e-6
+relative_tolerance = 0.0
+
+[[metric]]
+name = "t1_terminal_position_delta_norm_m"
+expected = 0.0
+absolute_tolerance = 1.0e-6
+relative_tolerance = 0.0
+
+[[metric]]
+name = "t1_terminal_velocity_delta_norm_m_s"
+expected = 0.0
+absolute_tolerance = 1.0e-6
+relative_tolerance = 0.0
+
+[[metric]]
+name = "t1_continuity_defect_norm"
+expected = 0.0
+absolute_tolerance = 1.0e-6
+relative_tolerance = 0.0
+
+[[metric]]
+name = "t1_terminal_residual_norm"
+expected = 0.0
+absolute_tolerance = 1.0e-6
+relative_tolerance = 0.0

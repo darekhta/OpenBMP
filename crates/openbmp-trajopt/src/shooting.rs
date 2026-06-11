@@ -2400,7 +2400,290 @@ fn apply_free_node_and_control_step(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::corrector::DifferentialCorrector;
+    use crate::driver::{TwoBodyApogeeTargeting, correct_two_body_apogee};
+    use openbmp_core::ValidationStatus;
     use openbmp_physics::WGS84_MU_M3_S2;
+    use serde::Deserialize;
+    use std::io::{Error, ErrorKind};
+
+    const CROSS_TIER_TOLERANCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scenarios/trajopt-two-body-apogee/multiple-shooting-tolerance.toml"
+    ));
+
+    #[derive(Debug, Deserialize)]
+    struct CrossTierToleranceTable {
+        case: String,
+        source: String,
+        validation: ValidationStatus,
+        problem: CrossTierProblem,
+        metric: Vec<CrossTierMetric>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct CrossTierProblem {
+        initial_radius_m: f64,
+        target_apogee_radius_m: f64,
+        initial_tangential_speed_m_s: f64,
+        coast_duration_s: f64,
+        step_s: f64,
+        segment_durations_s: Vec<f64>,
+        residual_tolerance: f64,
+        max_iterations: usize,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct CrossTierMetric {
+        name: String,
+        expected: f64,
+        absolute_tolerance: f64,
+        relative_tolerance: f64,
+    }
+
+    impl CrossTierToleranceTable {
+        fn parse() -> Result<Self, Box<dyn std::error::Error>> {
+            let table: Self = toml::from_str(CROSS_TIER_TOLERANCE)?;
+            table.require_valid()?;
+            Ok(table)
+        }
+
+        fn require_valid(&self) -> Result<(), Error> {
+            if self.case != "trajopt-two-body-apogee-cross-tier" {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "unexpected WP-07.1 cross-tier tolerance case",
+                ));
+            }
+            if !self
+                .source
+                .contains("Synthetic WGS84 point-mass cross-tier regression")
+            {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "cross-tier tolerance source must describe the synthetic reference",
+                ));
+            }
+            if self.validation != ValidationStatus::ValidatedToy {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "cross-tier tolerance table must be validated-toy",
+                ));
+            }
+            if self.metric.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "cross-tier tolerance table must declare metrics",
+                ));
+            }
+            self.problem.require_valid()?;
+            for metric in &self.metric {
+                metric.require_valid()?;
+            }
+            Ok(())
+        }
+
+        fn check_metric(&self, name: &str, actual: f64) -> Result<(), Error> {
+            let metric = self
+                .metric
+                .iter()
+                .find(|metric| metric.name == name)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidData,
+                        format!("missing cross-tier tolerance metric {name}"),
+                    )
+                })?;
+            metric.check(actual)
+        }
+    }
+
+    impl CrossTierProblem {
+        fn require_valid(&self) -> Result<(), Error> {
+            let positive_values = [
+                self.initial_radius_m,
+                self.target_apogee_radius_m,
+                self.initial_tangential_speed_m_s,
+                self.step_s,
+                self.residual_tolerance,
+            ];
+            if !positive_values
+                .iter()
+                .all(|value| value.is_finite() && *value > 0.0)
+            {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "cross-tier problem positive values must be finite and positive",
+                ));
+            }
+            if !self.coast_duration_s.is_finite() || self.coast_duration_s < 0.0 {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "cross-tier coast duration must be finite and non-negative",
+                ));
+            }
+            if self.segment_durations_s.is_empty()
+                || !self
+                    .segment_durations_s
+                    .iter()
+                    .all(|duration_s| duration_s.is_finite() && *duration_s >= 0.0)
+            {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "cross-tier segment durations must be finite and non-negative",
+                ));
+            }
+            let duration_sum = self.segment_durations_s.iter().sum::<f64>();
+            if (duration_sum - self.coast_duration_s).abs() > 1.0e-12 {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "cross-tier segment durations must sum to coast duration",
+                ));
+            }
+            if self.max_iterations == 0 {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "cross-tier max_iterations must be nonzero",
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl CrossTierMetric {
+        fn require_valid(&self) -> Result<(), Error> {
+            if self.name.trim().is_empty()
+                || !self.expected.is_finite()
+                || !self.absolute_tolerance.is_finite()
+                || self.absolute_tolerance < 0.0
+                || !self.relative_tolerance.is_finite()
+                || self.relative_tolerance < 0.0
+            {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("invalid cross-tier metric {}", self.name),
+                ));
+            }
+            Ok(())
+        }
+
+        fn check(&self, actual: f64) -> Result<(), Error> {
+            if !actual.is_finite() {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("metric {} actual is not finite", self.name),
+                ));
+            }
+            let absolute_error = (actual - self.expected).abs();
+            let relative_denominator = self.expected.abs().max(f64::MIN_POSITIVE);
+            let relative_error = absolute_error / relative_denominator;
+            if absolute_error <= self.absolute_tolerance
+                || relative_error <= self.relative_tolerance
+            {
+                Ok(())
+            } else {
+                Err(Error::other(format!(
+                    "metric {} actual {actual} outside tolerance: expected {}, \
+                     absolute error {absolute_error} > {}, relative error {relative_error} > {}",
+                    self.name, self.expected, self.absolute_tolerance, self.relative_tolerance
+                )))
+            }
+        }
+    }
+
+    #[test]
+    fn multiple_shooting_matches_single_shooting_cross_tier_tolerance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let table = CrossTierToleranceTable::parse()?;
+        let problem = &table.problem;
+        let mut config = TwoBodyApogeeTargeting::wgs84(
+            problem.initial_radius_m,
+            problem.target_apogee_radius_m,
+            problem.initial_tangential_speed_m_s,
+        );
+        config.coast_duration_s = problem.coast_duration_s;
+        config.step_s = problem.step_s;
+        config.corrector = DifferentialCorrector {
+            max_iterations: problem.max_iterations,
+            residual_tolerance: problem.residual_tolerance,
+            ..DifferentialCorrector::default()
+        };
+
+        let t0_report = correct_two_body_apogee(&config)?;
+        table.check_metric(
+            "t0_corrected_tangential_speed_m_s",
+            t0_report.correction.free_variables[0],
+        )?;
+        table.check_metric(
+            "t0_apogee_residual_norm_m",
+            t0_report.correction.residual.norm,
+        )?;
+
+        let initial_state = TwoBodyCartesianState::new(
+            [problem.initial_radius_m, 0.0, 0.0],
+            [0.0, t0_report.correction.free_variables[0], 0.0],
+        )?;
+        let nodes = seed_two_body_multiple_shooting_nodes(
+            initial_state,
+            &problem.segment_durations_s,
+            problem.step_s,
+            WGS84_MU_M3_S2,
+        )?;
+        let t0_terminal_position = t0_report.terminal_state.position_eci_m();
+        let t0_terminal_velocity = t0_report.terminal_state.velocity_eci_m_s();
+        let condition = TerminalCondition::RendezvousState {
+            position_eci_m: t0_terminal_position,
+            velocity_eci_m_s: t0_terminal_velocity,
+        };
+        let mut perturbed = nodes.clone();
+        perturbed[1].state.position_eci_m[0] += 25.0;
+        perturbed[1].state.velocity_eci_m_s[1] -= 0.025;
+        perturbed[2].state.position_eci_m[1] -= 40.0;
+        perturbed[2].state.velocity_eci_m_s[0] += 0.03;
+        perturbed[3].state.position_eci_m[0] += 10.0;
+        perturbed[3].state.velocity_eci_m_s[1] -= 0.01;
+        let corrector = MultipleShootingCorrector {
+            max_iterations: problem.max_iterations,
+            defect_tolerance: problem.residual_tolerance,
+            max_step_norm: 100.0,
+            ..MultipleShootingCorrector::default()
+        };
+
+        let t1_correction = corrector.solve_two_body_terminal_condition(
+            &condition,
+            &perturbed,
+            &problem.segment_durations_s,
+            problem.step_s,
+            WGS84_MU_M3_S2,
+        )?;
+
+        assert!(t0_report.correction.converged, "{t0_report:?}");
+        assert!(t1_correction.converged, "{t1_correction:?}");
+        let t1_terminal = t1_correction.nodes[t1_correction.nodes.len() - 1].state;
+        table.check_metric(
+            "t1_terminal_position_delta_norm_m",
+            norm3(vector_delta(
+                t1_terminal.position_eci_m,
+                t0_terminal_position,
+            )),
+        )?;
+        table.check_metric(
+            "t1_terminal_velocity_delta_norm_m_s",
+            norm3(vector_delta(
+                t1_terminal.velocity_eci_m_s,
+                t0_terminal_velocity,
+            )),
+        )?;
+        table.check_metric(
+            "t1_continuity_defect_norm",
+            t1_correction.continuity_report.defect_norm,
+        )?;
+        table.check_metric(
+            "t1_terminal_residual_norm",
+            t1_correction.terminal_residual.norm,
+        )?;
+        Ok(())
+    }
 
     #[test]
     fn dynamically_seeded_nodes_have_zero_continuity_defect() -> Result<(), TrajoptError> {
@@ -3049,5 +3332,13 @@ mod tests {
         assert_eq!(correction.iterations, corrector.max_iterations);
         assert_eq!(correction.nodes[0], nodes[0]);
         Ok(())
+    }
+
+    fn vector_delta(actual: [f64; 3], expected: [f64; 3]) -> [f64; 3] {
+        [
+            actual[0] - expected[0],
+            actual[1] - expected[1],
+            actual[2] - expected[2],
+        ]
     }
 }

@@ -163,7 +163,9 @@ against):
   atmosphere dynamic pressure, and qbar-alpha using a declared body-forward axis.
   This is traced by `REQ-TRAJOPT-002`, including a downstream compile-fail
   tripwire that refuses surface-coordinate fields on the multiple-shooting node
-  surface; it is not yet full WP-07.1 acceptance closure.
+  surface, plus
+  `scenarios/trajopt-two-body-apogee/multiple-shooting-tolerance.toml`, which
+  gates the T1 multiple-shooting result against the T0 apogee solution.
 
 **`crates/openbmp-physics/src/profile.rs` — the vocabulary + propagator pieces.**
 
@@ -206,16 +208,16 @@ against):
 `landing.rs`), Apache-2.0, with deterministic settings wired.
 
 **Summary maturity:** WP-07.0 is implemented: the differential corrector now has
-T0 offline two-body and scenario-backed apogee CLI I-load paths; WP-07.1 has a
-partial STM, multiple-shooting continuity, and fixed-endpoint interior-node
-correction substrate, fixed-initial terminal-condition correction, soft
-node/path penalties including qbar/q-alpha, free-duration terminal correction,
-controlled terminal correction, and a no-surface-coordinate compile-fail
-tripwire; the closed terminal-condition vocabulary still holds; a Clarabel SOCP
-epigraph smoke test, a forward propagator, and a PEG-style closed-loop ascent
-reference exist. No NLP transcription, pseudospectral method, LCvx/SCvx horizon
-problem, closed-loop wiring of an optimized reference, or indirect cross-check
-exists.
+T0 offline two-body and scenario-backed apogee CLI I-load paths; WP-07.1 is
+implemented with STM/complex-step verification, multiple-shooting continuity,
+duration and control sensitivity checks, fixed-endpoint and fixed-initial
+terminal-condition correction, soft node/path penalties including
+qbar/q-alpha, free-duration and controlled terminal correction, a T0/T1
+cross-tier tolerance table, and a no-surface-coordinate compile-fail tripwire.
+The closed terminal-condition vocabulary still holds; a Clarabel SOCP epigraph
+smoke test, a forward propagator, and a PEG-style closed-loop ascent reference
+exist. No NLP transcription, pseudospectral method, LCvx/SCvx horizon problem,
+closed-loop wiring of an optimized reference, or indirect cross-check exists.
 
 ---
 
@@ -610,6 +612,7 @@ since no flight data exists (§1.2).
 | Case | Type | Tier(s) | What it proves | Label earned |
 |---|---|---|---|---|
 | **Two-body apsis correction** (existing `corrects_tangential_speed_to_target_apogee`) | analytic | T0/T1 | corrector + shooting closes a known orbital residual | `validated-toy` |
+| **T0/T1 apogee cross-tier regression** (`multiple-shooting-tolerance.toml`) | synthetic cross-tier | T0/T1 | perturbed T1 multiple-shooting solve matches the T0 single-shooting apogee terminal state to `< 1e-6` | `validated-toy` |
 | **Brachistochrone** | known-optimal OCP | T2/T3 | HS & LGR transcription accuracy; costate/multiplier estimate | `research` |
 | **Bryson-Denham** (state-constrained) | known-optimal OCP | T2/T3 | path-constraint handling; active-set correctness | `research` |
 | **Goddard max-altitude (singular arc)** | bang-singular-bang OCP | T3 | ph-mesh refinement on a nonsmooth arc (Betts; PHR ph paper) | `research` |
@@ -625,6 +628,7 @@ since no flight data exists (§1.2).
 | Quantity | Tier | Tolerance | Notes |
 |---|---|---|---|
 | Orbital residual norm (apsis/elements) | T0/T1 | `< 1e-2` (mixed m / m·s⁻¹) | matches existing `meters_tolerance` test scale |
+| T0/T1 terminal state cross-tier delta | T1 | `< 1e-6` on terminal position, velocity, continuity, and terminal residual norms | `scenarios/trajopt-two-body-apogee/multiple-shooting-tolerance.toml` |
 | HS defect convergence order | T2 | slope `4.0 ± 0.3` on log‖ζ‖ vs log h | MMS order-of-accuracy gate |
 | LGR spectral convergence | T3 | error decays faster than any algebraic order on smooth arcs | exponential-decay check |
 | Brachistochrone optimal cost | T2/T3 | `< 1e-4` relative to closed form | |
@@ -745,7 +749,7 @@ gates green and answers the §3 per-PR checklist.
 ### WP-07.1 — Multiple shooting with STM / variational Jacobian
 
 - **title:** Generalize the corrector from M=1 to M-segment multiple shooting.
-- **implementation_status:** partial. `src/stm.rs` integrates deterministic
+- **implementation_status:** implemented. `src/stm.rs` integrates deterministic
   two-body variational equations with a state-transition matrix and verifies
   the STM against complex-step sensitivities, and
   `src/shooting.rs` evaluates M-segment continuity defects plus a block-
@@ -759,8 +763,10 @@ gates green and answers the §3 per-PR checklist.
   controls. Soft path rows now include qbar and qbar-alpha mappings from node
   state, density, and a declared body-forward axis. A trybuild UI test proves
   the public multiple-shooting node surface cannot carry target latitude/
-  longitude fields. Remaining acceptance work: the T0 cross-tier regression
-  tolerance table.
+  longitude fields. The checked-in
+  `scenarios/trajopt-two-body-apogee/multiple-shooting-tolerance.toml` table
+  now gates a perturbed T1 multiple-shooting solve against the T0
+  single-shooting apogee solution to `< 1e-6`.
 - **goal:** Robust ascent-to-orbit reference generation that reuses the existing
   physics propagator, replacing the single-shooting limitation with block-
   bidiagonal continuity defects and an STM-based Jacobian.

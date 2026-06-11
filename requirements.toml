@@ -219,7 +219,7 @@ verification = ["V-TRAJOPT-001"]
 [[requirements]]
 id = "REQ-TRAJOPT-002"
 title = "The trajectory optimizer exposes an STM multiple-shooting substrate"
-statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator with complex-step column verification, a multiple-shooting continuity evaluator whose defects and state Jacobian are block-bidiagonal and whose segment-duration sensitivity columns are verified, a controlled multiple-shooting evaluator whose control sensitivity columns are verified for piecewise-constant ECI acceleration controls, soft box/path exterior-penalty rows for node state components, state norms, rotating-atmosphere qbar, and qbar-alpha, a damped fixed-endpoint interior-node corrector, and fixed-initial-state terminal-condition correctors, including free-duration and controlled variants, that target only the closed TerminalCondition equality vocabulary, report non-convergence honestly, and remain independent of any surface-coordinate target vocabulary."
+statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator with complex-step column verification, a multiple-shooting continuity evaluator whose defects and state Jacobian are block-bidiagonal and whose segment-duration sensitivity columns are verified, a controlled multiple-shooting evaluator whose control sensitivity columns are verified for piecewise-constant ECI acceleration controls, soft box/path exterior-penalty rows for node state components, state norms, rotating-atmosphere qbar, and qbar-alpha, a damped fixed-endpoint interior-node corrector, and fixed-initial-state terminal-condition correctors, including free-duration and controlled variants, that target only the closed TerminalCondition equality vocabulary, report non-convergence honestly, prove the T1 multiple-shooting solution matches the T0 single-shooting apogee case through a checked-in cross-tier tolerance table, and remain independent of any surface-coordinate target vocabulary."
 verification = ["V-TRAJOPT-002"]
 
 [[requirements]]
@@ -1453,6 +1453,7 @@ paths = [
   "crates/openbmp-testkit/tests/trajopt_no_surface_coordinate_compile_fail.rs",
   "crates/openbmp-testkit/tests/ui/trajopt_multiple_shooting_surface_coordinate.rs",
   "crates/openbmp-testkit/tests/ui/trajopt_multiple_shooting_surface_coordinate.stderr",
+  "scenarios/trajopt-two-body-apogee/multiple-shooting-tolerance.toml",
   "docs/parity/07-trajectory-optimization-and-mission-design.md",
   "docs/parity/progress.md",
 ]
@@ -1490,6 +1491,8 @@ contains = [
   "duration_jacobian_matches_finite_difference_columns",
   "controlled_jacobian_matches_finite_difference_columns",
   "zero_controlled_seed_matches_uncontrolled_seed",
+  "multiple_shooting_matches_single_shooting_cross_tier_tolerance",
+  "t1_terminal_position_delta_norm_m",
   "fixed_endpoint_corrector_restores_perturbed_interior_nodes",
   "fixed_endpoint_corrector_reports_non_convergence_for_inconsistent_endpoint",
   "terminal_condition_corrector_restores_perturbed_rendezvous_mesh",
@@ -1503,8 +1506,8 @@ contains = [
   "multiple_shooting_node_cannot_carry_surface_coordinates",
   "target_latitude_rad",
   "target_longitude_rad",
-  "WP-07.1: **partial**",
-  "**implementation_status:** partial",
+  "WP-07.1: **implemented**",
+  "**implementation_status:** implemented",
 ]
 requirements = ["REQ-TRAJOPT-002"]
 
