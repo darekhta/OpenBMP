@@ -753,9 +753,11 @@ Effort sizes are from the research ladder.
   `LiquidEnginePerformance` helper in `openbmp-propulsion` now derives
   liquid-engine max thrust, choked mass flow, and effective `Isp` from a
   looked-up thermochemical state plus the pressure-thrust nozzle solver
-  (`REQ-PROP-028` / `V-PROP-028`). Scenario/runner construction of liquid
-  engines directly from deck metadata and CEARUN/Cantera tolerance tables remain
-  future evidence before this WP is complete.
+  (`REQ-PROP-028` / `V-PROP-028`), and schema-v3 liquid engines can opt into
+  that path through `thermochemical_performance` while reusing the SHA-pinned
+  `[propulsion.thermochem]` deck lookup (`REQ-PROP-029` / `V-PROP-029`).
+  CEARUN/Cantera tolerance tables and empirical efficiency-band propagation
+  remain future evidence before this WP is complete.
 - **goal:** Derive `c*(pc,MR)`, `Tc`, `γ`, `MW` from a CEA/Cantera deck instead
   of hardcoded constants; enable mixture-ratio-aware liquid performance and the
   documented efficiency band.

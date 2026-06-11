@@ -534,6 +534,12 @@ title = "Liquid engine performance can be derived from thermochemistry"
 statement = "The propulsion crate exposes a deterministic liquid-engine performance helper that consumes looked-up thermochemical chamber pressure, c*, gamma, and nozzle geometry, computes choked throat mass flow, solves the existing ideal pressure-thrust nozzle model with optional separation, derives max thrust and effective Isp from the same state, validates non-finite and out-of-envelope inputs fail-closed, and can construct a LiquidEngine by replacing only max_thrust_n and isp_s while preserving existing lifecycle and control limits."
 verification = ["V-PROP-028"]
 
+[[requirements]]
+id = "REQ-PROP-029"
+title = "Liquid engine scenarios can consume thermochemistry decks"
+statement = "A liquid engine may declare an optional thermochemical_performance block under [[vehicle.assembly.engines]] with throat area, exit area, ambient pressure, and optional nozzle separation; scenario validation requires a SHA-pinnable [propulsion.thermochem] deck lookup when any engine opts in, rejects malformed nozzle scalars fail-closed, keeps the no-block constant-thrust/Isp path unchanged, and the point-mass and rigid-body runners build the engine with deck-derived max thrust, choked mass flow, and effective Isp through LiquidEnginePerformance."
+verification = ["V-PROP-029"]
+
 [[verification]]
 id = "V-SIL-001"
 kind = "test"
@@ -2950,3 +2956,29 @@ contains = [
   "liquid_engine_new_with_performance_uses_thermochemical_mass_flow",
 ]
 requirements = ["REQ-PROP-028"]
+
+[[verification]]
+id = "V-PROP-029"
+kind = "test"
+command = "cargo test -p openbmp-scenario thermochem --locked && cargo test -p openbmp-runner build_engine_applies_thermochemical_performance --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-runner/src/engines.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/05-propulsion-high-fidelity.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "thermochemical_performance",
+  "EngineThermochemicalPerformanceConfig",
+  "load_liquid_engine_performance",
+  "LiquidEnginePerformance::from_thermochemistry",
+  "parses_propulsion_thermochem_with_engine_performance_schema",
+  "rejects_engine_thermochemical_performance_without_propulsion_thermochem",
+  "build_engine_applies_thermochemical_performance",
+]
+requirements = ["REQ-PROP-029"]

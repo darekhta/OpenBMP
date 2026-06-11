@@ -3214,7 +3214,64 @@ kind = "piecewise_exponential"
             err,
             ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
                 if field_a == "propulsion.thermochem"
-                    && field_b == "propulsion.motor.grain or propulsion.feed_network"
+                    && field_b == "propulsion.motor.grain, propulsion.feed_network, or vehicle engine thermochemical_performance"
+        ));
+    }
+
+    #[test]
+    fn parses_propulsion_thermochem_with_engine_performance_schema() {
+        let toml = format!(
+            "{}\n\
+             [propulsion.thermochem]\n\
+             file = \"thermochem/synthetic.toml\"\n\
+             chamber_pressure_pa = 2000000.0\n\
+             mixture_ratio = 2.5\n\
+             \n\
+             [vehicle.assembly.engines.thermochemical_performance]\n\
+             throat_area_m2 = 0.02\n\
+             exit_area_m2 = 0.24\n\
+             ambient_pressure_pa = 101325.0\n\
+             separation = \"schmucker\"\n",
+            assembly_with_engine_propellant_budget()
+                .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+        );
+
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+
+        let propulsion = scenario.document.propulsion.as_ref().unwrap();
+        assert!(propulsion.thermochem.is_some());
+        let performance = scenario.document.vehicle.assembly.engines[1]
+            .thermochemical_performance
+            .as_ref()
+            .expect("engine thermochemical performance parsed");
+        assert_eq!(performance.throat_area_m2.to_bits(), 0.02_f64.to_bits());
+        assert_eq!(performance.exit_area_m2.to_bits(), 0.24_f64.to_bits());
+        assert_eq!(
+            performance.ambient_pressure_pa.to_bits(),
+            101_325.0_f64.to_bits()
+        );
+        assert_eq!(performance.separation, NozzleSeparationConfig::Schmucker);
+    }
+
+    #[test]
+    fn rejects_engine_thermochemical_performance_without_propulsion_thermochem() {
+        let toml = format!(
+            "{}\n\
+             [vehicle.assembly.engines.thermochemical_performance]\n\
+             throat_area_m2 = 0.02\n\
+             exit_area_m2 = 0.24\n\
+             ambient_pressure_pa = 101325.0\n",
+            assembly_with_engine_propellant_budget()
+                .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+        );
+
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "vehicle.assembly.engines[1].thermochemical_performance"
+                    && field_b == "propulsion.thermochem"
         ));
     }
 

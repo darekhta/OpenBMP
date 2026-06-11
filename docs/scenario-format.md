@@ -1070,15 +1070,18 @@ API.
 `propellant_volume_m3`. All parameters are synthetic/textbook/public and are
 rejected if non-finite or outside the selected regression envelope.
 
-Inline grain motors and feed-network engines may also declare a pinned
-Schema-1 thermochemistry deck. The runner resolves the deck through the
-same referenced-file SHA-256 path as aero and motor files, samples it at the
+Inline grain motors, feed-network engines, and liquid-engine
+`thermochemical_performance` opt-ins may also declare a pinned Schema-1
+thermochemistry deck. The runner resolves the deck through the same
+referenced-file SHA-256 path as aero and motor files, samples it at the
 declared nominal chamber pressure and mixture ratio, and uses the returned
 state for reduced propulsion constants. Inline grains consume `c_star_m_s`
 and `gamma`; feed networks consume `c_star_m_s`, chamber temperature, and
-the molecular-weight-derived gas constant. When the block is omitted, the
-inline `[propulsion.motor.grain.propellant]` and `[[propulsion.feed_network]]`
-constants are preserved.
+the molecular-weight-derived gas constant; liquid-engine performance consumes
+`c_star_m_s` and `gamma` plus per-engine nozzle geometry to derive max thrust,
+choked mass flow, and effective `Isp`. When the block is omitted, the inline
+`[propulsion.motor.grain.propellant]`, `[[propulsion.feed_network]]`, and
+constant-`Isp` liquid-engine limits are preserved.
 
 ```toml
 [propulsion.thermochem]
@@ -2045,6 +2048,20 @@ limits              = { max_thrust_n = 5000.0, isp_s = 250.0,
                         ignition_transient_s = 0.1,
                         shutdown_transient_s = 0.1,
                         max_gimbal_rad = 0.087 }
+```
+
+Schema v3 liquid engines can opt into thermochemistry-derived performance by
+adding a subtable to the engine. This requires `[propulsion.thermochem]`.
+Only `limits.max_thrust_n` and `limits.isp_s` are replaced at runner
+construction; lifecycle, gimbal, throttle, propellant-budget, and fault
+settings remain unchanged.
+
+```toml
+[vehicle.assembly.engines.thermochemical_performance]
+throat_area_m2      = 0.02
+exit_area_m2        = 0.24
+ambient_pressure_pa = 101325.0
+separation          = "off" # off | summerfield | schmucker
 ```
 
 #### Engine kinds

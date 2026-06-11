@@ -35,13 +35,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use openbmp_core::{Body, BodyId, Duration, EngineId, Position3, StepIndex};
 use openbmp_propulsion::{
     ClusterLayout as PropulsionClusterLayout, EngineCluster, EngineFault, EngineLimits,
-    EngineModel, EngineState, LiquidEngine,
+    EngineModel, EngineState, LiquidEngine, LiquidEngineNozzle, LiquidEnginePerformance,
+    LiquidEngineThermochemistry, NozzleSeparationCriterion,
 };
 use openbmp_scenario::{
     ClusterLayoutConfig, EngineConfig, EngineFaultConfig, EngineKindConfig,
-    PropulsionCavitationFaultLegConfig, ScenarioDocument,
+    EngineThermochemicalPerformanceConfig, NozzleSeparationConfig,
+    PropulsionCavitationFaultLegConfig, PropulsionThermochemConfig, ResolvedFile, ScenarioDocument,
 };
 use openbmp_sim::{EngineSnapshot, FiredEvent, ScenarioScriptAction};
+use openbmp_thermochem::{ThermochemDeck, ThermochemQuery, ThermochemTable};
 use openbmp_vehicle::PropellantBudgetReport;
 
 use crate::error::RunnerError;
@@ -86,7 +89,10 @@ impl EngineRack {
     /// Returns [`RunnerError::Engine`] when an engine config fails
     /// `LiquidEngine::new` (invalid limits) or when a load-time
     /// fault rejects against the engine's authority envelope.
-    pub fn build(document: &ScenarioDocument) -> Result<Self, RunnerError> {
+    pub fn build(
+        document: &ScenarioDocument,
+        resolved_files: &BTreeMap<String, ResolvedFile>,
+    ) -> Result<Self, RunnerError> {
         let dt = Duration::from_seconds(document.time.dt_s);
         let mut engines: Vec<Box<dyn EngineModel>> = Vec::new();
         let mut mount_points_body: Vec<Position3<Body>> = Vec::new();
@@ -94,8 +100,12 @@ impl EngineRack {
         let mut engine_owners: BTreeMap<EngineId, BodyId> = BTreeMap::new();
         let assembly = &document.vehicle.assembly;
         let layout = assembly.cluster_layout.unwrap_or_default();
+        let thermochem = document
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.thermochem.as_ref());
         for (index, config) in assembly.engines.iter().enumerate() {
-            let engine = build_engine(index, config)?;
+            let engine = build_engine(index, config, thermochem, resolved_files)?;
             let id = engine.id();
             if let Some(owner) = config.mounted_to.as_deref() {
                 engine_owners.insert(id, body_id_from_scenario_text(owner));
@@ -513,7 +523,12 @@ fn engine_state_index(state: EngineState) -> u8 {
 /// Engine resolver: scenario `EngineConfig` →
 /// `LiquidEngine` (the only kind currently supported). Mounts the
 /// optional load-time fault.
-fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, RunnerError> {
+fn build_engine(
+    index: usize,
+    config: &EngineConfig,
+    thermochem: Option<&PropulsionThermochemConfig>,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<LiquidEngine, RunnerError> {
     let id = EngineId::from_path(&format!("vehicle.assembly.engines.{id}", id = config.id));
     let limits = EngineLimits {
         max_thrust_n: config.limits.max_thrust_n,
@@ -536,12 +551,29 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Run
             reason: "unsupported engine kind".to_owned(),
         });
     }
-    let mut engine = LiquidEngine::new(id, limits)
-        .map_err(|err| RunnerError::Engine {
-            field: format!("vehicle.assembly.engines[{index}]"),
-            reason: err.to_string(),
-        })?
-        .with_restart_policy(config.limits.restartable);
+    let performance = config
+        .thermochemical_performance
+        .as_ref()
+        .map(|performance| {
+            let Some(thermochem) = thermochem else {
+                return Err(RunnerError::Engine {
+                    field: format!("vehicle.assembly.engines[{index}].thermochemical_performance"),
+                    reason: "internal invariant: [propulsion.thermochem] missing after scenario validation"
+                        .to_owned(),
+                });
+            };
+            load_liquid_engine_performance(index, performance, thermochem, resolved_files)
+        })
+        .transpose()?;
+    let mut engine = match performance {
+        Some(performance) => LiquidEngine::new_with_performance(id, limits, performance),
+        None => LiquidEngine::new(id, limits),
+    }
+    .map_err(|err| RunnerError::Engine {
+        field: format!("vehicle.assembly.engines[{index}]"),
+        reason: err.to_string(),
+    })?
+    .with_restart_policy(config.limits.restartable);
     if let Some(fault_config) = &config.fault {
         let fault = engine_fault_from_config(*fault_config);
         engine
@@ -552,6 +584,56 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Run
             })?;
     }
     Ok(engine)
+}
+
+fn load_liquid_engine_performance(
+    index: usize,
+    config: &EngineThermochemicalPerformanceConfig,
+    thermochem: &PropulsionThermochemConfig,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<LiquidEnginePerformance, RunnerError> {
+    let resolved =
+        resolved_files
+            .get("propulsion.thermochem.file")
+            .ok_or_else(|| RunnerError::Engine {
+                field: format!("vehicle.assembly.engines[{index}].thermochemical_performance"),
+                reason: "internal invariant: resolved file `propulsion.thermochem.file` missing after pin verification"
+                    .to_owned(),
+            })?;
+    let text = std::str::from_utf8(&resolved.bytes).map_err(|err| RunnerError::Engine {
+        field: format!("vehicle.assembly.engines[{index}].thermochemical_performance"),
+        reason: format!(
+            "could not read thermochemistry deck {} as UTF-8: {err}",
+            resolved.path.display()
+        ),
+    })?;
+    let deck = ThermochemTable::load_from_str(text)?;
+    let state = deck.lookup(ThermochemQuery {
+        chamber_pressure_pa: thermochem.chamber_pressure_pa,
+        mixture_ratio: thermochem.mixture_ratio,
+    })?;
+    let separation = match config.separation {
+        NozzleSeparationConfig::Off => NozzleSeparationCriterion::Off,
+        NozzleSeparationConfig::Summerfield => NozzleSeparationCriterion::Summerfield,
+        NozzleSeparationConfig::Schmucker => NozzleSeparationCriterion::Schmucker,
+    };
+    LiquidEnginePerformance::from_thermochemistry(
+        LiquidEngineThermochemistry {
+            chamber_pressure_pa: thermochem.chamber_pressure_pa,
+            c_star_m_s: state.c_star_m_s,
+            gamma: state.gamma,
+        },
+        LiquidEngineNozzle {
+            throat_area_m2: config.throat_area_m2,
+            exit_area_m2: config.exit_area_m2,
+            ambient_pressure_pa: config.ambient_pressure_pa,
+            separation,
+        },
+    )
+    .map_err(|err| RunnerError::Engine {
+        field: format!("vehicle.assembly.engines[{index}].thermochemical_performance"),
+        reason: err.to_string(),
+    })
 }
 
 fn scheduled_faults(document: &ScenarioDocument) -> Vec<ScheduledEngineFault> {
@@ -634,7 +716,11 @@ mod tests {
     use super::*;
     use openbmp_core::{SimTime, StepIndex};
     use openbmp_propulsion::{EngineCluster, EngineCommand, EngineLimits};
+    use openbmp_scenario::{
+        EngineLimitsConfig, EngineThermochemicalPerformanceConfig, PropulsionThermochemConfig,
+    };
     use openbmp_sim::EventId;
+    use std::path::PathBuf;
 
     fn test_limits() -> EngineLimits {
         EngineLimits {
@@ -647,6 +733,21 @@ mod tests {
             throttle_slew_per_s: f64::INFINITY,
             min_throttle_unit: 0.0,
             isp_throttle_falloff: 0.0,
+        }
+    }
+
+    fn test_limits_config() -> EngineLimitsConfig {
+        EngineLimitsConfig {
+            max_thrust_n: 1000.0,
+            isp_s: 250.0,
+            ignition_transient_s: 0.0,
+            shutdown_transient_s: 0.1,
+            max_gimbal_rad: 0.1,
+            gimbal_slew_rad_per_s: f64::INFINITY,
+            throttle_slew_per_s: f64::INFINITY,
+            min_throttle_unit: 0.0,
+            isp_throttle_falloff: 0.0,
+            restartable: false,
         }
     }
 
@@ -839,5 +940,94 @@ mod tests {
             EngineFault::CavitationThrustLoss { factor }
                 if factor.to_bits() == 0.35_f64.to_bits()
         ));
+    }
+
+    #[test]
+    fn build_engine_applies_thermochemical_performance() {
+        let bytes = include_bytes!("../tests/fixtures/thermochem/synthetic-grain.toml").to_vec();
+        let mut resolved_files = BTreeMap::new();
+        resolved_files.insert(
+            "propulsion.thermochem.file".to_owned(),
+            ResolvedFile {
+                path: PathBuf::from("tests/fixtures/thermochem/synthetic-grain.toml"),
+                sha256_hex: "fixture".to_owned(),
+                bytes,
+            },
+        );
+        let thermochem = PropulsionThermochemConfig {
+            file: PathBuf::from("tests/fixtures/thermochem/synthetic-grain.toml"),
+            file_sha256: None,
+            chamber_pressure_pa: 2_000_000.0,
+            mixture_ratio: 2.5,
+        };
+        let performance_config = EngineThermochemicalPerformanceConfig {
+            throat_area_m2: 0.02,
+            exit_area_m2: 0.24,
+            ambient_pressure_pa: 101_325.0,
+            separation: NozzleSeparationConfig::Off,
+        };
+        let config = EngineConfig {
+            id: "engine_a".to_owned(),
+            mounted_to: None,
+            kind: EngineKindConfig::LiquidEngine,
+            mount_point_body_m: [0.0, 0.0, 0.0],
+            limits: test_limits_config(),
+            propellant: None,
+            fault: None,
+            thermochemical_performance: Some(performance_config),
+        };
+        let expected_state = ThermochemTable::load_from_str(
+            std::str::from_utf8(
+                &resolved_files
+                    .get("propulsion.thermochem.file")
+                    .unwrap()
+                    .bytes,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .lookup(ThermochemQuery {
+            chamber_pressure_pa: thermochem.chamber_pressure_pa,
+            mixture_ratio: thermochem.mixture_ratio,
+        })
+        .unwrap();
+        let expected = LiquidEnginePerformance::from_thermochemistry(
+            LiquidEngineThermochemistry {
+                chamber_pressure_pa: thermochem.chamber_pressure_pa,
+                c_star_m_s: expected_state.c_star_m_s,
+                gamma: expected_state.gamma,
+            },
+            LiquidEngineNozzle {
+                throat_area_m2: performance_config.throat_area_m2,
+                exit_area_m2: performance_config.exit_area_m2,
+                ambient_pressure_pa: performance_config.ambient_pressure_pa,
+                separation: NozzleSeparationCriterion::Off,
+            },
+        )
+        .unwrap();
+
+        let mut engine = build_engine(0, &config, Some(&thermochem), &resolved_files).unwrap();
+
+        assert_eq!(
+            engine.limits().max_thrust_n.to_bits(),
+            expected.max_thrust_n.to_bits()
+        );
+        assert_eq!(engine.limits().isp_s.to_bits(), expected.isp_s.to_bits());
+        engine
+            .apply_command(EngineCommand {
+                throttle_unit: 1.0,
+                gimbal_pitch_rad: 0.0,
+                gimbal_yaw_rad: 0.0,
+                ignite: true,
+                shutdown: false,
+            })
+            .unwrap();
+        let snapshot = engine.step(Duration::from_seconds(0.001)).unwrap();
+
+        assert_eq!(
+            snapshot.thrust_body.z.to_bits(),
+            expected.max_thrust_n.to_bits()
+        );
+        assert!((snapshot.mass_flow_kg_per_s - expected.mass_flow_kg_per_s).abs() < 1.0e-12);
     }
 }
