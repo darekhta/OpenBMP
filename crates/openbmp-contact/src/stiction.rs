@@ -515,6 +515,29 @@ mod tests {
     }
 
     #[test]
+    fn stiction_drive_spring_oscillator_matches_karnopp_reference() {
+        let reference = KarnoppDriveSpringReference::new(1.0, 50.0, 0.1, 10.0, 0.6, 0.4);
+        let model = AnchoredStictionFriction::new(0.6, 0.4, 20_000.0, 60.0, 1.0e-5).unwrap();
+        let measured = simulate_drive_spring_oscillator(model, reference, 1.0e-5, 4.6);
+
+        assert_relative_eq!(
+            measured.first_slip_duration_s,
+            reference.slip_duration_s(),
+            max_relative = 0.02
+        );
+        assert_relative_eq!(
+            measured.first_cycle_period_s,
+            reference.cycle_period_s(),
+            max_relative = 0.02
+        );
+        assert_relative_eq!(
+            measured.first_cycle_displacement_m,
+            reference.cycle_displacement_m(),
+            max_relative = 0.02
+        );
+    }
+
+    #[test]
     fn rest_detector_requires_energy_floor_sticking_and_hold_count() {
         let detector = RestDetector::new(RestDetectorConfig::new(1.0e-6, 3).unwrap());
         let mut state = RestDetectorState::new();
@@ -551,5 +574,163 @@ mod tests {
             TAU / expected_frequency,
             max_relative = 1.0e-15
         );
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct KarnoppDriveSpringReference {
+        mass_kg: f64,
+        drive_stiffness_n_m: f64,
+        drive_speed_m_s: f64,
+        normal_force_n: f64,
+        static_coefficient: f64,
+        kinetic_coefficient: f64,
+    }
+
+    impl KarnoppDriveSpringReference {
+        const fn new(
+            mass_kg: f64,
+            drive_stiffness_n_m: f64,
+            drive_speed_m_s: f64,
+            normal_force_n: f64,
+            static_coefficient: f64,
+            kinetic_coefficient: f64,
+        ) -> Self {
+            Self {
+                mass_kg,
+                drive_stiffness_n_m,
+                drive_speed_m_s,
+                normal_force_n,
+                static_coefficient,
+                kinetic_coefficient,
+            }
+        }
+
+        fn omega_rad_s(self) -> f64 {
+            (self.drive_stiffness_n_m / self.mass_kg).sqrt()
+        }
+
+        fn static_extension_m(self) -> f64 {
+            self.static_coefficient * self.normal_force_n / self.drive_stiffness_n_m
+        }
+
+        fn kinetic_extension_m(self) -> f64 {
+            self.kinetic_coefficient * self.normal_force_n / self.drive_stiffness_n_m
+        }
+
+        fn slip_duration_s(self) -> f64 {
+            let omega = self.omega_rad_s();
+            let extension_delta_m = self.static_extension_m() - self.kinetic_extension_m();
+            2.0 * (core::f64::consts::PI
+                - (extension_delta_m * omega / self.drive_speed_m_s).atan())
+                / omega
+        }
+
+        fn restick_extension_m(self) -> f64 {
+            let omega = self.omega_rad_s();
+            let slip_phase_rad = omega * self.slip_duration_s();
+            let extension_delta_m = self.static_extension_m() - self.kinetic_extension_m();
+            self.kinetic_extension_m()
+                + extension_delta_m * slip_phase_rad.cos()
+                + (self.drive_speed_m_s / omega) * slip_phase_rad.sin()
+        }
+
+        fn stick_duration_s(self) -> f64 {
+            (self.static_extension_m() - self.restick_extension_m()) / self.drive_speed_m_s
+        }
+
+        fn cycle_period_s(self) -> f64 {
+            self.slip_duration_s() + self.stick_duration_s()
+        }
+
+        fn cycle_displacement_m(self) -> f64 {
+            self.drive_speed_m_s * self.cycle_period_s()
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct DriveSpringMeasurement {
+        first_slip_start_s: Option<f64>,
+        first_resticking_s: Option<f64>,
+        second_slip_start_s: Option<f64>,
+        first_resticking_position_m: Option<f64>,
+        second_resticking_position_m: Option<f64>,
+    }
+
+    impl DriveSpringMeasurement {
+        fn finish(self) -> MeasuredDriveSpringCycle {
+            let first_slip_start_s = self.first_slip_start_s.unwrap();
+            let first_resticking_s = self.first_resticking_s.unwrap();
+            let second_slip_start_s = self.second_slip_start_s.unwrap();
+            let first_resticking_position_m = self.first_resticking_position_m.unwrap();
+            let second_resticking_position_m = self.second_resticking_position_m.unwrap();
+            MeasuredDriveSpringCycle {
+                first_slip_duration_s: first_resticking_s - first_slip_start_s,
+                first_cycle_period_s: second_slip_start_s - first_slip_start_s,
+                first_cycle_displacement_m: second_resticking_position_m
+                    - first_resticking_position_m,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct MeasuredDriveSpringCycle {
+        first_slip_duration_s: f64,
+        first_cycle_period_s: f64,
+        first_cycle_displacement_m: f64,
+    }
+
+    fn simulate_drive_spring_oscillator(
+        friction: AnchoredStictionFriction,
+        reference: KarnoppDriveSpringReference,
+        dt_s: f64,
+        stop_s: f64,
+    ) -> MeasuredDriveSpringCycle {
+        let mut friction_state = AnchoredStictionState::new();
+        let mut measurement = DriveSpringMeasurement::default();
+        let mut previous_mode = StictionMode::Free;
+        let mut time_s = 0.0;
+        let mut position_m = 0.0;
+        let mut velocity_m_s = 0.0;
+
+        while time_s < stop_s && measurement.second_resticking_position_m.is_none() {
+            let drive_force_n =
+                reference.drive_stiffness_n_m * (reference.drive_speed_m_s * time_s - position_m);
+            let response = friction
+                .evaluate(
+                    &mut friction_state,
+                    reference.normal_force_n,
+                    [velocity_m_s, 0.0, 0.0],
+                    dt_s,
+                )
+                .unwrap();
+
+            match (previous_mode, response.mode) {
+                (StictionMode::Sticking, StictionMode::Sliding) => {
+                    if measurement.first_slip_start_s.is_none() {
+                        measurement.first_slip_start_s = Some(time_s);
+                    } else if measurement.second_slip_start_s.is_none() {
+                        measurement.second_slip_start_s = Some(time_s);
+                    }
+                }
+                (StictionMode::Sliding, StictionMode::Sticking) => {
+                    if measurement.first_resticking_s.is_none() {
+                        measurement.first_resticking_s = Some(time_s);
+                        measurement.first_resticking_position_m = Some(position_m);
+                    } else if measurement.second_resticking_position_m.is_none() {
+                        measurement.second_resticking_position_m = Some(position_m);
+                    }
+                }
+                _ => {}
+            }
+            previous_mode = response.mode;
+
+            let acceleration_m_s2 =
+                (drive_force_n + response.friction_force_n[0]) / reference.mass_kg;
+            velocity_m_s += acceleration_m_s2 * dt_s;
+            position_m += velocity_m_s * dt_s;
+            time_s += dt_s;
+        }
+
+        measurement.finish()
     }
 }
