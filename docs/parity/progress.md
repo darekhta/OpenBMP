@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-12, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (104 requirement ids).
+traceability (105 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -77,10 +77,14 @@ force-dual cross products, Pluecker transforms, `SpatialInertia` construction
 from validated `MassProperties`, the WP-01.1 `Joint` vocabulary, and a
 topologically ordered `MultibodyTree`/`MultibodyState` shape with deterministic
 q/qd offsets and fail-closed topology/state validation (`REQ-MULTIBODY-001`).
-Missing for full WP-01.1: ABA forward dynamics, RNEA inverse dynamics, CRBA,
-single-free-flyer byte-equivalence against the current kernel, scenario wiring,
-gimballed ascent exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6:
-**not started**.
+It also has a fixed-transform CRBA/RNEA self-consistency substrate:
+`JointSpaceInertia`, `joint_space_inertia_crba_fixed_transforms()`, and
+`inverse_dynamics_rnea_fixed_transforms()` prove CRBA columns against
+zero-velocity RNEA on a small tree (`REQ-MULTIBODY-002`). Missing for full
+WP-01.1: q-dependent joint transforms, velocity bias, gravity/external-force
+RNEA, ABA forward dynamics, single-free-flyer byte-equivalence against the
+current kernel, scenario wiring, gimballed ascent exercise, and Spatial_v2
+oracle checks. WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 

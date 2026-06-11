@@ -301,6 +301,20 @@ impl PluckerTransform {
             self.motion_matrix_parent_to_child().transpose() * force_child.vector,
         )
     }
+
+    /// Transform a child-frame spatial inertia into parent-frame coordinates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError::NonFinite`] if the transformed matrix contains
+    /// non-finite components.
+    pub fn transform_inertia_child_to_parent(
+        &self,
+        inertia_child: SpatialInertia,
+    ) -> Result<SpatialInertia, MultibodyError> {
+        let x = self.motion_matrix_parent_to_child();
+        SpatialInertia::from_matrix(x.transpose() * inertia_child.matrix * x)
+    }
 }
 
 /// Joint type connecting a tree body to its parent.
@@ -465,6 +479,79 @@ pub struct TreeBody {
     pub qd_offset: usize,
 }
 
+/// Dense joint-space inertia matrix.
+///
+/// Stored row-major in a deterministic `Vec<f64>` so the crate remains usable
+/// without `std`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointSpaceInertia {
+    dimension: usize,
+    values_row_major: Vec<f64>,
+}
+
+impl JointSpaceInertia {
+    /// Construct from row-major values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the value count is not `dimension^2` or
+    /// any element is non-finite.
+    pub fn new(dimension: usize, values_row_major: Vec<f64>) -> Result<Self, MultibodyError> {
+        if values_row_major.len() != dimension * dimension {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "joint-space inertia values",
+                expected: dimension * dimension,
+                actual: values_row_major.len(),
+            });
+        }
+        if !values_row_major.iter().all(|v| v.is_finite()) {
+            return Err(MultibodyError::NonFinite {
+                reason: "joint-space inertia matrix contains non-finite components",
+            });
+        }
+        Ok(Self {
+            dimension,
+            values_row_major,
+        })
+    }
+
+    /// Zero matrix of dimension `dimension`.
+    #[must_use]
+    pub fn zeros(dimension: usize) -> Self {
+        Self {
+            dimension,
+            values_row_major: vec![0.0; dimension * dimension],
+        }
+    }
+
+    /// Matrix dimension.
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    /// Row-major matrix values.
+    #[must_use]
+    pub fn values_row_major(&self) -> &[f64] {
+        &self.values_row_major
+    }
+
+    /// Return one matrix element, or `None` when indices are outside the
+    /// matrix.
+    #[must_use]
+    pub fn at(&self, row: usize, col: usize) -> Option<f64> {
+        if row >= self.dimension || col >= self.dimension {
+            return None;
+        }
+        Some(self.values_row_major[row * self.dimension + col])
+    }
+
+    fn set_symmetric(&mut self, row: usize, col: usize, value: f64) {
+        self.values_row_major[row * self.dimension + col] = value;
+        self.values_row_major[col * self.dimension + row] = value;
+    }
+}
+
 /// Topologically ordered multibody tree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MultibodyTree {
@@ -571,6 +658,141 @@ impl MultibodyTree {
         }
         Ok(())
     }
+
+    /// Composite-rigid-body joint-space inertia for the current fixed tree
+    /// transforms and q-independent joint subspaces.
+    ///
+    /// This is the first CRBA substrate used by WP-01.1 self-consistency tests.
+    /// It does not yet apply q-dependent joint transforms, velocity terms, or
+    /// floating-base factorization; those remain part of the full ABA/RNEA/CRBA
+    /// work package.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if an intermediate transformed inertia is
+    /// non-finite.
+    pub fn joint_space_inertia_crba_fixed_transforms(
+        &self,
+    ) -> Result<JointSpaceInertia, MultibodyError> {
+        let mut composite_inertia: Vec<SpatialMatrix> = self
+            .bodies
+            .iter()
+            .map(|body| *body.inertia.matrix())
+            .collect();
+
+        for child_index in (0..self.bodies.len()).rev() {
+            if let Some(parent) = self.bodies[child_index].parent {
+                let x = self.bodies[child_index]
+                    .parent_to_body
+                    .motion_matrix_parent_to_child();
+                let transformed = x.transpose() * composite_inertia[child_index] * x;
+                composite_inertia[parent.index()] += transformed;
+            }
+        }
+
+        let subspaces: Vec<Vec<SpatialMotion>> = self
+            .bodies
+            .iter()
+            .map(|body| body.joint.motion_subspace())
+            .collect();
+        let mut h = JointSpaceInertia::zeros(self.n_qd);
+
+        for body_index in 0..self.bodies.len() {
+            let body = &self.bodies[body_index];
+            for (local_col, column_motion) in subspaces[body_index].iter().enumerate() {
+                let col = body.qd_offset + local_col;
+                let mut force = composite_inertia[body_index] * column_motion.vector();
+                let mut ancestor_index = body_index;
+                loop {
+                    let ancestor = &self.bodies[ancestor_index];
+                    for (local_row, row_motion) in subspaces[ancestor_index].iter().enumerate() {
+                        let row = ancestor.qd_offset + local_row;
+                        h.set_symmetric(row, col, row_motion.vector().dot(&force));
+                    }
+                    if let Some(parent) = ancestor.parent {
+                        let x = ancestor.parent_to_body.motion_matrix_parent_to_child();
+                        force = x.transpose() * force;
+                        ancestor_index = parent.index();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        JointSpaceInertia::new(self.n_qd, h.values_row_major)
+    }
+
+    /// Zero-velocity Recursive Newton-Euler inverse dynamics over fixed tree
+    /// transforms.
+    ///
+    /// Given generalized acceleration `qdd`, this computes `tau = H*qdd` for
+    /// the same fixed-transform, q-independent-subspace assumptions as
+    /// [`Self::joint_space_inertia_crba_fixed_transforms`]. It is intentionally
+    /// a substrate for the CRBA-column self-consistency gate, not yet the full
+    /// WP-01.1 RNEA with velocity bias, gravity, external forces, or
+    /// q-dependent joint transforms.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if `qdd` has the wrong length or contains a
+    /// non-finite value.
+    pub fn inverse_dynamics_rnea_fixed_transforms(
+        &self,
+        qdd: &[f64],
+    ) -> Result<Vec<f64>, MultibodyError> {
+        if qdd.len() != self.n_qd {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "qdd",
+                expected: self.n_qd,
+                actual: qdd.len(),
+            });
+        }
+        if !qdd.iter().all(|v| v.is_finite()) {
+            return Err(MultibodyError::NonFinite {
+                reason: "generalized acceleration contains non-finite components",
+            });
+        }
+
+        let subspaces: Vec<Vec<SpatialMotion>> = self
+            .bodies
+            .iter()
+            .map(|body| body.joint.motion_subspace())
+            .collect();
+        let mut accelerations = vec![SpatialVector::zeros(); self.bodies.len()];
+        let mut forces = vec![SpatialVector::zeros(); self.bodies.len()];
+
+        for body_index in 0..self.bodies.len() {
+            let body = &self.bodies[body_index];
+            let mut acceleration = if let Some(parent) = body.parent {
+                body.parent_to_body.motion_matrix_parent_to_child() * accelerations[parent.index()]
+            } else {
+                SpatialVector::zeros()
+            };
+            for (local, motion) in subspaces[body_index].iter().enumerate() {
+                acceleration += motion.vector() * qdd[body.qd_offset + local];
+            }
+            accelerations[body_index] = acceleration;
+            forces[body_index] = body.inertia.matrix() * acceleration;
+        }
+
+        let mut tau = vec![0.0; self.n_qd];
+        for body_index in (0..self.bodies.len()).rev() {
+            let body = &self.bodies[body_index];
+            for (local, motion) in subspaces[body_index].iter().enumerate() {
+                tau[body.qd_offset + local] = motion.vector().dot(&forces[body_index]);
+            }
+            if let Some(parent) = body.parent {
+                let parent_force = body
+                    .parent_to_body
+                    .motion_matrix_parent_to_child()
+                    .transpose()
+                    * forces[body_index];
+                forces[parent.index()] += parent_force;
+            }
+        }
+        Ok(tau)
+    }
 }
 
 /// Generalized-coordinate multibody state.
@@ -635,6 +857,16 @@ pub enum MultibodyError {
         /// Actual generalized-velocity length.
         actual_qd: usize,
     },
+    /// Generalized vector length mismatch.
+    #[error("multibody vector dimension mismatch for {vector}: expected {expected}, got {actual}")]
+    GeneralizedVectorDimensionMismatch {
+        /// Vector label.
+        vector: &'static str,
+        /// Expected length.
+        expected: usize,
+        /// Actual length.
+        actual: usize,
+    },
     /// Lower state-layer mass-property validation failed.
     #[error(transparent)]
     State(#[from] openbmp_state::StateError),
@@ -677,6 +909,33 @@ mod tests {
 
     fn inertia() -> SpatialInertia {
         SpatialInertia::from_mass_properties(&mass_properties()).unwrap()
+    }
+
+    fn sample_tree() -> MultibodyTree {
+        let root = TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let hinge = TreeBodySpec {
+            id: BodyId::new(2),
+            parent: Some(BodyIndex::new(0)),
+            joint: Joint::revolute(Vector3::new(0.0, 1.0, 0.0)).unwrap(),
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::new(Matrix3::identity(), Vector3::new(1.0, 0.0, 0.0))
+                .unwrap(),
+        };
+        let slider = TreeBodySpec {
+            id: BodyId::new(3),
+            parent: Some(BodyIndex::new(1)),
+            joint: Joint::prismatic(Vector3::new(0.0, 0.0, 1.0)).unwrap(),
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::new(Matrix3::identity(), Vector3::new(0.0, 0.5, 0.0))
+                .unwrap(),
+        };
+        MultibodyTree::new(vec![root, hinge, slider]).unwrap()
     }
 
     #[test]
@@ -845,5 +1104,77 @@ mod tests {
             MultibodyTree::new(vec![child_before_parent, root]),
             Err(MultibodyError::InvalidTopology { .. })
         ));
+    }
+
+    #[test]
+    fn crba_fixed_transforms_single_root_matches_spatial_inertia() {
+        let root_inertia = inertia();
+        let tree = MultibodyTree::new(vec![TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: root_inertia,
+            parent_to_body: PluckerTransform::identity(),
+        }])
+        .unwrap();
+
+        let h = tree.joint_space_inertia_crba_fixed_transforms().unwrap();
+
+        assert_eq!(h.dimension(), 6);
+        for row in 0..6 {
+            for col in 0..6 {
+                assert_abs_diff_eq!(
+                    h.at(row, col).unwrap(),
+                    root_inertia.matrix()[(row, col)],
+                    epsilon = 1.0e-14
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn crba_fixed_transforms_matches_rnea_columns() {
+        let tree = sample_tree();
+        let h = tree.joint_space_inertia_crba_fixed_transforms().unwrap();
+
+        for col in 0..tree.n_qd() {
+            let mut qdd = vec![0.0; tree.n_qd()];
+            qdd[col] = 1.0;
+            let tau = tree.inverse_dynamics_rnea_fixed_transforms(&qdd).unwrap();
+            for (row, tau_row) in tau.iter().enumerate() {
+                assert_abs_diff_eq!(*tau_row, h.at(row, col).unwrap(), epsilon = 1.0e-13);
+            }
+        }
+
+        for row in 0..h.dimension() {
+            assert!(h.at(row, row).unwrap() > 0.0);
+            for col in 0..h.dimension() {
+                assert_abs_diff_eq!(
+                    h.at(row, col).unwrap(),
+                    h.at(col, row).unwrap(),
+                    epsilon = 1.0e-14
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rnea_fixed_transforms_rejects_bad_generalized_acceleration() {
+        let tree = sample_tree();
+
+        let short = tree
+            .inverse_dynamics_rnea_fixed_transforms(&vec![0.0; tree.n_qd() - 1])
+            .unwrap_err();
+        let mut nonfinite = vec![0.0; tree.n_qd()];
+        nonfinite[0] = f64::NAN;
+        let nonfinite_err = tree
+            .inverse_dynamics_rnea_fixed_transforms(&nonfinite)
+            .unwrap_err();
+
+        assert!(matches!(
+            short,
+            MultibodyError::GeneralizedVectorDimensionMismatch { .. }
+        ));
+        assert!(matches!(nonfinite_err, MultibodyError::NonFinite { .. }));
     }
 }

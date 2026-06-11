@@ -7,6 +7,12 @@ statement = "The workspace contains an openbmp-multibody L2 crate registered in 
 verification = ["V-MULTIBODY-001"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-002"
+title = "The multibody substrate cross-checks fixed-transform CRBA against RNEA columns"
+statement = "The openbmp-multibody crate exposes a fixed-transform composite-rigid-body joint-space inertia substrate and a zero-velocity fixed-transform Recursive Newton-Euler inverse-dynamics substrate that share the same q-independent joint subspaces and deterministic tree order, validate generalized acceleration dimensions and finiteness fail-closed, prove a single free-flyer root returns the root spatial inertia block, and prove CRBA columns match RNEA generalized forces on a small tree while making no claim that q-dependent joint transforms, velocity bias, gravity, external forces, ABA factorization, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-002"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -655,6 +661,27 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-001"]
+
+[[verification]]
+id = "V-MULTIBODY-002"
+kind = "test"
+command = "cargo test -p openbmp-multibody --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "JointSpaceInertia",
+  "joint_space_inertia_crba_fixed_transforms",
+  "inverse_dynamics_rnea_fixed_transforms",
+  "crba_fixed_transforms_single_root_matches_spatial_inertia",
+  "crba_fixed_transforms_matches_rnea_columns",
+  "rnea_fixed_transforms_rejects_bad_generalized_acceleration",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-002"]
 
 [[verification]]
 id = "V-SIL-001"

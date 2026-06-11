@@ -193,9 +193,12 @@ adapters (`crates/openbmp-vehicle/src/adapters.rs`) are the existing rack
 pattern a multibody adapter mirrors. `crates/openbmp-multibody` now provides
 the first WP-01.1 spatial-vector substrate: `SpatialMotion`, `SpatialForce`,
 `SpatialInertia`, `PluckerTransform`, the `Joint` vocabulary, and a validated
-`MultibodyTree`/`MultibodyState` topology surface. ABA/RNEA/CRBA, simulator
-adapter wiring, scenario opt-in, and external Spatial_v2 oracle fixtures remain
-open.
+`MultibodyTree`/`MultibodyState` topology surface. It also has the first
+fixed-transform CRBA/RNEA self-consistency substrate (`JointSpaceInertia`,
+`joint_space_inertia_crba_fixed_transforms()`, and
+`inverse_dynamics_rnea_fixed_transforms()`). ABA, q-dependent joint transforms,
+velocity-bias/external-force RNEA, simulator adapter wiring, scenario opt-in,
+and external Spatial_v2 oracle fixtures remain open.
 
 ---
 
@@ -665,11 +668,16 @@ justification first, reviewed before the implementation lands.
   from validated `MassProperties`, free-flyer/revolute/prismatic/welded/
   spherical `Joint` vocabulary, and topologically ordered
   `MultibodyTree`/`MultibodyState` shapes with deterministic q/qd offsets and
-  fail-closed state/topology validation. Remaining WP-01.1 work: ABA forward
-  dynamics, RNEA inverse dynamics, CRBA, `MultibodyState` integrator adapter,
-  no-joint byte-equivalence against the current `RigidBodyState` kernel,
-  double-pendulum tolerance table, Spatial_v2 oracle fixtures, and scenario
-  exercise.
+  fail-closed state/topology validation. It also exposes
+  `JointSpaceInertia`, `joint_space_inertia_crba_fixed_transforms()`, and
+  `inverse_dynamics_rnea_fixed_transforms()`; tests prove the single-root CRBA
+  block equals the root spatial inertia and that fixed-transform CRBA columns
+  match zero-velocity RNEA generalized forces on a small tree. Remaining
+  WP-01.1 work: q-dependent joint transforms, velocity-bias/external-force
+  RNEA, ABA forward dynamics, full CRBA over joint coordinates,
+  `MultibodyState` integrator adapter, no-joint byte-equivalence against the
+  current `RigidBodyState` kernel, double-pendulum tolerance table, Spatial_v2
+  oracle fixtures, and scenario exercise.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics
