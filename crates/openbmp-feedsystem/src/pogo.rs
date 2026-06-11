@@ -303,6 +303,7 @@ fn require_nonnegative_finite(value: f64, reason: &'static str) -> Result<(), Fe
 #[allow(clippy::unwrap_used)]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use toml::value::Table;
 
     use super::*;
 
@@ -395,6 +396,94 @@ mod tests {
     }
 
     #[test]
+    fn pogo_matches_provenance_tolerance_table() {
+        let data: toml::Value = toml::from_str(include_str!(
+            "../../../data/feed_system/generic-pogo-stability-v1.toml"
+        ))
+        .unwrap();
+        assert_eq!(
+            table("openbmp", &data)["feed_pogo_stability"]
+                .as_integer()
+                .unwrap(),
+            1
+        );
+        let mode_table = table("mode", &data);
+        let feed_defaults = table("feed_defaults", &data);
+        let tolerance = float(table("tolerances", &data), "absolute");
+
+        for case in data
+            .get("case")
+            .and_then(toml::Value::as_array)
+            .expect("case array")
+        {
+            let case = case.as_table().unwrap();
+            let config = PogoStabilityConfig {
+                mode: PogoModeConfig {
+                    natural_frequency_rad_s: float(mode_table, "natural_frequency_rad_s"),
+                    damping_ratio: float(mode_table, "damping_ratio"),
+                },
+                feed: PogoFeedCouplingConfig {
+                    open_loop_gain_rad2: float(case, "open_loop_gain_rad2"),
+                    feed_time_constant_s: float(feed_defaults, "feed_time_constant_s"),
+                    mass_flow_gain_time_s: optional_float(case, "mass_flow_gain_time_s")
+                        .unwrap_or_else(|| float(feed_defaults, "mass_flow_gain_time_s")),
+                    cavitation_compliance_m3_per_pa: float(
+                        feed_defaults,
+                        "cavitation_compliance_m3_per_pa",
+                    ),
+                    accumulator_compliance_m3_per_pa: float(
+                        case,
+                        "accumulator_compliance_m3_per_pa",
+                    ),
+                },
+            };
+            let snapshot = PogoStability::new(config).unwrap().analyze().unwrap();
+
+            assert_abs_diff_eq!(
+                snapshot.accumulator_attenuation,
+                float(case, "expected_accumulator_attenuation"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.effective_open_loop_gain_rad2,
+                float(case, "expected_effective_open_loop_gain_rad2"),
+                epsilon = tolerance
+            );
+            for (actual, expected) in snapshot
+                .characteristic_coefficients
+                .iter()
+                .zip(coefficients(case, "expected_characteristic_coefficients"))
+            {
+                assert_abs_diff_eq!(*actual, expected, epsilon = tolerance);
+            }
+            assert_abs_diff_eq!(
+                snapshot.static_margin_rad2,
+                float(case, "expected_static_margin_rad2"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.routh_hurwitz_margin,
+                float(case, "expected_routh_hurwitz_margin"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.critical_effective_gain_rad2,
+                float(case, "expected_critical_effective_gain_rad2"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot
+                    .neutral_accumulator_compliance_m3_per_pa
+                    .expect("neutral accumulator value"),
+                float(case, "expected_neutral_accumulator_compliance_m3_per_pa"),
+                epsilon = tolerance
+            );
+            assert_eq!(snapshot.verdict, verdict(string(case, "expected_verdict")));
+            assert_eq!(snapshot.validation, ValidationStatus::ValidatedToy);
+        }
+    }
+
+    #[test]
     fn pogo_stability_rejects_invalid_parameters() {
         let mut invalid = config(500.0, 0.0);
         invalid.mode.natural_frequency_rad_s = 0.0;
@@ -409,5 +498,42 @@ mod tests {
             PogoStability::new(invalid),
             Err(FeedSystemError::InvalidParameter { .. })
         ));
+    }
+
+    fn table<'a>(key: &str, value: &'a toml::Value) -> &'a Table {
+        value.get(key).and_then(toml::Value::as_table).unwrap()
+    }
+
+    fn float(table: &Table, key: &str) -> f64 {
+        table.get(key).and_then(toml::Value::as_float).unwrap()
+    }
+
+    fn optional_float(table: &Table, key: &str) -> Option<f64> {
+        table.get(key).and_then(toml::Value::as_float)
+    }
+
+    fn string<'a>(table: &'a Table, key: &str) -> &'a str {
+        table.get(key).and_then(toml::Value::as_str).unwrap()
+    }
+
+    fn coefficients(table: &Table, key: &str) -> [f64; 4] {
+        table
+            .get(key)
+            .and_then(toml::Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|value| value.as_float().unwrap())
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    }
+
+    fn verdict(value: &str) -> PogoStabilityVerdict {
+        match value {
+            "stable" => PogoStabilityVerdict::Stable,
+            "static_divergence" => PogoStabilityVerdict::StaticDivergence,
+            "dynamic_instability" => PogoStabilityVerdict::DynamicInstability,
+            other => panic!("unknown POGO stability verdict {other}"),
+        }
     }
 }

@@ -911,11 +911,13 @@ Effort sizes are from the research ladder.
   one longitudinal mode to a first-order feed response, applies cavitation-to-
   accumulator compliance attenuation, evaluates the cubic Routh-Hurwitz margins,
   reports static/dynamic instability verdicts, and exposes a neutral accumulator
-  compliance boundary. Scenario-facing `[propulsion.pogo]` parsing and runner
-  startup gating are implemented and traced by `REQ-PROP-019` / `V-PROP-019`.
-  Full transfer-matrix assembly, structural modal-data consumption, and public
-  Saturn V/Titan case-history evidence remain future work before this WP is
-  complete.
+  compliance boundary; a provenance-backed synthetic tolerance table under
+  `data/feed_system/` now covers stable, static-divergent, dynamically
+  unstable, accumulator-detuned, and compliance-attenuated cases.
+  Scenario-facing `[propulsion.pogo]` parsing and runner startup gating are
+  implemented and traced by `REQ-PROP-019` / `V-PROP-019`. Full
+  transfer-matrix assembly, structural modal-data consumption, and public Saturn
+  V/Titan case-history evidence remain future work before this WP is complete.
 - **goal:** Assemble `G_feed(s)` from the linearized feed network + pump
   cavitation compliance/mass-flow-gain, couple to the longitudinal structural
   mode from `02`, and run complex-eigenvalue / Nyquist stability + accumulator

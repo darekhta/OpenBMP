@@ -110,7 +110,7 @@ WP-04.1-a … WP-04.4-b: **not started**.
 | WP-05.4-a feed network + transient chamber | **partial** | `openbmp-feedsystem` (graph/network/line/chamber/control/transient) + `crates/openbmp-runner/src/feed_network.rs` + scenario `propulsion.feed_networks` validation; missing: dedicated acceptance tests + tolerance tables |
 | WP-05.4-b turbopump map + NPSH | **partial** | `pump.rs` (`Turbopump`, normalized map, design point) + scenario pump blocks + runner pressure/cavitation coupling + synthetic provenance-backed tolerance table; missing: public real-pump calibration |
 | WP-05.4-c MOC line transients | **partial** | `line.rs` (`MocLine`) + scenario line blocks + runner pressure perturbation coupling + synthetic provenance-backed Joukowsky tolerance table; missing: richer boundary library, standalone line topology, public benchmark tables |
-| WP-05.5-a POGO feed half | **partial** | `pogo.rs` (feedsystem + runner) + `propulsion.pogo` schema; method-level validation cases not found; structural half is doc 02's |
+| WP-05.5-a POGO feed half | **partial** | `pogo.rs` (feedsystem + runner) + `propulsion.pogo` schema + synthetic provenance-backed stability tolerance table; missing: structural modal-data consumption and public Saturn V/Titan case-history evidence |
 | WP-05.5-b engine-out & fault library | **partial** | `crates/openbmp-sil/tests/propulsion_stimulus.rs`; `openbmp mc` propulsion-fault campaign path with UQ flags; full doc fault set unverified |
 
 ### 06 — Coupled MIMO GNC

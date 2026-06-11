@@ -1,0 +1,87 @@
+openbmp.feed_pogo_stability = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.generic_pogo_stability.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic reduced POGO stability tolerance table"
+provenance = "OpenBMP synthetic analytic fixture derived from the reduced cubic POGO characteristic and Routh-Hurwitz stability criteria; not a real vehicle case history."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[mode]
+natural_frequency_rad_s = 60.0
+damping_ratio = 0.04
+
+[feed_defaults]
+feed_time_constant_s = 0.02
+mass_flow_gain_time_s = 0.004
+cavitation_compliance_m3_per_pa = 1.0e-9
+
+[tolerances]
+absolute = 1.0e-12
+
+[[case]]
+name = "stable_low_gain"
+open_loop_gain_rad2 = 500.0
+accumulator_compliance_m3_per_pa = 0.0
+expected_accumulator_attenuation = 1.0
+expected_effective_open_loop_gain_rad2 = 500.0
+expected_characteristic_coefficients = [0.02, 1.096, 74.8, 3100.0]
+expected_static_margin_rad2 = 3100.0
+expected_routh_hurwitz_margin = 19.980800000000002
+expected_critical_effective_gain_rad2 = 3600.0
+expected_neutral_accumulator_compliance_m3_per_pa = 0.0
+expected_verdict = "stable"
+
+[[case]]
+name = "static_divergence"
+open_loop_gain_rad2 = 4000.0
+accumulator_compliance_m3_per_pa = 0.0
+expected_accumulator_attenuation = 1.0
+expected_effective_open_loop_gain_rad2 = 4000.0
+expected_characteristic_coefficients = [0.02, 1.096, 60.8, -400.0]
+expected_static_margin_rad2 = -400.0
+expected_routh_hurwitz_margin = 74.63680000000001
+expected_critical_effective_gain_rad2 = 3600.0
+expected_neutral_accumulator_compliance_m3_per_pa = 1.1111111111111117e-10
+expected_verdict = "static_divergence"
+
+[[case]]
+name = "dynamic_instability"
+open_loop_gain_rad2 = 500.0
+mass_flow_gain_time_s = 0.5
+accumulator_compliance_m3_per_pa = 0.0
+expected_accumulator_attenuation = 1.0
+expected_effective_open_loop_gain_rad2 = 500.0
+expected_characteristic_coefficients = [0.02, 1.096, -173.2, 3100.0]
+expected_static_margin_rad2 = 3100.0
+expected_routh_hurwitz_margin = -251.8272
+expected_critical_effective_gain_rad2 = 23.054545454545472
+expected_neutral_accumulator_compliance_m3_per_pa = 2.0687697160883267e-8
+expected_verdict = "dynamic_instability"
+
+[[case]]
+name = "accumulator_detuned"
+open_loop_gain_rad2 = 4000.0
+accumulator_compliance_m3_per_pa = 1.222222222222223e-10
+expected_accumulator_attenuation = 0.891089108910891
+expected_effective_open_loop_gain_rad2 = 3564.356435643564
+expected_characteristic_coefficients = [0.02, 1.096, 62.54257425742574, 35.643564356435945]
+expected_static_margin_rad2 = 35.643564356435945
+expected_routh_hurwitz_margin = 67.8337900990099
+expected_critical_effective_gain_rad2 = 3600.0
+expected_neutral_accumulator_compliance_m3_per_pa = 1.1111111111111117e-10
+expected_verdict = "stable"
+
+[[case]]
+name = "compliance_attenuated"
+open_loop_gain_rad2 = 1000.0
+accumulator_compliance_m3_per_pa = 3.0e-9
+expected_accumulator_attenuation = 0.25
+expected_effective_open_loop_gain_rad2 = 250.0
+expected_characteristic_coefficients = [0.02, 1.096, 75.8, 3350.0]
+expected_static_margin_rad2 = 3350.0
+expected_routh_hurwitz_margin = 16.076800000000006
+expected_critical_effective_gain_rad2 = 3600.0
+expected_neutral_accumulator_compliance_m3_per_pa = 0.0
+expected_verdict = "stable"
