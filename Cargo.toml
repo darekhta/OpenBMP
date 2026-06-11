@@ -17,6 +17,7 @@ members = [
     "crates/openbmp-thermochem",
     "crates/openbmp-feedsystem",
     "crates/openbmp-propulsion",
+    "crates/openbmp-plume",
     "crates/openbmp-sensors",
     "crates/openbmp-fc",
     "crates/openbmp-trajopt",
@@ -150,6 +151,7 @@ openbmp-contact    = { version = "0.0.1", path = "crates/openbmp-contact" }
 openbmp-thermochem = { version = "0.0.1", path = "crates/openbmp-thermochem" }
 openbmp-feedsystem = { version = "0.0.1", path = "crates/openbmp-feedsystem" }
 openbmp-propulsion = { version = "0.0.1", path = "crates/openbmp-propulsion" }
+openbmp-plume      = { version = "0.0.1", path = "crates/openbmp-plume" }
 openbmp-sensors    = { version = "0.0.1", path = "crates/openbmp-sensors", default-features = false }
 openbmp-fc         = { version = "0.0.1", path = "crates/openbmp-fc" }
 openbmp-trajopt    = { version = "0.0.1", path = "crates/openbmp-trajopt" }

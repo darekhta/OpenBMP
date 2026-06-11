@@ -546,6 +546,12 @@ title = "Thermochemistry decks carry checked Cantera reference evidence"
 statement = "The repository ships a provenance-recorded Cantera 3.2.0 gri30.yaml LOX/LCH4 Schema-1 thermochemistry deck plus an independent tolerance table over chamber pressure and mixture ratio; the runner validation harness loads the deck, checks looked-up temperature, gamma, molecular weight, and ideal c* against the table, and checks LiquidEnginePerformance nominal mass flow, mass-flow envelope, sea-level thrust, and nominal Isp against independently generated nozzle references."
 verification = ["V-PROP-030"]
 
+[[requirements]]
+id = "REQ-PLUME-001"
+title = "Plume similarity substrate computes live diagnostic state"
+statement = "The L2 openbmp-plume crate exposes coordinate-free plume similarity inputs and deterministic PlumeState assembly from freestream, nozzle, and intrinsic cluster-geometry scalars; it computes nozzle pressure ratio, exit-pressure ratio, thrust coefficient, momentum-flux ratio, Prandtl-Meyer initial turn angle, reduced cluster-merge distance and flag, and a PIFS onset flag while validating non-finite and malformed scalar inputs fail-closed and depending on no runner, simulator, mission, or flight-controller crates."
+verification = ["V-PLUME-001"]
+
 [[verification]]
 id = "V-SIL-001"
 kind = "test"
@@ -3026,3 +3032,32 @@ contains = [
   "expected_isp_s",
 ]
 requirements = ["REQ-PROP-030"]
+
+[[verification]]
+id = "V-PLUME-001"
+kind = "test"
+command = "cargo test -p openbmp-plume --locked"
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "crates/openbmp-plume/Cargo.toml",
+  "crates/openbmp-plume/src/lib.rs",
+  "crates/openbmp-plume/src/error.rs",
+  "docs/parity/15-plume-environments-and-supersonic-retropropulsion.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "openbmp-plume",
+  "PlumeState",
+  "PlumeFreestream",
+  "PlumeNozzle",
+  "PlumeClusterGeometry",
+  "prandtl_meyer_rad",
+  "initial_turn_angle_rad",
+  "plume_merge_distance_m",
+  "prandtl_meyer_known_air_value",
+  "initial_turn_angle_is_zero_for_adapted_or_overexpanded_nozzle",
+  "merge_distance_matches_cone_overlap_geometry",
+  "plume_state_reports_similarity_scalars",
+]
+requirements = ["REQ-PLUME-001"]

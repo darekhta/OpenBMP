@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-11, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (91 requirement ids).
+traceability (92 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -22,8 +22,8 @@ same PR as any WP merge.
 ## 1. Roll-up
 
 Across the series: **207 work packages** (108 in `01`–`12`, 99 in `14`–`25`).
-As of this snapshot: **20 implemented · 17 partial · 0 in progress ·
-170 not started.**
+As of this snapshot: **20 implemented · 18 partial · 0 in progress ·
+169 not started.**
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
 |---|---|---|---|---|
@@ -40,7 +40,7 @@ As of this snapshot: **20 implemented · 17 partial · 0 in progress ·
 | 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial | 3/5/9 | WP-11.7 |
 | 12 | Determinism, real-time, compute | **substantially implemented**; Linux aarch64 bit-stable CI lane present; GPU offload boundary pending | 9/0/10 | WP-12.4-b |
 | 14 | Contact, touchdown, landing | WP-14.1 crate + runner force/diagnostic path present; WP-14.2 crate primitives landed; WP-14.3 implemented; WP-14.4 massless oleo/crush gear with per-pad ContactPair footpads implemented | 2/2/10 | WP-14.5 after WP-09.7, or WP-14.7 after terrain substrate |
-| 15 | Plume & SRP | not started (05 nozzle state now available) | 0/0/12 | WP-15.1 |
+| 15 | Plume & SRP | WP-15.1 L2 plume-similarity substrate landed; runner telemetry pending | 0/1/12 | finish WP-15.1 runner assembly |
 | 16 | Parachute & recovery | T0 baseline (`recovery/` rack) | 0/0/11 | WP-16.1 |
 | 17 | Cryogenic fluid management | not started | 0/0/8 | WP-17.1 |
 | 18 | Ground segment & countdown | not started | 0/0/8 | WP-18.1 |
@@ -236,8 +236,15 @@ WP-14.5 … WP-14.10: **not started**.
 
 ### 15 — Plume environments & SRP
 
-**Not started** (no plume code). Note: its primary dependency — doc 05
-nozzle/chamber state — now exists, so WP-15.1 is genuinely unblocked.
+WP-15.1: **partial** — `openbmp-plume` now exists as an L2 crate with
+coordinate-free `PlumeState` assembly inputs and closed-form similarity
+diagnostics: NPR, exit-pressure ratio, `C_T`, momentum-flux ratio,
+Prandtl-Meyer initial turn angle, reduced cluster-merge distance/flag, and
+PIFS onset. Crate tests cover the Prandtl-Meyer closed form, adapted/
+overexpanded zero-turn limits, analytic cone-overlap merge distance, and
+state scalar assembly (`REQ-PLUME-001`). Missing for WP completion: scenario
+`[aero.plume]`, runner assembly from engine/atmosphere state, telemetry
+columns, and canonical byte-identity coverage when off.
 
 ### 16 — Parachute, decelerator & recovery
 

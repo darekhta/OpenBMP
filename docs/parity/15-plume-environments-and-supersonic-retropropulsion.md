@@ -141,11 +141,12 @@ solver-consumed). No artifact claims `flight-qualified`/`certified`/
 
 ## 2. Current state in source
 
-Verified against the tree. The honest summary: **OpenBMP has zero plume
-capability today** — but it has every *ingredient* the discipline needs, which
-is why this dimension is tractable: live nozzle exit conditions, cluster
-geometry, a Knudsen/bridging substrate, a panel-mesh plan (doc `03`), and an
-aerothermal correlation surface (doc `04`).
+Verified against the tree. The honest summary: **OpenBMP has a plume
+similarity substrate but no runner-coupled plume force/heating capability
+today**. The discipline is tractable because the needed ingredients now exist
+or are planned: live nozzle exit conditions, cluster geometry, a
+Knudsen/bridging substrate, a panel-mesh plan (doc `03`), and an aerothermal
+correlation surface (doc `04`).
 
 | Area | Where | State |
 |---|---|---|
@@ -154,6 +155,7 @@ aerothermal correlation surface (doc `04`).
 | Nozzle exit state | `crates/openbmp-propulsion/src/motor.rs:349-470` (`NozzlePerformance`, `IdealNozzlePerformance`, `NozzleSolution`) | **Shipped** (doc `05` WP-05.1 class): exit Mach, exit static pressure, momentum + pressure thrust, ambient-aware via `AmbientPressureCorrection::PressureThrust`. `NPR` and `p_e/p_∞` are computable live today — the plume similarity inputs already exist. |
 | Solid motor geometry | `crates/openbmp-propulsion/src/grain.rs:368-433` | Throat area + expansion ratio validated at load; `exit_area_m2 = throat·ε` (`grain.rs:522`). |
 | Cluster geometry | `crates/openbmp-propulsion/src/cluster.rs:60-133` (`EngineCluster::mount_points_body`) | Per-engine body-frame mount points exist — the spacing input the multi-engine merge criterion needs. No plume use. |
+| Plume similarity substrate | `crates/openbmp-plume/src/lib.rs` (`PlumeState`, `PlumeNozzle`, `PlumeFreestream`, `PlumeClusterGeometry`) | **Partial WP-15.1.** Computes NPR, exit-pressure ratio, `C_T`, momentum-flux ratio, Prandtl-Meyer initial turn angle, reduced cluster-merge distance, and PIFS onset from coordinate-free nozzle/freestream/geometry scalars. Runner assembly and telemetry are not wired yet. |
 | Rarefied substrate | `crates/openbmp-aero/src/knudsen.rs` | Mean free path, Knudsen number, three bridge functions, Schaaf-Chambré free-molecular aero, `HybridAeroMethod`. Built for freestream rarefaction; directly reusable for plume-impingement regime handoff (§3.6). |
 | Aerothermal surface | `crates/openbmp-aerothermal/src/stagnation.rs` | Fay-Riddell, Sutton-Graves, Tauber-Sutton-reserved — **forebody stagnation only**. No base heating, no separated-zone heating, no plume radiation. |
 | Force composition | `crates/openbmp-runner/src/point_mass.rs:59` (`EngineClusterForceAdapter`, `AeroMethodForceAdapter`, `DeckDragForceAdapter`), `crates/openbmp-runner/src/aero.rs` | Thrust and aero are **independent summed adapters** — no coupling. During the Phalcon-9 boostback/entry burn the deck applies full power-off drag while the engine fires retrograde; the SRP drag-collapse physics is absent. This is the headline wrongness this doc exists to fix. |
@@ -161,9 +163,10 @@ aerothermal correlation surface (doc `04`).
 | Stated deferrals | `docs/roadmap.md:152` ("Power-on plume/base-drag coupling" deferred), `docs/staging-and-separation.md:172` ("Coupled (reserved). Plume impingement…") | The repo already names these as reserved seams; this document is their design. |
 | Sibling-doc coverage | doc `03` §1.2 item 2 + §7; doc `04` §7; doc `05` §1.2 item 4 + §8 (SU2/OpenFOAM/SPARTA "offline reference fields" rows) | Each defers the discipline to the others; none designs it. Doc `03`'s panel mesh/BVH (T1) and `openbmp-aerodb` (T3/T4) are the geometry and database substrates this doc consumes rather than duplicates. |
 
-**Maturity verdict:** Tier 0 across the board (power-off base drag is the only
-plume-adjacent model), with unusually strong substrates in place. Nothing here
-regresses any existing model; every tier is additive and gated.
+**Maturity verdict:** Tier 0 for coupled plume effects; the T1 similarity
+math substrate has started. Power-off base drag remains the only plume-adjacent
+force model. Nothing here regresses any existing model; every tier is additive
+and gated.
 
 ---
 
@@ -690,6 +693,10 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 
 ### WP-15.1 — `openbmp-plume` skeleton + live plume similarity state
 
+- **implementation_status:** partial. The L2 crate skeleton and coordinate-free
+  similarity primitives are implemented and traced by `REQ-PLUME-001` /
+  `V-PLUME-001`; runner assembly, scenario opt-in, telemetry columns, and
+  byte-identity golden coverage remain to complete the WP.
 - **goal:** Create the L2 crate (first commit = skeleton + §3.0 placement
   justification, reviewed) and ship `PlumeState` assembled per step from
   `NozzleSolution` + cluster geometry + atmosphere: NPR, exit-pressure ratio,
