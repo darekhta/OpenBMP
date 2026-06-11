@@ -39,7 +39,7 @@ As of this snapshot: **19 implemented · 18 partial · 0 in progress ·
 | 10 | Flight SW in the loop (XIL) | **T1–T3 implemented**; T4 partial | 3/2/8 | finish WP-10.4, or WP-10.6 in parallel |
 | 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial | 3/5/9 | WP-11.7 |
 | 12 | Determinism, real-time, compute | **substantially implemented**; Linux aarch64 bit-stable CI lane present; GPU offload boundary pending | 9/0/10 | WP-12.4-b |
-| 14 | Contact, touchdown, landing | WP-14.1 crate + runner force/diagnostic path present; WP-14.2 crate primitives landed; WP-14.3 implemented; WP-14.4 runner/schema/drop/report path partial | 1/3/10 | finish WP-14.4 per-pad/line-load evidence |
+| 14 | Contact, touchdown, landing | WP-14.1 crate + runner force/diagnostic path present; WP-14.2 crate primitives landed; WP-14.3 implemented; WP-14.4 runner/schema/drop/report/line-load path partial | 1/3/10 | finish WP-14.4 per-pad ContactPair coupling |
 | 15 | Plume & SRP | not started (05 nozzle state now available) | 0/0/12 | WP-15.1 |
 | 16 | Parachute & recovery | T0 baseline (`recovery/` rack) | 0/0/11 | WP-16.1 |
 | 17 | Cryogenic fluid management | not started | 0/0/8 | WP-17.1 |
@@ -225,8 +225,10 @@ stroke, gap, crush, and contact telemetry, records a pinned synthetic gear data
 SHA, and verifies the checked-in 3-D four-leg drop fixture
 (`REQ-CONTACT-007`). `RunOutcome.landing_gear` now classifies the synthetic
 drop as `Rest` under a consecutive quiet-speed hold and carries a deterministic
-energy audit that closes to <1% on the fixture. Remaining: full per-pad
-`ContactPair` coupling and independent line-load recovery evidence.
+energy audit that closes to <1% on the fixture; the runner can recover body-x
+section loads from final per-leg samples and the fixture cross-checks mid-body
+shear/bending against independently read final front-leg telemetry. Remaining:
+full per-pad `ContactPair` coupling.
 WP-14.5 … WP-14.10: **not started**.
 
 ### 15 — Plume environments & SRP

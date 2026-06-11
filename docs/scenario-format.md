@@ -627,7 +627,10 @@ relative to the scenario file and recorded in telemetry metadata under
 `openbmp.scenario_files.vehicle.landing_gear.data_file`. The runner also
 emits `RunOutcome.landing_gear` outside canonical telemetry bytes with
 NoContact/Rest/Unsettled classification, final per-leg samples, load/stroke
-maxima, and a deterministic gear energy audit.
+maxima, and a deterministic gear energy audit. The helper
+`openbmp_runner::landing_gear::recover_section_loads_body_x` recovers
+structural body-x section loads from those final per-leg samples for line-load
+consumers.
 
 ### Gravity coefficients
 
