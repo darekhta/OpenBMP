@@ -1142,6 +1142,19 @@ impl Topic for GuidanceCutoff {
     const INDEX: usize = topic_index::GUIDANCE_CUTOFF;
 }
 
+#[cfg(not(feature = "hal"))]
+const fn scenario_state_override_descriptor() -> TopicDescriptor {
+    TopicDescriptor::of::<ScenarioStateOverride>()
+}
+
+#[cfg(feature = "hal")]
+const fn scenario_state_override_descriptor() -> TopicDescriptor {
+    TopicDescriptor::reserved(
+        topic_index::COMMANDER_SCENARIO_STATE_OVERRIDE,
+        "commander.scenario_state_override",
+    )
+}
+
 /// Canonical OpenBMP command/telemetry topic dictionary.
 ///
 /// The table is ordered by stable topic index. Reserved entries keep
@@ -1167,7 +1180,7 @@ pub const CANONICAL_TOPIC_DESCRIPTORS: [TopicDescriptor; topic_index::COUNT] = [
     TopicDescriptor::of::<HealthRegionStatePublish>(),
     TopicDescriptor::of::<CommsRegionStatePublish>(),
     TopicDescriptor::of::<EstimatorRegimeRegionStatePublish>(),
-    TopicDescriptor::of::<ScenarioStateOverride>(),
+    scenario_state_override_descriptor(),
     TopicDescriptor::of::<FailsafeFlags>(),
     TopicDescriptor::of::<ActuatorCommand>(),
     TopicDescriptor::of::<AutopilotStatus>(),
