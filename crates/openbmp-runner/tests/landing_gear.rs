@@ -100,6 +100,11 @@ fn landing_gear_four_leg_drop_publishes_loads_and_leg_telemetry() {
         "landing gear audit should close to 1%: {:#?}",
         report.energy
     );
+    let recovered =
+        openbmp_runner::landing_gear::recover_section_loads_body_x(&report.final_legs, &[0.0])
+            .expect("recover mid-body landing gear section load");
+    let mid_body_load = recovered[0];
+    assert_eq!(mid_body_load.included_leg_count, 2);
 
     let total_z = f64_column(&outcome, "force.landing_gear.z_n");
     let max_total_z = total_z.iter().copied().fold(0.0, f64::max);
@@ -107,6 +112,31 @@ fn landing_gear_four_leg_drop_publishes_loads_and_leg_telemetry() {
         max_total_z > 1.0,
         "landing gear force channel should carry nonzero vertical load: {max_total_z}"
     );
+    let front_final_load_from_telemetry = ["front_left", "front_right"]
+        .into_iter()
+        .map(|leg_id| {
+            f64_column(&outcome, &format!("landing_gear.{leg_id}.force_n"))
+                .last()
+                .copied()
+                .expect("leg force has final row")
+        })
+        .sum::<f64>();
+    assert!(
+        (mid_body_load.shear_z_n - front_final_load_from_telemetry).abs()
+            <= front_final_load_from_telemetry.abs().max(1.0) * 1.0e-12,
+        "mid-body shear should recover from front leg final telemetry: \
+         recovered={mid_body_load:?}, telemetry={front_final_load_from_telemetry}"
+    );
+    assert!(
+        (mid_body_load.bending_moment_n_m() - front_final_load_from_telemetry).abs()
+            <= front_final_load_from_telemetry.abs().max(1.0) * 1.0e-12,
+        "mid-body bending should equal front-leg shear times 1 m lever: \
+         recovered={mid_body_load:?}, telemetry={front_final_load_from_telemetry}"
+    );
+    assert!(mid_body_load.axial_n.abs() <= 1.0e-12);
+    assert!(mid_body_load.shear_y_n.abs() <= 1.0e-12);
+    assert!(mid_body_load.torsion_x_n_m.abs() <= 1.0e-12);
+    assert!(mid_body_load.bending_z_n_m.abs() <= 1.0e-12);
 
     let leg_ids = ["front_left", "front_right", "rear_left", "rear_right"];
     let mut contact_columns = Vec::new();

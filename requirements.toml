@@ -249,7 +249,7 @@ verification = ["V-CONTACT-006"]
 [[requirements]]
 id = "REQ-CONTACT-007"
 title = "Landing gear rack is scenario-reachable"
-statement = "Schema-v3 rigid_body scenarios can declare [vehicle.landing_gear] with a provenance-pinned data_file, ground altitude, and N validated legs carrying hardpoint, strut axis, free length, footpad, oleo, and crush parameters. The parser derives the landing_gear force when [forces] is omitted, rejects inconsistent explicit force lists, records the resolved data-file SHA-256 in telemetry metadata, routes landing_gear through rigid-body force and moment adapters, disables automatic ground-impact termination for gear scenarios, publishes both force.landing_gear.{x,y,z}_n and per-leg stroke, gap, compression-rate, load, crush, and contact telemetry, and emits a RunOutcome.landing_gear report with Rest/Unsettled/NoContact classification plus a deterministic energy audit. The checked-in synthetic four-leg drop fixture verifies all four legs load and contact simultaneously, reaches Rest, and closes the landing-gear energy audit to within 1%."
+statement = "Schema-v3 rigid_body scenarios can declare [vehicle.landing_gear] with a provenance-pinned data_file, ground altitude, and N validated legs carrying hardpoint, strut axis, free length, footpad, oleo, and crush parameters. The parser derives the landing_gear force when [forces] is omitted, rejects inconsistent explicit force lists, records the resolved data-file SHA-256 in telemetry metadata, routes landing_gear through rigid-body force and moment adapters, disables automatic ground-impact termination for gear scenarios, publishes both force.landing_gear.{x,y,z}_n and per-leg stroke, gap, compression-rate, load, crush, and contact telemetry, emits a RunOutcome.landing_gear report with Rest/Unsettled/NoContact classification plus a deterministic energy audit, and recovers body-x section loads from final per-leg samples for structural line-load consumers. The checked-in synthetic four-leg drop fixture verifies all four legs load and contact simultaneously, reaches Rest, closes the landing-gear energy audit to within 1%, and matches recovered mid-body shear/bending against independently read final front-leg telemetry."
 verification = ["V-CONTACT-007"]
 
 [[requirements]]
@@ -1573,6 +1573,8 @@ contains = [
   "LandingGearRunReport",
   "LandingGearRunAccumulator",
   "LandingGearStepSummary",
+  "LandingGearSectionLoad",
+  "recover_section_loads_body_x",
   "vehicle.landing_gear.data_file",
   "force.landing_gear.z_n",
   "RunOutcome",
@@ -1583,6 +1585,8 @@ contains = [
   "landing_gear_force_requires_landing_gear_block",
   "landing_gear_four_leg_drop_publishes_loads_and_leg_telemetry",
   "relative_closure_error <= 1.0e-2",
+  "mid-body shear should recover from front leg final telemetry",
+  "mid-body bending should equal front-leg shear times 1 m lever",
   "[vehicle.landing_gear]",
   "gamma_unit",
   "synthetic-four-leg-oleo-crush.toml",

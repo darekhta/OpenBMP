@@ -337,6 +337,8 @@ impl RuntimeLeg {
                 id: self.id.clone(),
                 stroke_m,
                 gap_m,
+                contact_body_m: [foot_body.x, foot_body.y, foot_body.z],
+                force_body_n: [force_body_n.x, force_body_n.y, force_body_n.z],
                 normal_velocity_m_s: foot_velocity_eci.z,
                 compression_rate_m_s,
                 force_n,
@@ -384,6 +386,8 @@ impl InternalLegSample {
                 id,
                 stroke_m: 0.0,
                 gap_m,
+                contact_body_m: [0.0; 3],
+                force_body_n: [0.0; 3],
                 normal_velocity_m_s: 0.0,
                 compression_rate_m_s: 0.0,
                 force_n: 0.0,
@@ -407,6 +411,10 @@ pub struct LandingGearLegSample {
     pub stroke_m: f64,
     /// Signed footpad gap to the ground plane in meters.
     pub gap_m: f64,
+    /// Body-frame contact point used for load recovery.
+    pub contact_body_m: [f64; 3],
+    /// Body-frame leg force vector applied to the vehicle.
+    pub force_body_n: [f64; 3],
     /// Signed footpad normal velocity in m/s; negative values are closing.
     pub normal_velocity_m_s: f64,
     /// Non-negative closing speed in m/s.
@@ -425,6 +433,104 @@ pub struct LandingGearLegSample {
     pub contact_power_on_vehicle_w: f64,
     /// Whether the footpad is in contact with the ground plane.
     pub in_contact: bool,
+}
+
+/// Body-axis section load recovered from landing-gear leg loads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LandingGearSectionLoad {
+    /// Body x station of the free-body cut, meters.
+    pub station_body_x_m: f64,
+    /// Number of contacting legs included outboard of the cut.
+    pub included_leg_count: usize,
+    /// Axial force along body x, newtons.
+    pub axial_n: f64,
+    /// Body-y shear force, newtons.
+    pub shear_y_n: f64,
+    /// Body-z shear force, newtons.
+    pub shear_z_n: f64,
+    /// Torsion around body x, N*m.
+    pub torsion_x_n_m: f64,
+    /// Bending moment around body y, N*m.
+    pub bending_y_n_m: f64,
+    /// Bending moment around body z, N*m.
+    pub bending_z_n_m: f64,
+}
+
+impl LandingGearSectionLoad {
+    /// Scalar transverse shear magnitude.
+    #[must_use]
+    pub fn shear_n(self) -> f64 {
+        self.shear_y_n.hypot(self.shear_z_n)
+    }
+
+    /// Scalar bending moment magnitude.
+    #[must_use]
+    pub fn bending_moment_n_m(self) -> f64 {
+        self.bending_y_n_m.hypot(self.bending_z_n_m)
+    }
+}
+
+/// Recover body-x section loads from landing-gear leg samples.
+///
+/// The convention is a free-body cut normal to body x. Contacting legs with
+/// `contact_body_m.x >= station_body_x_m` are included in the outboard
+/// free-body sum. The returned loads are structural quantities only: force and
+/// moment resultants at the station cut.
+///
+/// # Errors
+///
+/// Returns [`RunnerError`] if any requested station or included sample carries
+/// non-finite coordinates/loads.
+pub fn recover_section_loads_body_x(
+    samples: &[LandingGearLegSample],
+    stations_body_x_m: &[f64],
+) -> Result<Vec<LandingGearSectionLoad>, RunnerError> {
+    let mut loads = Vec::with_capacity(stations_body_x_m.len());
+    for &station_body_x_m in stations_body_x_m {
+        if !station_body_x_m.is_finite() {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "landing gear section-load station must be finite".to_owned(),
+            });
+        }
+        let mut force_body_n = Vector3::zeros();
+        let mut moment_body_n_m = Vector3::zeros();
+        let mut included_leg_count = 0usize;
+        for sample in samples
+            .iter()
+            .filter(|sample| sample.in_contact && sample.contact_body_m[0] >= station_body_x_m)
+        {
+            if !sample.contact_body_m.iter().all(|value| value.is_finite())
+                || !sample.force_body_n.iter().all(|value| value.is_finite())
+            {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "landing gear sample `{}` carries non-finite load-recovery inputs",
+                        sample.id
+                    ),
+                });
+            }
+            let force = array_to_vec(sample.force_body_n);
+            let arm = Vector3::new(
+                sample.contact_body_m[0] - station_body_x_m,
+                sample.contact_body_m[1],
+                sample.contact_body_m[2],
+            );
+            force_body_n += force;
+            moment_body_n_m += arm.cross(&force);
+            included_leg_count += 1;
+        }
+        loads.push(LandingGearSectionLoad {
+            station_body_x_m,
+            included_leg_count,
+            axial_n: force_body_n.x,
+            shear_y_n: force_body_n.y,
+            shear_z_n: force_body_n.z,
+            torsion_x_n_m: moment_body_n_m.x,
+            bending_y_n_m: moment_body_n_m.y,
+            bending_z_n_m: moment_body_n_m.z,
+        });
+    }
+    Ok(loads)
 }
 
 /// One row-boundary landing-gear summary.
@@ -825,6 +931,8 @@ impl LandingGearTelemetryChannels {
                     id: channels.id.clone(),
                     stroke_m: 0.0,
                     gap_m: f64::INFINITY,
+                    contact_body_m: [0.0; 3],
+                    force_body_n: [0.0; 3],
                     normal_velocity_m_s: 0.0,
                     compression_rate_m_s: 0.0,
                     force_n: 0.0,

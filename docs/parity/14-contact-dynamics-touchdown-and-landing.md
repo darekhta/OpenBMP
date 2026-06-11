@@ -934,8 +934,10 @@ sibling notation (`WP-NN.t`, doc `NN`).
   synthetic 3-D four-leg drop fixture. `RunOutcome.landing_gear` now reports
   NoContact/Rest/Unsettled classification plus a deterministic energy audit;
   the synthetic 3-D drop reaches Rest with all four legs loaded and <1% audit
-  residual. Remaining WP-14.4 work: full per-pad `ContactPair` coupling and
-  independent line-load recovery evidence.
+  residual. The runner also recovers body-x section loads from final per-leg
+  samples; the fixture cross-checks mid-body shear/bending against independently
+  read final front-leg telemetry. Remaining WP-14.4 work: full per-pad
+  `ContactPair` coupling.
 - **goal:** The T2 landing vehicle: N-leg gear rack (mirroring the `recovery/`
   rack pattern) with polytropic oleo stage, monotone-coordinate crush core,
   and per-pad `ContactPair`s; 1-D and 3-D drop tests; gear loads telemetered
