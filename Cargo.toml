@@ -11,6 +11,7 @@ members = [
     "crates/openbmp-hal",
     "crates/openbmp-sim",
     "crates/openbmp-vehicle",
+    "crates/openbmp-multibody",
     "crates/openbmp-aero",
     "crates/openbmp-aerothermal",
     "crates/openbmp-contact",
@@ -145,6 +146,7 @@ openbmp-msgs       = { version = "0.0.1", path = "crates/openbmp-msgs", default-
 openbmp-hal        = { version = "0.0.1", path = "crates/openbmp-hal" }
 openbmp-sim        = { version = "0.0.1", path = "crates/openbmp-sim" }
 openbmp-vehicle    = { version = "0.0.1", path = "crates/openbmp-vehicle" }
+openbmp-multibody  = { version = "0.0.1", path = "crates/openbmp-multibody" }
 openbmp-aero       = { version = "0.0.1", path = "crates/openbmp-aero" }
 openbmp-aerothermal = { version = "0.0.1", path = "crates/openbmp-aerothermal" }
 openbmp-contact    = { version = "0.0.1", path = "crates/openbmp-contact" }

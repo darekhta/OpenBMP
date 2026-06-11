@@ -1,0 +1,31 @@
+[package]
+name                    = "openbmp-multibody"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP deterministic spatial-vector multibody dynamics substrate."
+
+[features]
+default = ["std"]
+std     = [
+    "nalgebra/std",
+    "openbmp-core/std",
+    "openbmp-state/std",
+    "thiserror/std",
+]
+
+[dependencies]
+nalgebra      = { version = "0.34.2", default-features = false, features = ["libm"] }
+openbmp-core  = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+openbmp-state = { version = "0.0.1", path = "../openbmp-state", default-features = false }
+thiserror     = { version = "2.0.18", default-features = false }
+
+[dev-dependencies]
+approx = { workspace = true }
+uom    = { workspace = true }
+
+[lints]
+workspace = true

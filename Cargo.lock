@@ -1690,6 +1690,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbmp-multibody"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "openbmp-core",
+ "openbmp-state",
+ "thiserror 2.0.18",
+ "uom",
+]
+
+[[package]]
 name = "openbmp-physics"
 version = "0.0.1"
 dependencies = [

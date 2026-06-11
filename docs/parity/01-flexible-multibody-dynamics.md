@@ -190,9 +190,12 @@ positive-definite/symmetry/triangle-inequality validation), `PointMassState`.
 `ModelId` (all `u64` newtypes). The runner-side `StructuralRack`
 (`crates/openbmp-runner/src/structural.rs`) and the per-body force/moment/mass
 adapters (`crates/openbmp-vehicle/src/adapters.rs`) are the existing rack
-pattern a multibody adapter mirrors. **No spatial-vector, Plücker-transform,
-`Joint`, `SpatialInertia`, or articulated-body type exists anywhere in the
-workspace** (grep-confirmed).
+pattern a multibody adapter mirrors. `crates/openbmp-multibody` now provides
+the first WP-01.1 spatial-vector substrate: `SpatialMotion`, `SpatialForce`,
+`SpatialInertia`, `PluckerTransform`, the `Joint` vocabulary, and a validated
+`MultibodyTree`/`MultibodyState` topology surface. ABA/RNEA/CRBA, simulator
+adapter wiring, scenario opt-in, and external Spatial_v2 oracle fixtures remain
+open.
 
 ---
 
@@ -206,11 +209,11 @@ openbmp-multibody   L2   spatial-vector tree (ABA/RNEA/CRBA) + FFRF flex
 
 **Placement justification (review before building, per `13` §5).**
 `openbmp-multibody` sits at **L2**, alongside `openbmp-vehicle` and
-`openbmp-physics`. It depends *down* on `openbmp-core` (ids, `Duration`,
-`DeterministicRng`, MXCSR guard), `openbmp-state` (`MassProperties`,
-`RigidBodyState` for the rigid-equivalence regression), and `openbmp-models`
-(the `SimState`/`SimStateDerivative` traits so its generalized-coordinate state
-plugs into the existing integrator). It depends on **no L3+ crate**. It does
+`openbmp-physics`. The initial substrate depends *down* on `openbmp-core` (ids,
+time) and `openbmp-state` (`MassProperties`); the later simulator adapter will
+consume `openbmp-models` integration traits once the generalized-coordinate
+state shape is compatible with that trait surface. It depends on **no L3+
+crate**. It does
 **not** depend on `openbmp-sim` — instead `openbmp-sim` gains a thin
 `MultibodyState: SimState` adapter so the existing kernel/integrator drive the
 tree (mirroring how the rigid kernel drives `RigidBodyState`). It carries **no
@@ -654,6 +657,19 @@ justification first, reviewed before the implementation lands.
 ---
 
 **WP-01.1 — Spatial-vector rigid tree (ABA forward dynamics)**
+- **implementation_status:** partial. `crates/openbmp-multibody` is registered
+  as an L2 crate with no `openbmp-sim`, `openbmp-runner`, or `openbmp-fc`
+  dependency. It exposes angular-over-linear `SpatialMotion`,
+  moment-over-force `SpatialForce`, force-dual cross-product matrices,
+  Pluecker transforms with a power-duality regression, `SpatialInertia` built
+  from validated `MassProperties`, free-flyer/revolute/prismatic/welded/
+  spherical `Joint` vocabulary, and topologically ordered
+  `MultibodyTree`/`MultibodyState` shapes with deterministic q/qd offsets and
+  fail-closed state/topology validation. Remaining WP-01.1 work: ABA forward
+  dynamics, RNEA inverse dynamics, CRBA, `MultibodyState` integrator adapter,
+  no-joint byte-equivalence against the current `RigidBodyState` kernel,
+  double-pendulum tolerance table, Spatial_v2 oracle fixtures, and scenario
+  exercise.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

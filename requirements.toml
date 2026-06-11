@@ -1,6 +1,12 @@
 schema_version = 1
 
 [[requirements]]
+id = "REQ-MULTIBODY-001"
+title = "The multibody substrate exposes deterministic spatial-vector primitives"
+statement = "The workspace contains an openbmp-multibody L2 crate registered in the workspace that depends only on lower L0/L1 crates plus nalgebra, exposes angular-over-linear SpatialMotion and moment-over-force SpatialForce vectors, force-dual motion cross products, Pluecker parent-to-child transforms with power-dual force mapping, SpatialInertia construction from validated MassProperties, the WP-01.1 joint vocabulary and topologically ordered MultibodyTree/MultibodyState shape with deterministic q/qd offsets and fail-closed topology/state validation, while making no claim that ABA, RNEA, CRBA, simulator integration, scenario wiring, or external Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-001"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -617,6 +623,38 @@ id = "REQ-PLUME-007"
 title = "Plume momentum-flux ratio follows the documented similarity equation"
 statement = "The openbmp-plume PlumeState momentum_flux_ratio diagnostic must implement the WP-15.1 similarity equation as total nozzle thrust divided by rho_inf * V_inf^2 * S_ref, using the runner-provided dynamic pressure as one half rho_inf * V_inf^2; the value must include pressure thrust through total_thrust_n, use reference_area_m2 rather than nozzle exit area in the denominator, and reject non-finite results fail-closed through PlumeState validation."
 verification = ["V-PLUME-007"]
+
+[[verification]]
+id = "V-MULTIBODY-001"
+kind = "test"
+command = "cargo test -p openbmp-multibody --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "crates/openbmp-multibody/Cargo.toml",
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "openbmp-multibody",
+  "SpatialMotion",
+  "SpatialForce",
+  "SpatialInertia",
+  "PluckerTransform",
+  "Joint",
+  "MultibodyTree",
+  "MultibodyState",
+  "spatial_motion_cross_matrix_matches_vector_formula",
+  "spatial_force_cross_matrix_is_motion_dual",
+  "spatial_inertia_from_mass_properties_uses_parallel_axis_blocks",
+  "plucker_transform_preserves_motion_force_power_pairing",
+  "joint_motion_subspaces_use_locked_axis_order",
+  "multibody_tree_assigns_offsets_and_validates_state_dimensions",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-001"]
 
 [[verification]]
 id = "V-SIL-001"

@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-12, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (103 requirement ids).
+traceability (104 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -22,12 +22,12 @@ same PR as any WP merge.
 ## 1. Roll-up
 
 Across the series: **207 work packages** (108 in `01`–`12`, 99 in `14`–`25`).
-As of this snapshot: **22 implemented · 20 partial · 0 in progress ·
-165 not started.**
+As of this snapshot: **22 implemented · 21 partial · 0 in progress ·
+164 not started.**
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
 |---|---|---|---|---|
-| 01 | Multibody dynamics | T0 baseline | 0/0/6 | WP-01.1 |
+| 01 | Multibody dynamics | T0 plus WP-01.1 spatial-vector substrate crate; ABA/RNEA/CRBA and simulator adapter still open | 0/1/6 | finish WP-01.1 |
 | 02 | Structural, loads, slosh, POGO | T0 (+ feed-side POGO prerequisite now exists via 05) | 0/0/9 | WP-02.1-a |
 | 03 | Aero database & CFD | T0 baseline | 0/0/9 | WP-03.1 |
 | 04 | Aerothermal, real-gas, TPS | T0 (+ shared `openbmp-thermochem` scaffold) | 0/0/11 | WP-04.1-a |
@@ -70,8 +70,17 @@ design-complete, implementation-untouched except `14` (substrate) and the
 Baseline confirmed: single rigid body in `crates/openbmp-sim/src/kernel.rs`,
 separation as mass-property partition, SDOF bending
 (`crates/openbmp-vehicle/src/structural.rs`), equivalent-pendulum slosh
-(`crates/openbmp-vehicle/src/tank/`). No spatial-vector/ABA code anywhere;
-`openbmp-multibody` does not exist. WP-01.1 … WP-01.6: **not started**.
+(`crates/openbmp-vehicle/src/tank/`). WP-01.1 is now **partial**:
+`crates/openbmp-multibody` exists as the L2 spatial-vector substrate crate with
+angular-over-linear `SpatialMotion`, moment-over-force `SpatialForce`,
+force-dual cross products, Pluecker transforms, `SpatialInertia` construction
+from validated `MassProperties`, the WP-01.1 `Joint` vocabulary, and a
+topologically ordered `MultibodyTree`/`MultibodyState` shape with deterministic
+q/qd offsets and fail-closed topology/state validation (`REQ-MULTIBODY-001`).
+Missing for full WP-01.1: ABA forward dynamics, RNEA inverse dynamics, CRBA,
+single-free-flyer byte-equivalence against the current kernel, scenario wiring,
+gimballed ascent exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6:
+**not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 
