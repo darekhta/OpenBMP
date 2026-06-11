@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-12, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (100 requirement ids).
+traceability (101 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -22,8 +22,8 @@ same PR as any WP merge.
 ## 1. Roll-up
 
 Across the series: **207 work packages** (108 in `01`–`12`, 99 in `14`–`25`).
-As of this snapshot: **22 implemented · 18 partial · 0 in progress ·
-167 not started.**
+As of this snapshot: **22 implemented · 19 partial · 0 in progress ·
+166 not started.**
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
 |---|---|---|---|---|
@@ -34,7 +34,7 @@ As of this snapshot: **22 implemented · 18 partial · 0 in progress ·
 | 05 | Propulsion high-fidelity | **T1+T2 implemented**; T3 partial; T4/T5 wired-substrate partial | 3/6/9 | finish WP-05.3 (CEARUN/Cantera tolerance tables) |
 | 06 | Coupled MIMO GNC | T0 (+ lane-voting diagnostic improvement) | 0/0/10 | WP-06.1 (after 01) |
 | 07 | Trajectory optimization | **T0-T1 implemented**; STM/multiple-shooting substrate closed with cross-tier tolerance evidence | 2/0/8 | WP-07.2 |
-| 08 | Environment, gravity, frames | T0 baseline (zonal degree-6 cap) | 0/0/7 | WP-08.1 |
+| 08 | Environment, gravity, frames | T0 plus WP-08.1 degree-2 tesseral substrate; high-degree Pines/Gottlieb still open | 0/1/7 | finish WP-08.1 |
 | 09 | Sensors, nav, actuators | T0 (specific force still finite-difference) | 0/0/12 | WP-09.1 |
 | 10 | Flight SW in the loop (XIL) | **T1–T3 implemented**; T4 partial | 3/2/8 | finish WP-10.4, or WP-10.6 in parallel |
 | 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial | 3/5/9 | WP-11.7 |
@@ -54,8 +54,9 @@ As of this snapshot: **22 implemented · 18 partial · 0 in progress ·
 
 **Phase view (`00` §5).** Phase A is the critical path: of its five tracks,
 `12` (MC/determinism substrate) and `11` T0–T2 are substantially done and
-`05` T1 is done, but `01` (multibody tree) and `08` (tesseral gravity) have
-not started — they gate `02`, `06`, and most of Phase B/C. Phase D started
+`05` T1 is done, but `01` (multibody tree) has not started and `08`
+(tesseral gravity) has only the first degree-2 substrate — they gate `02`,
+`06`, and most of Phase B/C. Phase D started
 early on its independent track (`10` T1–T3 done). The extension rounds are
 design-complete, implementation-untouched except `14` (substrate) and the
 `20` dictionary-export head start.
@@ -153,10 +154,18 @@ WP-07.2 … WP-07.6: **not started**.
 ### 08 — Environment, gravity & frames
 
 Baseline confirmed: `Egm2008ZonalGravity` is zonal-only, hard-capped at
-degree 6 (`gravity.rs`); IAU 1976/1980 equinox frames (no CIO path);
-NRLMSISE-00/HWM14 means only (no perturbed-atmosphere decorator); WMM2025
-(no IGRF-14, no gradient); SPK DAF parser present; no tides/SRP/Battin/
-relativity. WP-08.1 … WP-08.7: **not started**.
+degree 6 (`gravity.rs`), and WP-08.1 is now **partial** through
+`TesseralGravity`, `DegreeTwoTesseralCoefficients`, and `TideSystem`: the first
+degree-2/order-2 static harmonic surface supports C20, C21/S21, and C22/S22
+terms, keeps the degree-2/order-0 WGS84 J2 path byte-identical to `J2Gravity`,
+stays finite near the pole, and rejects unsupported degree/order requests
+fail-closed (`REQ-ENV-001`). Missing for full WP-08.1: high-degree
+Pines/Gottlieb synthesis, EGM2008 coefficient ingestion/provenance/tripwire,
+and NGA HARMONIC_SYNTH benchmark tables. IAU 1976/1980 equinox frames remain
+the frame path (no CIO); NRLMSISE-00/HWM14 means only (no perturbed-atmosphere
+decorator); WMM2025 remains the magnetic path (no IGRF-14, no gradient); SPK
+DAF parser present; no tides/SRP/Battin/relativity. WP-08.2 … WP-08.7:
+**not started**.
 
 ### 09 — Sensors, navigation & actuators
 
@@ -364,9 +373,9 @@ verifier, or capture logic.
 
 1. **Close the open partials before opening new fronts:** WP-05.3 runtime
    deck consumption; WP-14.1 gear-leg closure; WP-12.4-b GPU boundary.
-2. **Start the two unstarted Phase-A gates:** WP-01.1 (spatial-vector tree)
-   and WP-08.1 (tesseral gravity) — they block most of Phase B/C (02, 06,
-   07 closed-loop quality).
+2. **Advance the Phase-A gates:** start WP-01.1 (spatial-vector tree) and
+   finish WP-08.1 (high-degree Pines/Gottlieb tesseral gravity) — they block
+   most of Phase B/C (02, 06, 07 closed-loop quality).
 3. Start WP-07.2 (Hermite-Simpson/SQP) or use the implemented WP-07.0/WP-07.1
    corrector stack as the prerequisite for WP-19.2.
 4. WP-15.1 (plume state) is newly unblocked by 05's chamber/nozzle state.

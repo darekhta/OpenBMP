@@ -12,8 +12,11 @@
 //! * [`J2Gravity`] — point-mass plus the J2 zonal harmonic, expressed
 //!   in ECI. Default constructor pins WGS84
 //!   `µ`, `R_e`, and the NIMA TR 8350.2 `J2 = 1.082626683 × 10⁻³`.
+//! * [`TesseralGravity`] — the first static non-zonal harmonic surface,
+//!   currently degree 2 / order 2, using Cartesian solid-harmonic
+//!   polynomials for deterministic tesseral and sectoral acceleration.
 //!
-//! All three models implement the [`GravityModel`] trait and report
+//! All models implement the [`GravityModel`] trait and report
 //! failure via [`crate::error::PhysicsError`] (out-of-envelope, non-finite,
 //! invalid parameter). They never panic, never silent-clamp, and
 //! never return `NaN`.
@@ -509,6 +512,348 @@ fn j2_perturbation_eci(
 }
 
 // ---------------------------------------------------------------------
+// TesseralGravity
+// ---------------------------------------------------------------------
+
+/// Maximum harmonic degree implemented by the current [`TesseralGravity`]
+/// evaluator.
+///
+/// This is an intentionally narrow WP-08.1 starter slice. The full parity
+/// target is the Pines/Gottlieb runtime-selectable EGM2008 kernel; this
+/// constant keeps the public surface fail-closed until that kernel lands.
+pub const TESSERAL_GRAVITY_MAX_DEGREE: usize = 2;
+
+/// Maximum harmonic order implemented by the current [`TesseralGravity`]
+/// evaluator.
+pub const TESSERAL_GRAVITY_MAX_ORDER: usize = 2;
+
+/// Permanent-tide convention associated with a harmonic coefficient block.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TideSystem {
+    /// Tide-free field.
+    TideFree,
+    /// Zero-tide field.
+    ZeroTide,
+    /// Mean-tide field.
+    MeanTide,
+}
+
+/// Degree-2 unnormalised harmonic coefficients for [`TesseralGravity`].
+///
+/// Coefficients follow the low-degree geopotential convention
+///
+/// ```text
+/// U = µ/r · [1 + (R/r)^2 · (C20 P20 + P21(C21 cosλ + S21 sinλ)
+///                         + P22(C22 cos2λ + S22 sin2λ))]
+/// ```
+///
+/// where `C20 = -J2` reproduces the existing [`J2Gravity`] sign convention.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct DegreeTwoTesseralCoefficients {
+    c20: f64,
+    c21: f64,
+    s21: f64,
+    c22: f64,
+    s22: f64,
+    tide_system: TideSystem,
+}
+
+impl DegreeTwoTesseralCoefficients {
+    /// Construct finite degree-2 coefficients.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if any coefficient is
+    /// non-finite.
+    pub fn new(
+        c20: f64,
+        c21: f64,
+        s21: f64,
+        c22: f64,
+        s22: f64,
+        tide_system: TideSystem,
+    ) -> Result<Self, PhysicsError> {
+        let coefficients = [c20, c21, s21, c22, s22];
+        if !coefficients.iter().all(|value| value.is_finite()) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "degree-2 tesseral coefficients must be finite",
+            });
+        }
+        Ok(Self {
+            c20,
+            c21,
+            s21,
+            c22,
+            s22,
+            tide_system,
+        })
+    }
+
+    /// Coefficients that reproduce [`J2Gravity`] for the supplied positive
+    /// `J2` value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `j2` is non-finite.
+    pub fn from_j2(j2: f64, tide_system: TideSystem) -> Result<Self, PhysicsError> {
+        if !j2.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "J2 must be finite",
+            });
+        }
+        Self::new(-j2, 0.0, 0.0, 0.0, 0.0, tide_system)
+    }
+
+    /// All harmonic coefficients set to zero.
+    #[must_use]
+    pub const fn zero(tide_system: TideSystem) -> Self {
+        Self {
+            c20: 0.0,
+            c21: 0.0,
+            s21: 0.0,
+            c22: 0.0,
+            s22: 0.0,
+            tide_system,
+        }
+    }
+
+    /// Zonal `C20` coefficient.
+    #[must_use]
+    pub const fn c20(&self) -> f64 {
+        self.c20
+    }
+
+    /// Tesseral `C21` coefficient.
+    #[must_use]
+    pub const fn c21(&self) -> f64 {
+        self.c21
+    }
+
+    /// Tesseral `S21` coefficient.
+    #[must_use]
+    pub const fn s21(&self) -> f64 {
+        self.s21
+    }
+
+    /// Sectoral `C22` coefficient.
+    #[must_use]
+    pub const fn c22(&self) -> f64 {
+        self.c22
+    }
+
+    /// Sectoral `S22` coefficient.
+    #[must_use]
+    pub const fn s22(&self) -> f64 {
+        self.s22
+    }
+
+    /// Permanent-tide convention declared for the coefficients.
+    #[must_use]
+    pub const fn tide_system(&self) -> TideSystem {
+        self.tide_system
+    }
+}
+
+/// Static degree-2 tesseral gravity evaluator.
+///
+/// This model is off by default and does not ingest EGM2008 yet. It is the
+/// first WP-08.1 substrate: a fail-closed non-zonal force surface that proves
+/// the public API, degree/order validation, J2 byte-regression path, and
+/// singularity-free Cartesian degree-2 tesseral/sectoral acceleration. Full
+/// Pines/Gottlieb high-degree synthesis remains future work.
+#[derive(Copy, Clone, Debug)]
+pub struct TesseralGravity {
+    mu_m3_s2: f64,
+    r_e_m: f64,
+    coefficients: DegreeTwoTesseralCoefficients,
+    degree: usize,
+    order: usize,
+}
+
+impl TesseralGravity {
+    /// Construct a degree-2/order-2-or-lower tesseral gravity model.
+    ///
+    /// `degree = 0` is permitted and evaluates point-mass gravity only.
+    /// `degree = 2` evaluates the configured degree-2 coefficients up to
+    /// `order`. Degree 1 and degrees above [`TESSERAL_GRAVITY_MAX_DEGREE`] are
+    /// rejected until the full harmonic kernel lands.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] for invalid gravity
+    /// constants, unsupported degree/order, or non-finite coefficients.
+    pub fn new(
+        mu_m3_s2: f64,
+        r_e_m: f64,
+        coefficients: DegreeTwoTesseralCoefficients,
+        degree: usize,
+        order: usize,
+    ) -> Result<Self, PhysicsError> {
+        if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "µ must be strictly positive and finite",
+            });
+        }
+        if !r_e_m.is_finite() || r_e_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Earth radius must be strictly positive and finite",
+            });
+        }
+        if degree == 1 || degree > TESSERAL_GRAVITY_MAX_DEGREE {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "tesseral gravity currently supports degree 0 or 2 only",
+            });
+        }
+        if order > degree || order > TESSERAL_GRAVITY_MAX_ORDER {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "tesseral gravity order must be <= degree and <= 2",
+            });
+        }
+        Ok(Self {
+            mu_m3_s2,
+            r_e_m,
+            coefficients,
+            degree,
+            order,
+        })
+    }
+
+    /// WGS84 degree-2/order-0 model that is byte-identical to
+    /// [`J2Gravity::wgs84`] for the same query point.
+    #[must_use]
+    pub const fn wgs84_j2() -> Self {
+        Self {
+            mu_m3_s2: WGS84_MU_M3_S2,
+            r_e_m: WGS84_A_M,
+            coefficients: DegreeTwoTesseralCoefficients {
+                c20: -WGS84_J2,
+                c21: 0.0,
+                s21: 0.0,
+                c22: 0.0,
+                s22: 0.0,
+                tide_system: TideSystem::TideFree,
+            },
+            degree: 2,
+            order: 0,
+        }
+    }
+
+    /// Configured `µ` (m³/s²).
+    #[must_use]
+    pub const fn mu_m3_s2(&self) -> f64 {
+        self.mu_m3_s2
+    }
+
+    /// Configured reference radius (m).
+    #[must_use]
+    pub const fn r_e_m(&self) -> f64 {
+        self.r_e_m
+    }
+
+    /// Degree-2 coefficients.
+    #[must_use]
+    pub const fn coefficients(&self) -> DegreeTwoTesseralCoefficients {
+        self.coefficients
+    }
+
+    /// Configured maximum degree.
+    #[must_use]
+    pub const fn degree(&self) -> usize {
+        self.degree
+    }
+
+    /// Configured maximum order.
+    #[must_use]
+    pub const fn order(&self) -> usize {
+        self.order
+    }
+}
+
+impl GravityModel for TesseralGravity {
+    fn gravity_eci_m_s2(
+        &self,
+        position_eci: Position3<Eci>,
+        _time: SimTime,
+    ) -> Result<Vector3<f64>, PhysicsError> {
+        let r = position_eci.vector;
+        let r2 = r.dot(&r);
+        if r2 == 0.0 {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "TesseralGravity is singular at r = 0",
+            });
+        }
+        let r_norm = r2.sqrt();
+        let r3 = r_norm * r2;
+        let r5 = r3 * r2;
+        let g_central = (-self.mu_m3_s2 / r3) * r;
+        if self.degree == 0 {
+            return Ok(g_central);
+        }
+        let g_degree_two = if self.order == 0 {
+            // This preserves the existing J2 implementation exactly for the
+            // degree-2/order-0 regression path.
+            j2_perturbation_eci(r, r2, r5, self.mu_m3_s2, self.r_e_m, -self.coefficients.c20)
+        } else {
+            degree_two_tesseral_perturbation_eci(
+                r,
+                r2,
+                r_norm,
+                self.mu_m3_s2,
+                self.r_e_m,
+                self.coefficients,
+                self.order,
+            )
+        };
+        let g = g_central + g_degree_two;
+        if !g.iter().all(|value| value.is_finite()) {
+            return Err(PhysicsError::NonFinite {
+                reason: "tesseral gravity produced non-finite acceleration",
+            });
+        }
+        Ok(g)
+    }
+}
+
+fn degree_two_tesseral_perturbation_eci(
+    r: Vector3<f64>,
+    r2: f64,
+    r_norm: f64,
+    mu_m3_s2: f64,
+    r_e_m: f64,
+    coefficients: DegreeTwoTesseralCoefficients,
+    order: usize,
+) -> Vector3<f64> {
+    let x = r.x;
+    let y = r.y;
+    let z = r.z;
+    let mut n = 0.5 * coefficients.c20 * (2.0 * z * z - x * x - y * y);
+    let mut dn_dx = -coefficients.c20 * x;
+    let mut dn_dy = -coefficients.c20 * y;
+    let mut dn_dz = 2.0 * coefficients.c20 * z;
+
+    if order >= 1 {
+        n += 3.0 * z * (coefficients.c21 * x + coefficients.s21 * y);
+        dn_dx += 3.0 * coefficients.c21 * z;
+        dn_dy += 3.0 * coefficients.s21 * z;
+        dn_dz += 3.0 * (coefficients.c21 * x + coefficients.s21 * y);
+    }
+    if order >= 2 {
+        n += 3.0 * coefficients.c22 * (x * x - y * y) + 6.0 * coefficients.s22 * x * y;
+        dn_dx += 6.0 * coefficients.c22 * x + 6.0 * coefficients.s22 * y;
+        dn_dy += -6.0 * coefficients.c22 * y + 6.0 * coefficients.s22 * x;
+    }
+
+    let r5 = r2 * r2 * r_norm;
+    let r7 = r5 * r2;
+    let scale = mu_m3_s2 * r_e_m * r_e_m;
+    Vector3::new(
+        scale * (dn_dx / r5 - 5.0 * n * x / r7),
+        scale * (dn_dy / r5 - 5.0 * n * y / r7),
+        scale * (dn_dz / r5 - 5.0 * n * z / r7),
+    )
+}
+
+// ---------------------------------------------------------------------
 // Egm2008ZonalGravity
 // ---------------------------------------------------------------------
 
@@ -964,6 +1309,112 @@ mod tests {
         assert!(J2Gravity::new(0.0, WGS84_A_M, WGS84_J2).is_err());
         assert!(J2Gravity::new(WGS84_MU_M3_S2, 0.0, WGS84_J2).is_err());
         assert!(J2Gravity::new(WGS84_MU_M3_S2, WGS84_A_M, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn tesseral_gravity_degree_two_zonal_matches_existing_j2_byte_for_byte() {
+        let tesseral = TesseralGravity::wgs84_j2();
+        let j2 = J2Gravity::wgs84();
+        let positions = [
+            at_x(WGS84_A_M + 100_000.0),
+            at_z(WGS84_A_M + 100_000.0),
+            Position3::new(7_000_000.0, 1_000_000.0, 500_000.0),
+            Position3::new(0.0, 7_000_000.0, 0.0),
+        ];
+
+        for position in positions {
+            let tesseral_accel = tesseral.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+            let j2_accel = j2.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+            for axis in 0..3 {
+                assert_eq!(tesseral_accel[axis].to_bits(), j2_accel[axis].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn tesseral_gravity_zero_degree_reduces_to_point_mass() {
+        let tesseral = TesseralGravity::new(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            DegreeTwoTesseralCoefficients::zero(TideSystem::TideFree),
+            0,
+            0,
+        )
+        .unwrap();
+        let point_mass = PointMassGravity::wgs84();
+        let position = Position3::new(7_200_000.0, -900_000.0, 300_000.0);
+
+        let tesseral_accel = tesseral.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        let point_mass_accel = point_mass
+            .gravity_eci_m_s2(position, SimTime::ZERO)
+            .unwrap();
+
+        for axis in 0..3 {
+            assert_eq!(
+                tesseral_accel[axis].to_bits(),
+                point_mass_accel[axis].to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn tesseral_gravity_sectoral_term_changes_longitude_acceleration() {
+        let coefficients =
+            DegreeTwoTesseralCoefficients::new(0.0, 0.0, 0.0, 1.0e-6, 0.0, TideSystem::TideFree)
+                .unwrap();
+        let tesseral = TesseralGravity::new(WGS84_MU_M3_S2, WGS84_A_M, coefficients, 2, 2).unwrap();
+        let point_mass = PointMassGravity::wgs84();
+        let position = Position3::new(WGS84_A_M + 400_000.0, 250_000.0, 0.0);
+
+        let tesseral_accel = tesseral.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        let point_mass_accel = point_mass
+            .gravity_eci_m_s2(position, SimTime::ZERO)
+            .unwrap();
+        let perturbation = tesseral_accel - point_mass_accel;
+
+        assert!(perturbation.norm() > 1.0e-5);
+        assert!(perturbation.x.is_finite());
+        assert!(perturbation.y.is_finite());
+        assert_abs_diff_eq!(perturbation.z, 0.0, epsilon = 1.0e-14);
+    }
+
+    #[test]
+    fn tesseral_gravity_tesseral_terms_are_finite_near_pole() {
+        let coefficients = DegreeTwoTesseralCoefficients::new(
+            -WGS84_J2,
+            2.0e-7,
+            -3.0e-7,
+            1.0e-7,
+            -2.0e-7,
+            TideSystem::TideFree,
+        )
+        .unwrap();
+        let tesseral = TesseralGravity::new(WGS84_MU_M3_S2, WGS84_A_M, coefficients, 2, 2).unwrap();
+        let position = Position3::new(1.0, -2.0, WGS84_A_M + 500_000.0);
+
+        let acceleration = tesseral.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+
+        assert!(acceleration.iter().all(|value| value.is_finite()));
+        assert!(acceleration.z < 0.0);
+    }
+
+    #[test]
+    fn tesseral_gravity_rejects_unsupported_degree_order_and_nonfinite_coefficients() {
+        assert!(DegreeTwoTesseralCoefficients::from_j2(f64::NAN, TideSystem::TideFree).is_err());
+        let coefficients = DegreeTwoTesseralCoefficients::zero(TideSystem::TideFree);
+
+        assert!(matches!(
+            TesseralGravity::new(WGS84_MU_M3_S2, WGS84_A_M, coefficients, 1, 0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            TesseralGravity::new(WGS84_MU_M3_S2, WGS84_A_M, coefficients, 3, 0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            TesseralGravity::new(WGS84_MU_M3_S2, WGS84_A_M, coefficients, 2, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     /// Kepler check: integrating point-mass gravity over a circular

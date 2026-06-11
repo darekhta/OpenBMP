@@ -94,7 +94,14 @@ Verified by reading the actual files (paths absolute under the repo root).
 
 - `trait GravityModel { fn gravity_eci_m_s2(&self, position_eci, time) -> Result<Vector3<f64>, PhysicsError> }` — the single environment-side gravity surface; time-parameterized for forward compatibility but no model currently varies with it.
 - `ConstantGravity`, `PointMassGravity` (`−µ/r² r̂`), `J2Gravity` (point-mass + J₂ in closed Cartesian form, Vallado §8.6).
-- `Egm2008ZonalGravity` — **zonal-only** truncation J₂…J₆, **hard-capped at `EGM2008_MAX_DEGREE = 6`** (fixed-size arrays; `new(...)` rejects `degree ∉ [2,6]`). The doc-comment is explicit: *"tesseral and sectoral terms are deferred."* This is the dimension's central gap.
+- `Egm2008ZonalGravity` — **zonal-only** truncation J₂…J₆, **hard-capped at `EGM2008_MAX_DEGREE = 6`** (fixed-size arrays; `new(...)` rejects `degree ∉ [2,6]`).
+- `TesseralGravity` — first WP-08.1 substrate: a static degree-2/order-2 ECI
+  harmonic surface with `DegreeTwoTesseralCoefficients`, `TideSystem`, and
+  fail-closed degree/order validation. It supports `C20`, `C21/S21`, and
+  `C22/S22` Cartesian solid-harmonic acceleration, proves its degree-2/order-0
+  path is byte-identical to `J2Gravity`, and stays finite near the pole. This is
+  **not yet** the full Pines/Gottlieb high-degree EGM2008 kernel; coefficient
+  ingestion and external HARMONIC_SYNTH validation remain the central gap.
 - `ThirdBody` / `ThirdBodyGravity<G,E>` — central + Σ third-body perturbation, but the perturbation in `third_body_perturbation()` uses the **naive difference** `µ_b·((r_b−r)/|r_b−r|³ − r_b/|r_b|³)` (lines ~341–365), which suffers catastrophic cancellation for |r| ≪ |r_b|. No Battin `f(q)`.
 - No SRP, no relativity, no tides anywhere in the file.
 
@@ -613,6 +620,17 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
 ---
 
 **WP-08.1 — Singularity-free harmonic-synthesis kernel + Pines/Gottlieb gravity**
+- **implementation_status:** partial. `crates/openbmp-physics/src/gravity.rs`
+  now exposes `TesseralGravity`, `DegreeTwoTesseralCoefficients`, and
+  `TideSystem` as the first non-zonal static harmonic force surface.
+  `TesseralGravity::wgs84_j2()` is byte-identical to `J2Gravity`, the degree-2
+  evaluator includes C21/S21 tesseral and C22/S22 sectoral terms through
+  Cartesian solid-harmonic polynomials, and tests prove non-zonal acceleration,
+  near-pole finite evaluation, point-mass degeneration, and fail-closed
+  unsupported degree/order handling. Remaining work for full WP-08.1 acceptance:
+  runtime-selectable high-degree Pines synthesis, independent normalized
+  Gottlieb oracle, EGM2008 coefficient ingestion/provenance/tripwire, and
+  NGA HARMONIC_SYNTH benchmark tolerance tables.
 - **goal:** Replace the deg-6 zonal cap with full tesseral gravity. Build the shared `HarmonicSynthesis` kernel (Pines + normalized Gottlieb oracle + Holmes–Featherstone scaled recursion) and `TesseralGravity`; load EGM2008 to a runtime-selectable degree. The central gap-closer for this dimension and a "pure win that improves all propagation" (`00` §5).
 - **fidelity_tier:** T1
 - **depends_on:** []
