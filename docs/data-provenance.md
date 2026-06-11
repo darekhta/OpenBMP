@@ -40,8 +40,9 @@ These are distinct, non-overlapping trees with provenance:
   by a model implementation in a Rust crate. **Never** put an `openbmp.scenario`
   or `openbmp.benchmark` file here. The schema markers permitted under `data/`
   are `openbmp.aero_deck`, `openbmp.thermochem_deck`,
-  `openbmp.feed_turbopump_map`, `openbmp.feed_moc_line`, `openbmp.motor`,
-  `openbmp.imu_noise_budget`, and the schema-less constant TOMLs read directly by
+  `openbmp.feed_turbopump_map`, `openbmp.feed_moc_line`,
+  `openbmp.feed_pogo_stability`, `openbmp.motor`, `openbmp.imu_noise_budget`,
+  and the schema-less constant TOMLs read directly by
   `crates/openbmp-{core,env}/` (atmosphere, gravity).
 - **`scenarios/<category>/<name>.toml`** — *runnable scenario specifications*
   consumed by the `openbmp run` CLI runner. Each scenario carries an
@@ -466,8 +467,8 @@ The tripwires fail the build on:
    string literal in a `*.rs` file whose body contains an OpenBMP
 	   schema header (`openbmp.scenario`, `openbmp.aero_deck`,
 	   `openbmp.thermochem_deck`, `openbmp.feed_turbopump_map`,
-	   `openbmp.feed_moc_line`, `openbmp.motor`, `openbmp.imu_noise_budget`,
-	   `openbmp.benchmark`)
+	   `openbmp.feed_moc_line`, `openbmp.feed_pogo_stability`,
+	   `openbmp.motor`, `openbmp.imu_noise_budget`, `openbmp.benchmark`)
    or a `[[metric]]` table marker is forbidden when it carries actual
    newlines or escaped `\n` separators, regardless of enclosing
    context (module-level `const`, function-local `let`, helper `fn`
@@ -528,7 +529,8 @@ The tripwires also enforce three structural rules:
    `openbmp.benchmark` schema marker (those belong in `scenarios/`),
 	   and a TOML under `scenarios/` may not contain an `openbmp.aero_deck`,
 	   `openbmp.thermochem_deck`, `openbmp.feed_turbopump_map`,
-	   `openbmp.feed_moc_line`, `openbmp.motor`, or
+	   `openbmp.feed_moc_line`, `openbmp.feed_pogo_stability`,
+	   `openbmp.motor`, or
 	   `openbmp.imu_noise_budget` schema marker (those belong in `data/`).
 	   This enforces the layout principle described in
    § Scope; misplaced schemas fail closed at `cargo test` time.

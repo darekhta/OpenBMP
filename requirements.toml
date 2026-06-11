@@ -2669,12 +2669,16 @@ id = "V-PROP-018"
 kind = "test"
 command = "cargo test -p openbmp-feedsystem pogo --locked"
 paths = [
+  "data/feed_system/generic-pogo-stability-v1.toml",
+  "data/feed_system/provenance.md",
   "crates/openbmp-feedsystem/src/lib.rs",
   "crates/openbmp-feedsystem/src/error.rs",
   "crates/openbmp-feedsystem/src/pogo.rs",
+  "docs/data-provenance.md",
   "docs/parity/05-propulsion-high-fidelity.md",
 ]
 contains = [
+  "openbmp.feed_pogo_stability",
   "PogoStability",
   "PogoStabilityConfig",
   "PogoModeConfig",
@@ -2685,6 +2689,8 @@ contains = [
   "pogo_stability_detects_static_divergence",
   "pogo_stability_detects_dynamic_instability",
   "pogo_accumulator_compliance_detunes_unstable_case",
+  "pogo_matches_provenance_tolerance_table",
+  "Synthetic reduced POGO stability tolerance table",
 ]
 requirements = ["REQ-PROP-018"]
 
