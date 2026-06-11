@@ -540,6 +540,12 @@ title = "Liquid engine scenarios can consume thermochemistry decks"
 statement = "A liquid engine may declare an optional thermochemical_performance block under [[vehicle.assembly.engines]] with throat area, exit area, ambient pressure, and optional nozzle separation; scenario validation requires a SHA-pinnable [propulsion.thermochem] deck lookup when any engine opts in, rejects malformed nozzle scalars fail-closed, keeps the no-block constant-thrust/Isp path unchanged, and the point-mass and rigid-body runners build the engine with deck-derived max thrust, nominal effective-Isp, and choked mass-flow/Isp efficiency envelope through LiquidEnginePerformance."
 verification = ["V-PROP-029"]
 
+[[requirements]]
+id = "REQ-PROP-030"
+title = "Thermochemistry decks carry checked Cantera reference evidence"
+statement = "The repository ships a provenance-recorded Cantera 3.2.0 gri30.yaml LOX/LCH4 Schema-1 thermochemistry deck plus an independent tolerance table over chamber pressure and mixture ratio; the runner validation harness loads the deck, checks looked-up temperature, gamma, molecular weight, and ideal c* against the table, and checks LiquidEnginePerformance nominal mass flow, mass-flow envelope, sea-level thrust, and nominal Isp against independently generated nozzle references."
+verification = ["V-PROP-030"]
+
 [[verification]]
 id = "V-SIL-001"
 kind = "test"
@@ -2993,3 +2999,30 @@ contains = [
   "build_engine_applies_thermochemical_performance",
 ]
 requirements = ["REQ-PROP-029"]
+
+[[verification]]
+id = "V-PROP-030"
+kind = "test"
+command = "cargo test -p openbmp-runner --test thermochem_reference cantera_gri30_reference_table --locked"
+paths = [
+  "data/thermochem/lox-lch4-cantera-gri30-schema-1.toml",
+  "data/thermochem/lox-lch4-cantera-gri30-tolerance-v1.toml",
+  "data/thermochem/provenance.md",
+  "scripts/generate_cantera_thermochem_reference.py",
+  "crates/openbmp-runner/tests/thermochem_reference.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "openbmp.thermochem_reference = 1",
+  "Cantera 3.2.0",
+  "gri30.yaml",
+  "LOX/LCH4",
+  "cantera_gri30_reference_table_matches_thermochem_and_liquid_performance",
+  "ThermochemTable::load_from_str",
+  "ThermochemQuery",
+  "LiquidEnginePerformance::from_thermochemistry_with_efficiency",
+  "expected_nominal_mass_flow_kg_per_s",
+  "expected_isp_s",
+]
+requirements = ["REQ-PROP-030"]

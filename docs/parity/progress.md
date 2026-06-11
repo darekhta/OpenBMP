@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-11, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (90 requirement ids).
+traceability (91 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -106,7 +106,7 @@ WP-04.1-a … WP-04.4-b: **not started**.
 | WP-05.1 pressure-thrust + altitude | **implemented** | `NozzlePerformance` in `crates/openbmp-propulsion/src/motor.rs`; scenario `ambient_pressure_correction = "pressure_thrust"`; `crates/openbmp-runner/tests/pressure_thrust.rs` + fixture; REQ-PROP-001/V-PROP-001 |
 | WP-05.2-a nozzle separation clipping | **implemented** | `NozzleSeparationCriterion::{Summerfield,Schmucker}`; scenario opt-in; test in `pressure_thrust.rs`; REQ-PROP-002 |
 | WP-05.2-b transient solid ballistics | **implemented** | `TransientChamber` pc(t) ODE + erosive hook in `grain.rs`; `[propulsion.motor.grain] mode = "transient"`; test; REQ-PROP-003 |
-| WP-05.3 thermochem deck ingestion | **partial** | crate + parser + scenario block + SHA pin + fixtures + inline grain, reduced feed-network, liquid-engine thermochemical runtime consumption, and empirical `c_star_efficiency` band propagation landed; `LiquidEnginePerformance` derives thrust, nominal choked mass flow, `Isp`, and mass-flow/`Isp` envelopes from looked-up thermochemical state + nozzle geometry; missing: CEARUN/Cantera tolerance tables |
+| WP-05.3 thermochem deck ingestion | **partial** | crate + parser + scenario block + SHA pin + fixtures + inline grain, reduced feed-network, liquid-engine thermochemical runtime consumption, empirical `c_star_efficiency` band propagation, and a provenance-recorded Cantera 3.2.0 `gri30.yaml` LOX/LCH4 reference tolerance table landed; `LiquidEnginePerformance` derives thrust, nominal choked mass flow, `Isp`, and mass-flow/`Isp` envelopes from looked-up thermochemical state + nozzle geometry; missing: full CEARUN/Cantera tolerance-table matrix for LOX/RP-1, LOX/LH2, NTO/MMH, and broader LOX/LCH4 coverage |
 | WP-05.4-a feed network + transient chamber | **partial** | `openbmp-feedsystem` (graph/network/line/chamber/control/transient) + `crates/openbmp-runner/src/feed_network.rs` + scenario `propulsion.feed_networks` validation; missing: dedicated acceptance tests + tolerance tables |
 | WP-05.4-b turbopump map + NPSH | **partial** | `pump.rs` (`Turbopump`, normalized map, design point) + scenario pump blocks + runner pressure/cavitation coupling + synthetic provenance-backed tolerance table; missing: public real-pump calibration |
 | WP-05.4-c MOC line transients | **partial** | `line.rs` (`MocLine`) + scenario line blocks + runner pressure perturbation coupling + synthetic provenance-backed Joukowsky tolerance table; missing: richer boundary library, standalone line topology, public benchmark tables |

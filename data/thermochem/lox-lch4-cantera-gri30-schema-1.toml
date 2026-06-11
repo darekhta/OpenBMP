@@ -1,0 +1,46 @@
+openbmp.thermochem_deck = 1
+
+[meta]
+propellant_pair = "LOX/LCH4"
+provenance = "Generated with Cantera 3.2.0 gri30.yaml gas-phase HP equilibrium; see data/thermochem/provenance.md"
+validation = "research"
+
+[axes]
+chamber_pressure_pa = [1000000.0, 4000000.0]
+mixture_ratio = [2.8, 3.4]
+
+[[state]]
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 2.8
+chamber_temperature_k = 3269.2808262112526
+gamma = 1.2143498333007585
+molecular_weight_kg_per_mol = 0.019126336142580167
+c_star_m_s = 1830.3925753881483
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 3.4
+chamber_temperature_k = 3353.1971222174357
+gamma = 1.2088701931444743
+molecular_weight_kg_per_mol = 0.020814770435951018
+c_star_m_s = 1779.843441141693
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 2.8
+chamber_temperature_k = 3427.5254062044523
+gamma = 1.2090265991278777
+molecular_weight_kg_per_mol = 0.01941325944494042
+c_star_m_s = 1863.1981054510713
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 3.4
+chamber_temperature_k = 3546.5623021258953
+gamma = 1.20244728741433
+molecular_weight_kg_per_mol = 0.02120511503485797
+c_star_m_s = 1816.9872693613363
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }

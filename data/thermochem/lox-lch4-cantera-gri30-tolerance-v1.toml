@@ -1,0 +1,85 @@
+openbmp.thermochem_reference = 1
+
+[meta]
+dataset_id = "openbmp.thermochem.lox_lch4_cantera_gri30.v1"
+source_class = "public-open-source-tool"
+source_title = "Cantera 3.2.0 gri30.yaml LOX/LCH4 HP-equilibrium thermochemistry tolerance table"
+source_url = "https://cantera.org/"
+mechanism = "gri30.yaml"
+license_or_terms = "Cantera BSD-3-Clause; GRI-Mech 3.0 mechanism terms documented by Cantera distribution"
+validation = "research"
+
+[deck]
+file = "lox-lch4-cantera-gri30-schema-1.toml"
+
+[nozzle]
+throat_area_m2 = 0.02
+exit_area_m2 = 0.24
+ambient_pressure_pa = 101325.0
+separation = "off"
+
+[tolerances]
+relative = 1.0e-10
+absolute_temperature_k = 1.0e-8
+absolute_gamma = 1.0e-12
+absolute_molecular_weight_kg_per_mol = 1.0e-14
+absolute_c_star_m_s = 1.0e-8
+absolute_mass_flow_kg_per_s = 1.0e-10
+absolute_isp_s = 1.0e-8
+absolute_thrust_n = 1.0e-7
+
+[[case]]
+name = "pc1mpa_mr2p8"
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 2.8
+expected_chamber_temperature_k = 3269.2808262112526
+expected_gamma = 1.2143498333007585
+expected_molecular_weight_kg_per_mol = 0.019126336142580167
+expected_c_star_m_s = 1830.3925753881483
+expected_nominal_mass_flow_kg_per_s = 11.149609946914486
+expected_mass_flow_min_kg_per_s = 10.926617747976197
+expected_mass_flow_max_kg_per_s = 11.381893487475207
+expected_thrust_n = 10786.208495805025
+expected_isp_s = 98.64803999512515
+
+[[case]]
+name = "pc1mpa_mr3p4"
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 3.4
+expected_chamber_temperature_k = 3353.1971222174357
+expected_gamma = 1.2088701931444743
+expected_molecular_weight_kg_per_mol = 0.020814770435951018
+expected_c_star_m_s = 1779.843441141693
+expected_nominal_mass_flow_kg_per_s = 11.466268770367334
+expected_mass_flow_min_kg_per_s = 11.236943394959987
+expected_mass_flow_max_kg_per_s = 11.705149369749984
+expected_thrust_n = 10856.485806830628
+expected_isp_s = 96.54871008954467
+
+[[case]]
+name = "pc4mpa_mr2p8"
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 2.8
+expected_chamber_temperature_k = 3427.5254062044523
+expected_gamma = 1.2090265991278777
+expected_molecular_weight_kg_per_mol = 0.01941325944494042
+expected_c_star_m_s = 1863.1981054510713
+expected_nominal_mass_flow_kg_per_s = 43.813190246595716
+expected_mass_flow_min_kg_per_s = 42.9369264416638
+expected_mass_flow_max_kg_per_s = 44.72596504339979
+expected_thrust_n = 116371.86770675363
+expected_isp_s = 270.84601593082957
+
+[[case]]
+name = "pc4mpa_mr3p4"
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 3.4
+expected_chamber_temperature_k = 3546.5623021258953
+expected_gamma = 1.20244728741433
+expected_molecular_weight_kg_per_mol = 0.02120511503485797
+expected_c_star_m_s = 1816.9872693613363
+expected_nominal_mass_flow_kg_per_s = 44.927476618984814
+expected_mass_flow_min_kg_per_s = 44.028927086605115
+expected_mass_flow_max_kg_per_s = 45.86346571521366
+expected_thrust_n = 116714.22592702274
+expected_isp_s = 264.9055709767197

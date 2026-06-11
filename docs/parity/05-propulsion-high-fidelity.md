@@ -760,8 +760,12 @@ Effort sizes are from the research ladder.
   Schema-1 state rows now carry an optional empirical `c_star_efficiency`
   band; the deck interpolator preserves it and the liquid-engine bridge uses
   its nominal value for deterministic mass flow/`Isp` while retaining min/max
-  mass-flow and `Isp` envelope evidence. CEARUN/Cantera tolerance tables
-  remain future evidence before this WP is complete.
+  mass-flow and `Isp` envelope evidence. A first provenance-recorded Cantera
+  3.2.0 `gri30.yaml` LOX/LCH4 reference deck and tolerance table now checks
+  deck lookup plus liquid-engine mass-flow/thrust/`Isp` against independently
+  generated values (`REQ-PROP-030` / `V-PROP-030`). The full CEARUN/Cantera
+  tolerance-table matrix for LOX/RP-1, LOX/LH2, NTO/MMH, and broader LOX/LCH4
+  coverage remains future evidence before this WP is complete.
 - **goal:** Derive `c*(pc,MR)`, `Tc`, `γ`, `MW` from a CEA/Cantera deck instead
   of hardcoded constants; enable mixture-ratio-aware liquid performance and the
   documented efficiency band.
