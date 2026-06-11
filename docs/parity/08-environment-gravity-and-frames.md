@@ -102,7 +102,12 @@ Verified by reading the actual files (paths absolute under the repo root).
   path is byte-identical to `J2Gravity`, and stays finite near the pole. This is
   **not yet** the full Pines/Gottlieb high-degree EGM2008 kernel; coefficient
   ingestion and external HARMONIC_SYNTH validation remain the central gap.
-- `ThirdBody` / `ThirdBodyGravity<G,E>` — central + Σ third-body perturbation, but the perturbation in `third_body_perturbation()` uses the **naive difference** `µ_b·((r_b−r)/|r_b−r|³ − r_b/|r_b|³)` (lines ~341–365), which suffers catastrophic cancellation for |r| ≪ |r_b|. No Battin `f(q)`.
+- `ThirdBody` / `ThirdBodyGravity<G,E>` — central + Σ third-body perturbation
+  with Battin's cancellation-free `f(q)` formulation in
+  `third_body_perturbation()`. The regression suite now compares the Battin form
+  to the naive difference in a well-conditioned case and documents the
+  pathological |r| ≪ |r_b| case where the naive difference drops a small
+  component to zero.
 - No SRP, no relativity, no tides anywhere in the file.
 
 ### 2.2 Frames — `crates/openbmp-physics/src/frames.rs` (2835 lines)
@@ -652,6 +657,13 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
 ---
 
 **WP-08.2 — Third-body Battin f(q) + cannonball SRP + Schwarzschild**
+- **implementation_status:** partial. `third_body_perturbation()` now uses
+  Battin's cancellation-free `f(q)` formulation while preserving the existing
+  `ThirdBodyGravity` API. Tests prove agreement with the naive expression in a
+  well-conditioned Moon-like case and document a |r| ≪ |r_b| case where the
+  naive difference loses the small x-component entirely while Battin preserves
+  the finite value. Remaining WP-08.2 work: cannonball SRP with conical shadow,
+  Schwarzschild acceleration, and an Orekit code-to-code force-stack fixture.
 - **goal:** Fix the cancellation bug in the existing third-body path and add the two cheap, high-value perturbations enabling credible high-altitude/coast runs.
 - **fidelity_tier:** T2
 - **depends_on:** [WP-08.1]

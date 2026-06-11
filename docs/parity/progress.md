@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-12, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (101 requirement ids).
+traceability (102 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -22,8 +22,8 @@ same PR as any WP merge.
 ## 1. Roll-up
 
 Across the series: **207 work packages** (108 in `01`–`12`, 99 in `14`–`25`).
-As of this snapshot: **22 implemented · 19 partial · 0 in progress ·
-166 not started.**
+As of this snapshot: **22 implemented · 20 partial · 0 in progress ·
+165 not started.**
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
 |---|---|---|---|---|
@@ -34,7 +34,7 @@ As of this snapshot: **22 implemented · 19 partial · 0 in progress ·
 | 05 | Propulsion high-fidelity | **T1+T2 implemented**; T3 partial; T4/T5 wired-substrate partial | 3/6/9 | finish WP-05.3 (CEARUN/Cantera tolerance tables) |
 | 06 | Coupled MIMO GNC | T0 (+ lane-voting diagnostic improvement) | 0/0/10 | WP-06.1 (after 01) |
 | 07 | Trajectory optimization | **T0-T1 implemented**; STM/multiple-shooting substrate closed with cross-tier tolerance evidence | 2/0/8 | WP-07.2 |
-| 08 | Environment, gravity, frames | T0 plus WP-08.1 degree-2 tesseral substrate; high-degree Pines/Gottlieb still open | 0/1/7 | finish WP-08.1 |
+| 08 | Environment, gravity, frames | T0 plus WP-08.1 degree-2 tesseral substrate and WP-08.2 Battin third-body fix; high-degree Pines/Gottlieb, SRP, relativity still open | 0/2/7 | finish WP-08.1 or WP-08.2 |
 | 09 | Sensors, nav, actuators | T0 (specific force still finite-difference) | 0/0/12 | WP-09.1 |
 | 10 | Flight SW in the loop (XIL) | **T1–T3 implemented**; T4 partial | 3/2/8 | finish WP-10.4, or WP-10.6 in parallel |
 | 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial | 3/5/9 | WP-11.7 |
@@ -164,8 +164,13 @@ Pines/Gottlieb synthesis, EGM2008 coefficient ingestion/provenance/tripwire,
 and NGA HARMONIC_SYNTH benchmark tables. IAU 1976/1980 equinox frames remain
 the frame path (no CIO); NRLMSISE-00/HWM14 means only (no perturbed-atmosphere
 decorator); WMM2025 remains the magnetic path (no IGRF-14, no gradient); SPK
-DAF parser present; no tides/SRP/Battin/relativity. WP-08.2 … WP-08.7:
-**not started**.
+DAF parser present. WP-08.2 is now **partial**: `ThirdBodyGravity` keeps its
+existing API but evaluates perturbations with Battin's cancellation-free
+`f(q)` form, and tests document the |r|≪|r_b| case where the naive difference
+loses the small component (`REQ-ENV-002`). Missing for full WP-08.2:
+cannonball SRP with conical shadow, Schwarzschild acceleration, and an Orekit
+code-to-code force-stack fixture. No tides/SRP/relativity yet. WP-08.3 …
+WP-08.7: **not started**.
 
 ### 09 — Sensors, navigation & actuators
 

@@ -260,12 +260,15 @@ impl ThirdBody {
 /// The perturbing acceleration is evaluated in the central-body frame:
 ///
 /// ```text
-/// a_3 = μ_b · ((r_b - r) / |r_b - r|³ - r_b / |r_b|³)
+/// q   = r · (r - 2r_b) / |r_b|²
+/// f(q)= q(3 + 3q + q²) / (1 + (1+q)^(3/2))
+/// a_3 = -μ_b / |r_b - r|³ · (r + f(q) r_b)
 /// ```
 ///
 /// where `r` is the vehicle position relative to Earth and `r_b` is
-/// the perturbing body's Earth-centered inertial position from the
-/// configured ephemeris model.
+/// the perturbing body's Earth-centered inertial position from the configured
+/// ephemeris model. This is Battin's cancellation-free form of the ordinary
+/// third-body difference.
 #[derive(Clone, Debug)]
 #[cfg(feature = "std")]
 pub struct ThirdBodyGravity<G, E> {
@@ -356,9 +359,12 @@ fn third_body_perturbation(
         });
     }
     let relative_r = relative_r2.sqrt();
-    let body_r = body_r2.sqrt();
+    let q = vehicle_position.dot(&(vehicle_position - 2.0 * body_position)) / body_r2;
+    let one_plus_q = relative_r2 / body_r2;
+    let one_plus_q_3_over_2 = one_plus_q * one_plus_q.sqrt();
+    let f_q = q * (3.0 + 3.0 * q + q * q) / (1.0 + one_plus_q_3_over_2);
     let perturbation =
-        mu_m3_s2 * (relative / (relative_r * relative_r2) - body_position / (body_r * body_r2));
+        (-mu_m3_s2 / (relative_r * relative_r2)) * (vehicle_position + f_q * body_position);
     if !perturbation.iter().all(|v| v.is_finite()) {
         return Err(PhysicsError::NonFinite {
             reason: "third-body perturbation produced non-finite acceleration",
@@ -1180,6 +1186,36 @@ mod tests {
     }
 
     #[test]
+    fn third_body_battin_matches_naive_difference_in_well_conditioned_case() {
+        let vehicle_position = Vector3::new(7_000_000.0, 2_000_000.0, 1_000_000.0);
+        let body_position = Vector3::new(384_400_000.0, -12_000_000.0, 3_000_000.0);
+        let mu_m3_s2 = CelestialBody::Moon.mu_m3_s2();
+
+        let battin = third_body_perturbation(vehicle_position, body_position, mu_m3_s2).unwrap();
+        let naive = naive_third_body_perturbation(vehicle_position, body_position, mu_m3_s2);
+
+        for axis in 0..3 {
+            assert_abs_diff_eq!(battin[axis], naive[axis], epsilon = 1.0e-18);
+        }
+    }
+
+    #[test]
+    fn third_body_battin_preserves_small_component_lost_by_naive_difference() {
+        let vehicle_position = Vector3::new(0.0, 1.0, 0.0);
+        let body_position = Vector3::new(1.0e16, 0.0, 0.0);
+        let mu_m3_s2 = 1.0;
+
+        let battin = third_body_perturbation(vehicle_position, body_position, mu_m3_s2).unwrap();
+        let naive = naive_third_body_perturbation(vehicle_position, body_position, mu_m3_s2);
+
+        assert_eq!(naive.x.to_bits(), 0.0_f64.to_bits());
+        assert!(battin.x.is_finite());
+        assert!(battin.x < 0.0);
+        assert_abs_diff_eq!(battin.x, -1.5e-64, epsilon = 1.0e-76);
+        assert_abs_diff_eq!(battin.y, naive.y, epsilon = 1.0e-62);
+    }
+
+    #[test]
     fn constant_gravity_down_z_rejects_negative_magnitude() {
         let err = ConstantGravity::down_z(-1.0).unwrap_err();
         assert!(matches!(err, PhysicsError::InvalidParameter { .. }));
@@ -1448,6 +1484,19 @@ mod tests {
 
     fn at_xyz(x: f64, y: f64, z: f64) -> Position3<Eci> {
         Position3::new(x, y, z)
+    }
+
+    fn naive_third_body_perturbation(
+        vehicle_position: Vector3<f64>,
+        body_position: Vector3<f64>,
+        mu_m3_s2: f64,
+    ) -> Vector3<f64> {
+        let relative = body_position - vehicle_position;
+        let relative_r2 = relative.dot(&relative);
+        let body_r2 = body_position.dot(&body_position);
+        let relative_r = relative_r2.sqrt();
+        let body_r = body_r2.sqrt();
+        mu_m3_s2 * (relative / (relative_r * relative_r2) - body_position / (body_r * body_r2))
     }
 
     #[test]

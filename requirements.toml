@@ -229,6 +229,12 @@ statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity mo
 verification = ["V-ENV-001"]
 
 [[requirements]]
+id = "REQ-ENV-002"
+title = "Third-body perturbations use Battin's cancellation-free form"
+statement = "The physics layer's ThirdBodyGravity path keeps its existing central-gravity plus ephemeris API but evaluates each third-body perturbing acceleration with Battin's f(q) formulation instead of the naive subtractive difference, remains finite in a documented |r| much less than |r_b| case where the naive expression loses a small component, and still reports singular/non-finite inputs fail-closed without claiming the remaining WP-08.2 SRP, shadow, Schwarzschild, or Orekit force-stack work is complete."
+verification = ["V-ENV-002"]
+
+[[requirements]]
 id = "REQ-CONTACT-001"
 title = "Contact substrate exposes deterministic half-space force laws"
 statement = "The contact dynamics substrate is an L2 crate that exposes point and sphere half-space kinematics, Kelvin-Voigt, Hertz, and Hunt-Crossley normal laws, regularized Coulomb friction, a fixed-step penalty-contact stability bound, and energy-audit closure helpers without depending on runner, simulator, or flight-controller crates."
@@ -1542,6 +1548,26 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-ENV-001"]
+
+[[verification]]
+id = "V-ENV-002"
+kind = "test"
+command = "cargo test -p openbmp-physics gravity::tests::third_body --locked"
+paths = [
+  "crates/openbmp-physics/src/gravity.rs",
+  "docs/parity/08-environment-gravity-and-frames.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "third_body_perturbation",
+  "f_q",
+  "one_plus_q_3_over_2",
+  "third_body_battin_matches_naive_difference_in_well_conditioned_case",
+  "third_body_battin_preserves_small_component_lost_by_naive_difference",
+  "WP-08.2 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-ENV-002"]
 
 [[verification]]
 id = "V-CONTACT-001"
