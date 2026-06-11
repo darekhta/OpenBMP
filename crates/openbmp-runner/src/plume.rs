@@ -179,7 +179,7 @@ impl<'a> PointMassPlumeEvaluator<'a> {
             motor,
             ignition_time_s,
             reference_area_m2: config.reference_area_m2,
-            geometry: plume_geometry(config),
+            geometry: point_mass_plume_geometry(config, motor),
         }))
     }
 
@@ -220,6 +220,14 @@ impl<'a> PointMassPlumeEvaluator<'a> {
             .map(Some)
             .map_err(RunnerError::from)
     }
+}
+
+fn point_mass_plume_geometry(config: &AeroPlumeConfig, motor: &SolidMotor) -> PlumeClusterGeometry {
+    let mut geometry = plume_geometry(config);
+    geometry.engine_count = 1;
+    geometry.exit_area_total_m2 = motor.geometry().exit_area_m2;
+    geometry.center_spacing_m = 0.0;
+    geometry
 }
 
 fn plume_geometry(config: &AeroPlumeConfig) -> PlumeClusterGeometry {

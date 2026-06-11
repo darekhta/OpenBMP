@@ -576,6 +576,12 @@ title = "Plume telemetry remains byte-identical when not declared"
 statement = "Point-mass and rigid-body runners must keep canonical telemetry bytes unchanged when a scenario has no [aero.plume] block, including the compatible case where an otherwise unused [aero] block is present; in that state the runner must allocate no plume.* channels, build no plume evaluator, and preserve the baseline canonical CSV byte stream."
 verification = ["V-PLUME-005"]
 
+[[requirements]]
+id = "REQ-PLUME-006"
+title = "Point-mass plume geometry derives from the solid motor"
+statement = "For point-mass solid-motor plume telemetry, the runner must derive the PlumeClusterGeometry engine count, total exit area, and center spacing from the single solid motor instead of trusting the compatibility fields in [aero.plume]: engine_count is one, exit_area_total_m2 is the motor nozzle exit area, center_spacing_m is zero, and valid but misleading static [aero.plume] geometry values cannot change the canonical plume telemetry byte stream."
+verification = ["V-PLUME-006"]
+
 [[verification]]
 id = "V-SIL-001"
 kind = "test"
@@ -3181,3 +3187,22 @@ contains = [
   "plume.nozzle_pressure_ratio",
 ]
 requirements = ["REQ-PLUME-005"]
+
+[[verification]]
+id = "V-PLUME-006"
+kind = "test"
+command = "cargo test -p openbmp-runner --test pressure_thrust point_mass_plume_geometry_uses_solid_motor_nozzle --locked"
+paths = [
+  "crates/openbmp-runner/src/plume.rs",
+  "crates/openbmp-runner/tests/pressure_thrust.rs",
+  "docs/scenario-format.md",
+  "docs/parity/15-plume-environments-and-supersonic-retropropulsion.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "point_mass_plume_geometry",
+  "motor.geometry().exit_area_m2",
+  "point_mass_plume_geometry_uses_solid_motor_nozzle",
+  "plume.momentum_flux_ratio",
+]
+requirements = ["REQ-PLUME-006"]

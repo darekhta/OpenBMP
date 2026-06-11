@@ -91,6 +91,55 @@ fn plume_telemetry_is_opt_in_and_uses_live_nozzle_state() {
 }
 
 #[test]
+fn point_mass_plume_geometry_uses_solid_motor_nozzle() {
+    let canonical = run_scenario(
+        &include_str!("fixtures/point-mass-pressure-thrust.toml").replace(
+            "[forces]",
+            "[aero]\n\
+             \n\
+             [aero.plume]\n\
+             engine_count = 1\n\
+             reference_area_m2 = 1.0\n\
+             exit_area_total_m2 = 0.002\n\
+             base_area_m2 = 1.0\n\
+             center_spacing_m = 0.0\n\
+             merge_evaluation_distance_m = 0.0\n\
+             pifs_onset_angle_rad = 0.05\n\
+             \n\
+             [forces]",
+        ),
+    );
+    let misleading_static_geometry = run_scenario(
+        &include_str!("fixtures/point-mass-pressure-thrust.toml").replace(
+            "[forces]",
+            "[aero]\n\
+             \n\
+             [aero.plume]\n\
+             engine_count = 4\n\
+             reference_area_m2 = 1.0\n\
+             exit_area_total_m2 = 1.0\n\
+             base_area_m2 = 1.0\n\
+             center_spacing_m = 0.01\n\
+             merge_evaluation_distance_m = 100.0\n\
+             pifs_onset_angle_rad = 0.05\n\
+             \n\
+             [forces]",
+        ),
+    );
+
+    assert!(
+        f64_column(&misleading_static_geometry, "plume.momentum_flux_ratio")
+            .iter()
+            .any(|value| *value > 0.0),
+        "fixture should produce active plume telemetry"
+    );
+    assert_eq!(
+        telemetry_csv_bytes(&canonical),
+        telemetry_csv_bytes(&misleading_static_geometry)
+    );
+}
+
+#[test]
 fn plume_absent_aero_block_is_byte_identical_for_point_mass() {
     let baseline = run_scenario(include_str!("fixtures/point-mass-pressure-thrust.toml"));
     let empty_aero = run_scenario(
