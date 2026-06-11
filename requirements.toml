@@ -193,6 +193,12 @@ statement = "The DOPRI5 and DOP853 adaptive integrators expose opt-in dense-outp
 verification = ["V-DET-003"]
 
 [[requirements]]
+id = "REQ-DET-004"
+title = "Native aarch64 determinism is a CI-declared bit-stable profile"
+statement = "The CI workflow runs the fixed-step canonical determinism scenarios on a native aarch64 Linux runner, verifies the aarch64 host and floating-point guard profile, and byte-diffs those Parquet/CSV outputs against the same-run x86_64 reference artifact before accepting the second Linux bit-stable profile."
+verification = ["V-DET-004"]
+
+[[requirements]]
 id = "REQ-STD-001"
 title = "Standards posture avoids certification overclaim"
 statement = "The repository documents that upstream OpenBMP uses civil aerospace and simulation standards as vocabulary and evidence organization only; certification, qualification, real-time proof, and data-rights posture are re-earned by downstream real-vehicle forks."
@@ -1243,6 +1249,29 @@ contains = [
   "solver.adaptive.dense_output = true",
 ]
 requirements = ["REQ-DET-003"]
+
+[[verification]]
+id = "V-DET-004"
+kind = "ci"
+command = "GitHub Actions CI job determinism-gate (aarch64)"
+paths = [
+  ".github/workflows/ci.yml",
+  "docs/software-architecture.md",
+  "docs/parity/12-determinism-realtime-and-compute.md",
+]
+contains = [
+  "determinism-gate (aarch64)",
+  "ubuntu-24.04-arm",
+  "x86_64-determinism-reference-${{ github.sha }}",
+  "actions/download-artifact@v4",
+  "Verify aarch64 host profile and FP guard",
+  "Compare aarch64 outputs against x86_64 reference",
+  "aarch64-unknown-linux-gnu",
+  "second CI-declared bit-stable profile",
+  "REQ-DET-004",
+  "V-DET-004",
+]
+requirements = ["REQ-DET-004"]
 
 [[verification]]
 id = "V-STD-001"

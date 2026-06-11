@@ -659,7 +659,7 @@ verification cases, a tolerance table, and the label it earns.
 | V2 | Serial fold == merge-tree result, same inputs | self-referential bit-diff | **byte-exact** | T1 | validated-toy |
 | V3 | One-shot run == checkpoint+K-resume run | self-referential bit-diff | **byte-exact** | T2 | validated-toy |
 | V4 | Welford merge recovers analytic mean/variance of a known distribution (e.g. Gaussian, uniform) | analytic / MMS-style | mean ≤ 1e-12 rel, var ≤ 1e-10 rel vs closed form on fixed sample set | T1 | validated-toy |
-| V5 | aarch64 fixed-step canonical scenarios byte-diff vs locked reference bytes | code-to-code (arch-to-arch) | **byte-exact** on fixed-step; state-stable tol on adaptive | T3 | validated-toy |
+| V5 | aarch64 fixed-step canonical scenarios byte-diff vs the same-run x86_64 reference artifact | code-to-code (arch-to-arch) | **byte-exact** on fixed-step; state-stable tol on adaptive | T3 | validated-toy |
 | V6 | `FpEnvironment` guard rejects a deliberately FTZ/DAZ/round-down-set environment; accepts clean | unit + property | exact reject/accept | T0 | checked |
 | V7 | `for_mc_sample` pinned reference stream | unit (locked bytes) | **byte-exact** | T0 | checked |
 | V8 | Dense-output interpolant vs analytic solution of a linear ODE between steps | analytic | interpolation error ≤ scheme order (7 for DOP853, 4 for DOPRI5) in a grid-halving log-ratio | T4 | checked (state-stable) |
@@ -962,9 +962,15 @@ Executed in `depends_on` order, one PR each, green on the full gate set (`13`
 ---
 
 **WP-12.3-b — aarch64 determinism CI lane.**
+- **implementation_status:** implemented in `.github/workflows/ci.yml` as
+  `determinism-gate (aarch64)`: the x86_64 determinism job uploads
+  `x86_64-determinism-reference-${{ github.sha }}`, and the native
+  `ubuntu-24.04-arm` job verifies the aarch64 host profile, runs the fixed-step
+  canonical scenario set, and byte-diffs those outputs against the same-run
+  x86_64 reference artifact. Traceable as `REQ-DET-004` / `V-DET-004`.
 - **goal:** Close the cross-architecture reproducibility loop: byte-diff the
-  fixed-step canonical scenarios on an aarch64 runner against the locked reference
-  bytes, declaring a **second bit-stable profile** for the fixed-step
+  fixed-step canonical scenarios on an aarch64 runner against the same-run
+  x86_64 reference bytes, declaring a **second bit-stable profile** for the fixed-step
   integrators.
 - **fidelity_tier:** T3
 - **depends_on:** [WP-12.0-b]
@@ -972,13 +978,13 @@ Executed in `depends_on` order, one PR each, green on the full gate set (`13`
 - **touched:** `.github/workflows/ci.yml` (aarch64 determinism lane);
   `docs/software-architecture.md` (declare the second profile);
   `requirements.toml`.
-- **approach:** Run the existing fixed-step determinism scenarios on an aarch64
-  runner with the contraction-ban build flags from WP-12.0-b; assert byte-exact
-  for the fixed-step integrators and state-stable tolerance for the adaptive ones
-  (V5).
+- **approach:** Run the existing fixed-step determinism scenarios on a native
+  `ubuntu-24.04-arm` runner with the contraction-ban build flags from
+  WP-12.0-b; assert byte-exact outputs against the x86_64 reference artifact
+  produced by the same workflow run (V5).
 - **acceptance:**
-  - V5: aarch64 fixed-step Parquet byte-identical to the locked reference; adaptive
-    within state-stable tolerance.
+  - V5: aarch64 fixed-step Parquet byte-identical to the same-run x86_64
+    reference artifact.
   - The second bit-stable profile is documented (target triple + toolchain + opt
     level + FP-guard pass).
   - All §2 gates green.

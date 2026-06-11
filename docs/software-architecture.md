@@ -2139,11 +2139,16 @@ the subscriber redirected to `/dev/null`, to verify that diagnostic
 logging side-effects do not leak into deterministic outputs. Failures
 here block merging.
 
-The reference platform profile is `x86_64-unknown-linux-gnu` with the
+The primary reference platform profile is `x86_64-unknown-linux-gnu` with the
 pinned working toolchain from `rust-toolchain.toml` and the `default` simulation
-profile. Other platform profiles (macOS, ARM Linux, Windows) are
-exercised in nightly CI as `state-stable, not bit-stable`: cross-platform
-diffs are expected; intra-platform-profile bit identity is required.
+profile. The native Linux arm64 profile (`aarch64-unknown-linux-gnu` on
+`ubuntu-24.04-arm`, same pinned Rust toolchain, release build, default
+simulation profile, and the `.cargo/config.toml` FP-contraction ban) is the
+second CI-declared bit-stable profile: the aarch64 determinism job downloads the
+x86_64 reference bytes produced earlier in the same workflow run and byte-diffs
+the fixed-step canonical scenarios against them. macOS and Windows remain
+state-stable profiles: tolerance compliance is required, but cross-platform byte
+equality is not claimed there.
 
 ## HIL Pattern (Optional, Generic)
 
@@ -2231,12 +2236,22 @@ naming the public source.
 ## Determinism Profile
 
 A *platform profile* is the tuple `(target_triple, rustc_version,
-simulation_profile)` declared in CI. Byte-identical replay is guaranteed
-within a platform profile; cross-platform-profile diffs are expected and
-are documented in the determinism CI gate as `state-stable, not
-bit-stable`. The reference platform profile is
-`x86_64-unknown-linux-gnu`, the pinned working toolchain from `rust-toolchain.toml`,
-and `default` simulation profile.
+simulation_profile, optimization_profile, fp_control_profile)` declared in CI.
+Byte-identical replay is guaranteed within a platform profile, and only profiles
+with an explicit cross-profile CI byte-diff are promoted to cross-architecture
+bit-stable. The declared bit-stable profiles are:
+
+- `x86_64-unknown-linux-gnu`, pinned working toolchain from
+  `rust-toolchain.toml`, release build, `default` simulation profile, MXCSR guard
+  clean, and x86_64 `target-feature=-fma`.
+- `aarch64-unknown-linux-gnu`, pinned working toolchain from
+  `rust-toolchain.toml`, release build on `ubuntu-24.04-arm`, `default`
+  simulation profile, FPCR guard clean, and the aarch64 `--fp-contract=off`
+  contraction-ban rustflag.
+
+macOS and Windows CI profiles are documented as `state-stable, not bit-stable`:
+the e2e tests enforce tolerance compliance, but byte equality across those
+profiles is not a project guarantee.
 
 The default determinism profile guarantees:
 
