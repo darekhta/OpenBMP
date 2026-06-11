@@ -241,6 +241,12 @@ statement = "Schema-v3 [contact] blocks can select regularized_coulomb or anchor
 verification = ["V-CONTACT-005"]
 
 [[requirements]]
+id = "REQ-CONTACT-006"
+title = "Landing gear oleo and crush-core primitives exist"
+statement = "The vehicle crate exposes landing-gear leg primitives with validated body hardpoints, normalized strut axes, optional footpad geometry, a polytropic oleo stage with quadratic orifice damping and closed-form stored-energy reporting, and an irreversible crush-core stage whose absorbed-energy update advances a monotone crushed coordinate with the plateau identity stroke = energy / force."
+verification = ["V-CONTACT-006"]
+
+[[requirements]]
 id = "REQ-MC-001"
 title = "Seeded Monte-Carlo evidence has a visible CI lane"
 statement = "The repository exposes a scheduled or manually runnable CI lane for the seeded footprint and ascent Monte-Carlo checks, so dispersion acceptance evidence is reproducible outside ad hoc local runs."
@@ -1500,6 +1506,34 @@ contains = [
   "point_mass_contact_anchored_stiction_reports_sticking_rest",
 ]
 requirements = ["REQ-CONTACT-005"]
+
+[[verification]]
+id = "V-CONTACT-006"
+kind = "test"
+command = "cargo test -p openbmp-vehicle landing_gear --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-vehicle/Cargo.toml",
+  "crates/openbmp-vehicle/src/lib.rs",
+  "crates/openbmp-vehicle/src/landing_gear/mod.rs",
+  "docs/parity/14-contact-dynamics-touchdown-and-landing.md",
+]
+contains = [
+  "LandingGearLeg",
+  "OleoStage",
+  "CrushCore",
+  "CrushCoreResponse",
+  "LandingGearError",
+  "gas_pressure_pa",
+  "stored_energy_j",
+  "absorb_energy_j",
+  "landing_gear_oleo_polytropic_curve_matches_closed_form",
+  "landing_gear_oleo_stored_energy_matches_polytropic_integral",
+  "landing_gear_crush_energy_sets_plateau_stroke",
+  "landing_gear_crush_coordinate_is_monotone_and_stroke_limited",
+  "landing_gear_leg_normalizes_axis_and_requires_stage",
+]
+requirements = ["REQ-CONTACT-006"]
 
 [[verification]]
 id = "V-MC-001"

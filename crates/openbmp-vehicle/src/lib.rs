@@ -52,6 +52,7 @@ pub mod adapters;
 pub mod assembly;
 pub mod effector;
 pub mod error;
+pub mod landing_gear;
 pub mod propellant_budget;
 pub mod recovery;
 pub mod structural;
@@ -73,6 +74,7 @@ pub use effector::{
     ControlEffector, EffectorError, EffectorFault, EffectorLimits, EffectorState, LinearActuator,
 };
 pub use error::VehicleError;
+pub use landing_gear::{CrushCore, CrushCoreResponse, LandingGearError, LandingGearLeg, OleoStage};
 pub use propellant_budget::{
     EnginePropellantBinding, EnginePropellantUtilization, FeedMode, PropellantBudget,
     PropellantBudgetError, PropellantBudgetReport, PropellantTankState,
