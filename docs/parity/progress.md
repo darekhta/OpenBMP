@@ -22,7 +22,7 @@ same PR as any WP merge.
 ## 1. Roll-up
 
 Across the series: **207 work packages** (108 in `01`–`12`, 99 in `14`–`25`).
-As of this snapshot: **17 implemented · 17 partial · 0 in progress ·
+As of this snapshot: **18 implemented · 16 partial · 0 in progress ·
 173 not started.**
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
@@ -38,7 +38,7 @@ As of this snapshot: **17 implemented · 17 partial · 0 in progress ·
 | 09 | Sensors, nav, actuators | T0 (specific force still finite-difference) | 0/0/12 | WP-09.1 |
 | 10 | Flight SW in the loop (XIL) | **T1–T3 implemented**; T4 partial | 3/2/8 | finish WP-10.4, or WP-10.6 in parallel |
 | 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial | 3/5/9 | WP-11.7 |
-| 12 | Determinism, real-time, compute | **substantially implemented**; aarch64 CI lane pending | 8/1/10 | WP-12.3-b |
+| 12 | Determinism, real-time, compute | **substantially implemented**; Linux aarch64 bit-stable CI lane present; GPU offload boundary pending | 9/0/10 | WP-12.4-b |
 | 14 | Contact, touchdown, landing | WP-14.1 crate + runner force path present; acceptance remains partial | 0/1/10 | finish WP-14.1, then WP-14.2 |
 | 15 | Plume & SRP | not started (05 nozzle state now available) | 0/0/12 | WP-15.1 |
 | 16 | Parachute & recovery | T0 baseline (`recovery/` rack) | 0/0/11 | WP-16.1 |
@@ -183,7 +183,7 @@ WP-09.1 … WP-09.12: **not started**.
 | WP-12.2-a parallel fan-out | **implemented** | worker-count-invariant campaigns (tests at 1/2/4/8 workers) |
 | WP-12.2-b checkpoint/resume | **implemented** | `FileCheckpointStore`, resume byte-identity, footprint `--checkpoint-json` |
 | WP-12.3-a frame pacer | **implemented** | `openbmp-rt` (shared with doc 10) |
-| WP-12.3-b aarch64 CI lane | **partial** | guard code ready; no aarch64 determinism job in `ci.yml` yet |
+| WP-12.3-b aarch64 CI lane | **implemented** | native `ubuntu-24.04-arm` `determinism-gate (aarch64)` downloads the same-run x86_64 reference artifact and byte-diffs the fixed-step canonical scenario outputs; traced by REQ-DET-004/V-DET-004 |
 | WP-12.4-a dense output | **implemented** | `advance_with_dense_output` for Dopri54/853, state-stable opt-in, off the bit-stable path |
 | WP-12.4-b GPU offload boundary | **not started** | no ingested-deck GPU pathway |
 
