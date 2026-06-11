@@ -6,7 +6,9 @@ use openbmp_contact::{
     half_space_kinematics,
 };
 use openbmp_core::{ChannelId, ModelId};
-use openbmp_scenario::{ContactConfig, ContactGeometryConfig, ContactNormalLawConfig};
+use openbmp_scenario::{
+    ContactConfig, ContactGeometryConfig, ContactNormalLawConfig, ScenarioDocument,
+};
 use openbmp_telemetry::{ChannelMetadata, TelemetryChannel, TelemetryRow};
 use openbmp_vehicle::HalfSpaceContactForceAdapter;
 
@@ -14,6 +16,17 @@ use crate::RunnerError;
 
 const REST_GAP_TOLERANCE_M: f64 = 1.0e-9;
 const REST_SPEED_TOLERANCE_M_S: f64 = 1.0e-9;
+
+/// Returns the runner kernel step size after contact fixed sub-stepping.
+#[must_use]
+pub(crate) fn kernel_step_s(document: &ScenarioDocument) -> f64 {
+    document
+        .contact
+        .as_ref()
+        .map_or(document.time.dt_s, |contact| {
+            document.time.dt_s / f64::from(contact.substeps)
+        })
+}
 
 /// Contact classification emitted in [`crate::RunOutcome`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

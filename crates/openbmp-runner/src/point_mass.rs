@@ -204,6 +204,7 @@ pub fn run(
     // absent, preserving the byte-stable contract for every
     // existing scenario.
     let runtime_integrator = build_runtime_integrator(document)?;
+    let kernel_step_s = crate::contact::kernel_step_s(document);
     let config = SimulationConfig {
         initial_state,
         integrator: runtime_integrator,
@@ -214,7 +215,7 @@ pub fn run(
             automatic_ground_impact(document),
             EndTime::new(SimTime::from_seconds(document.time.stop_s)),
         ),
-        dt: Duration::from_seconds(document.time.dt_s),
+        dt: Duration::from_seconds(kernel_step_s),
         scenario_seed: document.time.seed,
     };
 
@@ -372,11 +373,7 @@ pub fn run(
                     field: "vehicle.assembly.engines[*].propellant".to_owned(),
                     reason: err.to_string(),
                 })?;
-            feed_network_rack.apply_to_report(
-                &mut report,
-                document.time.dt_s,
-                kernel.current_step(),
-            )?;
+            feed_network_rack.apply_to_report(&mut report, kernel_step_s, kernel.current_step())?;
             tank_rack.set_propellant_budget_drain_rates(report.tank_drain_rates_kg_per_s.clone());
             engine_rack.apply_propellant_budget(&report)?;
         }
@@ -402,7 +399,7 @@ pub fn run(
         // (no-op for the instantaneous-deploy models).
         if !recovery_rack.is_empty() {
             recovery_rack.apply_deploys(&pending_recovery_events)?;
-            recovery_rack.step(document.time.dt_s)?;
+            recovery_rack.step(kernel_step_s)?;
         }
         // Push the rack's actuals snapshot to the kernel
         // BEFORE `step()` so all four RK4 stages see the same view.
@@ -446,7 +443,7 @@ pub fn run(
         let script_fired = kernel.drain_script_fired_events();
         if let Some(driver) = &mut aerothermal_driver {
             let environment = kernel.current_environment_sample()?;
-            driver.evaluate_point_mass(kernel.current_state(), &environment, document.time.dt_s)?;
+            driver.evaluate_point_mass(kernel.current_state(), &environment, kernel_step_s)?;
         }
         let snapshot = effector_rack.snapshot();
         record_step(
@@ -2246,6 +2243,15 @@ require_monotonic_time = true
             .collect()
     }
 
+    fn row_times_s(outcome: &RunOutcome) -> Vec<f64> {
+        outcome
+            .table
+            .rows()
+            .iter()
+            .map(|row| row.time.as_seconds())
+            .collect()
+    }
+
     #[test]
     fn point_mass_wires_aerothermal_diagnostics_into_force_stack() {
         let scenario = Scenario::from_toml_str(POINT_MASS_ENTRY_SCENARIO)
@@ -2449,6 +2455,33 @@ require_monotonic_time = true
                 .iter()
                 .all(|value| (*value - 20.0).abs() <= 1.0e-12)
         );
+    }
+
+    #[test]
+    fn point_mass_contact_substeps_drive_kernel_step_size() {
+        let scenario_toml = CONTACT_POINT_MASS_SCENARIO.replace("substeps = 1", "substeps = 2");
+        let scenario = Scenario::from_toml_str(&scenario_toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("contact run succeeds");
+
+        assert_eq!(outcome.final_step, 4);
+        assert_eq!(outcome.final_time_s.to_bits(), 0.002_f64.to_bits());
+        assert_eq!(outcome.table.rows().len(), 5);
+        assert_eq!(
+            row_times_s(&outcome)
+                .iter()
+                .map(|time_s| time_s.to_bits())
+                .collect::<Vec<_>>(),
+            [0.0_f64, 0.0005, 0.001, 0.0015, 0.002]
+                .iter()
+                .map(|time_s| time_s.to_bits())
+                .collect::<Vec<_>>()
+        );
+        let contact = outcome
+            .contact
+            .as_ref()
+            .expect("contact report should be present");
+        assert_eq!(contact.samples, 5);
     }
 
     #[test]

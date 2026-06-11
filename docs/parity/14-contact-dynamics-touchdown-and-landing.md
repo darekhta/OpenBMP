@@ -155,7 +155,9 @@ leg/survival-class touchdown outcomes remain open.**
   emit a `RunOutcome.contact` report with `NoContact`, `Rest`, or `Unsettled`
   endpoint classification plus contact elastic-energy/work/dissipation
   closure audit while disabling the legacy terminal `GroundImpact` stop for
-  that opt-in scenario.
+  that opt-in scenario. The runner divides the kernel step size by
+  `contact.substeps`, so contact evaluation and diagnostics advance on the
+  declared fixed substep lattice.
 - **A runner-side terminal landing throttle controller.**
   `crates/openbmp-runner/src/separated_landing.rs` is a deterministic
   *scenario-director* controller (its own doc comment: "not flight software…
@@ -799,8 +801,9 @@ sibling notation (`WP-NN.t`, doc `NN`).
   telemetry, load-time stability checks, and a `RunOutcome.contact` report that
   classifies half-space runs as `NoContact`, `Rest`, or `Unsettled` and reports
   a deterministic elastic-energy/contact-work/dissipation closure audit.
-  Gear-leg assemblies and contact substep integration remain future slices
-  before WP-14.1 is complete.
+  `contact.substeps` now drives the runner kernel step size as well as the
+  load-time stability bound. Gear-leg assemblies remain a future slice before
+  the contact/landing tier is complete.
 - **goal:** The sim stops ending at the ground. A `ContactPair` registry on the
   existing rigid-body kernel evaluates gap/normal/friction forces into the
   force accumulator at a fixed sub-step rate, with a fail-closed
@@ -818,7 +821,8 @@ sibling notation (`WP-NN.t`, doc `NN`).
   integer sub-steps, locked operand order, no allocation per sub-step.
   `GroundImpact` remains the default; `[contact]` disables the terminal
   ground-impact stop and routes the compliant force through the force stack.
-  Outcome classification (`Rest`/`NoContact` only at this tier) remains open.
+  Outcome classification (`NoContact`/`Rest`/`Unsettled`) and substep kernel
+  integration are wired for the half-space tier.
 - **acceptance:**
   - `[contact]` off by default; canonical goldens byte-identical
   - static penetration `mg/k` to `< 1e-12` rel; undamped Hertz bounce conserves

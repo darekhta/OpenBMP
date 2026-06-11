@@ -196,8 +196,8 @@ REQ-CONTACT-001). Scenario `[contact]` schema (`ContactConfig`) and runner
 force-adapter wiring are present (`crates/openbmp-runner/src/contact.rs` plus
 point-mass/rigid-body/vehicle edits), with contact diagnostics telemetry,
 `RunOutcome.contact` endpoint classification, run-level energy audit, and
-point-mass golden-stability proof. Missing for full acceptance: gear-leg
-assemblies and contact substep integration.
+substep-driven kernel step sizing, plus point-mass golden-stability proof.
+Missing for full acceptance: gear-leg assemblies.
 WP-14.2 … WP-14.10: **not started**.
 
 ### 15 — Plume environments & SRP
@@ -288,7 +288,7 @@ verifier, or capture logic.
 ## 4. Recommended next moves (from this snapshot)
 
 1. **Close the open partials before opening new fronts:** WP-05.3 runtime
-   deck consumption; WP-14.1 gear-leg/substep closure; WP-12.4-b GPU boundary.
+   deck consumption; WP-14.1 gear-leg closure; WP-12.4-b GPU boundary.
 2. **Start the two unstarted Phase-A gates:** WP-01.1 (spatial-vector tree)
    and WP-08.1 (tesseral gravity) — they block most of Phase B/C (02, 06,
    07 closed-loop quality).

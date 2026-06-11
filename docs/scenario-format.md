@@ -1215,7 +1215,10 @@ For `normal_law = "hertz"`, use `stiffness_n_m_3_2` plus
 `reference_impact_speed_m_s`. Scenario validation fails closed when
 `dt_s / substeps` violates the contact stability bound derived from
 `stability_stiffness_n_m` or Kelvin-Voigt `stiffness_n_m` and
-`effective_mass_kg`.
+`effective_mass_kg`. The runner also uses `substeps` operationally: when
+`[contact]` is present, the simulation kernel advances at
+`time.dt_s / contact.substeps`, so contact force, diagnostics, and
+`RunOutcome.contact` samples are produced at fixed substep boundaries.
 
 Contact remains off by default. With `[contact]` present, the point-mass
 and rigid-body runners disable the default `GroundImpact` stop and

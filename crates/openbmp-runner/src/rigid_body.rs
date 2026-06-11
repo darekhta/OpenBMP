@@ -215,6 +215,7 @@ pub fn run(
     // rigid-body kernel; the old reject gate that refused non-RK4
     // selections has been removed.
     let runtime_integrator = build_runtime_integrator(document)?;
+    let kernel_step_s = crate::contact::kernel_step_s(document);
     let separated_ground_radius_m = infer_near_surface_geocentric_radius_m(&initial_state);
 
     let config = SimulationConfig {
@@ -227,7 +228,7 @@ pub fn run(
             automatic_ground_impact(document),
             EndTime::new(SimTime::from_seconds(document.time.stop_s)),
         ),
-        dt: Duration::from_seconds(document.time.dt_s),
+        dt: Duration::from_seconds(kernel_step_s),
         scenario_seed: document.time.seed,
     };
 
@@ -411,11 +412,7 @@ pub fn run(
                     field: "vehicle.assembly.engines[*].propellant".to_owned(),
                     reason: err.to_string(),
                 })?;
-            feed_network_rack.apply_to_report(
-                &mut report,
-                document.time.dt_s,
-                kernel.current_step(),
-            )?;
+            feed_network_rack.apply_to_report(&mut report, kernel_step_s, kernel.current_step())?;
             tank_rack.set_propellant_budget_drain_rates(report.tank_drain_rates_kg_per_s.clone());
             engine_rack.apply_propellant_budget(&report)?;
         }
@@ -447,7 +444,7 @@ pub fn run(
         // deploy models).
         if !recovery_rack.is_empty() {
             recovery_rack.apply_deploys(&pending_recovery_events)?;
-            recovery_rack.step(document.time.dt_s)?;
+            recovery_rack.step(kernel_step_s)?;
         }
         if !deck_bindings.is_empty() || direct_torque_present {
             let rack_snapshot = effector_rack.snapshot();
@@ -492,7 +489,7 @@ pub fn run(
         // state. Slosh state on the next tick uses these drivers
         // (one-step lag, see TankRack module docs).
         if !tank_rack.is_empty() || !structural_rack.is_inactive() {
-            let dt_s = document.time.dt_s;
+            let dt_s = kernel_step_s;
             let new_state = kernel.current_state();
             let dv_eci = new_state.velocity.vector - prev_velocity_eci;
             let accel_eci = if dt_s > 0.0 {
@@ -540,7 +537,7 @@ pub fn run(
         }
         if let Some(driver) = &mut aerothermal_driver {
             let environment = kernel.current_environment_sample()?;
-            driver.evaluate_rigid_body(kernel.current_state(), &environment, document.time.dt_s)?;
+            driver.evaluate_rigid_body(kernel.current_state(), &environment, kernel_step_s)?;
         }
         let snapshot = effector_rack.snapshot();
         record_step(

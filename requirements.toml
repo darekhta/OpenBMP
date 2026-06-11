@@ -219,7 +219,7 @@ verification = ["V-CONTACT-001"]
 [[requirements]]
 id = "REQ-CONTACT-002"
 title = "Contact force is scenario-reachable without changing default ground impact"
-statement = "Schema-v3 scenarios can opt into a [contact] half-space force with point or sphere geometry, load-time stability validation, automatic force-stack derivation when [forces] is omitted, explicit-force consistency checks when [forces] is present, runner-side GroundImpact disablement for contact scenarios, standard force.contact.{x,y,z}_n telemetry, contact.gap_m, contact.penetration_m, contact.normal_velocity_m_s, and contact.normal_force_n diagnostics telemetry, and an out-of-band RunOutcome contact report with NoContact, Rest, and Unsettled classification plus run-level contact elastic-energy, contact-work, dissipation, and closure-error audit fields without depending on flight-controller crates."
+statement = "Schema-v3 scenarios can opt into a [contact] half-space force with point or sphere geometry, load-time stability validation, automatic force-stack derivation when [forces] is omitted, explicit-force consistency checks when [forces] is present, runner-side GroundImpact disablement for contact scenarios, fixed contact substep integration by dividing the runner kernel step size by contact.substeps, standard force.contact.{x,y,z}_n telemetry, contact.gap_m, contact.penetration_m, contact.normal_velocity_m_s, and contact.normal_force_n diagnostics telemetry, and an out-of-band RunOutcome contact report with NoContact, Rest, and Unsettled classification plus run-level contact elastic-energy, contact-work, dissipation, and closure-error audit fields without depending on flight-controller crates."
 verification = ["V-CONTACT-002"]
 
 [[requirements]]
@@ -1363,12 +1363,14 @@ contains = [
   "ContactRunEnergyAudit",
   "ContactOutcomeKind",
   "ContactTelemetryChannels",
+  "kernel_step_s",
   "build_half_space_contact_force_adapter",
   "POINT_MASS_CONTACT_MODEL_ID",
   "RIGID_BODY_CONTACT_MODEL_ID",
   "point_mass_contact_force_disables_ground_stop_and_publishes_force",
   "point_mass_contact_report_classifies_no_contact",
   "point_mass_contact_energy_audit_closes_for_balanced_static_penalty",
+  "point_mass_contact_substeps_drive_kernel_step_size",
   "point_mass_contact_diagnostics_are_golden_stable",
   "rigid_body_contact_publishes_diagnostics_and_report",
   "force.contact.z_n",
