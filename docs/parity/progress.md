@@ -139,10 +139,10 @@ against finite-difference columns; `src/shooting.rs` seeds and evaluates
 fixed-duration M-segment continuity defects with a block-bidiagonal
 `[STM_i, -I]` Jacobian, and `MultipleShootingCorrector` performs damped
 fixed-endpoint interior-node correction with honest non-convergence reporting
-plus a trybuild no-surface-coordinate tripwire (`REQ-TRAJOPT-002`). Missing:
-the full free-vector solve with controls/terminal targeting, cross-tier
-regression tolerance table, STM-vs-complex-step gate, and box/path penalty
-handling.
+plus fixed-initial terminal-condition correction and a trybuild
+no-surface-coordinate tripwire (`REQ-TRAJOPT-002`). Missing: the control/free-
+time part of the full free vector, cross-tier regression tolerance table,
+STM-vs-complex-step gate, and box/path penalty handling.
 WP-07.2 … WP-07.6: **not started**.
 
 ### 08 — Environment, gravity & frames
@@ -362,7 +362,7 @@ verifier, or capture logic.
 2. **Start the two unstarted Phase-A gates:** WP-01.1 (spatial-vector tree)
    and WP-08.1 (tesseral gravity) — they block most of Phase B/C (02, 06,
    07 closed-loop quality).
-3. **Finish WP-07.1** (full multiple-shooting controls/terminal solve,
+3. **Finish WP-07.1** (multiple-shooting controls/free-time solve,
    STM-vs-complex-step gate, cross-tier tolerance table, and path/box
    penalties) or use the implemented WP-07.0 runner-backed corrector as the
    prerequisite for WP-19.2.

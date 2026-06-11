@@ -7,11 +7,14 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use openbmp_physics::profile::TerminalCondition;
+
 use crate::corrector::solve_linear_system;
 use crate::iload::TrajoptError;
 use crate::stm::{
     TwoBodyCartesianState, TwoBodyVariationalPropagation, propagate_two_body_variational,
 };
+use crate::target::{TerminalResidual, terminal_residual_from_cartesian};
 
 /// One node in a multiple-shooting mesh.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,6 +57,8 @@ pub struct MultipleShootingCorrector {
     pub max_iterations: usize,
     /// Convergence threshold on the stacked continuity-defect norm.
     pub defect_tolerance: f64,
+    /// Relative finite-difference step for terminal residual Jacobians.
+    pub finite_difference_step: f64,
     /// Levenberg-Marquardt damping added to the normal-equation diagonal.
     pub levenberg_marquardt_damping: f64,
     /// Cap on the Euclidean norm of a single interior-node correction step.
@@ -65,6 +70,7 @@ impl Default for MultipleShootingCorrector {
         Self {
             max_iterations: 20,
             defect_tolerance: 1.0e-6,
+            finite_difference_step: 1.0e-6,
             levenberg_marquardt_damping: 1.0e-9,
             max_step_norm: f64::INFINITY,
         }
@@ -81,6 +87,23 @@ pub struct MultipleShootingCorrection {
     /// Number of Gauss-Newton iterations taken.
     pub iterations: usize,
     /// Whether the continuity-defect norm reached the configured tolerance.
+    pub converged: bool,
+}
+
+/// Result of a fixed-initial-state multiple-shooting terminal-condition solve.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultipleShootingTargetCorrection {
+    /// Corrected node sequence. The first node is held fixed.
+    pub nodes: Vec<MultipleShootingNode>,
+    /// Final continuity report for [`Self::nodes`].
+    pub continuity_report: MultipleShootingContinuityReport,
+    /// Final terminal-condition residual at the last node.
+    pub terminal_residual: TerminalResidual,
+    /// Euclidean norm of continuity defects and terminal residual components.
+    pub residual_norm: f64,
+    /// Number of Gauss-Newton iterations taken.
+    pub iterations: usize,
+    /// Whether the stacked residual norm reached the configured tolerance.
     pub converged: bool,
 }
 
@@ -148,10 +171,85 @@ impl MultipleShootingCorrector {
         })
     }
 
+    /// Correct all downstream nodes to satisfy continuity and a terminal condition.
+    ///
+    /// The initial node is held fixed. The terminal condition is the closed
+    /// [`TerminalCondition`] vocabulary shared with the T0 corrector; objective
+    /// style payload maximization is rejected because this routine nulls
+    /// equality residuals.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrajoptError`] when the configuration or mesh is invalid, the
+    /// terminal condition is not a supported equality condition, propagation
+    /// fails, or the damped normal equations are singular.
+    pub fn solve_two_body_terminal_condition(
+        &self,
+        condition: &TerminalCondition,
+        initial_nodes: &[MultipleShootingNode],
+        segment_durations_s: &[f64],
+        step_s: f64,
+        mu_m3_s2: f64,
+    ) -> Result<MultipleShootingTargetCorrection, TrajoptError> {
+        self.validate_config()?;
+        if matches!(condition, TerminalCondition::MaximizePayloadMass) {
+            return Err(TrajoptError::InvalidPayload {
+                reason: "multiple shooting terminal correction targets constraints, \
+                         not the payload-mass objective",
+            });
+        }
+        if initial_nodes.len() < 2 {
+            return Err(TrajoptError::InvalidPayload {
+                reason: "terminal multiple shooting requires at least one segment",
+            });
+        }
+        let mut nodes = initial_nodes.to_vec();
+        let mut report = evaluate_two_body_terminal_targeting(
+            condition,
+            &nodes,
+            segment_durations_s,
+            step_s,
+            mu_m3_s2,
+            self.finite_difference_step,
+        )?;
+        let mut iterations = 0;
+
+        while report.residual_norm > self.defect_tolerance {
+            if iterations >= self.max_iterations {
+                return Ok(report.into_correction(nodes, iterations, false));
+            }
+            let step = gauss_newton_step(
+                &report.jacobian,
+                &report.residuals,
+                report.residuals.len(),
+                report.free_state_count,
+                self.levenberg_marquardt_damping,
+            )?;
+            apply_free_node_step(&mut nodes, 1, &step, self.max_step_norm)?;
+
+            iterations += 1;
+            report = evaluate_two_body_terminal_targeting(
+                condition,
+                &nodes,
+                segment_durations_s,
+                step_s,
+                mu_m3_s2,
+                self.finite_difference_step,
+            )?;
+        }
+
+        Ok(report.into_correction(nodes, iterations, true))
+    }
+
     fn validate_config(&self) -> Result<(), TrajoptError> {
         if !self.defect_tolerance.is_finite() || self.defect_tolerance < 0.0 {
             return Err(TrajoptError::InvalidPayload {
                 reason: "multiple shooting defect tolerance must be finite and non-negative",
+            });
+        }
+        if !self.finite_difference_step.is_finite() || self.finite_difference_step <= 0.0 {
+            return Err(TrajoptError::InvalidPayload {
+                reason: "multiple shooting finite-difference step must be finite and positive",
             });
         }
         if !self.levenberg_marquardt_damping.is_finite() || self.levenberg_marquardt_damping < 0.0 {
@@ -165,6 +263,34 @@ impl MultipleShootingCorrector {
             });
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TerminalTargetingReport {
+    continuity_report: MultipleShootingContinuityReport,
+    terminal_residual: TerminalResidual,
+    residuals: Vec<f64>,
+    jacobian: Vec<f64>,
+    residual_norm: f64,
+    free_state_count: usize,
+}
+
+impl TerminalTargetingReport {
+    fn into_correction(
+        self,
+        nodes: Vec<MultipleShootingNode>,
+        iterations: usize,
+        converged: bool,
+    ) -> MultipleShootingTargetCorrection {
+        MultipleShootingTargetCorrection {
+            nodes,
+            continuity_report: self.continuity_report,
+            terminal_residual: self.terminal_residual,
+            residual_norm: self.residual_norm,
+            iterations,
+            converged,
+        }
     }
 }
 
@@ -239,6 +365,56 @@ pub fn evaluate_two_body_multiple_shooting(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn evaluate_two_body_terminal_targeting(
+    condition: &TerminalCondition,
+    nodes: &[MultipleShootingNode],
+    segment_durations_s: &[f64],
+    step_s: f64,
+    mu_m3_s2: f64,
+    finite_difference_step: f64,
+) -> Result<TerminalTargetingReport, TrajoptError> {
+    let continuity_report =
+        evaluate_two_body_multiple_shooting(nodes, segment_durations_s, step_s, mu_m3_s2)?;
+    let terminal_state = nodes[nodes.len() - 1].state;
+    let terminal_residual = terminal_residual_for_state(condition, terminal_state, mu_m3_s2)?;
+    let continuity_residual_count = continuity_report.defects.len();
+    let terminal_residual_count = terminal_residual.components.len();
+    let residual_count = continuity_residual_count + terminal_residual_count;
+    let free_state_count = (nodes.len() - 1) * 6;
+
+    let mut residuals = Vec::with_capacity(residual_count);
+    residuals.extend_from_slice(&continuity_report.defects);
+    residuals.extend_from_slice(&terminal_residual.components);
+
+    let mut jacobian = vec![0.0_f64; residual_count * free_state_count];
+    insert_downstream_continuity_jacobian(&continuity_report, &mut jacobian, free_state_count)?;
+    insert_terminal_residual_jacobian(
+        condition,
+        terminal_state,
+        &terminal_residual.components,
+        mu_m3_s2,
+        finite_difference_step,
+        continuity_residual_count,
+        free_state_count,
+        &mut jacobian,
+    )?;
+
+    let residual_norm = residuals
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    Ok(TerminalTargetingReport {
+        continuity_report,
+        terminal_residual,
+        residuals,
+        jacobian,
+        residual_norm,
+        free_state_count,
+    })
+}
+
 fn validate_mesh(
     nodes: &[MultipleShootingNode],
     segment_durations_s: &[f64],
@@ -264,6 +440,74 @@ fn validate_mesh(
         }
     }
     Ok(())
+}
+
+fn insert_downstream_continuity_jacobian(
+    report: &MultipleShootingContinuityReport,
+    jacobian: &mut [f64],
+    free_state_count: usize,
+) -> Result<(), TrajoptError> {
+    if report.free_state_count != free_state_count + 6 {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "terminal multiple shooting free-state count is inconsistent",
+        });
+    }
+    for row in 0..report.defects.len() {
+        for column in 0..free_state_count {
+            jacobian[row * free_state_count + column] =
+                report.jacobian[row * report.free_state_count + column + 6];
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_terminal_residual_jacobian(
+    condition: &TerminalCondition,
+    terminal_state: TwoBodyCartesianState,
+    base_components: &[f64],
+    mu_m3_s2: f64,
+    finite_difference_step: f64,
+    row_offset: usize,
+    free_state_count: usize,
+    jacobian: &mut [f64],
+) -> Result<(), TrajoptError> {
+    let terminal_col_offset = free_state_count - 6;
+    let base = terminal_state.to_array();
+    let residual_count = base_components.len();
+    for column in 0..6 {
+        let step = finite_difference_step * (1.0 + base[column].abs());
+        let mut perturbed = base;
+        perturbed[column] += step;
+        let perturbed_residual = terminal_residual_for_state(
+            condition,
+            TwoBodyCartesianState::from_array(perturbed)?,
+            mu_m3_s2,
+        )?;
+        if perturbed_residual.components.len() != residual_count {
+            return Err(TrajoptError::InvalidPayload {
+                reason: "terminal residual dimension changed across finite-difference stencil",
+            });
+        }
+        for row in 0..residual_count {
+            jacobian[(row_offset + row) * free_state_count + terminal_col_offset + column] =
+                (perturbed_residual.components[row] - base_components[row]) / step;
+        }
+    }
+    Ok(())
+}
+
+fn terminal_residual_for_state(
+    condition: &TerminalCondition,
+    state: TwoBodyCartesianState,
+    mu_m3_s2: f64,
+) -> Result<TerminalResidual, TrajoptError> {
+    terminal_residual_from_cartesian(
+        condition,
+        state.position_eci_m,
+        state.velocity_eci_m_s,
+        mu_m3_s2,
+    )
 }
 
 fn insert_segment_defect(
@@ -378,6 +622,38 @@ fn apply_interior_step(
     }
     let last_node_index = nodes.len() - 1;
     for (node_index, node) in nodes[1..last_node_index].iter_mut().enumerate() {
+        let mut state = node.state.to_array();
+        for component in 0..6 {
+            state[component] += scale * step[node_index * 6 + component];
+        }
+        node.state = TwoBodyCartesianState::from_array(state)?;
+    }
+    Ok(())
+}
+
+fn apply_free_node_step(
+    nodes: &mut [MultipleShootingNode],
+    first_free_node_index: usize,
+    step: &[f64],
+    max_step_norm: f64,
+) -> Result<(), TrajoptError> {
+    let free_node_count = nodes.len().saturating_sub(first_free_node_index);
+    if step.len() != free_node_count * 6 {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "multiple shooting correction step dimension is inconsistent",
+        });
+    }
+    let mut norm_squared = 0.0_f64;
+    for &value in step {
+        norm_squared += value * value;
+    }
+    let norm = norm_squared.sqrt();
+    let scale = if max_step_norm.is_finite() && norm > max_step_norm && norm > 0.0 {
+        max_step_norm / norm
+    } else {
+        1.0
+    };
+    for (node_index, node) in nodes[first_free_node_index..].iter_mut().enumerate() {
         let mut state = node.state.to_array();
         for component in 0..6 {
             state[component] += scale * step[node_index * 6 + component];
@@ -541,6 +817,112 @@ mod tests {
         );
 
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_condition_corrector_restores_perturbed_rendezvous_mesh() -> Result<(), TrajoptError>
+    {
+        let initial =
+            TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let durations = [40.0, 40.0, 40.0];
+        let truth =
+            seed_two_body_multiple_shooting_nodes(initial, &durations, 10.0, WGS84_MU_M3_S2)?;
+        let terminal = truth[truth.len() - 1].state;
+        let condition = TerminalCondition::RendezvousState {
+            position_eci_m: terminal.position_eci_m,
+            velocity_eci_m_s: terminal.velocity_eci_m_s,
+        };
+        let mut perturbed = truth.clone();
+        perturbed[1].state.position_eci_m[0] += 50.0;
+        perturbed[2].state.position_eci_m[1] -= 25.0;
+        perturbed[3].state.velocity_eci_m_s[0] += 0.05;
+        perturbed[3].state.position_eci_m[2] += 10.0;
+        let corrector = MultipleShootingCorrector {
+            defect_tolerance: 1.0e-7,
+            max_step_norm: 100.0,
+            ..MultipleShootingCorrector::default()
+        };
+
+        let correction = corrector.solve_two_body_terminal_condition(
+            &condition,
+            &perturbed,
+            &durations,
+            10.0,
+            WGS84_MU_M3_S2,
+        )?;
+
+        assert!(correction.converged, "{correction:?}");
+        assert!(correction.iterations > 0);
+        assert!(correction.residual_norm < corrector.defect_tolerance);
+        assert!(correction.continuity_report.defect_norm < corrector.defect_tolerance);
+        assert!(correction.terminal_residual.norm < corrector.defect_tolerance);
+        assert_eq!(correction.nodes[0], truth[0]);
+        let corrected_terminal = correction.nodes[correction.nodes.len() - 1]
+            .state
+            .to_array();
+        let truth_terminal = terminal.to_array();
+        for (corrected, truth_value) in corrected_terminal.iter().zip(truth_terminal.iter()) {
+            assert!((corrected - truth_value).abs() < 1.0e-6);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_condition_corrector_rejects_payload_objective() -> Result<(), TrajoptError> {
+        let initial =
+            TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let durations = [60.0];
+        let nodes =
+            seed_two_body_multiple_shooting_nodes(initial, &durations, 10.0, WGS84_MU_M3_S2)?;
+
+        let result = MultipleShootingCorrector::default().solve_two_body_terminal_condition(
+            &TerminalCondition::MaximizePayloadMass,
+            &nodes,
+            &durations,
+            10.0,
+            WGS84_MU_M3_S2,
+        );
+
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_condition_corrector_reports_non_convergence_for_incompatible_target()
+    -> Result<(), TrajoptError> {
+        let initial =
+            TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let durations = [60.0, 60.0];
+        let nodes =
+            seed_two_body_multiple_shooting_nodes(initial, &durations, 10.0, WGS84_MU_M3_S2)?;
+        let terminal = nodes[nodes.len() - 1].state;
+        let condition = TerminalCondition::RendezvousState {
+            position_eci_m: [
+                terminal.position_eci_m[0] + 10.0,
+                terminal.position_eci_m[1],
+                0.0,
+            ],
+            velocity_eci_m_s: terminal.velocity_eci_m_s,
+        };
+        let corrector = MultipleShootingCorrector {
+            max_iterations: 3,
+            defect_tolerance: 1.0e-12,
+            max_step_norm: 100.0,
+            ..MultipleShootingCorrector::default()
+        };
+
+        let correction = corrector.solve_two_body_terminal_condition(
+            &condition,
+            &nodes,
+            &durations,
+            10.0,
+            WGS84_MU_M3_S2,
+        )?;
+
+        assert!(!correction.converged);
+        assert_eq!(correction.iterations, corrector.max_iterations);
+        assert_eq!(correction.nodes[0], nodes[0]);
         Ok(())
     }
 }

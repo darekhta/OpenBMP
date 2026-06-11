@@ -30,17 +30,44 @@ pub fn terminal_residual(
     state.validate().map_err(|_| TrajoptError::InvalidPayload {
         reason: "terminal residual state is invalid",
     })?;
+    terminal_residual_from_cartesian(
+        condition,
+        state.position_eci_m(),
+        state.velocity_eci_m_s(),
+        mu_m3_s2,
+    )
+}
+
+/// Compute a terminal residual directly from Cartesian inertial state.
+///
+/// This is crate-internal so shooting methods can evaluate optimizer nodes
+/// without constructing a downstream free-flight seed.
+pub(crate) fn terminal_residual_from_cartesian(
+    condition: &TerminalCondition,
+    position_eci_m: [f64; 3],
+    velocity_eci_m_s: [f64; 3],
+    mu_m3_s2: f64,
+) -> Result<TerminalResidual, TrajoptError> {
     condition
         .validate()
         .map_err(|_| TrajoptError::InvalidPayload {
             reason: "terminal condition is invalid",
         })?;
+    if !position_eci_m
+        .iter()
+        .chain(velocity_eci_m_s.iter())
+        .all(|value| value.is_finite())
+    {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "terminal residual Cartesian state must be finite",
+        });
+    }
     if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
         return Err(TrajoptError::InvalidPayload {
             reason: "terminal residual gravity parameter must be finite and positive",
         });
     }
-    let elements = orbital_elements(state, mu_m3_s2)?;
+    let elements = orbital_elements(position_eci_m, velocity_eci_m_s, mu_m3_s2)?;
     let components = match *condition {
         TerminalCondition::OrbitalElements {
             semi_major_axis_m,
@@ -58,18 +85,16 @@ pub fn terminal_residual(
             alloc::vec![elements.flight_path_angle_rad - angle_rad]
         }
         TerminalCondition::RendezvousState {
-            position_eci_m,
-            velocity_eci_m_s,
+            position_eci_m: target_position_eci_m,
+            velocity_eci_m_s: target_velocity_eci_m_s,
         } => {
-            let position = state.position_eci_m();
-            let velocity = state.velocity_eci_m_s();
             alloc::vec![
-                position[0] - position_eci_m[0],
-                position[1] - position_eci_m[1],
-                position[2] - position_eci_m[2],
-                velocity[0] - velocity_eci_m_s[0],
-                velocity[1] - velocity_eci_m_s[1],
-                velocity[2] - velocity_eci_m_s[2],
+                position_eci_m[0] - target_position_eci_m[0],
+                position_eci_m[1] - target_position_eci_m[1],
+                position_eci_m[2] - target_position_eci_m[2],
+                velocity_eci_m_s[0] - target_velocity_eci_m_s[0],
+                velocity_eci_m_s[1] - target_velocity_eci_m_s[1],
+                velocity_eci_m_s[2] - target_velocity_eci_m_s[2],
             ]
         }
         TerminalCondition::MaximizePayloadMass => alloc::vec![0.0],
@@ -91,11 +116,12 @@ struct OrbitalElements {
 }
 
 fn orbital_elements(
-    state: &BallisticState,
+    position_eci_m: [f64; 3],
+    velocity_eci_m_s: [f64; 3],
     mu_m3_s2: f64,
 ) -> Result<OrbitalElements, TrajoptError> {
-    let r = state.position_eci_m();
-    let v = state.velocity_eci_m_s();
+    let r = position_eci_m;
+    let v = velocity_eci_m_s;
     let r_norm = norm3(r);
     let v_norm = norm3(v);
     if r_norm <= f64::EPSILON || v_norm <= f64::EPSILON {

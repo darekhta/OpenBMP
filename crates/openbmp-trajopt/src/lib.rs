@@ -28,7 +28,7 @@ pub use iload::{
 pub use openbmp_physics::profile::TerminalCondition;
 pub use shooting::{
     MultipleShootingContinuityReport, MultipleShootingCorrection, MultipleShootingCorrector,
-    MultipleShootingNode, evaluate_two_body_multiple_shooting,
+    MultipleShootingNode, MultipleShootingTargetCorrection, evaluate_two_body_multiple_shooting,
     seed_two_body_multiple_shooting_nodes,
 };
 pub use stm::{
