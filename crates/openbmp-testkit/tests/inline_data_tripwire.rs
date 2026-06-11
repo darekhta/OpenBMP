@@ -8,7 +8,8 @@
 //! 1. **Inline TOML scenario / data fixtures in `*.rs` source.** Any
 //!    multi-line Rust string literal in a `*.rs` file whose body
 //!    contains an OpenBMP schema header (`openbmp.scenario`,
-//!    `openbmp.aero_deck`, `openbmp.thermochem_deck`, `openbmp.motor`,
+//!    `openbmp.aero_deck`, `openbmp.thermochem_deck`,
+//!    `openbmp.feed_turbopump_map`, `openbmp.motor`,
 //!    `openbmp.imu_noise_budget`, `openbmp.benchmark`) or a `[[metric]]`
 //!    table marker is
 //!    forbidden, regardless of enclosing context (module-level
@@ -79,6 +80,7 @@ const TOML_SCHEMA_MARKERS: &[&str] = &[
     "openbmp.scenario",
     "openbmp.aero_deck",
     "openbmp.thermochem_deck",
+    "openbmp.feed_turbopump_map",
     "openbmp.motor",
     "openbmp.imu_noise_budget",
     "openbmp.benchmark",
@@ -1010,6 +1012,7 @@ const SCENARIO_SCHEMA_MARKERS: &[&str] = &["openbmp.scenario", "openbmp.benchmar
 const DATA_SCHEMA_MARKERS: &[&str] = &[
     "openbmp.aero_deck",
     "openbmp.thermochem_deck",
+    "openbmp.feed_turbopump_map",
     "openbmp.motor",
     "openbmp.imu_noise_budget",
 ];
@@ -1073,7 +1076,7 @@ fn data_and_scenarios_carry_correct_schema_markers() {
                 if toml_declares_schema_marker(&content, marker) {
                     let rel = relative_path(&root, toml_path);
                     violations.push(format!(
-                        "{rel} declares `{marker}` — aero deck / motor / sensor-budget TOMLs \
+                        "{rel} declares `{marker}` — aero deck / motor / sensor-budget / feed-system TOMLs \
                          belong under `data/<thing>/`, not `scenarios/`",
                     ));
                 }
@@ -1114,6 +1117,10 @@ fn schema_marker_detector_recognises_canonical_forms() {
     assert!(toml_declares_schema_marker(
         "openbmp.thermochem_deck = 1\n",
         "openbmp.thermochem_deck",
+    ));
+    assert!(toml_declares_schema_marker(
+        "openbmp.feed_turbopump_map = 1\n",
+        "openbmp.feed_turbopump_map",
     ));
 }
 

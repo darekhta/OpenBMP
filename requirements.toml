@@ -2506,12 +2506,16 @@ id = "V-PROP-012"
 kind = "test"
 command = "cargo test -p openbmp-feedsystem turbopump --locked"
 paths = [
+  "data/feed_system/generic-turbopump-map-v1.toml",
+  "data/feed_system/provenance.md",
   "crates/openbmp-feedsystem/src/lib.rs",
   "crates/openbmp-feedsystem/src/error.rs",
   "crates/openbmp-feedsystem/src/pump.rs",
+  "docs/data-provenance.md",
   "docs/parity/05-propulsion-high-fidelity.md",
 ]
 contains = [
+  "openbmp.feed_turbopump_map",
   "Turbopump",
   "TurbopumpConfig",
   "TurbopumpDesignPoint",
@@ -2521,6 +2525,8 @@ contains = [
   "turbopump_affinity_scales_head_with_speed_squared",
   "turbopump_npsh_gate_applies_cavitation_multiplier",
   "turbopump_reports_power_and_efficiency",
+  "turbopump_matches_provenance_tolerance_table",
+  "Synthetic normalized turbopump affinity/NPSH tolerance table",
 ]
 requirements = ["REQ-PROP-012"]
 

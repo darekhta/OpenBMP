@@ -379,6 +379,7 @@ fn require_unit_interval(value: f64, reason: &'static str) -> Result<(), FeedSys
 #[allow(clippy::unwrap_used)]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use toml::value::Table;
 
     use super::*;
 
@@ -468,6 +469,114 @@ mod tests {
     }
 
     #[test]
+    fn turbopump_matches_provenance_tolerance_table() {
+        let data: toml::Value = toml::from_str(include_str!(
+            "../../../data/feed_system/generic-turbopump-map-v1.toml"
+        ))
+        .unwrap();
+        assert_eq!(
+            table("openbmp", &data)["feed_turbopump_map"]
+                .as_integer()
+                .unwrap(),
+            1
+        );
+
+        let pump = Turbopump::new(TurbopumpConfig {
+            design: TurbopumpDesignPoint {
+                volumetric_flow_m3_per_s: float(table("design", &data), "volumetric_flow_m3_per_s"),
+                pressure_rise_pa: float(table("design", &data), "pressure_rise_pa"),
+                shaft_speed_rad_per_s: float(table("design", &data), "shaft_speed_rad_per_s"),
+                fluid_density_kg_m3: float(table("design", &data), "fluid_density_kg_m3"),
+                efficiency: float(table("design", &data), "efficiency"),
+                required_npsh_m: float(table("design", &data), "required_npsh_m"),
+                specific_speed: float(table("design", &data), "specific_speed"),
+            },
+            map: NormalizedPumpMap {
+                head_coefficients: coefficients(table("map", &data), "head_coefficients"),
+                efficiency_coefficients: coefficients(
+                    table("map", &data),
+                    "efficiency_coefficients",
+                ),
+                cavitation_head_multiplier: float(
+                    table("map", &data),
+                    "cavitation_head_multiplier",
+                ),
+            },
+        })
+        .unwrap();
+        let tolerance = float(table("tolerances", &data), "absolute");
+
+        for case in data
+            .get("case")
+            .and_then(toml::Value::as_array)
+            .expect("case array")
+        {
+            let case = case.as_table().unwrap();
+            let snapshot = pump
+                .solve(TurbopumpOperatingPoint {
+                    volumetric_flow_m3_per_s: float(case, "volumetric_flow_m3_per_s"),
+                    shaft_speed_rad_per_s: float(case, "shaft_speed_rad_per_s"),
+                    suction_pressure_pa: float(case, "suction_pressure_pa"),
+                    vapor_pressure_pa: float(case, "vapor_pressure_pa"),
+                })
+                .unwrap();
+            let name = string(case, "name");
+
+            assert_abs_diff_eq!(
+                snapshot.flow_coefficient,
+                float(case, "expected_flow_coefficient"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.speed_ratio,
+                float(case, "expected_speed_ratio"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.pressure_rise_pa,
+                float(case, "expected_pressure_rise_pa"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.discharge_pressure_pa,
+                float(case, "expected_discharge_pressure_pa"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.available_npsh_m,
+                float(case, "expected_available_npsh_m"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.required_npsh_m,
+                float(case, "expected_required_npsh_m"),
+                epsilon = tolerance
+            );
+            assert_eq!(
+                snapshot.cavitation,
+                cavitation(string(case, "expected_cavitation")),
+                "case {name}"
+            );
+            assert_abs_diff_eq!(
+                snapshot.efficiency,
+                float(case, "expected_efficiency"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.hydraulic_power_w,
+                float(case, "expected_hydraulic_power_w"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.shaft_power_w,
+                float(case, "expected_shaft_power_w"),
+                epsilon = tolerance
+            );
+            assert_eq!(snapshot.validation, ValidationStatus::ValidatedToy);
+        }
+    }
+
+    #[test]
     fn turbopump_rejects_invalid_map_and_operating_point() {
         let mut bad = config();
         bad.map.cavitation_head_multiplier = 1.2;
@@ -481,5 +590,37 @@ mod tests {
             pump.solve(operating(0.05, 0.0, 1.0e6)),
             Err(FeedSystemError::InvalidParameter { .. })
         ));
+    }
+
+    fn table<'a>(key: &str, value: &'a toml::Value) -> &'a Table {
+        value.get(key).and_then(toml::Value::as_table).unwrap()
+    }
+
+    fn float(table: &Table, key: &str) -> f64 {
+        table.get(key).and_then(toml::Value::as_float).unwrap()
+    }
+
+    fn string<'a>(table: &'a Table, key: &str) -> &'a str {
+        table.get(key).and_then(toml::Value::as_str).unwrap()
+    }
+
+    fn coefficients(table: &Table, key: &str) -> [f64; 3] {
+        table
+            .get(key)
+            .and_then(toml::Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|value| value.as_float().unwrap())
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    }
+
+    fn cavitation(value: &str) -> PumpCavitationState {
+        match value {
+            "nominal" => PumpCavitationState::Nominal,
+            "cavitating" => PumpCavitationState::Cavitating,
+            other => panic!("unknown cavitation state {other}"),
+        }
     }
 }

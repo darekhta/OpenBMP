@@ -1,0 +1,94 @@
+openbmp.feed_turbopump_map = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.generic_turbopump_map.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic normalized turbopump affinity/NPSH tolerance table"
+provenance = "OpenBMP synthetic analytic fixture derived from normalized pump affinity laws and NPSH head balance; not a real pump map."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[design]
+volumetric_flow_m3_per_s = 0.05
+pressure_rise_pa = 6000000.0
+shaft_speed_rad_per_s = 3000.0
+fluid_density_kg_m3 = 810.0
+efficiency = 0.70
+required_npsh_m = 20.0
+specific_speed = 0.8
+
+[map]
+head_coefficients = [1.2, -0.2, 0.0]
+efficiency_coefficients = [0.8, 0.4, -0.2]
+cavitation_head_multiplier = 0.25
+
+[tolerances]
+absolute = 1.0e-8
+
+[[case]]
+name = "design_nominal"
+volumetric_flow_m3_per_s = 0.05
+shaft_speed_rad_per_s = 3000.0
+suction_pressure_pa = 1000000.0
+vapor_pressure_pa = 30000.0
+expected_flow_coefficient = 1.0
+expected_speed_ratio = 1.0
+expected_pressure_rise_pa = 6000000.0
+expected_discharge_pressure_pa = 7000000.0
+expected_available_npsh_m = 122.1141637763692
+expected_required_npsh_m = 20.0
+expected_cavitation = "nominal"
+expected_efficiency = 0.70
+expected_hydraulic_power_w = 300000.0
+expected_shaft_power_w = 428571.4285714286
+
+[[case]]
+name = "speed_affinity_nominal"
+volumetric_flow_m3_per_s = 0.10
+shaft_speed_rad_per_s = 6000.0
+suction_pressure_pa = 1000000.0
+vapor_pressure_pa = 30000.0
+expected_flow_coefficient = 1.0
+expected_speed_ratio = 2.0
+expected_pressure_rise_pa = 24000000.0
+expected_discharge_pressure_pa = 25000000.0
+expected_available_npsh_m = 122.1141637763692
+expected_required_npsh_m = 80.0
+expected_cavitation = "nominal"
+expected_efficiency = 0.70
+expected_hydraulic_power_w = 2400000.0
+expected_shaft_power_w = 3428571.4285714286
+
+[[case]]
+name = "npsh_cavitating"
+volumetric_flow_m3_per_s = 0.05
+shaft_speed_rad_per_s = 3000.0
+suction_pressure_pa = 100000.0
+vapor_pressure_pa = 30000.0
+expected_flow_coefficient = 1.0
+expected_speed_ratio = 1.0
+expected_pressure_rise_pa = 1500000.0
+expected_discharge_pressure_pa = 1600000.0
+expected_available_npsh_m = 8.812362334377157
+expected_required_npsh_m = 20.0
+expected_cavitation = "cavitating"
+expected_efficiency = 0.70
+expected_hydraulic_power_w = 75000.0
+expected_shaft_power_w = 107142.85714285714
+
+[[case]]
+name = "high_flow_map_shape"
+volumetric_flow_m3_per_s = 0.075
+shaft_speed_rad_per_s = 3000.0
+suction_pressure_pa = 1000000.0
+vapor_pressure_pa = 30000.0
+expected_flow_coefficient = 1.5
+expected_speed_ratio = 1.0
+expected_pressure_rise_pa = 5400000.0
+expected_discharge_pressure_pa = 6400000.0
+expected_available_npsh_m = 122.1141637763692
+expected_required_npsh_m = 20.0
+expected_cavitation = "nominal"
+expected_efficiency = 0.665
+expected_hydraulic_power_w = 405000.0
+expected_shaft_power_w = 609022.5563909775
