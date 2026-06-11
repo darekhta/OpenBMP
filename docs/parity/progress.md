@@ -22,7 +22,7 @@ same PR as any WP merge.
 ## 1. Roll-up
 
 Across the series: **207 work packages** (108 in `01`–`12`, 99 in `14`–`25`).
-As of this snapshot: **20 implemented · 19 partial · 0 in progress ·
+As of this snapshot: **21 implemented · 18 partial · 0 in progress ·
 168 not started.**
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
@@ -33,7 +33,7 @@ As of this snapshot: **20 implemented · 19 partial · 0 in progress ·
 | 04 | Aerothermal, real-gas, TPS | T0 (+ shared `openbmp-thermochem` scaffold) | 0/0/11 | WP-04.1-a |
 | 05 | Propulsion high-fidelity | **T1+T2 implemented**; T3 partial; T4/T5 wired-substrate partial | 3/6/9 | finish WP-05.3 (CEARUN/Cantera tolerance tables) |
 | 06 | Coupled MIMO GNC | T0 (+ lane-voting diagnostic improvement) | 0/0/10 | WP-06.1 (after 01) |
-| 07 | Trajectory optimization | T0 offline two-body corrector driver/CLI slice landed; runner fixture still missing | 0/1/8 | finish WP-07.0 |
+| 07 | Trajectory optimization | **WP-07.0 implemented**; T1+ methods not started | 1/0/8 | WP-07.1 |
 | 08 | Environment, gravity, frames | T0 baseline (zonal degree-6 cap) | 0/0/7 | WP-08.1 |
 | 09 | Sensors, nav, actuators | T0 (specific force still finite-difference) | 0/0/12 | WP-09.1 |
 | 10 | Flight SW in the loop (XIL) | **T1–T3 implemented**; T4 partial | 3/2/8 | finish WP-10.4, or WP-10.6 in parallel |
@@ -44,7 +44,7 @@ As of this snapshot: **20 implemented · 19 partial · 0 in progress ·
 | 16 | Parachute & recovery | T0 baseline (`recovery/` rack) | 0/0/11 | WP-16.1 |
 | 17 | Cryogenic fluid management | not started | 0/0/8 | WP-17.1 |
 | 18 | Ground segment & countdown | not started | 0/0/8 | WP-18.1 |
-| 19 | Day-of-launch winds & commit | not started (WP-19.2 still blocked on full WP-07.0) | 0/0/6 | WP-19.1 |
+| 19 | Day-of-launch winds & commit | not started (WP-19.2 now has WP-07.0 prerequisite) | 0/0/6 | WP-19.1 |
 | 20 | Telemetry, RF links, network | dictionary export exists; physics not started | 0/1/8 | WP-20.1 |
 | 21 | Run-data, regression, visualization | not started | 0/0/8 | WP-21.1 |
 | 22 | Acoustics & overpressure | not started | 0/0/7 | WP-22.1 |
@@ -126,13 +126,14 @@ engine-out reconfiguration all absent).
 
 `corrector.rs` (Gauss-Newton/LM shooting) and the locked
 `TerminalCondition` vocabulary exist and the lock **holds** (no
-range/aimpoint variants; `RendezvousState` present). The offline
-`correct_two_body_apogee` driver now gives `DifferentialCorrector::solve`
-a non-test caller through `openbmp trajopt correct-apogee`, producing a
-postcard I-load only on convergence and reporting non-convergence without
-writing one (`REQ-TRAJOPT-001`). This is a deterministic two-body RK4 CLI
-fixture, not the full scenario/runner forward-map fixture.
-WP-07.0: **partial**. WP-07.1 … WP-07.6: **not started**.
+range/aimpoint variants; `RendezvousState` present). WP-07.0 is
+**implemented**: `correct_two_body_apogee` gives `DifferentialCorrector::solve`
+a non-test caller through `openbmp trajopt correct-apogee`, and
+`openbmp trajopt correct-apogee-scenario` uses `openbmp-runner` as the
+scenario forward map for `scenarios/trajopt-two-body-apogee/`. Both paths
+produce postcard I-loads only on convergence and report non-convergence
+without writing one (`REQ-TRAJOPT-001`).
+WP-07.1 … WP-07.6: **not started**.
 
 ### 08 — Environment, gravity & frames
 
@@ -283,7 +284,7 @@ cryo module.)
 ### 19 — Day-of-launch winds & commit operations
 
 **Not started.** No measured-wind ingestion or redesign driver. WP-19.2
-remains blocked on WP-07.0 (wired corrector); WP-19.1 is unblocked.
+now has its WP-07.0 wired-corrector prerequisite; WP-19.1 is unblocked.
 
 ### 20 — Telemetry, RF links & ground network
 
@@ -351,6 +352,6 @@ verifier, or capture logic.
 2. **Start the two unstarted Phase-A gates:** WP-01.1 (spatial-vector tree)
    and WP-08.1 (tesseral gravity) — they block most of Phase B/C (02, 06,
    07 closed-loop quality).
-3. **Finish WP-07.0** by promoting the new T0 CLI driver into the
-   scenario/runner forward-map fixture required before WP-19.2 can consume it.
+3. **Start WP-07.1** (multiple shooting + STM Jacobian) or use the newly
+   implemented WP-07.0 runner-backed corrector as the prerequisite for WP-19.2.
 4. WP-15.1 (plume state) is newly unblocked by 05's chamber/nozzle state.

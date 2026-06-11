@@ -321,6 +321,45 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                 println!("  wrote I-load {}", report.output_iload.display());
                 Ok(())
             }
+            TrajoptCommand::CorrectApogeeScenario {
+                scenario,
+                target_apogee_radius_m,
+                initial_speed_m_s,
+                mu_m3_s2,
+                residual_tolerance_m,
+                max_iterations,
+                synthesis_seed,
+                scenario_digest,
+                source_revision,
+                producer,
+                output_iload,
+            } => {
+                let report = trajopt::run_correct_apogee_scenario(
+                    trajopt::CorrectApogeeScenarioArgs {
+                        scenario,
+                        target_apogee_radius_m,
+                        initial_speed_m_s,
+                        mu_m3_s2,
+                        residual_tolerance_m,
+                        max_iterations,
+                        synthesis_seed,
+                        scenario_digest,
+                        source_revision,
+                        producer,
+                    },
+                    &output_iload,
+                )?;
+                println!(
+                    "openbmp trajopt correct-apogee-scenario: ok - corrected_speed_m_s={:.12}, residual_norm_m={:.12e}, iterations={}, reference_samples={}, iload_bytes={}",
+                    report.corrected_speed_m_s,
+                    report.residual_norm_m,
+                    report.iterations,
+                    report.reference_samples,
+                    report.iload_bytes,
+                );
+                println!("  wrote I-load {}", report.output_iload.display());
+                Ok(())
+            }
         },
         Command::CompareTelemetry {
             scenario,

@@ -1,0 +1,4 @@
+[trajopt_two_body_apogee]
+target_apogee_radius_m = 7_578_000.0
+residual_tolerance_m = 1.0e-2
+max_iterations = 100

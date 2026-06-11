@@ -19,6 +19,7 @@ Commands:
   conform            Run one or more scenarios as a fork-runnable conformance smoke suite
   verify-order       Verify integrator observed order and Richardson/GCI behavior
   reconstruct        Run offline reconstruction and filter-consistency evidence commands
+  trajopt            Run offline trajectory optimization and I-load synthesis commands
   compare-telemetry  Compare a scenario run against external local telemetry CSV / JSON
   footprint-mc       Run offline landing-footprint Monte Carlo post-processing
   mc                 Monte Carlo utility commands

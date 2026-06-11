@@ -1,7 +1,7 @@
 # Trajectory Optimization & Mission Design
 
-**Status:** `experimental` (T0 offline two-body corrector driver/CLI slice
-landed; higher-tier methods remain design intent).
+**Status:** `experimental` (WP-07.0 T0 offline two-body and scenario-backed
+corrector driver/CLI paths landed; higher-tier methods remain design intent).
 **Audience:** the engineer or LLM agent implementing the `openbmp-trajopt` work
 packages, and reviewers checking the forward-only locks.
 **One-line summary:** wire the dead differential corrector to the real
@@ -135,8 +135,13 @@ against):
   `BallisticState::from_forward_simulation` provenance, and emits a postcard
   I-load only when `converged` is true. The CLI path is
   `openbmp trajopt correct-apogee --target-apogee-radius-m ... --output-iload ...`.
-  This is traced by `REQ-TRAJOPT-001`; it is still a toy single-shooting slice,
-  not multiple shooting, collocation, or powered-descent optimization.
+  `openbmp trajopt correct-apogee-scenario` now runs a real scenario through
+  `openbmp-runner`, extracts terminal ECI state from runner telemetry, and
+  scales the scenario's initial velocity direction as the single free variable.
+  The reproducible fixture lives under `scenarios/trajopt-two-body-apogee/`
+  with provenance and a tolerance table. This is traced by `REQ-TRAJOPT-001`;
+  it is still a toy single-shooting slice, not multiple shooting, collocation,
+  or powered-descent optimization.
 
 **`crates/openbmp-physics/src/profile.rs` — the vocabulary + propagator pieces.**
 
@@ -178,8 +183,8 @@ against):
 **`clarabel`** is already a workspace dependency (`openbmp-fc` `mpc.rs`/
 `landing.rs`), Apache-2.0, with deterministic settings wired.
 
-**Summary maturity:** a correct, well-tested differential corrector now has a
-T0 offline two-body apogee driver and CLI I-load path; the closed
+**Summary maturity:** WP-07.0 is implemented: the differential corrector now has
+T0 offline two-body and scenario-backed apogee CLI I-load paths; the closed
 terminal-condition vocabulary still holds; a Clarabel SOCP epigraph smoke test,
 a forward propagator, and a PEG-style closed-loop ascent reference exist.
 Nothing above single shooting exists. No NLP transcription, no pseudospectral,
@@ -667,12 +672,13 @@ gates green and answers the §3 per-PR checklist.
 ### WP-07.0 — Wire the differential corrector to the real propagator
 
 - **title:** Give `DifferentialCorrector` a production offline driver/CLI caller.
-- **implementation_status:** partial T0 slice landed. `correct_two_body_apogee`
-  wires `DifferentialCorrector::solve` to a deterministic two-body RK4 forward
-  map, and `openbmp trajopt correct-apogee` writes a postcard I-load only on
-  convergence; `REQ-TRAJOPT-001` traces the current evidence. Remaining before
-  closing WP-07.0: promote the fixture beyond the CLI two-body case to the
-  scenario/runner forward-map fixture called out by the acceptance bullets.
+- **implementation_status:** implemented. `correct_two_body_apogee` wires
+  `DifferentialCorrector::solve` to a deterministic two-body RK4 forward map,
+  `openbmp trajopt correct-apogee` writes a postcard I-load only on convergence,
+  and `openbmp trajopt correct-apogee-scenario` uses `openbmp-runner` as the
+  scenario forward map for the checked-in
+  `scenarios/trajopt-two-body-apogee/` fixture. `REQ-TRAJOPT-001` traces the
+  convergence, non-convergence, provenance, and tolerance evidence.
 - **goal:** Turn correct-but-dead solver code into a tested capability with **no
   new math**: an offline driver whose `forward_map` integrates the workspace
   propagator to hit an `OrbitalElements`/`ApogeeRadius` terminal condition,

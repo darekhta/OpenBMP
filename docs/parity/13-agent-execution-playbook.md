@@ -200,9 +200,9 @@ Start here — each is small, unblocks others, and proves the workflow end-to-en
    transforms, `Joint` enum, ABA forward dynamics; regress byte-for-byte against
    the current single-body kernel for the no-joint case. The multibody substrate
    the whole flex/coupled-control program needs.
-5. **`WP-07.0` wire the differential corrector** — give the existing unwired
-   `openbmp-trajopt` corrector a real offline driver/CLI subcommand against the
-   forward propagator. Turns dead code into a tested capability with no new math.
+5. **`WP-07.1` multiple shooting + STM Jacobian** — build on the now-wired
+   `WP-07.0` differential-corrector CLI paths and move the trajectory optimizer
+   beyond single shooting without weakening the terminal-condition lock.
 
 Each of these is isolated, respects every invariant, and demonstrates the
 gate-green PR loop before the heavier physics tracks begin.

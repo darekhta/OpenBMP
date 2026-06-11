@@ -291,6 +291,49 @@ pub enum TrajoptCommand {
         #[arg(long = "output-iload")]
         output_iload: PathBuf,
     },
+    /// Correct a scenario initial-speed magnitude to hit an apogee radius.
+    CorrectApogeeScenario {
+        /// Scenario TOML file used as the runner forward map.
+        scenario: PathBuf,
+        /// Target apogee radius from the central body, in m.
+        #[arg(long = "target-apogee-radius-m")]
+        target_apogee_radius_m: f64,
+        /// Optional initial speed guess, in m/s.
+        ///
+        /// Omit to use the magnitude of the scenario's initial ECI
+        /// velocity. The scenario velocity direction is preserved.
+        #[arg(long = "initial-speed-m-s")]
+        initial_speed_m_s: Option<f64>,
+        /// Central-body gravitational parameter for terminal residuals, in m^3/s^2.
+        ///
+        /// Omit to use the scenario gravity parameter when present, or WGS84 µ
+        /// for built-in Earth gravity models.
+        #[arg(long = "mu-m3-s2")]
+        mu_m3_s2: Option<f64>,
+        /// Residual convergence tolerance, in m.
+        #[arg(long = "residual-tolerance-m", default_value_t = 1.0e-2)]
+        residual_tolerance_m: f64,
+        /// Maximum Gauss-Newton iterations.
+        #[arg(long = "max-iterations", default_value_t = 100)]
+        max_iterations: usize,
+        /// Deterministic synthesis seed recorded in the I-load header.
+        #[arg(long = "synthesis-seed", default_value_t = 0)]
+        synthesis_seed: u64,
+        /// Opaque scenario digest recorded in the I-load metadata.
+        ///
+        /// Omit to record the SHA-256 digest of the scenario file.
+        #[arg(long = "scenario-digest")]
+        scenario_digest: Option<String>,
+        /// Source revision recorded in the I-load metadata.
+        #[arg(long = "source-revision", default_value = "working-tree")]
+        source_revision: String,
+        /// Producer name recorded in the I-load header.
+        #[arg(long = "producer", default_value = "openbmp-trajopt-cli")]
+        producer: String,
+        /// Postcard I-load output path. Written only when the correction converges.
+        #[arg(long = "output-iload")]
+        output_iload: PathBuf,
+    },
 }
 
 /// Built-in trajectory code-to-code comparison tolerance packs.

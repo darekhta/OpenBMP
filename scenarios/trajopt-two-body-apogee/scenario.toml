@@ -1,0 +1,48 @@
+# T0 trajectory-optimization fixture: point-mass two-body apogee targeting.
+#
+# The trajopt CLI treats this scenario as the runner forward map and varies
+# only the initial velocity magnitude while preserving its inertial direction.
+
+openbmp.scenario = 3
+
+[meta]
+name = "trajopt-two-body-apogee"
+description = "1 kg point mass under point-mass gravity for the WP-07.0 scenario-backed apogee corrector fixture."
+validation = "validated-toy"
+provenance = "synthetic; WGS84 mu point-mass gravity, initial radius 6_778_000 m, initial tangential speed seeded at the local circular speed and below the 7_578_000 m target-apogee solution. See provenance.md."
+
+[time]
+start_s = 0.0
+stop_s = 120.0
+dt_s = 20.0
+seed = 0x0700_a906_ee00_0001
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [6_778_000.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 7_668.635_675, 0.0]
+
+[vehicle.assembly]
+id = "trajopt-two-body-apogee"
+
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "point_mass"
+mu_m3_s2      = 398_600_441_800_000.0
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/trajopt-two-body-apogee.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
