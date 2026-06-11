@@ -212,6 +212,9 @@ impl ScenarioDocument {
         if self.contact.is_some() {
             models.push("contact".to_owned());
         }
+        if self.vehicle.landing_gear.is_some() {
+            models.push("landing_gear".to_owned());
+        }
         models
     }
 
@@ -686,6 +689,13 @@ impl ScenarioDocument {
         if self.contact.is_some() && header < SCENARIO_VERSION_V3 {
             return Err(ScenarioError::SchemaVersionFieldReserved {
                 field: "contact".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
+        if self.vehicle.landing_gear.is_some() && header < SCENARIO_VERSION_V3 {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "vehicle.landing_gear".to_owned(),
                 required: SCENARIO_VERSION_V3,
                 found: header,
             });
@@ -1994,6 +2004,22 @@ impl ScenarioDocument {
                 value_b: "no `\"contact\"` entry".to_owned(),
             });
         }
+        let has_landing_gear_force = force_models.iter().any(|model| model == "landing_gear");
+        if has_landing_gear_force && self.vehicle.landing_gear.is_none() {
+            return Err(ScenarioError::MissingRequiredField {
+                field: "vehicle.landing_gear".to_owned(),
+                role: ModelRole::Force,
+                name: "landing_gear".to_owned(),
+            });
+        }
+        if self.vehicle.landing_gear.is_some() && !has_landing_gear_force {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "vehicle.landing_gear".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "forces.models".to_owned(),
+                value_b: "no `\"landing_gear\"` entry".to_owned(),
+            });
+        }
         let has_thrust_force = force_models.iter().any(|model| model == "thrust");
         let has_motor = self
             .propulsion
@@ -2632,6 +2658,10 @@ pub struct VehicleConfig {
     /// byte-identical).
     #[serde(default)]
     pub bending: Option<BendingConfig>,
+    /// Optional v3 landing-gear rack. When present, the parser derives a
+    /// `landing_gear` force model unless `[forces]` is explicitly declared.
+    #[serde(default)]
+    pub landing_gear: Option<LandingGearConfig>,
 }
 
 /// First lateral structural bending mode (`[vehicle.bending]`).
@@ -2727,6 +2757,16 @@ impl VehicleConfig {
             }
         }
         self.assembly.validate(descriptor.name.as_str(), dt_s)?;
+        if let Some(landing_gear) = &self.landing_gear {
+            if descriptor.name.as_str() != "rigid_body" {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "vehicle.landing_gear".to_owned(),
+                    role: ModelRole::Vehicle,
+                    name: descriptor.name.clone(),
+                });
+            }
+            landing_gear.validate(&self.assembly)?;
+        }
         if let Some(bending) = &self.bending {
             if descriptor.name.as_str() != "rigid_body" {
                 return Err(ScenarioError::UnexpectedField {
@@ -2736,6 +2776,223 @@ impl VehicleConfig {
                 });
             }
             bending.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// v3 landing-gear rack under `[vehicle.landing_gear]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingGearConfig {
+    /// Optional sidecar parameter/provenance file. The runner does not
+    /// consume this file directly; it is loaded and pinned so scenarios carry
+    /// deterministic evidence for the synthetic gear data source.
+    #[serde(default)]
+    pub data_file: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::data_file`].
+    #[serde(default)]
+    pub data_file_sha256: Option<String>,
+    /// Ground plane altitude in the local ECI `z` coordinate.
+    #[serde(default)]
+    pub ground_altitude_m: f64,
+    /// Per-leg rack definitions in scenario-declared order.
+    pub legs: Vec<LandingGearLegConfig>,
+}
+
+impl LandingGearConfig {
+    fn validate(&self, assembly: &AssemblyConfig) -> Result<(), ScenarioError> {
+        if self.data_file_sha256.is_some() && self.data_file.is_none() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "vehicle.landing_gear.data_file_sha256".to_owned(),
+                role: ModelRole::Vehicle,
+                name: "landing_gear".to_owned(),
+            });
+        }
+        require_finite(
+            "vehicle.landing_gear.ground_altitude_m",
+            self.ground_altitude_m,
+        )?;
+        if self.legs.is_empty() {
+            return Err(ScenarioError::EmptyList {
+                field: "vehicle.landing_gear.legs".to_owned(),
+            });
+        }
+        let body_ids: std::collections::BTreeSet<&str> = assembly
+            .bodies
+            .iter()
+            .map(|body| body.id.as_str())
+            .collect();
+        let mut seen_ids: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for (index, leg) in self.legs.iter().enumerate() {
+            leg.validate(index, &body_ids)?;
+            if !seen_ids.insert(leg.id.as_str()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("vehicle.landing_gear.legs[{index}].id"),
+                    value: leg.id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One massless landing-gear leg.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingGearLegConfig {
+    /// Stable leg id used in telemetry channel names.
+    pub id: String,
+    /// Owning rigid body id.
+    pub mounted_to: String,
+    /// Body-frame hardpoint, metres.
+    pub attach_body_m: [f64; 3],
+    /// Body-frame direction from hardpoint to footpad centre.
+    pub strut_axis_body: [f64; 3],
+    /// Unloaded hardpoint-to-footpad-centre distance, metres.
+    pub free_length_m: f64,
+    /// Footpad contact geometry.
+    pub footpad: ContactGeometryConfig,
+    /// Required when `footpad = "sphere"`.
+    #[serde(default)]
+    pub footpad_radius_m: Option<f64>,
+    /// Optional polytropic oleo stage.
+    #[serde(default)]
+    pub oleo: Option<LandingGearOleoConfig>,
+    /// Optional irreversible crush-core stage.
+    #[serde(default)]
+    pub crush: Option<LandingGearCrushConfig>,
+}
+
+impl LandingGearLegConfig {
+    fn validate(
+        &self,
+        index: usize,
+        body_ids: &std::collections::BTreeSet<&str>,
+    ) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.landing_gear.legs[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        require_non_empty(&path("mounted_to"), &self.mounted_to)?;
+        if !body_ids.contains(self.mounted_to.as_str()) {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: path("mounted_to"),
+                value: self.mounted_to.clone(),
+            });
+        }
+        require_finite_array(&path("attach_body_m"), &self.attach_body_m)?;
+        require_finite_array(&path("strut_axis_body"), &self.strut_axis_body)?;
+        let axis_norm_sq: f64 = self.strut_axis_body.iter().map(|v| v * v).sum();
+        if axis_norm_sq <= 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("strut_axis_body"),
+                value: axis_norm_sq,
+                rule: "must have non-zero length",
+            });
+        }
+        require_positive(&path("free_length_m"), self.free_length_m)?;
+        match self.footpad {
+            ContactGeometryConfig::Point => {
+                if self.footpad_radius_m.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: path("footpad_radius_m"),
+                        role: ModelRole::Vehicle,
+                        name: "landing_gear point footpad".to_owned(),
+                    });
+                }
+            }
+            ContactGeometryConfig::Sphere => {
+                let radius =
+                    self.footpad_radius_m
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: path("footpad_radius_m"),
+                            role: ModelRole::Vehicle,
+                            name: "landing_gear sphere footpad".to_owned(),
+                        })?;
+                require_non_negative(&path("footpad_radius_m"), radius)?;
+            }
+        }
+        if self.oleo.is_none() && self.crush.is_none() {
+            return Err(ScenarioError::MissingRequiredField {
+                field: path("oleo or crush"),
+                role: ModelRole::Vehicle,
+                name: "landing_gear leg compliance".to_owned(),
+            });
+        }
+        if let Some(oleo) = &self.oleo {
+            oleo.validate(index)?;
+        }
+        if let Some(crush) = &self.crush {
+            crush.validate(index)?;
+        }
+        Ok(())
+    }
+}
+
+/// Polytropic oleo stage config.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingGearOleoConfig {
+    /// Initial gas pressure, Pa.
+    pub p0_pa: f64,
+    /// Initial gas volume, m^3.
+    pub v0_m3: f64,
+    /// Dimensionless polytropic exponent.
+    pub gamma_unit: f64,
+    /// Quadratic compression damping coefficient, N*s^2/m^2.
+    #[serde(default)]
+    pub orifice_c_n_s2_m2: f64,
+    /// Maximum oleo stroke, m.
+    pub stroke_max_m: f64,
+    /// Piston area, m^2.
+    pub piston_area_m2: f64,
+}
+
+impl LandingGearOleoConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.landing_gear.legs[{index}].oleo.{field}");
+        require_positive(&path("p0_pa"), self.p0_pa)?;
+        require_positive(&path("v0_m3"), self.v0_m3)?;
+        require_positive(&path("gamma_unit"), self.gamma_unit)?;
+        require_non_negative(&path("orifice_c_n_s2_m2"), self.orifice_c_n_s2_m2)?;
+        require_positive(&path("stroke_max_m"), self.stroke_max_m)?;
+        require_positive(&path("piston_area_m2"), self.piston_area_m2)?;
+        if self.piston_area_m2 * self.stroke_max_m >= self.v0_m3 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("stroke_max_m"),
+                value: self.stroke_max_m,
+                rule: "piston_area_m2 * stroke_max_m must be less than v0_m3",
+            });
+        }
+        let linearized_stiffness_n_m =
+            self.gamma_unit * self.p0_pa * self.piston_area_m2 * self.piston_area_m2 / self.v0_m3;
+        require_finite(&path("linearized_stiffness_n_m"), linearized_stiffness_n_m)
+    }
+}
+
+/// Elasto-plastic crush-core config.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingGearCrushConfig {
+    /// Plateau crush force, N.
+    pub f_crush_n: f64,
+    /// Maximum irreversible crush stroke, m.
+    pub stroke_max_m: f64,
+    /// Elastic stiffness before plateau, N/m.
+    pub k_elastic_n_m: f64,
+}
+
+impl LandingGearCrushConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.landing_gear.legs[{index}].crush.{field}");
+        require_positive(&path("f_crush_n"), self.f_crush_n)?;
+        require_positive(&path("stroke_max_m"), self.stroke_max_m)?;
+        require_positive(&path("k_elastic_n_m"), self.k_elastic_n_m)?;
+        if self.f_crush_n / self.k_elastic_n_m > self.stroke_max_m {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("k_elastic_n_m"),
+                value: self.k_elastic_n_m,
+                rule: "elastic yield stroke must not exceed stroke_max_m",
+            });
         }
         Ok(())
     }

@@ -81,6 +81,8 @@ const RIGID_BODY_THRUST_MODEL_ID: ModelId = ModelId::new(303);
 const RIGID_BODY_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(304);
 const RIGID_BODY_AEROTHERMAL_MODEL_ID: ModelId = ModelId::new(305);
 const RIGID_BODY_CONTACT_MODEL_ID: ModelId = ModelId::new(306);
+const RIGID_BODY_LANDING_GEAR_FORCE_MODEL_ID: ModelId = ModelId::new(307);
+const RIGID_BODY_LANDING_GEAR_MOMENT_MODEL_ID: ModelId = ModelId::new(308);
 // Distinct model ids for the engine-cluster path on the
 // rigid-body kernel.
 const RIGID_BODY_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(320);
@@ -129,6 +131,7 @@ pub fn run(
     let propellant_budget = crate::propulsion::build_propellant_budget(document)?;
     let mut feed_network_rack = crate::feed_network::FeedNetworkRack::build(document)?;
     let _pogo_rack = crate::pogo::PogoStabilityRack::build(document)?;
+    let landing_gear_runtime = crate::landing_gear::LandingGearRuntime::maybe_build(document)?;
     // Recovery rack mirroring the point-mass runner.
     let mut recovery_rack = crate::recovery::RecoveryRack::build(document)?;
     let separated_attitude_targets =
@@ -176,6 +179,7 @@ pub fn run(
         &loaded,
         &assembly,
         resolved_files,
+        landing_gear_runtime.clone(),
         aerothermal_sink.clone(),
     )?;
     let breakdown_vehicle = build_vehicle(
@@ -183,6 +187,7 @@ pub fn run(
         &loaded,
         &assembly,
         resolved_files,
+        landing_gear_runtime.clone(),
         aerothermal_sink,
     )?;
     let mass_model = build_mass_model(
@@ -192,7 +197,7 @@ pub fn run(
         &initial_tank_snapshot,
         aerothermal_feedback,
     );
-    let moment_model = build_moment_model(document, &loaded)?;
+    let moment_model = build_moment_model(document, &loaded, landing_gear_runtime.clone())?;
     let rigid_models = RigidModels::new(moment_model, mass_model.clone());
     let separation_specs = build_rigid_body_separations(document, &mass_resources)?;
     // Bodies currently attached to the primary continuing stack. Starts as
@@ -338,6 +343,7 @@ pub fn run(
         breakdown_atmosphere.as_ref(),
         geocentric_surface_radius_m,
         aerothermal_driver.as_ref().map(|driver| driver.output()),
+        landing_gear_runtime.as_ref(),
         fc_bridge.as_ref(),
         &[],
         &mut mission_region_trace,
@@ -553,6 +559,7 @@ pub fn run(
             breakdown_atmosphere.as_ref(),
             geocentric_surface_radius_m,
             aerothermal_driver.as_ref().map(|driver| driver.output()),
+            landing_gear_runtime.as_ref(),
             fc_bridge.as_ref(),
             &mission_fired,
             &mut mission_region_trace,
@@ -613,7 +620,7 @@ fn retired_separated_body_ids(
 }
 
 fn automatic_ground_impact(document: &ScenarioDocument) -> GroundImpact {
-    if document.contact.is_some() {
+    if document.contact.is_some() || document.vehicle.landing_gear.is_some() {
         return GroundImpact::disabled();
     }
     if document.environment.gravity == "constant" {
@@ -687,12 +694,12 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     for name in document.force_model_universe() {
         if !matches!(
             name.as_str(),
-            "gravity" | "aero" | "thrust" | "aerothermal_diagnostics" | "contact"
+            "gravity" | "aero" | "thrust" | "aerothermal_diagnostics" | "contact" | "landing_gear"
         ) {
             return Err(RunnerError::UnsupportedScenario {
                 what: format!(
                     "forces.models entry `{name}` (only gravity, aero, thrust, \
-                     aerothermal_diagnostics, contact wired)"
+                     aerothermal_diagnostics, contact, landing_gear wired)"
                 ),
             });
         }
@@ -1726,6 +1733,7 @@ fn build_vehicle(
     loaded: &LoadedModels,
     assembly: &Assembly,
     resolved_files: &BTreeMap<String, ResolvedFile>,
+    landing_gear_runtime: Option<crate::landing_gear::LandingGearRuntime>,
     aerothermal_sink: Option<crate::aerothermal::LiveAerothermalSink>,
 ) -> Result<KernelVehicle<RigidBodyState>, RunnerError> {
     let mut named: Vec<NamedForceModel<RigidBodyState>> = Vec::new();
@@ -1885,6 +1893,21 @@ fn build_vehicle(
                 )?;
                 named.push(NamedForceModel::new("contact", Box::new(adapter)));
             }
+            "landing_gear" => {
+                let runtime =
+                    landing_gear_runtime
+                        .clone()
+                        .ok_or_else(|| RunnerError::UnsupportedScenario {
+                            what: "forces includes `landing_gear` but [vehicle.landing_gear] block is missing".to_owned(),
+                        })?;
+                named.push(NamedForceModel::new(
+                    "landing_gear",
+                    Box::new(crate::landing_gear::LandingGearForceAdapter::new(
+                        runtime,
+                        RIGID_BODY_LANDING_GEAR_FORCE_MODEL_ID,
+                    )),
+                ));
+            }
             other => unreachable!("require_supported_shape rejects unknown force model `{other}`"),
         }
     }
@@ -2020,6 +2043,7 @@ fn build_vehicle_scalar_mass_model(
 fn build_moment_model(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
+    landing_gear_runtime: Option<crate::landing_gear::LandingGearRuntime>,
 ) -> Result<KernelVehicle<RigidBodyState>, RunnerError> {
     let assembly = &document.vehicle.assembly;
     let mut named: Vec<NamedMomentModel<RigidBodyState>> = Vec::new();
@@ -2114,6 +2138,24 @@ fn build_moment_model(
                 tank_ids,
                 tank_owner_map(document),
                 RIGID_BODY_TANK_RACK_MOMENT_MODEL_ID,
+            )),
+        ));
+    }
+
+    if document
+        .force_model_universe()
+        .iter()
+        .any(|model| model == "landing_gear")
+    {
+        let runtime = landing_gear_runtime.ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "forces includes `landing_gear` but [vehicle.landing_gear] block is missing"
+                .to_owned(),
+        })?;
+        named.push(NamedMomentModel::new(
+            "landing_gear",
+            Box::new(crate::landing_gear::LandingGearMomentAdapter::new(
+                runtime,
+                RIGID_BODY_LANDING_GEAR_MOMENT_MODEL_ID,
             )),
         ));
     }
@@ -2439,6 +2481,7 @@ struct RigidChannelSet {
     atmosphere_speed_of_sound: Option<TelemetryChannel<f64>>,
     force_components: ForceComponentChannels,
     contact: Option<crate::contact::ContactTelemetryChannels>,
+    landing_gear: Option<crate::landing_gear::LandingGearTelemetryChannels>,
     active_models: Option<TelemetryChannel<String>>,
     aerothermal: Option<AerothermalTelemetryChannels>,
     /// Effector deflection channels, in scenario-declared
@@ -2799,6 +2842,13 @@ impl RigidChannelSet {
             .then(|| crate::contact::ContactTelemetryChannels::new(&mut alloc))
             .transpose()?;
 
+        let landing_gear = document
+            .vehicle
+            .landing_gear
+            .is_some()
+            .then(|| crate::landing_gear::LandingGearTelemetryChannels::new(document, &mut alloc))
+            .transpose()?;
+
         let active_models = document
             .forces
             .as_ref()
@@ -2969,6 +3019,7 @@ impl RigidChannelSet {
             atmosphere_speed_of_sound,
             force_components,
             contact,
+            landing_gear,
             active_models,
             aerothermal,
             effector_actuals,
@@ -3056,6 +3107,9 @@ impl RigidChannelSet {
         if let Some(contact) = &self.contact {
             contact.push_metadata(&mut channels);
         }
+        if let Some(landing_gear) = &self.landing_gear {
+            landing_gear.push_metadata(&mut channels);
+        }
         if let Some(active_models) = &self.active_models {
             channels.push(active_models.metadata().clone());
         }
@@ -3104,6 +3158,7 @@ fn record_step<I, F, MOM, MM, E, SC>(
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
     geocentric_surface_radius_m: Option<f64>,
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
+    landing_gear_runtime: Option<&crate::landing_gear::LandingGearRuntime>,
     fc_bridge: Option<&crate::fc_bridge::FcBridge>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
     mission_region_trace: &mut crate::MissionRegionTraceState,
@@ -3231,6 +3286,15 @@ where
         if let Some(accumulator) = contact_accumulator {
             accumulator.record(state.time.as_seconds(), diagnostics);
         }
+    }
+
+    if let Some(landing_gear_channels) = &channels.landing_gear {
+        let runtime = landing_gear_runtime.ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "[vehicle.landing_gear] telemetry requested without landing gear runtime"
+                .to_owned(),
+        })?;
+        let samples = runtime.samples()?;
+        landing_gear_channels.insert(&mut row, &samples)?;
     }
 
     if let Some(channel) = &channels.active_models {

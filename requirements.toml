@@ -247,6 +247,12 @@ statement = "The vehicle crate exposes landing-gear leg primitives with validate
 verification = ["V-CONTACT-006"]
 
 [[requirements]]
+id = "REQ-CONTACT-007"
+title = "Landing gear rack is scenario-reachable"
+statement = "Schema-v3 rigid_body scenarios can declare [vehicle.landing_gear] with a provenance-pinned data_file, ground altitude, and N validated legs carrying hardpoint, strut axis, free length, footpad, oleo, and crush parameters. The parser derives the landing_gear force when [forces] is omitted, rejects inconsistent explicit force lists, records the resolved data-file SHA-256 in telemetry metadata, routes landing_gear through rigid-body force and moment adapters, disables automatic ground-impact termination for gear scenarios, and publishes both force.landing_gear.{x,y,z}_n and per-leg stroke, gap, compression-rate, load, crush, and contact telemetry. The checked-in synthetic four-leg drop fixture verifies all four legs load and contact simultaneously."
+verification = ["V-CONTACT-007"]
+
+[[requirements]]
 id = "REQ-MC-001"
 title = "Seeded Monte-Carlo evidence has a visible CI lane"
 statement = "The repository exposes a scheduled or manually runnable CI lane for the seeded footprint and ascent Monte-Carlo checks, so dispersion acceptance evidence is reproducible outside ad hoc local runs."
@@ -1534,6 +1540,49 @@ contains = [
   "landing_gear_leg_normalizes_axis_and_requires_stage",
 ]
 requirements = ["REQ-CONTACT-006"]
+
+[[verification]]
+id = "V-CONTACT-007"
+kind = "test"
+command = "cargo test -p openbmp-scenario landing_gear --locked && cargo test -p openbmp-runner --test landing_gear --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-scenario/src/registry.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-runner/src/lib.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-runner/src/landing_gear.rs",
+  "crates/openbmp-runner/tests/landing_gear.rs",
+  "crates/openbmp-vehicle/src/landing_gear/mod.rs",
+  "data/landing_gear/synthetic-four-leg-oleo-crush.toml",
+  "data/landing_gear/provenance.md",
+  "scenarios/landing-gear-four-leg-drop/scenario.toml",
+  "scenarios/landing-gear-four-leg-drop/provenance.md",
+  "docs/scenario-format.md",
+  "docs/parity/14-contact-dynamics-touchdown-and-landing.md",
+]
+contains = [
+  "LandingGearConfig",
+  "LandingGearRuntime",
+  "LandingGearForceAdapter",
+  "LandingGearMomentAdapter",
+  "LandingGearTelemetryChannels",
+  "vehicle.landing_gear.data_file",
+  "force.landing_gear.z_n",
+  "openbmp.scenario_files.vehicle.landing_gear.data_file",
+  "landing_gear_block_derives_landing_gear_force_when_forces_absent",
+  "landing_gear_block_requires_landing_gear_force_when_forces_are_explicit",
+  "landing_gear_force_requires_landing_gear_block",
+  "landing_gear_four_leg_drop_publishes_loads_and_leg_telemetry",
+  "[vehicle.landing_gear]",
+  "gamma_unit",
+  "synthetic-four-leg-oleo-crush.toml",
+  "landing-gear-four-leg-drop",
+]
+requirements = ["REQ-CONTACT-007"]
 
 [[verification]]
 id = "V-MC-001"

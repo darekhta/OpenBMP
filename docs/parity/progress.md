@@ -218,9 +218,13 @@ plus consecutive sticking hold (`REQ-CONTACT-005`).
 WP-14.4: **partial** — `openbmp-vehicle` now exposes validated
 `LandingGearLeg`, `OleoStage`, and `CrushCore` primitives with oleo
 polytropic-force/energy tests and irreversible crush-core plateau-stroke plus
-monotonicity tests (`REQ-CONTACT-006`). Missing: scenario
-`[vehicle.landing_gear]`, runner rack wiring, per-leg telemetry,
-provenance-pinned synthetic gear data, and the 3-D four-leg drop fixture.
+monotonicity tests (`REQ-CONTACT-006`). Schema-v3 rigid-body scenarios can
+now declare `[vehicle.landing_gear]`; the runner wires the rack as force and
+moment adapters, emits `force.landing_gear.{x,y,z}_n` plus per-leg load,
+stroke, gap, crush, and contact telemetry, records a pinned synthetic gear data
+SHA, and verifies the checked-in 3-D four-leg drop fixture
+(`REQ-CONTACT-007`). Remaining: full per-pad `ContactPair` coupling, line-load
+recovery evidence, and a closed contact-energy/rest audit for gear touchdown.
 WP-14.5 … WP-14.10: **not started**.
 
 ### 15 — Plume environments & SRP

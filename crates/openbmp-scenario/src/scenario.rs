@@ -252,6 +252,14 @@ impl Scenario {
             files.insert("propulsion.thermochem.file".to_owned(), resolved);
         }
 
+        if let Some(landing_gear) = self.document.vehicle.landing_gear.as_ref()
+            && let Some(path) = &landing_gear.data_file
+        {
+            let resolved = ResolvedFile::load(self.resolve_path(path))?;
+            resolved.verify_pin(landing_gear.data_file_sha256.as_deref())?;
+            files.insert("vehicle.landing_gear.data_file".to_owned(), resolved);
+        }
+
         if let Some(sensors) = &self.document.sensors {
             for (name, sensor) in sensors {
                 if let Some(file) = &sensor.file {
@@ -5773,6 +5781,57 @@ substeps = 32
         assert!(
             matches!(err, ScenarioError::MissingRequiredField { ref field, role, ref name }
                 if field == "contact" && role == crate::ModelRole::Force && name == "contact"),
+            "got {err:?}",
+        );
+    }
+
+    const LANDING_GEAR_FOUR_LEG_DROP: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scenarios/landing-gear-four-leg-drop/scenario.toml"
+    ));
+
+    #[test]
+    fn landing_gear_block_derives_landing_gear_force_when_forces_absent() {
+        let scenario =
+            Scenario::from_toml_str(LANDING_GEAR_FOUR_LEG_DROP).expect("landing gear parses");
+        assert_eq!(force_names(&scenario), ["gravity", "landing_gear"]);
+        let landing_gear = scenario
+            .document
+            .vehicle
+            .landing_gear
+            .as_ref()
+            .expect("landing gear block");
+        assert_eq!(landing_gear.legs.len(), 4);
+    }
+
+    #[test]
+    fn landing_gear_block_requires_landing_gear_force_when_forces_are_explicit() {
+        let toml = LANDING_GEAR_FOUR_LEG_DROP.replace(
+            "\n[telemetry]\n",
+            "\n[forces]\nmodels = [\"gravity\"]\n\n[telemetry]\n",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "vehicle.landing_gear" && field_b == "forces.models"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn landing_gear_force_requires_landing_gear_block() {
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                r#"models = ["gravity"]"#,
+                r#"models = ["gravity", "landing_gear"]"#,
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, role, ref name }
+                if field == "vehicle.landing_gear"
+                    && role == crate::ModelRole::Force
+                    && name == "landing_gear"),
             "got {err:?}",
         );
     }
