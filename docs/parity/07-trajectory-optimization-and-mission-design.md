@@ -150,8 +150,10 @@ against):
 - `src/shooting.rs` — a fixed-duration M-segment multiple-shooting continuity
   evaluator. It seeds dynamically consistent two-body nodes, reports stacked
   defects `phi_i(x_i) - x_{i+1}`, and builds the row-major block-bidiagonal
-  Jacobian `[STM_i, -I]`. This is traced by `REQ-TRAJOPT-002`; it is not yet a
-  solve loop or full WP-07.1 acceptance closure.
+  Jacobian `[STM_i, -I]`. `MultipleShootingCorrector` adds the first solve
+  loop by holding endpoints fixed and applying damped Gauss-Newton corrections
+  to interior nodes through that STM Jacobian. This is traced by
+  `REQ-TRAJOPT-002`; it is not yet full WP-07.1 acceptance closure.
 
 **`crates/openbmp-physics/src/profile.rs` — the vocabulary + propagator pieces.**
 
@@ -195,10 +197,11 @@ against):
 
 **Summary maturity:** WP-07.0 is implemented: the differential corrector now has
 T0 offline two-body and scenario-backed apogee CLI I-load paths; WP-07.1 has a
-partial STM and multiple-shooting continuity substrate; the closed
-terminal-condition vocabulary still holds; a Clarabel SOCP epigraph smoke test,
-a forward propagator, and a PEG-style closed-loop ascent reference exist. No
-multiple-shooting solve loop, NLP transcription, pseudospectral method,
+partial STM, multiple-shooting continuity, and fixed-endpoint interior-node
+correction substrate; the closed terminal-condition vocabulary still holds; a
+Clarabel SOCP epigraph smoke test, a forward propagator, and a PEG-style
+closed-loop ascent reference exist. No full multiple-shooting solve with
+controls/terminal targeting, NLP transcription, pseudospectral method,
 LCvx/SCvx horizon problem, closed-loop wiring of an optimized reference, or
 indirect cross-check exists.
 
@@ -733,10 +736,12 @@ gates green and answers the §3 per-PR checklist.
 - **implementation_status:** partial. `src/stm.rs` integrates deterministic
   two-body variational equations with a state-transition matrix, and
   `src/shooting.rs` evaluates fixed-duration M-segment continuity defects plus
-  a block-bidiagonal `[STM_i, -I]` Jacobian. Remaining acceptance work: the
-  multiple-shooting solve loop, T0 cross-tier regression tolerance table,
-  STM-vs-complex-step gate, compile-fail no-surface-coordinate tripwire, and
-  box/path penalty handling.
+  a block-bidiagonal `[STM_i, -I]` Jacobian. `MultipleShootingCorrector` now
+  performs damped fixed-endpoint interior-node correction and reports honest
+  non-convergence for inconsistent endpoints. Remaining acceptance work: the
+  full free-vector solve with controls/terminal targeting, T0 cross-tier
+  regression tolerance table, STM-vs-complex-step gate, compile-fail
+  no-surface-coordinate tripwire, and box/path penalty handling.
 - **goal:** Robust ascent-to-orbit reference generation that reuses the existing
   physics propagator, replacing the single-shooting limitation with block-
   bidiagonal continuity defects and an STM-based Jacobian.

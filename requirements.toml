@@ -219,7 +219,7 @@ verification = ["V-TRAJOPT-001"]
 [[requirements]]
 id = "REQ-TRAJOPT-002"
 title = "The trajectory optimizer exposes an STM multiple-shooting substrate"
-statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator and a fixed-duration multiple-shooting continuity evaluator whose defects and Jacobian are block-bidiagonal, terminal-condition neutral, and independent of any surface-coordinate target vocabulary."
+statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator, a fixed-duration multiple-shooting continuity evaluator whose defects and Jacobian are block-bidiagonal, and a damped fixed-endpoint interior-node corrector that reports non-convergence honestly while remaining terminal-condition neutral and independent of any surface-coordinate target vocabulary."
 verification = ["V-TRAJOPT-002"]
 
 [[requirements]]
@@ -1456,7 +1456,11 @@ contains = [
   "stm_matches_central_difference_columns",
   "seed_two_body_multiple_shooting_nodes",
   "evaluate_two_body_multiple_shooting",
+  "MultipleShootingCorrector",
+  "solve_two_body_fixed_endpoint_continuity",
   "continuity_jacobian_has_block_bidiagonal_shape",
+  "fixed_endpoint_corrector_restores_perturbed_interior_nodes",
+  "fixed_endpoint_corrector_reports_non_convergence_for_inconsistent_endpoint",
   "WP-07.1: **partial**",
   "**implementation_status:** partial",
 ]

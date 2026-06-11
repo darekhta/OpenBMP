@@ -309,7 +309,7 @@ fn apply_step(free: &mut [f64], step: &[f64], max_step_norm: f64) -> Result<(), 
 /// Solve a dense `size x size` system `a x = b` by Gaussian
 /// elimination with partial pivoting. `a` is row-major and both `a`
 /// and `b` are consumed in place.
-fn solve_linear_system(
+pub(crate) fn solve_linear_system(
     mut a: Vec<f64>,
     mut b: Vec<f64>,
     size: usize,
