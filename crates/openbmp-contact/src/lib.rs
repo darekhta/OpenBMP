@@ -384,6 +384,12 @@ impl HuntCrossleyNormal {
 /// Supported normal-contact force laws.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NormalLaw {
+    /// External normal load supplied by a higher-level compliant element.
+    ///
+    /// This mode is for assemblies such as landing gear where the strut law
+    /// owns the normal force and the contact pair still owns pad geometry and
+    /// tangential friction.
+    External,
     /// Linear spring-damper normal contact.
     KelvinVoigt(KelvinVoigtNormal),
     /// Undamped Hertzian normal contact.
@@ -397,6 +403,7 @@ impl NormalLaw {
     #[must_use]
     pub fn evaluate(self, kin: ContactKinematics) -> NormalResponse {
         match self {
+            Self::External => no_normal_response(),
             Self::KelvinVoigt(model) => model.evaluate(kin),
             Self::Hertz(model) => model.evaluate(kin),
             Self::HuntCrossley(model) => model.evaluate(kin),
@@ -501,6 +508,35 @@ impl ContactPair {
         }
     }
 
+    /// Creates a contact pair whose normal force is supplied externally.
+    #[must_use]
+    pub const fn new_external_normal(
+        geometry: ContactGeometry,
+        friction: RegularizedCoulombFriction,
+    ) -> Self {
+        Self::new(geometry, NormalLaw::External, friction)
+    }
+
+    /// Computes half-space kinematics using this pair's contact geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when kinematics construction fails, for example from a
+    /// non-finite position or velocity component.
+    pub fn half_space_kinematics(
+        self,
+        half_space: HalfSpace,
+        contact_center_position_m: ContactVector3,
+        contact_center_velocity_m_s: ContactVector3,
+    ) -> Result<ContactKinematics, ContactError> {
+        half_space_kinematics(
+            half_space,
+            self.geometry,
+            contact_center_position_m,
+            contact_center_velocity_m_s,
+        )
+    }
+
     /// Evaluates this contact pair against a half-space.
     ///
     /// # Errors
@@ -527,6 +563,36 @@ impl ContactPair {
             normal_direction: half_space.normal(),
             elastic_energy_j: normal.elastic_energy_j,
             damping_power_w: normal.damping_power_w,
+        })
+    }
+
+    /// Evaluates geometry and friction with a normal force supplied by a
+    /// higher-level compliant element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when kinematics construction fails or when
+    /// `normal_force_n` is negative or non-finite.
+    pub fn evaluate_half_space_with_external_normal_force(
+        self,
+        half_space: HalfSpace,
+        contact_center_position_m: ContactVector3,
+        contact_center_velocity_m_s: ContactVector3,
+        normal_force_n: f64,
+    ) -> Result<ContactForce, ContactError> {
+        let normal_force_n = require_non_negative("normal_force_n", normal_force_n)?;
+        let kin = self.half_space_kinematics(
+            half_space,
+            contact_center_position_m,
+            contact_center_velocity_m_s,
+        )?;
+        Ok(ContactForce {
+            in_contact: normal_force_n > 0.0,
+            normal_force_n,
+            tangential_force_n: self.friction.force_n(kin, normal_force_n),
+            normal_direction: half_space.normal(),
+            elastic_energy_j: 0.0,
+            damping_power_w: 0.0,
         })
     }
 }
@@ -861,6 +927,34 @@ mod tests {
         assert_abs_diff_eq!(total[0], -5.0, epsilon = 1.0e-12);
         assert_abs_diff_eq!(total[1], 0.0, epsilon = 1.0e-15);
         assert_abs_diff_eq!(total[2], 10.0, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn contact_pair_external_normal_preserves_geometry_and_friction() {
+        let pair = ContactPair::new_external_normal(
+            ContactGeometry::sphere(0.25).unwrap(),
+            RegularizedCoulombFriction::new(0.25, 1.0e-9).unwrap(),
+        );
+        let kin = pair
+            .half_space_kinematics(HalfSpace::ground_z0(), [0.0, 0.0, 0.20], [4.0, 0.0, -0.5])
+            .unwrap();
+        assert_abs_diff_eq!(kin.gap_m, -0.05, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(kin.normal_velocity_m_s, -0.5, epsilon = 1.0e-15);
+
+        let force = pair
+            .evaluate_half_space_with_external_normal_force(
+                HalfSpace::ground_z0(),
+                [0.0, 0.0, 0.20],
+                [4.0, 0.0, -0.5],
+                100.0,
+            )
+            .unwrap();
+        let total = force.total_force_n();
+        assert!(force.in_contact);
+        assert_abs_diff_eq!(force.normal_force_n, 100.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(total[0], -25.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(total[1], 0.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(total[2], 100.0, epsilon = 1.0e-15);
     }
 
     #[test]

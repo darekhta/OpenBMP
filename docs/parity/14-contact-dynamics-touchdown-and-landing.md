@@ -124,8 +124,9 @@ Verified against the working tree. The honest summary: **touchdown remains a
 stop condition by default, landing guidance primitives exist, footprint Monte
 Carlo exists, the `openbmp-contact` substrate exists, and schema-v3 scenarios
 can now opt into a half-space `contact` force with scalar diagnostics,
-classification, and run-level energy audit; gear-leg contact and
-leg/survival-class touchdown outcomes remain open.**
+classification, and run-level energy audit; massless oleo/crush landing gear
+with per-pad `ContactPair` footpads is scenario-reachable; survival-class
+touchdown outcomes remain open.**
 
 ### 2.1 What already exists (the regress-against baseline)
 
@@ -211,11 +212,11 @@ leg/survival-class touchdown outcomes remain open.**
 
 | Sub-dimension | Current | Target tier |
 |---|---|---|
-| Ground contact | `GroundImpact` default; schema-v3 `[contact]` half-space point/sphere force wired through runner with scalar diagnostics and endpoint report | T1 gear/leg contact + friction + leg/survival outcome classification |
+| Ground contact | `GroundImpact` default; schema-v3 `[contact]` half-space point/sphere force wired through runner with scalar diagnostics and endpoint report; `[vehicle.landing_gear]` footpads use per-pad `ContactPair` geometry/friction with external oleo/crush normal loads | T1 gear/leg contact + friction + leg/survival outcome classification |
 | Stiction / rest | none | T2 anchored stiction + rest detection |
 | Joint stops / backlash / latches | actuator-path deadband only | T1/T2 scalar penalty primitives |
 | Closed kinematic loops | none (doc `01` is tree-only) | T3 CFE + Baumgarte on the tree |
-| Landing gear | none (parachutes only) | T2 oleo + crush-core legs / T3 gear DOFs |
+| Landing gear | T2 massless oleo + crush-core legs with per-pad `ContactPair` footpads and synthetic four-leg drop evidence | T3 gear DOFs |
 | Engine-cutoff-height | runner-side truth-fed director (`separated_landing.rs`) | T2 FC-side cutoff FSM on sensed state |
 | Soil / terrain compliance | none | T2/T3 Bekker + slope/DEM pairing |
 | Tipover / gear-load MC | footprint MC of ballistic impact only | T4 touchdown-dispersed campaign |
@@ -916,7 +917,7 @@ sibling notation (`WP-NN.t`, doc `NN`).
 ### WP-14.4 — Landing-gear legs: oleo + crush core + footpads (massless struts)
 
 - **title:** Per-leg strut force elements with elasto-plastic crush cores and footpad contact on the rigid body.
-- **implementation_status:** partial implementation traced by
+- **implementation_status:** implemented and traced by
   `REQ-CONTACT-006` / `V-CONTACT-006` and `REQ-CONTACT-007` /
   `V-CONTACT-007`: `openbmp-vehicle` now exposes `LandingGearLeg`,
   `OleoStage`, and `CrushCore` primitives. The leg validates body hardpoints,
@@ -936,8 +937,11 @@ sibling notation (`WP-NN.t`, doc `NN`).
   the synthetic 3-D drop reaches Rest with all four legs loaded and <1% audit
   residual. The runner also recovers body-x section loads from final per-leg
   samples; the fixture cross-checks mid-body shear/bending against independently
-  read final front-leg telemetry. Remaining WP-14.4 work: full per-pad
-  `ContactPair` coupling.
+  read final front-leg telemetry. Each runtime leg now owns a per-pad
+  `ContactPair` in external-normal mode: the oleo/crush strut supplies the
+  normal load, while the contact substrate owns half-space gap/rate evaluation
+  plus opt-in regularized Coulomb footpad friction and tangential-speed/friction
+  evidence in final per-leg samples.
 - **goal:** The T2 landing vehicle: N-leg gear rack (mirroring the `recovery/`
   rack pattern) with polytropic oleo stage, monotone-coordinate crush core,
   and per-pad `ContactPair`s; 1-D and 3-D drop tests; gear loads telemetered

@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use nalgebra::Vector3;
 use openbmp_contact::{
-    ContactEnergyAudit, ContactGeometry, RestDetector, RestDetectorConfig, RestDetectorState,
-    RestStatus,
+    ContactEnergyAudit, ContactGeometry, ContactPair, HalfSpace, RegularizedCoulombFriction,
+    RestDetector, RestDetectorConfig, RestDetectorState, RestStatus,
 };
 use openbmp_core::{BodyId, ChannelId, ModelId, SimTime, ValidationStatus};
 use openbmp_scenario::{
@@ -58,9 +58,11 @@ impl LandingGearRuntime {
         for leg in &config.legs {
             legs.push(RuntimeLeg::from_config(leg)?);
         }
+        let ground_half_space = HalfSpace::new([0.0, 0.0, 1.0], config.ground_altitude_m)
+            .map_err(landing_gear_contact_error)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(LandingGearRuntimeInner {
-                ground_altitude_m: config.ground_altitude_m,
+                ground_half_space,
                 legs,
                 last: None,
             })),
@@ -124,7 +126,7 @@ const LANDING_GEAR_INTERNAL_MODEL_ID: ModelId = ModelId::new(390);
 
 #[derive(Clone, Debug)]
 struct LandingGearRuntimeInner {
-    ground_altitude_m: f64,
+    ground_half_space: HalfSpace,
     legs: Vec<RuntimeLeg>,
     last: Option<CachedEvaluation>,
 }
@@ -142,7 +144,7 @@ impl LandingGearRuntimeInner {
         let mut moment_body = Vector3::zeros();
         let mut samples = Vec::with_capacity(self.legs.len());
         for leg in &mut self.legs {
-            let sample = leg.evaluate(state, self.ground_altitude_m, active_body, mutate)?;
+            let sample = leg.evaluate(state, self.ground_half_space, active_body, mutate)?;
             force_eci += sample.force_eci_n;
             moment_body += sample.moment_body_n_m;
             samples.push(sample.public);
@@ -167,6 +169,7 @@ struct RuntimeLeg {
     id: String,
     owner: BodyId,
     leg: LandingGearLeg,
+    pad_pair: ContactPair,
     crush: Option<CrushCore>,
 }
 
@@ -185,6 +188,17 @@ impl RuntimeLeg {
                 })?
             }
         };
+        let friction = RegularizedCoulombFriction::new(
+            config.footpad_friction_coefficient,
+            config.footpad_friction_regularization_speed_m_s,
+        )
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!(
+                "invalid vehicle.landing_gear leg `{}` footpad friction: {err}",
+                config.id
+            ),
+        })?;
+        let pad_pair = ContactPair::new_external_normal(footpad, friction);
         let oleo = config
             .oleo
             .map(|oleo| {
@@ -229,6 +243,7 @@ impl RuntimeLeg {
             id: config.id.clone(),
             owner: body_id_from_scenario_text(&config.mounted_to),
             leg,
+            pad_pair,
             crush,
         })
     }
@@ -236,7 +251,7 @@ impl RuntimeLeg {
     fn evaluate(
         &mut self,
         state: &RigidBodyState,
-        ground_altitude_m: f64,
+        ground_half_space: HalfSpace,
         active_body: Option<BodyId>,
         mutate: bool,
     ) -> Result<InternalLegSample, ModelEvalError> {
@@ -251,13 +266,31 @@ impl RuntimeLeg {
         let foot_eci = state.position.vector + foot_eci_offset;
         let omega_eci = state.orientation.q * state.angular_velocity.vector;
         let foot_velocity_eci = state.velocity.vector + omega_eci.cross(&foot_eci_offset);
-        let radius_m = footpad_radius_m(self.leg.footpad());
-        let gap_m = foot_eci.z - ground_altitude_m - radius_m;
+        let position = [foot_eci.x, foot_eci.y, foot_eci.z];
+        let velocity = [
+            foot_velocity_eci.x,
+            foot_velocity_eci.y,
+            foot_velocity_eci.z,
+        ];
+        let kinematics = self
+            .pad_pair
+            .half_space_kinematics(ground_half_space, position, velocity)
+            .map_err(|err| ModelEvalError::InvalidState {
+                model: LANDING_GEAR_INTERNAL_MODEL_ID,
+                reason: Cow::Owned(err.to_string()),
+            })?;
+        let gap_m = kinematics.gap_m;
         let raw_stroke_m = (-gap_m).max(0.0);
-        let compression_rate_m_s = (-foot_velocity_eci.z).max(0.0);
+        let compression_rate_m_s = kinematics.penetration_rate_m_s().max(0.0);
 
         if raw_stroke_m <= 0.0 {
-            return Ok(InternalLegSample::zero_with_gap(self.id.clone(), gap_m));
+            return Ok(InternalLegSample::zero_with_gap_and_contact_point(
+                self.id.clone(),
+                gap_m,
+                foot_body,
+                kinematics.normal_velocity_m_s,
+                kinematics.tangential_speed_m_s(),
+            ));
         }
 
         let oleo_stroke_max = self.leg.oleo().map_or(0.0, OleoStage::stroke_max_m);
@@ -326,10 +359,29 @@ impl RuntimeLeg {
                 model: LANDING_GEAR_INTERNAL_MODEL_ID,
             });
         }
-        let force_eci_n = Vector3::new(0.0, 0.0, force_n);
+        let contact_force = self
+            .pad_pair
+            .evaluate_half_space_with_external_normal_force(
+                ground_half_space,
+                position,
+                velocity,
+                force_n,
+            )
+            .map_err(|err| ModelEvalError::InvalidState {
+                model: LANDING_GEAR_INTERNAL_MODEL_ID,
+                reason: Cow::Owned(err.to_string()),
+            })?;
+        let contact_total_force_n = contact_force.total_force_n();
+        let force_eci_n = array_to_vec(contact_total_force_n);
+        let normal_force_eci_n = scale_vec(array_to_vec(contact_force.normal_direction), force_n);
+        let tangential_force_eci_n = force_eci_n - normal_force_eci_n;
         let force_body_n = state.orientation.q.inverse() * force_eci_n;
+        let tangential_force_body_n = state.orientation.q.inverse() * tangential_force_eci_n;
         let moment_body_n_m = foot_body.cross(&force_body_n);
         let contact_power_on_vehicle_w = force_eci_n.dot(&foot_velocity_eci);
+        let friction_dissipated_power_w = (-tangential_force_eci_n
+            .dot(&array_to_vec(kinematics.tangential_velocity_m_s)))
+        .max(0.0);
         Ok(InternalLegSample {
             force_eci_n,
             moment_body_n_m,
@@ -339,15 +391,21 @@ impl RuntimeLeg {
                 gap_m,
                 contact_body_m: [foot_body.x, foot_body.y, foot_body.z],
                 force_body_n: [force_body_n.x, force_body_n.y, force_body_n.z],
-                normal_velocity_m_s: foot_velocity_eci.z,
+                tangential_force_body_n: [
+                    tangential_force_body_n.x,
+                    tangential_force_body_n.y,
+                    tangential_force_body_n.z,
+                ],
+                normal_velocity_m_s: kinematics.normal_velocity_m_s,
+                tangential_speed_m_s: kinematics.tangential_speed_m_s(),
                 compression_rate_m_s,
                 force_n,
                 crushed_m: self.crush.map_or(0.0, CrushCore::crushed_m),
                 elastic_energy_j,
-                dissipated_power_w,
+                dissipated_power_w: dissipated_power_w + friction_dissipated_power_w,
                 plastic_dissipated_energy_j,
                 contact_power_on_vehicle_w,
-                in_contact: true,
+                in_contact: contact_force.in_contact,
             },
         })
     }
@@ -379,6 +437,16 @@ impl InternalLegSample {
     }
 
     fn zero_with_gap(id: String, gap_m: f64) -> Self {
+        Self::zero_with_gap_and_contact_point(id, gap_m, Vector3::zeros(), 0.0, 0.0)
+    }
+
+    fn zero_with_gap_and_contact_point(
+        id: String,
+        gap_m: f64,
+        contact_body_m: Vector3<f64>,
+        normal_velocity_m_s: f64,
+        tangential_speed_m_s: f64,
+    ) -> Self {
         Self {
             force_eci_n: Vector3::zeros(),
             moment_body_n_m: Vector3::zeros(),
@@ -386,9 +454,11 @@ impl InternalLegSample {
                 id,
                 stroke_m: 0.0,
                 gap_m,
-                contact_body_m: [0.0; 3],
+                contact_body_m: [contact_body_m.x, contact_body_m.y, contact_body_m.z],
                 force_body_n: [0.0; 3],
-                normal_velocity_m_s: 0.0,
+                tangential_force_body_n: [0.0; 3],
+                normal_velocity_m_s,
+                tangential_speed_m_s,
                 compression_rate_m_s: 0.0,
                 force_n: 0.0,
                 crushed_m: 0.0,
@@ -415,8 +485,12 @@ pub struct LandingGearLegSample {
     pub contact_body_m: [f64; 3],
     /// Body-frame leg force vector applied to the vehicle.
     pub force_body_n: [f64; 3],
+    /// Body-frame tangential footpad friction force applied to the vehicle.
+    pub tangential_force_body_n: [f64; 3],
     /// Signed footpad normal velocity in m/s; negative values are closing.
     pub normal_velocity_m_s: f64,
+    /// Relative tangential footpad speed in m/s.
+    pub tangential_speed_m_s: f64,
     /// Non-negative closing speed in m/s.
     pub compression_rate_m_s: f64,
     /// Scalar compressive leg load in newtons.
@@ -552,6 +626,8 @@ pub struct LandingGearStepSummary {
     pub max_crushed_m: f64,
     /// Largest absolute normal footpad speed, m/s.
     pub max_abs_normal_velocity_m_s: f64,
+    /// Largest relative tangential footpad speed, m/s.
+    pub max_tangential_speed_m_s: f64,
     /// Sum of recoverable gear elastic energy, joules.
     pub elastic_energy_j: f64,
     /// Sum of gear-force power on the vehicle, watts.
@@ -587,6 +663,10 @@ impl LandingGearStepSummary {
             max_abs_normal_velocity_m_s: samples
                 .iter()
                 .map(|sample| sample.normal_velocity_m_s.abs())
+                .fold(0.0, f64::max),
+            max_tangential_speed_m_s: samples
+                .iter()
+                .map(|sample| sample.tangential_speed_m_s)
                 .fold(0.0, f64::max),
             elastic_energy_j: samples.iter().map(|sample| sample.elastic_energy_j).sum(),
             contact_power_on_vehicle_w: samples
@@ -720,7 +800,9 @@ impl LandingGearRunAccumulator {
 
         // Use a unit-mass normal kinetic-energy proxy so rest classification
         // depends only on footpad normal speed, not on vehicle mass scaling.
-        let kinetic_proxy_j = 0.5 * summary.max_abs_normal_velocity_m_s.powi(2);
+        let max_speed_sq =
+            summary.max_abs_normal_velocity_m_s.powi(2) + summary.max_tangential_speed_m_s.powi(2);
+        let kinetic_proxy_j = 0.5 * max_speed_sq;
         self.final_rest_status = self
             .rest_detector
             .update(
@@ -933,7 +1015,9 @@ impl LandingGearTelemetryChannels {
                     gap_m: f64::INFINITY,
                     contact_body_m: [0.0; 3],
                     force_body_n: [0.0; 3],
+                    tangential_force_body_n: [0.0; 3],
                     normal_velocity_m_s: 0.0,
+                    tangential_speed_m_s: 0.0,
                     compression_rate_m_s: 0.0,
                     force_n: 0.0,
                     crushed_m: 0.0,
@@ -1035,11 +1119,8 @@ fn array_to_vec(value: [f64; 3]) -> Vector3<f64> {
     Vector3::new(value[0], value[1], value[2])
 }
 
-fn footpad_radius_m(geometry: ContactGeometry) -> f64 {
-    match geometry {
-        ContactGeometry::Point => 0.0,
-        ContactGeometry::Sphere { radius_m } => radius_m,
-    }
+fn scale_vec(value: Vector3<f64>, scalar: f64) -> Vector3<f64> {
+    Vector3::new(value.x * scalar, value.y * scalar, value.z * scalar)
 }
 
 fn body_id_from_scenario_text(id: &str) -> BodyId {
@@ -1078,6 +1159,7 @@ fn test_state(z_m: f64, vz_m_s: f64) -> RigidBodyState {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn landing_gear_runtime_reports_four_leg_loads() {
@@ -1095,6 +1177,8 @@ mod tests {
                     free_length_m: 1.0,
                     footpad: ContactGeometryConfig::Sphere,
                     footpad_radius_m: Some(0.05),
+                    footpad_friction_coefficient: 0.0,
+                    footpad_friction_regularization_speed_m_s: 1.0e-3,
                     oleo: Some(openbmp_scenario::LandingGearOleoConfig {
                         p0_pa: 100_000.0,
                         v0_m3: 0.01,
@@ -1122,5 +1206,54 @@ mod tests {
                 .iter()
                 .all(|sample| sample.in_contact)
         );
+    }
+
+    #[test]
+    fn landing_gear_footpad_contact_pair_applies_tangential_friction() {
+        let config = LandingGearConfig {
+            data_file: None,
+            data_file_sha256: None,
+            ground_altitude_m: 0.0,
+            legs: vec![LandingGearLegConfig {
+                id: "leg".to_owned(),
+                mounted_to: "core".to_owned(),
+                attach_body_m: [0.0, 0.0, 0.0],
+                strut_axis_body: [0.0, 0.0, -1.0],
+                free_length_m: 1.0,
+                footpad: ContactGeometryConfig::Sphere,
+                footpad_radius_m: Some(0.05),
+                footpad_friction_coefficient: 0.5,
+                footpad_friction_regularization_speed_m_s: 1.0e-9,
+                oleo: Some(openbmp_scenario::LandingGearOleoConfig {
+                    p0_pa: 100_000.0,
+                    v0_m3: 0.01,
+                    gamma_unit: 1.2,
+                    orifice_c_n_s2_m2: 0.0,
+                    stroke_max_m: 0.2,
+                    piston_area_m2: 0.01,
+                }),
+                crush: None,
+            }],
+        };
+        let runtime = LandingGearRuntime::build(&config).unwrap();
+        let mut state = test_state(0.9, -1.0);
+        state.velocity.vector.x = 3.0;
+        let eval = runtime
+            .force_eval(&state, SimTime::from_seconds(0.0), None)
+            .unwrap();
+        let sample = eval.samples.first().unwrap();
+
+        assert!(sample.in_contact);
+        assert_abs_diff_eq!(sample.gap_m, -0.15, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(sample.tangential_speed_m_s, 3.0, epsilon = 1.0e-15);
+        assert!(sample.force_n > 0.0);
+        assert!(sample.tangential_force_body_n[0] < 0.0);
+        assert_abs_diff_eq!(
+            sample.tangential_force_body_n[0],
+            -0.5 * sample.force_n,
+            epsilon = 1.0e-9
+        );
+        assert_abs_diff_eq!(eval.force_eci_n.x, -0.5 * sample.force_n, epsilon = 1.0e-9);
+        assert!(sample.dissipated_power_w > 0.0);
     }
 }
