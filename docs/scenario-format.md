@@ -1225,8 +1225,10 @@ publish the standard per-force telemetry channels
 `contact.normal_velocity_m_s`, and `contact.normal_force_n`. Library callers
 also receive `RunOutcome.contact`, an out-of-band run report with the final
 diagnostics, max penetration, max normal force, sample count, and a closed
-`NoContact` / `Rest` / `Unsettled` classification. The report is not part of
-canonical telemetry bytes.
+`NoContact` / `Rest` / `Unsettled` classification. The report also carries a
+run-level contact energy audit: initial/final elastic energy, contact work on
+the vehicle, damping/friction dissipation, signed closure error, and relative
+closure error. The report is not part of canonical telemetry bytes.
 
 ### Hash pinning
 

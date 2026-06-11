@@ -123,8 +123,9 @@ item is the deliverable:
 Verified against the working tree. The honest summary: **touchdown remains a
 stop condition by default, landing guidance primitives exist, footprint Monte
 Carlo exists, the `openbmp-contact` substrate exists, and schema-v3 scenarios
-can now opt into a half-space `contact` force; gear-leg contact, run-level
-contact energy audit, and leg/survival-class touchdown outcomes remain open.**
+can now opt into a half-space `contact` force with scalar diagnostics,
+classification, and run-level energy audit; gear-leg contact and
+leg/survival-class touchdown outcomes remain open.**
 
 ### 2.1 What already exists (the regress-against baseline)
 
@@ -152,8 +153,9 @@ contact energy audit, and leg/survival-class touchdown outcomes remain open.**
   publish scalar `contact.gap_m`, `contact.penetration_m`,
   `contact.normal_velocity_m_s`, and `contact.normal_force_n` diagnostics, and
   emit a `RunOutcome.contact` report with `NoContact`, `Rest`, or `Unsettled`
-  endpoint classification while disabling the legacy terminal `GroundImpact`
-  stop for that opt-in scenario.
+  endpoint classification plus contact elastic-energy/work/dissipation
+  closure audit while disabling the legacy terminal `GroundImpact` stop for
+  that opt-in scenario.
 - **A runner-side terminal landing throttle controller.**
   `crates/openbmp-runner/src/separated_landing.rs` is a deterministic
   *scenario-director* controller (its own doc comment: "not flight software…
@@ -795,9 +797,10 @@ sibling notation (`WP-NN.t`, doc `NN`).
   scenario-reachable as a point/sphere half-space force in the point-mass and
   rigid-body runners with standard force telemetry, contact diagnostics
   telemetry, load-time stability checks, and a `RunOutcome.contact` report that
-  classifies half-space runs as `NoContact`, `Rest`, or `Unsettled`. Gear-leg
-  assemblies, run-level contact energy audit, and contact substep integration
-  remain future slices before WP-14.1 is complete.
+  classifies half-space runs as `NoContact`, `Rest`, or `Unsettled` and reports
+  a deterministic elastic-energy/contact-work/dissipation closure audit.
+  Gear-leg assemblies and contact substep integration remain future slices
+  before WP-14.1 is complete.
 - **goal:** The sim stops ending at the ground. A `ContactPair` registry on the
   existing rigid-body kernel evaluates gap/normal/friction forces into the
   force accumulator at a fixed sub-step rate, with a fail-closed

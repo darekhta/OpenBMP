@@ -587,6 +587,10 @@ pub fn run(
         .map(crate::fc_bridge::FcBridge::actuator_stream_report)
         .transpose()?
         .flatten();
+    let contact = contact_accumulator
+        .map(crate::contact::ContactRunAccumulator::finish)
+        .transpose()?
+        .flatten();
 
     Ok(RunOutcome {
         final_step: kernel.current_step().value(),
@@ -595,7 +599,7 @@ pub fn run(
         table,
         realtime: realtime_pacer.finish(),
         actuator_stream,
-        contact: contact_accumulator.and_then(crate::contact::ContactRunAccumulator::finish),
+        contact,
     })
 }
 
@@ -3223,7 +3227,7 @@ where
             .diagnostics_from_state_vectors(state.position.vector, state.velocity.vector)?;
         contact_channels.insert(&mut row, diagnostics)?;
         if let Some(accumulator) = contact_accumulator {
-            accumulator.record(diagnostics);
+            accumulator.record(state.time.as_seconds(), diagnostics);
         }
     }
 

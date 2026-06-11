@@ -1,8 +1,9 @@
 //! Runner-side construction, diagnostics, and reports for compliant contact.
 
 use openbmp_contact::{
-    ContactError, ContactGeometry, ContactPair, HalfSpace, HertzNormal, HuntCrossleyNormal,
-    KelvinVoigtNormal, NormalLaw, RegularizedCoulombFriction, half_space_kinematics,
+    ContactEnergyAudit, ContactError, ContactGeometry, ContactPair, HalfSpace, HertzNormal,
+    HuntCrossleyNormal, KelvinVoigtNormal, NormalLaw, RegularizedCoulombFriction,
+    half_space_kinematics,
 };
 use openbmp_core::{ChannelId, ModelId};
 use openbmp_scenario::{ContactConfig, ContactGeometryConfig, ContactNormalLawConfig};
@@ -37,6 +38,29 @@ pub struct ContactStepDiagnostics {
     pub normal_velocity_m_s: f64,
     /// Non-negative scalar normal force in newtons.
     pub normal_force_n: f64,
+    /// Elastic energy stored in the normal law.
+    pub elastic_energy_j: f64,
+    /// Instantaneous damping/friction dissipation power in watts.
+    pub dissipated_power_w: f64,
+    /// Instantaneous contact-force power on the vehicle in watts.
+    pub contact_power_on_vehicle_w: f64,
+}
+
+/// Deterministic run-level contact energy balance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContactRunEnergyAudit {
+    /// Elastic energy stored at the first contact diagnostic sample.
+    pub initial_elastic_energy_j: f64,
+    /// Elastic energy stored at the final contact diagnostic sample.
+    pub final_elastic_energy_j: f64,
+    /// Integrated work done by contact forces on the vehicle.
+    pub contact_work_on_vehicle_j: f64,
+    /// Integrated energy dissipated by normal damping and tangential friction.
+    pub dissipated_energy_j: f64,
+    /// Signed closure error for `ΔE_elastic + D + W_vehicle = 0`.
+    pub closure_error_j: f64,
+    /// Absolute closure error normalized by the largest energy scale.
+    pub relative_closure_error: f64,
 }
 
 /// Run-level contact summary emitted outside canonical telemetry bytes.
@@ -52,6 +76,8 @@ pub struct ContactRunReport {
     pub max_normal_force_n: f64,
     /// Final row's contact diagnostics.
     pub final_diagnostics: ContactStepDiagnostics,
+    /// Run-level contact energy balance.
+    pub energy: ContactRunEnergyAudit,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -84,13 +110,28 @@ impl ContactDiagnosticsEvaluator {
             .pair
             .evaluate_half_space(self.half_space, position, velocity)
             .map_err(contact_build_error)?;
+        let total_force_n = force.total_force_n();
+        let tangential_dissipated_power_w =
+            (0.0 - dot(force.tangential_force_n, kinematics.tangential_velocity_m_s)).max(0.0);
+        let dissipated_power_w = force.damping_power_w + tangential_dissipated_power_w;
+        let contact_power_on_vehicle_w = dot(total_force_n, velocity);
         Ok(ContactStepDiagnostics {
             gap_m: kinematics.gap_m,
             penetration_m: kinematics.penetration_m(),
             normal_velocity_m_s: kinematics.normal_velocity_m_s,
             normal_force_n: force.normal_force_n,
+            elastic_energy_j: force.elastic_energy_j,
+            dissipated_power_w,
+            contact_power_on_vehicle_w,
         })
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ContactEnergySample {
+    time_s: f64,
+    dissipated_power_w: f64,
+    contact_power_on_vehicle_w: f64,
 }
 
 #[derive(Debug, Default)]
@@ -98,32 +139,73 @@ pub(crate) struct ContactRunAccumulator {
     samples: u64,
     max_penetration_m: f64,
     max_normal_force_n: f64,
+    initial_elastic_energy_j: Option<f64>,
+    final_elastic_energy_j: f64,
+    contact_work_on_vehicle_j: f64,
+    dissipated_energy_j: f64,
+    previous_energy_sample: Option<ContactEnergySample>,
     final_diagnostics: Option<ContactStepDiagnostics>,
 }
 
 impl ContactRunAccumulator {
-    pub(crate) fn record(&mut self, diagnostics: ContactStepDiagnostics) {
+    pub(crate) fn record(&mut self, time_s: f64, diagnostics: ContactStepDiagnostics) {
         self.samples += 1;
         self.max_penetration_m = self.max_penetration_m.max(diagnostics.penetration_m);
         self.max_normal_force_n = self.max_normal_force_n.max(diagnostics.normal_force_n);
+        self.initial_elastic_energy_j
+            .get_or_insert(diagnostics.elastic_energy_j);
+        self.final_elastic_energy_j = diagnostics.elastic_energy_j;
+        let sample = ContactEnergySample {
+            time_s,
+            dissipated_power_w: diagnostics.dissipated_power_w,
+            contact_power_on_vehicle_w: diagnostics.contact_power_on_vehicle_w,
+        };
+        if let Some(previous) = self.previous_energy_sample {
+            let dt_s = (sample.time_s - previous.time_s).max(0.0);
+            self.contact_work_on_vehicle_j += 0.5
+                * (previous.contact_power_on_vehicle_w + sample.contact_power_on_vehicle_w)
+                * dt_s;
+            self.dissipated_energy_j +=
+                0.5 * (previous.dissipated_power_w + sample.dissipated_power_w) * dt_s;
+        }
+        self.previous_energy_sample = Some(sample);
         self.final_diagnostics = Some(diagnostics);
     }
 
-    pub(crate) fn finish(self) -> Option<ContactRunReport> {
-        let final_diagnostics = self.final_diagnostics?;
+    pub(crate) fn finish(self) -> Result<Option<ContactRunReport>, RunnerError> {
+        let Some(final_diagnostics) = self.final_diagnostics else {
+            return Ok(None);
+        };
         let outcome = classify_contact_outcome(
             final_diagnostics,
             self.max_penetration_m,
             REST_GAP_TOLERANCE_M,
             REST_SPEED_TOLERANCE_M_S,
         );
-        Some(ContactRunReport {
+        let initial_elastic_energy_j = self.initial_elastic_energy_j.unwrap_or(0.0);
+        let audit = ContactEnergyAudit::new(
+            initial_elastic_energy_j,
+            self.final_elastic_energy_j,
+            -self.contact_work_on_vehicle_j,
+            self.dissipated_energy_j,
+        )
+        .map_err(contact_build_error)?;
+        let energy = ContactRunEnergyAudit {
+            initial_elastic_energy_j,
+            final_elastic_energy_j: self.final_elastic_energy_j,
+            contact_work_on_vehicle_j: self.contact_work_on_vehicle_j,
+            dissipated_energy_j: self.dissipated_energy_j,
+            closure_error_j: audit.closure_error_j(),
+            relative_closure_error: audit.relative_closure_error(),
+        };
+        Ok(Some(ContactRunReport {
             outcome,
             samples: self.samples,
             max_penetration_m: self.max_penetration_m,
             max_normal_force_n: self.max_normal_force_n,
             final_diagnostics,
-        })
+            energy,
+        }))
     }
 }
 
@@ -269,6 +351,10 @@ fn contact_build_error(err: ContactError) -> RunnerError {
     }
 }
 
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
 fn classify_contact_outcome(
     final_diagnostics: ContactStepDiagnostics,
     max_penetration_m: f64,
@@ -299,6 +385,9 @@ mod tests {
                 penetration_m: 0.0,
                 normal_velocity_m_s: 0.0,
                 normal_force_n: 0.0,
+                elastic_energy_j: 0.0,
+                dissipated_power_w: 0.0,
+                contact_power_on_vehicle_w: 0.0,
             },
             0.0,
             REST_GAP_TOLERANCE_M,
@@ -312,6 +401,9 @@ mod tests {
                 penetration_m: 0.01,
                 normal_velocity_m_s: 0.0,
                 normal_force_n: 20.0,
+                elastic_energy_j: 0.1,
+                dissipated_power_w: 0.0,
+                contact_power_on_vehicle_w: 0.0,
             },
             0.01,
             REST_GAP_TOLERANCE_M,
@@ -325,6 +417,9 @@ mod tests {
                 penetration_m: 0.01,
                 normal_velocity_m_s: 1.0e-3,
                 normal_force_n: 20.0,
+                elastic_energy_j: 0.1,
+                dissipated_power_w: 0.0,
+                contact_power_on_vehicle_w: 0.02,
             },
             0.01,
             REST_GAP_TOLERANCE_M,
@@ -365,5 +460,11 @@ mod tests {
         assert_eq!(diagnostics.penetration_m.to_bits(), 0.01_f64.to_bits());
         assert_eq!(diagnostics.normal_velocity_m_s.to_bits(), 0.0_f64.to_bits());
         assert!((diagnostics.normal_force_n - 20.0).abs() <= 1.0e-12);
+        assert!((diagnostics.elastic_energy_j - 0.1).abs() <= 1.0e-15);
+        assert_eq!(diagnostics.dissipated_power_w.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            diagnostics.contact_power_on_vehicle_w.to_bits(),
+            0.0_f64.to_bits()
+        );
     }
 }
