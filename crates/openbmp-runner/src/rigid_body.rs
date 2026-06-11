@@ -125,7 +125,7 @@ pub fn run(
     // runner. Empty rack means no per-step effector operations.
     let mut effector_rack = crate::effectors::EffectorRack::build(document)?;
     // See point_mass.rs for the rationale.
-    let mut engine_rack = crate::engines::EngineRack::build(document)?;
+    let mut engine_rack = crate::engines::EngineRack::build(document, resolved_files)?;
     // Tank rack mirroring the point-mass runner.
     let mut tank_rack = crate::tanks::TankRack::build(document)?;
     let propellant_budget = crate::propulsion::build_propellant_budget(document)?;

@@ -143,7 +143,7 @@ pub fn run(
     // `[[vehicle.assembly.engines]]` are declared, in which case
     // every per-step rack operation short-circuits and the legacy
     // single-motor byte-stable path is preserved.
-    let mut engine_rack = crate::engines::EngineRack::build(document)?;
+    let mut engine_rack = crate::engines::EngineRack::build(document, resolved_files)?;
     // Build the runner-side tank rack. Empty when no
     // `[[vehicle.assembly.tanks]]` are declared, in which case every
     // per-step rack operation short-circuits and the legacy

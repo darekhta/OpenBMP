@@ -328,7 +328,7 @@ impl ScenarioDocument {
             }
         }
         if let Some(propulsion) = &self.propulsion {
-            propulsion.validate(registry)?;
+            propulsion.validate(registry, self.has_engine_thermochemical_performance())?;
         }
         self.validate_top_level_resource_owners()?;
         if let Some(wind) = &self.wind {
@@ -402,6 +402,7 @@ impl ScenarioDocument {
         self.validate_ascent_reference_agreement()?;
         self.validate_effector_references()?;
         self.validate_engine_references()?;
+        self.validate_engine_thermochemical_performance()?;
         self.validate_feed_network_references()?;
         self.validate_propulsion_fault_references()?;
         self.validate_recovery_references()?;
@@ -699,6 +700,15 @@ impl ScenarioDocument {
                 required: SCENARIO_VERSION_V3,
                 found: header,
             });
+        }
+        for (index, engine) in self.vehicle.assembly.engines.iter().enumerate() {
+            if engine.thermochemical_performance.is_some() && header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: format!("vehicle.assembly.engines[{index}].thermochemical_performance"),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
         }
         Ok(())
     }
@@ -1487,6 +1497,41 @@ impl ScenarioDocument {
             }
         }
         Ok(())
+    }
+
+    fn has_engine_thermochemical_performance(&self) -> bool {
+        self.vehicle
+            .assembly
+            .engines
+            .iter()
+            .any(|engine| engine.thermochemical_performance.is_some())
+    }
+
+    fn validate_engine_thermochemical_performance(&self) -> Result<(), ScenarioError> {
+        if !self.has_engine_thermochemical_performance() {
+            return Ok(());
+        }
+        if self
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.thermochem.as_ref())
+            .is_some()
+        {
+            return Ok(());
+        }
+        let index = self
+            .vehicle
+            .assembly
+            .engines
+            .iter()
+            .position(|engine| engine.thermochemical_performance.is_some())
+            .unwrap_or_default();
+        Err(ScenarioError::InconsistentSection {
+            field_a: format!("vehicle.assembly.engines[{index}].thermochemical_performance"),
+            value_a: "declared".to_owned(),
+            field_b: "propulsion.thermochem".to_owned(),
+            value_b: "missing".to_owned(),
+        })
     }
 
     fn validate_propulsion_fault_references(&self) -> Result<(), ScenarioError> {
@@ -6456,7 +6501,11 @@ pub struct PropulsionConfig {
 }
 
 impl PropulsionConfig {
-    fn validate(&self, registry: &ModelRegistry) -> Result<(), ScenarioError> {
+    fn validate(
+        &self,
+        registry: &ModelRegistry,
+        has_engine_thermochemical_performance: bool,
+    ) -> Result<(), ScenarioError> {
         if let Some(motor) = &self.motor {
             motor.validate(registry)?;
         }
@@ -6467,11 +6516,16 @@ impl PropulsionConfig {
                 .as_ref()
                 .and_then(|motor| motor.grain.as_ref())
                 .is_some();
-            if !has_inline_grain && self.feed_networks.is_empty() {
+            if !has_inline_grain
+                && self.feed_networks.is_empty()
+                && !has_engine_thermochemical_performance
+            {
                 return Err(ScenarioError::InconsistentSection {
                     field_a: "propulsion.thermochem".to_owned(),
                     value_a: "declared".to_owned(),
-                    field_b: "propulsion.motor.grain or propulsion.feed_network".to_owned(),
+                    field_b:
+                        "propulsion.motor.grain, propulsion.feed_network, or vehicle engine thermochemical_performance"
+                            .to_owned(),
                     value_b: "missing".to_owned(),
                 });
             }
@@ -10198,6 +10252,11 @@ pub struct EngineConfig {
     /// Optional fault mounted at scenario load time.
     #[serde(default)]
     pub fault: Option<EngineFaultConfig>,
+    /// Optional thermochemical liquid-performance override. Requires
+    /// `[propulsion.thermochem]` and replaces only `limits.max_thrust_n`
+    /// plus `limits.isp_s` at runner construction.
+    #[serde(default)]
+    pub thermochemical_performance: Option<EngineThermochemicalPerformanceConfig>,
 }
 
 impl EngineConfig {
@@ -10225,6 +10284,50 @@ impl EngineConfig {
         require_finite_array(&path("mount_point_body_m"), &self.mount_point_body_m)?;
         if let Some(fault) = &self.fault {
             fault.validate(index, &self.limits)?;
+        }
+        if let Some(performance) = &self.thermochemical_performance {
+            performance.validate(index)?;
+        }
+        Ok(())
+    }
+}
+
+/// Per-liquid-engine nozzle inputs for thermochemical performance coupling.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EngineThermochemicalPerformanceConfig {
+    /// Nozzle throat area in m².
+    pub throat_area_m2: f64,
+    /// Nozzle exit area in m².
+    pub exit_area_m2: f64,
+    /// Ambient static pressure used for the performance point, in Pa.
+    pub ambient_pressure_pa: f64,
+    /// Optional overexpanded-nozzle separation clipping criterion.
+    #[serde(default)]
+    pub separation: NozzleSeparationConfig,
+}
+
+impl EngineThermochemicalPerformanceConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| {
+            format!("vehicle.assembly.engines[{index}].thermochemical_performance.{field}")
+        };
+        require_positive(&path("throat_area_m2"), self.throat_area_m2)?;
+        require_finite(&path("exit_area_m2"), self.exit_area_m2)?;
+        if self.exit_area_m2 < self.throat_area_m2 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("exit_area_m2"),
+                value: self.exit_area_m2,
+                rule: "must be greater than or equal to throat_area_m2",
+            });
+        }
+        require_finite(&path("ambient_pressure_pa"), self.ambient_pressure_pa)?;
+        if self.ambient_pressure_pa < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("ambient_pressure_pa"),
+                value: self.ambient_pressure_pa,
+                rule: "must be non-negative",
+            });
         }
         Ok(())
     }
