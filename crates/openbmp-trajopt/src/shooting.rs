@@ -13,7 +13,8 @@ use openbmp_physics::{WGS84_OMEGA_RAD_S, profile::TerminalCondition};
 use crate::corrector::solve_linear_system;
 use crate::iload::TrajoptError;
 use crate::stm::{
-    TwoBodyCartesianState, TwoBodyVariationalPropagation, propagate_two_body_variational,
+    StateTransitionMatrix, TwoBodyCartesianState, TwoBodyVariationalPropagation,
+    propagate_two_body_variational,
 };
 use crate::target::{TerminalResidual, terminal_residual_from_cartesian};
 
@@ -29,6 +30,36 @@ impl MultipleShootingNode {
     #[must_use]
     pub const fn new(state: TwoBodyCartesianState) -> Self {
         Self { state }
+    }
+}
+
+/// Piecewise-constant inertial acceleration control for one segment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MultipleShootingControl {
+    /// Constant ECI acceleration applied over the segment, in m/s^2.
+    pub acceleration_eci_m_s2: [f64; 3],
+}
+
+impl MultipleShootingControl {
+    /// Construct a finite inertial acceleration control.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrajoptError`] when any component is non-finite.
+    pub fn new(acceleration_eci_m_s2: [f64; 3]) -> Result<Self, TrajoptError> {
+        let control = Self {
+            acceleration_eci_m_s2,
+        };
+        validate_control(control)?;
+        Ok(control)
+    }
+
+    /// Zero acceleration control.
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self {
+            acceleration_eci_m_s2: [0.0; 3],
+        }
     }
 }
 
@@ -55,6 +86,32 @@ pub struct MultipleShootingContinuityReport {
     pub segment_count: usize,
     /// Number of free node-state variables.
     pub free_state_count: usize,
+}
+
+/// Continuity-defect report for a controlled multiple-shooting mesh.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultipleShootingControlledContinuityReport {
+    /// Stacked continuity defects, six rows per segment:
+    /// `phi_i(x_i, u_i) - x_{i+1}`.
+    pub defects: Vec<f64>,
+    /// Row-major Jacobian of `defects` with respect to all node states.
+    ///
+    /// Columns are grouped as `[x_0, x_1, ..., x_M]`, six variables per node.
+    /// Each continuity block contains `[STM_i, -I]`.
+    pub jacobian: Vec<f64>,
+    /// Row-major Jacobian of `defects` with respect to segment controls.
+    ///
+    /// Columns are grouped as `[u_0, u_1, ..., u_{M-1}]`, three variables per
+    /// segment.
+    pub control_jacobian: Vec<f64>,
+    /// Euclidean norm of [`Self::defects`].
+    pub defect_norm: f64,
+    /// Number of propagated segments.
+    pub segment_count: usize,
+    /// Number of free node-state variables.
+    pub free_state_count: usize,
+    /// Number of free control variables.
+    pub control_count: usize,
 }
 
 /// Scalar soft constraint attached to one multiple-shooting node.
@@ -285,6 +342,29 @@ pub struct MultipleShootingFreeDurationTargetCorrection {
     /// Final continuity report for [`Self::nodes`] and
     /// [`Self::segment_durations_s`].
     pub continuity_report: MultipleShootingContinuityReport,
+    /// Final soft-constraint residual report.
+    pub soft_constraint_report: MultipleShootingSoftConstraintReport,
+    /// Final terminal-condition residual at the last node.
+    pub terminal_residual: TerminalResidual,
+    /// Euclidean norm of continuity defects, soft-constraint residuals, and
+    /// terminal residual components.
+    pub residual_norm: f64,
+    /// Number of Gauss-Newton iterations taken.
+    pub iterations: usize,
+    /// Whether the stacked residual norm reached the configured tolerance.
+    pub converged: bool,
+}
+
+/// Result of a fixed-duration controlled terminal-condition solve.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultipleShootingControlledTargetCorrection {
+    /// Corrected node sequence. The first node is held fixed.
+    pub nodes: Vec<MultipleShootingNode>,
+    /// Corrected piecewise-constant controls, one per segment.
+    pub controls: Vec<MultipleShootingControl>,
+    /// Final controlled continuity report for [`Self::nodes`] and
+    /// [`Self::controls`].
+    pub continuity_report: MultipleShootingControlledContinuityReport,
     /// Final soft-constraint residual report.
     pub soft_constraint_report: MultipleShootingSoftConstraintReport,
     /// Final terminal-condition residual at the last node.
@@ -572,6 +652,119 @@ impl MultipleShootingCorrector {
         Ok(report.into_correction(nodes, durations, iterations, true))
     }
 
+    /// Correct downstream nodes and segment controls to satisfy a terminal condition.
+    ///
+    /// The initial node is held fixed. Each segment control is a constant ECI
+    /// acceleration over that segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrajoptError`] when the configuration or mesh is invalid, the
+    /// terminal condition is not a supported equality condition, propagation
+    /// fails, or the damped normal equations are singular.
+    pub fn solve_two_body_terminal_condition_with_controls(
+        &self,
+        condition: &TerminalCondition,
+        initial_nodes: &[MultipleShootingNode],
+        initial_controls: &[MultipleShootingControl],
+        segment_durations_s: &[f64],
+        step_s: f64,
+        mu_m3_s2: f64,
+    ) -> Result<MultipleShootingControlledTargetCorrection, TrajoptError> {
+        self.solve_two_body_terminal_condition_with_controls_and_soft_constraints(
+            condition,
+            initial_nodes,
+            initial_controls,
+            segment_durations_s,
+            step_s,
+            mu_m3_s2,
+            &[],
+        )
+    }
+
+    /// Correct downstream nodes and segment controls with soft path/box residuals.
+    ///
+    /// This is the first control-bearing T1 solve surface. It keeps the
+    /// terminal-condition target vocabulary closed while solving node states and
+    /// piecewise-constant acceleration controls together.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrajoptError`] when the configuration, mesh, controls,
+    /// terminal condition, or soft constraints are invalid, propagation fails,
+    /// or the damped normal equations are singular.
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_two_body_terminal_condition_with_controls_and_soft_constraints(
+        &self,
+        condition: &TerminalCondition,
+        initial_nodes: &[MultipleShootingNode],
+        initial_controls: &[MultipleShootingControl],
+        segment_durations_s: &[f64],
+        step_s: f64,
+        mu_m3_s2: f64,
+        soft_constraints: &[MultipleShootingSoftConstraint],
+    ) -> Result<MultipleShootingControlledTargetCorrection, TrajoptError> {
+        self.validate_config()?;
+        if matches!(condition, TerminalCondition::MaximizePayloadMass) {
+            return Err(TrajoptError::InvalidPayload {
+                reason: "multiple shooting terminal correction targets constraints, \
+                         not the payload-mass objective",
+            });
+        }
+        if initial_nodes.len() < 2 {
+            return Err(TrajoptError::InvalidPayload {
+                reason: "controlled terminal multiple shooting requires at least one segment",
+            });
+        }
+        let mut nodes = initial_nodes.to_vec();
+        let mut controls = initial_controls.to_vec();
+        let mut report = evaluate_two_body_controlled_terminal_targeting(
+            condition,
+            &nodes,
+            &controls,
+            segment_durations_s,
+            step_s,
+            mu_m3_s2,
+            self.finite_difference_step,
+            soft_constraints,
+        )?;
+        let mut iterations = 0;
+
+        while report.residual_norm > self.defect_tolerance {
+            if iterations >= self.max_iterations {
+                return Ok(report.into_correction(nodes, controls, iterations, false));
+            }
+            let step = gauss_newton_step(
+                &report.jacobian,
+                &report.residuals,
+                report.residuals.len(),
+                report.free_variable_count,
+                self.levenberg_marquardt_damping,
+            )?;
+            apply_free_node_and_control_step(
+                &mut nodes,
+                1,
+                &mut controls,
+                &step,
+                self.max_step_norm,
+            )?;
+
+            iterations += 1;
+            report = evaluate_two_body_controlled_terminal_targeting(
+                condition,
+                &nodes,
+                &controls,
+                segment_durations_s,
+                step_s,
+                mu_m3_s2,
+                self.finite_difference_step,
+                soft_constraints,
+            )?;
+        }
+
+        Ok(report.into_correction(nodes, controls, iterations, true))
+    }
+
     fn validate_config(&self) -> Result<(), TrajoptError> {
         if !self.defect_tolerance.is_finite() || self.defect_tolerance < 0.0 {
             return Err(TrajoptError::InvalidPayload {
@@ -611,6 +804,17 @@ struct TerminalTargetingReport {
 #[derive(Clone, Debug, PartialEq)]
 struct FreeDurationTerminalTargetingReport {
     continuity_report: MultipleShootingContinuityReport,
+    soft_constraint_report: MultipleShootingSoftConstraintReport,
+    terminal_residual: TerminalResidual,
+    residuals: Vec<f64>,
+    jacobian: Vec<f64>,
+    residual_norm: f64,
+    free_variable_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ControlledTerminalTargetingReport {
+    continuity_report: MultipleShootingControlledContinuityReport,
     soft_constraint_report: MultipleShootingSoftConstraintReport,
     terminal_residual: TerminalResidual,
     residuals: Vec<f64>,
@@ -659,6 +863,27 @@ impl FreeDurationTerminalTargetingReport {
     }
 }
 
+impl ControlledTerminalTargetingReport {
+    fn into_correction(
+        self,
+        nodes: Vec<MultipleShootingNode>,
+        controls: Vec<MultipleShootingControl>,
+        iterations: usize,
+        converged: bool,
+    ) -> MultipleShootingControlledTargetCorrection {
+        MultipleShootingControlledTargetCorrection {
+            nodes,
+            controls,
+            continuity_report: self.continuity_report,
+            soft_constraint_report: self.soft_constraint_report,
+            terminal_residual: self.terminal_residual,
+            residual_norm: self.residual_norm,
+            iterations,
+            converged,
+        }
+    }
+}
+
 /// Generate a dynamically consistent two-body multiple-shooting node seed.
 ///
 /// # Errors
@@ -676,6 +901,33 @@ pub fn seed_two_body_multiple_shooting_nodes(
     for &duration_s in segment_durations_s {
         current =
             propagate_two_body_variational(current, duration_s, step_s, mu_m3_s2)?.terminal_state;
+        nodes.push(MultipleShootingNode::new(current));
+    }
+    Ok(nodes)
+}
+
+/// Generate a dynamically consistent controlled two-body shooting node seed.
+///
+/// # Errors
+///
+/// Returns [`TrajoptError`] when the mesh/control shape is invalid or any
+/// segment propagation fails.
+pub fn seed_two_body_controlled_multiple_shooting_nodes(
+    initial_state: TwoBodyCartesianState,
+    controls: &[MultipleShootingControl],
+    segment_durations_s: &[f64],
+    step_s: f64,
+    mu_m3_s2: f64,
+) -> Result<Vec<MultipleShootingNode>, TrajoptError> {
+    validate_control_mesh_shape(controls, segment_durations_s)?;
+    let mut nodes = Vec::with_capacity(segment_durations_s.len() + 1);
+    nodes.push(MultipleShootingNode::new(initial_state));
+    let mut current = initial_state;
+    for (&control, &duration_s) in controls.iter().zip(segment_durations_s.iter()) {
+        current = propagate_two_body_controlled_variational(
+            current, control, duration_s, step_s, mu_m3_s2,
+        )?
+        .terminal_state;
         nodes.push(MultipleShootingNode::new(current));
     }
     Ok(nodes)
@@ -736,6 +988,69 @@ pub fn evaluate_two_body_multiple_shooting(
         defect_norm,
         segment_count,
         free_state_count,
+    })
+}
+
+/// Evaluate controlled two-body continuity plus state/control Jacobians.
+///
+/// # Errors
+///
+/// Returns [`TrajoptError`] when the mesh/control shape is invalid or any
+/// segment propagation fails.
+pub fn evaluate_two_body_controlled_multiple_shooting(
+    nodes: &[MultipleShootingNode],
+    controls: &[MultipleShootingControl],
+    segment_durations_s: &[f64],
+    step_s: f64,
+    mu_m3_s2: f64,
+) -> Result<MultipleShootingControlledContinuityReport, TrajoptError> {
+    validate_mesh(nodes, segment_durations_s)?;
+    validate_control_mesh_shape(controls, segment_durations_s)?;
+    let segment_count = segment_durations_s.len();
+    let free_state_count = nodes.len() * 6;
+    let control_count = segment_count * 3;
+    let defect_count = segment_count * 6;
+    let mut defects = vec![0.0_f64; defect_count];
+    let mut jacobian = vec![0.0_f64; defect_count * free_state_count];
+    let mut control_jacobian = vec![0.0_f64; defect_count * control_count];
+
+    for (segment_index, ((&control, &duration_s), node_pair)) in controls
+        .iter()
+        .zip(segment_durations_s.iter())
+        .zip(nodes.windows(2))
+        .enumerate()
+    {
+        let propagation = propagate_two_body_controlled_variational(
+            node_pair[0].state,
+            control,
+            duration_s,
+            step_s,
+            mu_m3_s2,
+        )?;
+        insert_controlled_segment_defect(
+            segment_index,
+            &propagation,
+            node_pair[1].state,
+            free_state_count,
+            control_count,
+            &mut defects,
+            &mut jacobian,
+            &mut control_jacobian,
+        );
+    }
+    let defect_norm = defects
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    Ok(MultipleShootingControlledContinuityReport {
+        defects,
+        jacobian,
+        control_jacobian,
+        defect_norm,
+        segment_count,
+        free_state_count,
+        control_count,
     })
 }
 
@@ -950,6 +1265,94 @@ fn evaluate_two_body_free_duration_terminal_targeting(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn evaluate_two_body_controlled_terminal_targeting(
+    condition: &TerminalCondition,
+    nodes: &[MultipleShootingNode],
+    controls: &[MultipleShootingControl],
+    segment_durations_s: &[f64],
+    step_s: f64,
+    mu_m3_s2: f64,
+    finite_difference_step: f64,
+    soft_constraints: &[MultipleShootingSoftConstraint],
+) -> Result<ControlledTerminalTargetingReport, TrajoptError> {
+    let continuity_report = evaluate_two_body_controlled_multiple_shooting(
+        nodes,
+        controls,
+        segment_durations_s,
+        step_s,
+        mu_m3_s2,
+    )?;
+    let terminal_state = nodes[nodes.len() - 1].state;
+    let terminal_residual = terminal_residual_for_state(condition, terminal_state, mu_m3_s2)?;
+    let continuity_residual_count = continuity_report.defects.len();
+    let soft_constraint_report =
+        evaluate_multiple_shooting_soft_constraints(nodes, 1, soft_constraints)?;
+    let soft_residual_count = soft_constraint_report.residuals.len();
+    let terminal_residual_count = terminal_residual.components.len();
+    let free_state_count = (nodes.len() - 1) * 6;
+    let control_count = controls.len() * 3;
+    let free_variable_count = free_state_count + control_count;
+    if soft_constraint_report.free_state_count != free_state_count {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft-constraint free-state count is inconsistent",
+        });
+    }
+    let residual_count = continuity_residual_count + soft_residual_count + terminal_residual_count;
+
+    let mut residuals = Vec::with_capacity(residual_count);
+    residuals.extend_from_slice(&continuity_report.defects);
+    residuals.extend_from_slice(&soft_constraint_report.residuals);
+    residuals.extend_from_slice(&terminal_residual.components);
+
+    let mut jacobian = vec![0.0_f64; residual_count * free_variable_count];
+    insert_controlled_downstream_continuity_jacobian(
+        &continuity_report,
+        &mut jacobian,
+        free_state_count,
+        free_variable_count,
+    )?;
+    insert_controlled_continuity_control_jacobian(
+        &continuity_report,
+        free_state_count,
+        free_variable_count,
+        &mut jacobian,
+    )?;
+    insert_soft_constraint_jacobian(
+        &soft_constraint_report,
+        continuity_residual_count,
+        free_state_count,
+        free_variable_count,
+        &mut jacobian,
+    )?;
+    insert_terminal_residual_jacobian(
+        condition,
+        terminal_state,
+        &terminal_residual.components,
+        mu_m3_s2,
+        finite_difference_step,
+        continuity_residual_count + soft_residual_count,
+        free_state_count,
+        free_variable_count,
+        &mut jacobian,
+    )?;
+
+    let residual_norm = residuals
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    Ok(ControlledTerminalTargetingReport {
+        continuity_report,
+        soft_constraint_report,
+        terminal_residual,
+        residuals,
+        jacobian,
+        residual_norm,
+        free_variable_count,
+    })
+}
+
 fn validate_mesh(
     nodes: &[MultipleShootingNode],
     segment_durations_s: &[f64],
@@ -973,6 +1376,34 @@ fn validate_mesh(
                 reason: "multiple shooting segment duration must be finite and non-negative",
             });
         }
+    }
+    Ok(())
+}
+
+fn validate_control_mesh_shape(
+    controls: &[MultipleShootingControl],
+    segment_durations_s: &[f64],
+) -> Result<(), TrajoptError> {
+    if controls.len() != segment_durations_s.len() {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "controlled multiple shooting requires one control per segment",
+        });
+    }
+    for &control in controls {
+        validate_control(control)?;
+    }
+    Ok(())
+}
+
+fn validate_control(control: MultipleShootingControl) -> Result<(), TrajoptError> {
+    if !control
+        .acceleration_eci_m_s2
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "multiple shooting control acceleration must be finite",
+        });
     }
     Ok(())
 }
@@ -1012,6 +1443,46 @@ fn insert_continuity_duration_jacobian(
         for segment_index in 0..report.segment_count {
             jacobian[row * free_variable_count + duration_col_offset + segment_index] =
                 report.duration_jacobian[row * report.segment_count + segment_index];
+        }
+    }
+    Ok(())
+}
+
+fn insert_controlled_downstream_continuity_jacobian(
+    report: &MultipleShootingControlledContinuityReport,
+    jacobian: &mut [f64],
+    free_state_count: usize,
+    free_variable_count: usize,
+) -> Result<(), TrajoptError> {
+    if report.free_state_count != free_state_count + 6 {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "controlled terminal multiple shooting free-state count is inconsistent",
+        });
+    }
+    for row in 0..report.defects.len() {
+        for column in 0..free_state_count {
+            jacobian[row * free_variable_count + column] =
+                report.jacobian[row * report.free_state_count + column + 6];
+        }
+    }
+    Ok(())
+}
+
+fn insert_controlled_continuity_control_jacobian(
+    report: &MultipleShootingControlledContinuityReport,
+    control_col_offset: usize,
+    free_variable_count: usize,
+    jacobian: &mut [f64],
+) -> Result<(), TrajoptError> {
+    if report.control_jacobian.len() != report.defects.len() * report.control_count {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "controlled terminal multiple shooting control-Jacobian shape is inconsistent",
+        });
+    }
+    for row in 0..report.defects.len() {
+        for column in 0..report.control_count {
+            jacobian[row * free_variable_count + control_col_offset + column] =
+                report.control_jacobian[row * report.control_count + column];
         }
     }
     Ok(())
@@ -1391,6 +1862,232 @@ fn dot3(lhs: [f64; 3], rhs: [f64; 3]) -> f64 {
     lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ControlledSegmentPropagation {
+    terminal_state: TwoBodyCartesianState,
+    stm: StateTransitionMatrix,
+    control_sensitivity: [f64; 18],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ControlledAugmentedState {
+    state: [f64; 6],
+    stm: [f64; 36],
+    control_sensitivity: [f64; 18],
+}
+
+fn propagate_two_body_controlled_variational(
+    initial_state: TwoBodyCartesianState,
+    control: MultipleShootingControl,
+    duration_s: f64,
+    step_s: f64,
+    mu_m3_s2: f64,
+) -> Result<ControlledSegmentPropagation, TrajoptError> {
+    validate_control(control)?;
+    validate_propagation_problem(duration_s, step_s, mu_m3_s2)?;
+    let mut augmented = ControlledAugmentedState {
+        state: initial_state.to_array(),
+        stm: StateTransitionMatrix::identity().row_major,
+        control_sensitivity: [0.0; 18],
+    };
+    let mut elapsed_s = 0.0_f64;
+    while elapsed_s < duration_s {
+        let remaining_s = duration_s - elapsed_s;
+        let dt_s = remaining_s.min(step_s);
+        augmented = rk4_controlled_augmented_step(augmented, control, dt_s, mu_m3_s2)?;
+        elapsed_s += dt_s;
+    }
+    Ok(ControlledSegmentPropagation {
+        terminal_state: TwoBodyCartesianState::from_array(augmented.state)?,
+        stm: StateTransitionMatrix {
+            row_major: augmented.stm,
+        },
+        control_sensitivity: augmented.control_sensitivity,
+    })
+}
+
+fn validate_propagation_problem(
+    duration_s: f64,
+    step_s: f64,
+    mu_m3_s2: f64,
+) -> Result<(), TrajoptError> {
+    if !duration_s.is_finite() || duration_s < 0.0 {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "controlled multiple shooting duration must be finite and non-negative",
+        });
+    }
+    if !step_s.is_finite() || step_s <= 0.0 {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "controlled multiple shooting step must be finite and positive",
+        });
+    }
+    if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "controlled multiple shooting gravity parameter must be finite and positive",
+        });
+    }
+    Ok(())
+}
+
+fn rk4_controlled_augmented_step(
+    state: ControlledAugmentedState,
+    control: MultipleShootingControl,
+    dt_s: f64,
+    mu_m3_s2: f64,
+) -> Result<ControlledAugmentedState, TrajoptError> {
+    let k1 = controlled_augmented_derivative(state, control, mu_m3_s2)?;
+    let k2 = controlled_augmented_derivative(
+        offset_controlled_augmented(state, k1, 0.5 * dt_s)?,
+        control,
+        mu_m3_s2,
+    )?;
+    let k3 = controlled_augmented_derivative(
+        offset_controlled_augmented(state, k2, 0.5 * dt_s)?,
+        control,
+        mu_m3_s2,
+    )?;
+    let k4 = controlled_augmented_derivative(
+        offset_controlled_augmented(state, k3, dt_s)?,
+        control,
+        mu_m3_s2,
+    )?;
+    let mut next = state;
+    let one_sixth_dt = dt_s / 6.0;
+    for i in 0..6 {
+        next.state[i] +=
+            (k1.state[i] + 2.0 * k2.state[i] + 2.0 * k3.state[i] + k4.state[i]) * one_sixth_dt;
+    }
+    for i in 0..36 {
+        next.stm[i] += (k1.stm[i] + 2.0 * k2.stm[i] + 2.0 * k3.stm[i] + k4.stm[i]) * one_sixth_dt;
+    }
+    for i in 0..18 {
+        next.control_sensitivity[i] += (k1.control_sensitivity[i]
+            + 2.0 * k2.control_sensitivity[i]
+            + 2.0 * k3.control_sensitivity[i]
+            + k4.control_sensitivity[i])
+            * one_sixth_dt;
+    }
+    validate_controlled_augmented(next)?;
+    Ok(next)
+}
+
+fn offset_controlled_augmented(
+    state: ControlledAugmentedState,
+    derivative: ControlledAugmentedState,
+    dt_s: f64,
+) -> Result<ControlledAugmentedState, TrajoptError> {
+    let mut offset = state;
+    for i in 0..6 {
+        offset.state[i] += derivative.state[i] * dt_s;
+    }
+    for i in 0..36 {
+        offset.stm[i] += derivative.stm[i] * dt_s;
+    }
+    for i in 0..18 {
+        offset.control_sensitivity[i] += derivative.control_sensitivity[i] * dt_s;
+    }
+    validate_controlled_augmented(offset)?;
+    Ok(offset)
+}
+
+fn controlled_augmented_derivative(
+    state: ControlledAugmentedState,
+    control: MultipleShootingControl,
+    mu_m3_s2: f64,
+) -> Result<ControlledAugmentedState, TrajoptError> {
+    validate_controlled_augmented(state)?;
+    let state_derivative =
+        controlled_state_derivative(state.state, control.acceleration_eci_m_s2, mu_m3_s2)?;
+    let dynamics_jacobian = two_body_dynamics_jacobian(state.state, mu_m3_s2)?;
+    let mut stm_derivative = [0.0_f64; 36];
+    for row in 0..6 {
+        for column in 0..6 {
+            let mut sum = 0.0_f64;
+            for inner in 0..6 {
+                sum += dynamics_jacobian[row * 6 + inner] * state.stm[inner * 6 + column];
+            }
+            stm_derivative[row * 6 + column] = sum;
+        }
+    }
+    let mut control_sensitivity_derivative = [0.0_f64; 18];
+    for row in 0..6 {
+        for column in 0..3 {
+            let mut sum = 0.0_f64;
+            for inner in 0..6 {
+                sum += dynamics_jacobian[row * 6 + inner]
+                    * state.control_sensitivity[inner * 3 + column];
+            }
+            if row == column + 3 {
+                sum += 1.0;
+            }
+            control_sensitivity_derivative[row * 3 + column] = sum;
+        }
+    }
+    Ok(ControlledAugmentedState {
+        state: state_derivative,
+        stm: stm_derivative,
+        control_sensitivity: control_sensitivity_derivative,
+    })
+}
+
+fn controlled_state_derivative(
+    state: [f64; 6],
+    acceleration_eci_m_s2: [f64; 3],
+    mu_m3_s2: f64,
+) -> Result<[f64; 6], TrajoptError> {
+    let uncontrolled =
+        two_body_state_derivative(TwoBodyCartesianState::from_array(state)?, mu_m3_s2)?;
+    Ok([
+        uncontrolled[0],
+        uncontrolled[1],
+        uncontrolled[2],
+        uncontrolled[3] + acceleration_eci_m_s2[0],
+        uncontrolled[4] + acceleration_eci_m_s2[1],
+        uncontrolled[5] + acceleration_eci_m_s2[2],
+    ])
+}
+
+fn two_body_dynamics_jacobian(state: [f64; 6], mu_m3_s2: f64) -> Result<[f64; 36], TrajoptError> {
+    let position = [state[0], state[1], state[2]];
+    let radius_m = norm3(position);
+    if radius_m <= f64::EPSILON {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "controlled multiple shooting state radius is degenerate",
+        });
+    }
+    let r2 = radius_m * radius_m;
+    let r3 = r2 * radius_m;
+    let r5 = r3 * r2;
+    let mut jacobian = [0.0_f64; 36];
+    jacobian[3] = 1.0;
+    jacobian[10] = 1.0;
+    jacobian[17] = 1.0;
+    for row in 0..3 {
+        for column in 0..3 {
+            let identity = if row == column { 1.0 } else { 0.0 };
+            jacobian[(row + 3) * 6 + column] =
+                -mu_m3_s2 * (identity / r3 - 3.0 * position[row] * position[column] / r5);
+        }
+    }
+    Ok(jacobian)
+}
+
+fn validate_controlled_augmented(state: ControlledAugmentedState) -> Result<(), TrajoptError> {
+    if !state.state.iter().all(|value| value.is_finite())
+        || !state.stm.iter().all(|value| value.is_finite())
+        || !state
+            .control_sensitivity
+            .iter()
+            .all(|value| value.is_finite())
+    {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "controlled multiple shooting propagation produced non-finite state",
+        });
+    }
+    TwoBodyCartesianState::from_array(state.state)?;
+    Ok(())
+}
+
 fn insert_segment_defect(
     segment_index: usize,
     propagation: &TwoBodyVariationalPropagation,
@@ -1411,6 +2108,37 @@ fn insert_segment_defect(
                 propagation.stm.get(row, column);
         }
         jacobian[(row_offset + row) * free_state_count + next_col_offset + row] = -1.0;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_controlled_segment_defect(
+    segment_index: usize,
+    propagation: &ControlledSegmentPropagation,
+    next_node: TwoBodyCartesianState,
+    free_state_count: usize,
+    control_count: usize,
+    defects: &mut [f64],
+    jacobian: &mut [f64],
+    control_jacobian: &mut [f64],
+) {
+    let row_offset = segment_index * 6;
+    let current_col_offset = segment_index * 6;
+    let next_col_offset = (segment_index + 1) * 6;
+    let control_col_offset = segment_index * 3;
+    let terminal = propagation.terminal_state.to_array();
+    let next = next_node.to_array();
+    for row in 0..6 {
+        defects[row_offset + row] = terminal[row] - next[row];
+        for column in 0..6 {
+            jacobian[(row_offset + row) * free_state_count + current_col_offset + column] =
+                propagation.stm.get(row, column);
+        }
+        jacobian[(row_offset + row) * free_state_count + next_col_offset + row] = -1.0;
+        for column in 0..3 {
+            control_jacobian[(row_offset + row) * control_count + control_col_offset + column] =
+                propagation.control_sensitivity[row * 3 + column];
+        }
     }
 }
 
@@ -1627,6 +2355,48 @@ fn apply_free_node_and_duration_step(
     Ok(())
 }
 
+fn apply_free_node_and_control_step(
+    nodes: &mut [MultipleShootingNode],
+    first_free_node_index: usize,
+    controls: &mut [MultipleShootingControl],
+    step: &[f64],
+    max_step_norm: f64,
+) -> Result<(), TrajoptError> {
+    let free_node_count = nodes.len().saturating_sub(first_free_node_index);
+    let free_state_count = free_node_count * 6;
+    let control_count = controls.len() * 3;
+    if step.len() != free_state_count + control_count {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "controlled multiple shooting correction step dimension is inconsistent",
+        });
+    }
+    let mut norm_squared = 0.0_f64;
+    for &value in step {
+        norm_squared += value * value;
+    }
+    let norm = norm_squared.sqrt();
+    let scale = if max_step_norm.is_finite() && norm > max_step_norm && norm > 0.0 {
+        max_step_norm / norm
+    } else {
+        1.0
+    };
+    for (node_index, node) in nodes[first_free_node_index..].iter_mut().enumerate() {
+        let mut state = node.state.to_array();
+        for component in 0..6 {
+            state[component] += scale * step[node_index * 6 + component];
+        }
+        node.state = TwoBodyCartesianState::from_array(state)?;
+    }
+    for (control_index, control) in controls.iter_mut().enumerate() {
+        for component in 0..3 {
+            control.acceleration_eci_m_s2[component] +=
+                scale * step[free_state_count + control_index * 3 + component];
+        }
+        validate_control(*control)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1720,6 +2490,96 @@ mod tests {
                     (actual - expected).abs() < tolerance,
                     "segment {segment_index}, row {row}: actual {actual}, expected {expected}"
                 );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn zero_controlled_seed_matches_uncontrolled_seed() -> Result<(), TrajoptError> {
+        let initial =
+            TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let durations = [30.0, 40.0, 50.0];
+        let controls = [MultipleShootingControl::zero(); 3];
+
+        let uncontrolled =
+            seed_two_body_multiple_shooting_nodes(initial, &durations, 5.0, WGS84_MU_M3_S2)?;
+        let controlled = seed_two_body_controlled_multiple_shooting_nodes(
+            initial,
+            &controls,
+            &durations,
+            5.0,
+            WGS84_MU_M3_S2,
+        )?;
+
+        for (uncontrolled_node, controlled_node) in uncontrolled.iter().zip(controlled.iter()) {
+            let uncontrolled_state = uncontrolled_node.state.to_array();
+            let controlled_state = controlled_node.state.to_array();
+            for (uncontrolled_component, controlled_component) in
+                uncontrolled_state.iter().zip(controlled_state.iter())
+            {
+                assert!((uncontrolled_component - controlled_component).abs() < 1.0e-9);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_jacobian_matches_finite_difference_columns() -> Result<(), TrajoptError> {
+        let initial =
+            TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let durations = [40.0, 30.0];
+        let controls = [
+            MultipleShootingControl::new([0.01, -0.02, 0.005])?,
+            MultipleShootingControl::new([-0.005, 0.01, 0.0])?,
+        ];
+        let nodes = seed_two_body_controlled_multiple_shooting_nodes(
+            initial,
+            &controls,
+            &durations,
+            5.0,
+            WGS84_MU_M3_S2,
+        )?;
+        let report = evaluate_two_body_controlled_multiple_shooting(
+            &nodes,
+            &controls,
+            &durations,
+            5.0,
+            WGS84_MU_M3_S2,
+        )?;
+        let step = 1.0e-4;
+
+        for control_index in 0..controls.len() {
+            for component in 0..3 {
+                let mut plus_controls = controls;
+                plus_controls[control_index].acceleration_eci_m_s2[component] += step;
+                let plus = evaluate_two_body_controlled_multiple_shooting(
+                    &nodes,
+                    &plus_controls,
+                    &durations,
+                    5.0,
+                    WGS84_MU_M3_S2,
+                )?;
+                let mut minus_controls = controls;
+                minus_controls[control_index].acceleration_eci_m_s2[component] -= step;
+                let minus = evaluate_two_body_controlled_multiple_shooting(
+                    &nodes,
+                    &minus_controls,
+                    &durations,
+                    5.0,
+                    WGS84_MU_M3_S2,
+                )?;
+                let column = control_index * 3 + component;
+                for row in 0..report.defects.len() {
+                    let actual = (plus.defects[row] - minus.defects[row]) / (2.0 * step);
+                    let expected = report.control_jacobian[row * report.control_count + column];
+                    let tolerance = 1.0e-4 * (1.0 + expected.abs());
+                    assert!(
+                        (actual - expected).abs() < tolerance,
+                        "control {control_index}, component {component}, row {row}: \
+                         actual {actual}, expected {expected}"
+                    );
+                }
             }
         }
         Ok(())
@@ -2069,6 +2929,66 @@ mod tests {
                 .iter()
                 .zip(initial_durations.iter())
                 .any(|(corrected, initial)| (corrected - initial).abs() > 0.1)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_terminal_corrector_solves_for_nonzero_controls() -> Result<(), TrajoptError> {
+        let initial =
+            TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let durations = [40.0, 40.0];
+        let truth_controls = [
+            MultipleShootingControl::new([0.02, 0.0, 0.0])?,
+            MultipleShootingControl::new([0.02, 0.0, 0.0])?,
+        ];
+        let seed_controls = [MultipleShootingControl::zero(); 2];
+        let truth = seed_two_body_controlled_multiple_shooting_nodes(
+            initial,
+            &truth_controls,
+            &durations,
+            5.0,
+            WGS84_MU_M3_S2,
+        )?;
+        let seed = seed_two_body_controlled_multiple_shooting_nodes(
+            initial,
+            &seed_controls,
+            &durations,
+            5.0,
+            WGS84_MU_M3_S2,
+        )?;
+        let terminal = truth[truth.len() - 1].state;
+        let condition = TerminalCondition::RendezvousState {
+            position_eci_m: terminal.position_eci_m,
+            velocity_eci_m_s: terminal.velocity_eci_m_s,
+        };
+        let corrector = MultipleShootingCorrector {
+            defect_tolerance: 1.0e-6,
+            max_iterations: 20,
+            max_step_norm: 200.0,
+            ..MultipleShootingCorrector::default()
+        };
+
+        let correction = corrector.solve_two_body_terminal_condition_with_controls(
+            &condition,
+            &seed,
+            &seed_controls,
+            &durations,
+            5.0,
+            WGS84_MU_M3_S2,
+        )?;
+
+        assert!(correction.converged, "{correction:?}");
+        assert!(correction.iterations > 0);
+        assert!(correction.residual_norm < corrector.defect_tolerance);
+        assert!(correction.continuity_report.defect_norm < corrector.defect_tolerance);
+        assert!(correction.terminal_residual.norm < corrector.defect_tolerance);
+        assert_eq!(correction.nodes[0], seed[0]);
+        assert!(
+            correction
+                .controls
+                .iter()
+                .any(|control| control.acceleration_eci_m_s2[0].abs() > 1.0e-3)
         );
         Ok(())
     }

@@ -27,11 +27,14 @@ pub use iload::{
 };
 pub use openbmp_physics::profile::TerminalCondition;
 pub use shooting::{
-    MultipleShootingContinuityReport, MultipleShootingCorrection, MultipleShootingCorrector,
+    MultipleShootingContinuityReport, MultipleShootingControl,
+    MultipleShootingControlledContinuityReport, MultipleShootingControlledTargetCorrection,
+    MultipleShootingCorrection, MultipleShootingCorrector,
     MultipleShootingFreeDurationTargetCorrection, MultipleShootingNode,
     MultipleShootingSoftConstraint, MultipleShootingSoftConstraintKind,
     MultipleShootingSoftConstraintReport, MultipleShootingTargetCorrection,
-    evaluate_multiple_shooting_soft_constraints, evaluate_two_body_multiple_shooting,
+    evaluate_multiple_shooting_soft_constraints, evaluate_two_body_controlled_multiple_shooting,
+    evaluate_two_body_multiple_shooting, seed_two_body_controlled_multiple_shooting_nodes,
     seed_two_body_multiple_shooting_nodes,
 };
 pub use stm::{

@@ -142,9 +142,10 @@ exterior-penalty rows for node state-component boxes, radius/speed path norms,
 rotating-atmosphere qbar, and qbar-alpha, and `MultipleShootingCorrector`
 performs damped fixed-endpoint interior-node correction with honest
 non-convergence reporting plus fixed-initial terminal-condition correction,
-free-duration terminal correction, and a trybuild no-surface-coordinate
-tripwire (`REQ-TRAJOPT-002`). Missing: the control part of the full free vector
-and cross-tier regression tolerance table.
+free-duration terminal correction, controlled terminal correction with
+piecewise-constant ECI acceleration controls, and a trybuild no-surface-
+coordinate tripwire (`REQ-TRAJOPT-002`). Missing: the cross-tier regression
+tolerance table.
 WP-07.2 … WP-07.6: **not started**.
 
 ### 08 — Environment, gravity & frames
@@ -364,7 +365,6 @@ verifier, or capture logic.
 2. **Start the two unstarted Phase-A gates:** WP-01.1 (spatial-vector tree)
    and WP-08.1 (tesseral gravity) — they block most of Phase B/C (02, 06,
    07 closed-loop quality).
-3. **Finish WP-07.1** (multiple-shooting control solve and cross-tier
-   tolerance table) or use the implemented WP-07.0 runner-backed corrector as
-   the prerequisite for WP-19.2.
+3. **Finish WP-07.1** (cross-tier tolerance table) or use the implemented
+   WP-07.0 runner-backed corrector as the prerequisite for WP-19.2.
 4. WP-15.1 (plume state) is newly unblocked by 05's chamber/nozzle state.
