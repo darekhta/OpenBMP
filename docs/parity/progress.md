@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-12, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (98 requirement ids).
+traceability (99 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -22,8 +22,8 @@ same PR as any WP merge.
 ## 1. Roll-up
 
 Across the series: **207 work packages** (108 in `01`–`12`, 99 in `14`–`25`).
-As of this snapshot: **20 implemented · 18 partial · 0 in progress ·
-169 not started.**
+As of this snapshot: **20 implemented · 19 partial · 0 in progress ·
+168 not started.**
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
 |---|---|---|---|---|
@@ -33,7 +33,7 @@ As of this snapshot: **20 implemented · 18 partial · 0 in progress ·
 | 04 | Aerothermal, real-gas, TPS | T0 (+ shared `openbmp-thermochem` scaffold) | 0/0/11 | WP-04.1-a |
 | 05 | Propulsion high-fidelity | **T1+T2 implemented**; T3 partial; T4/T5 wired-substrate partial | 3/6/9 | finish WP-05.3 (CEARUN/Cantera tolerance tables) |
 | 06 | Coupled MIMO GNC | T0 (+ lane-voting diagnostic improvement) | 0/0/10 | WP-06.1 (after 01) |
-| 07 | Trajectory optimization | T0; corrector exists, unwired | 0/0/8 | WP-07.0 |
+| 07 | Trajectory optimization | T0 offline two-body corrector driver/CLI slice landed; runner fixture still missing | 0/1/8 | finish WP-07.0 |
 | 08 | Environment, gravity, frames | T0 baseline (zonal degree-6 cap) | 0/0/7 | WP-08.1 |
 | 09 | Sensors, nav, actuators | T0 (specific force still finite-difference) | 0/0/12 | WP-09.1 |
 | 10 | Flight SW in the loop (XIL) | **T1–T3 implemented**; T4 partial | 3/2/8 | finish WP-10.4, or WP-10.6 in parallel |
@@ -44,7 +44,7 @@ As of this snapshot: **20 implemented · 18 partial · 0 in progress ·
 | 16 | Parachute & recovery | T0 baseline (`recovery/` rack) | 0/0/11 | WP-16.1 |
 | 17 | Cryogenic fluid management | not started | 0/0/8 | WP-17.1 |
 | 18 | Ground segment & countdown | not started | 0/0/8 | WP-18.1 |
-| 19 | Day-of-launch winds & commit | not started (WP-19.2 blocked on WP-07.0) | 0/0/6 | WP-19.1 |
+| 19 | Day-of-launch winds & commit | not started (WP-19.2 still blocked on full WP-07.0) | 0/0/6 | WP-19.1 |
 | 20 | Telemetry, RF links, network | dictionary export exists; physics not started | 0/1/8 | WP-20.1 |
 | 21 | Run-data, regression, visualization | not started | 0/0/8 | WP-21.1 |
 | 22 | Acoustics & overpressure | not started | 0/0/7 | WP-22.1 |
@@ -126,9 +126,13 @@ engine-out reconfiguration all absent).
 
 `corrector.rs` (Gauss-Newton/LM shooting) and the locked
 `TerminalCondition` vocabulary exist and the lock **holds** (no
-range/aimpoint variants; `RendezvousState` present). There is **no
-trajopt CLI subcommand** — the corrector remains unwired.
-WP-07.0 … WP-07.6: **not started** (WP-07.0 is the gate).
+range/aimpoint variants; `RendezvousState` present). The offline
+`correct_two_body_apogee` driver now gives `DifferentialCorrector::solve`
+a non-test caller through `openbmp trajopt correct-apogee`, producing a
+postcard I-load only on convergence and reporting non-convergence without
+writing one (`REQ-TRAJOPT-001`). This is a deterministic two-body RK4 CLI
+fixture, not the full scenario/runner forward-map fixture.
+WP-07.0: **partial**. WP-07.1 … WP-07.6: **not started**.
 
 ### 08 — Environment, gravity & frames
 
@@ -332,8 +336,8 @@ verifier, or capture logic.
 - **Determinism toolchain hardened:** FP-environment guard (x86_64 +
   aarch64 code paths), FMA contraction ban, provenance check in CI; the
   aarch64 CI determinism lane is the one outstanding piece (WP-12.3-b).
-- **Traceability:** 164 requirement ids in `requirements.toml`, including
-  the new REQ-PROP-001…019, REQ-MC, and REQ-CONTACT families.
+- **Traceability:** 99 requirement ids in `requirements.toml`, including
+  the REQ-PROP, REQ-MC, REQ-CONTACT, REQ-PLUME, and REQ-TRAJOPT families.
 - **Byte-stable-by-default pattern observed** in everything that landed:
   pressure-thrust, transient grain, transports, realtime, contact, and
   fault schedules are all scenario-gated opt-ins.
@@ -347,6 +351,6 @@ verifier, or capture logic.
 2. **Start the two unstarted Phase-A gates:** WP-01.1 (spatial-vector tree)
    and WP-08.1 (tesseral gravity) — they block most of Phase B/C (02, 06,
    07 closed-loop quality).
-3. **WP-07.0 remains the cheapest unblocked capability win** (wire the
-   existing corrector to a CLI driver) and unblocks WP-19.2 later.
+3. **Finish WP-07.0** by promoting the new T0 CLI driver into the
+   scenario/runner forward-map fixture required before WP-19.2 can consume it.
 4. WP-15.1 (plume state) is newly unblocked by 05's chamber/nozzle state.

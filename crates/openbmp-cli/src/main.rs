@@ -7,11 +7,11 @@ use clap::Parser;
 
 use openbmp_cli::cli::{
     Cli, Command, DictCommand, McCommand, McWilksSide, MigrateCommand, PackageCommand,
-    ReconstructCommand, SilCommand,
+    ReconstructCommand, SilCommand, TrajoptCommand,
 };
 use openbmp_cli::commands::{
     check, compare_telemetry, conform, dict, diff, footprint_mc, mc, migrate, package, provenance,
-    reconstruct, run, sil, verify_order,
+    reconstruct, run, sil, trajopt, verify_order,
 };
 use openbmp_cli::tracing;
 
@@ -274,6 +274,51 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                     "  wrote trajectory mapping {}",
                     report.output_toml.display()
                 );
+                Ok(())
+            }
+        },
+        Command::Trajopt { command } => match command {
+            TrajoptCommand::CorrectApogee {
+                initial_radius_m,
+                target_apogee_radius_m,
+                initial_speed_m_s,
+                coast_duration_s,
+                step_s,
+                mu_m3_s2,
+                residual_tolerance_m,
+                max_iterations,
+                synthesis_seed,
+                scenario_digest,
+                source_revision,
+                producer,
+                output_iload,
+            } => {
+                let report = trajopt::run_correct_apogee(
+                    trajopt::CorrectApogeeArgs {
+                        initial_radius_m,
+                        target_apogee_radius_m,
+                        initial_speed_m_s,
+                        coast_duration_s,
+                        step_s,
+                        mu_m3_s2,
+                        residual_tolerance_m,
+                        max_iterations,
+                        synthesis_seed,
+                        scenario_digest,
+                        source_revision,
+                        producer,
+                    },
+                    &output_iload,
+                )?;
+                println!(
+                    "openbmp trajopt correct-apogee: ok - corrected_speed_m_s={:.12}, residual_norm_m={:.12e}, iterations={}, reference_samples={}, iload_bytes={}",
+                    report.corrected_speed_m_s,
+                    report.residual_norm_m,
+                    report.iterations,
+                    report.reference_samples,
+                    report.iload_bytes,
+                );
+                println!("  wrote I-load {}", report.output_iload.display());
                 Ok(())
             }
         },

@@ -38,6 +38,7 @@ openbmp-sim        = { workspace = true }
 openbmp-sil        = { workspace = true }
 openbmp-telemetry  = { workspace = true }
 openbmp-testkit    = { workspace = true }
+openbmp-trajopt    = { workspace = true }
 openbmp-uq         = { workspace = true }
 nalgebra           = { workspace = true }
 parquet            = { workspace = true }

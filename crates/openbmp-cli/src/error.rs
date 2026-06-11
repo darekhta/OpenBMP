@@ -10,6 +10,7 @@ use openbmp_runner::RunnerError;
 use openbmp_scenario::ScenarioError;
 use openbmp_sil::SilError;
 use openbmp_telemetry::TelemetryError;
+use openbmp_trajopt::TrajoptError;
 use thiserror::Error;
 
 /// Errors surfaced by the CLI.
@@ -72,6 +73,16 @@ pub enum CliError {
         /// Short, human-readable failure summary.
         summary: String,
     },
+    /// Offline trajectory optimization failed acceptance or could not run.
+    #[error("trajectory optimization: {summary}")]
+    Trajopt {
+        /// Short, human-readable failure summary.
+        summary: String,
+    },
+    /// The trajectory-optimization library rejected an input or failed
+    /// serialization.
+    #[error("trajectory optimization error")]
+    TrajoptLib(#[from] TrajoptError),
     /// Two telemetry archives differ.
     #[error("telemetry diff: {summary}")]
     Diff {
@@ -139,6 +150,7 @@ impl CliError {
         match self {
             Self::Diff { .. } | Self::TelemetryCompare { .. } => 1,
             Self::CodeVerification { .. } => 1,
+            Self::Trajopt { .. } => 1,
             Self::Scenario(_)
             | Self::TelemetryCompareConfig { .. }
             | Self::MigrateToml { .. }
@@ -149,6 +161,7 @@ impl CliError {
             Self::Io { .. } | Self::Csv { .. } => 3,
             Self::Telemetry(_)
             | Self::Sil(_)
+            | Self::TrajoptLib(_)
             | Self::TelemetryCompareReportJson { .. }
             | Self::DiffReportJson { .. }
             | Self::Parquet(_)

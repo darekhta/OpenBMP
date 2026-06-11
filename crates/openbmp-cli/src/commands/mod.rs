@@ -13,4 +13,5 @@ pub mod provenance;
 pub mod reconstruct;
 pub mod run;
 pub mod sil;
+pub mod trajopt;
 pub mod verify_order;

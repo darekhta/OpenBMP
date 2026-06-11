@@ -1554,6 +1554,7 @@ dependencies = [
  "openbmp-sim",
  "openbmp-telemetry",
  "openbmp-testkit",
+ "openbmp-trajopt",
  "openbmp-uq",
  "parquet",
  "predicates",

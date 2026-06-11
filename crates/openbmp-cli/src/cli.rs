@@ -75,6 +75,12 @@ pub enum Command {
         #[command(subcommand)]
         command: ReconstructCommand,
     },
+    /// Run offline trajectory optimization and I-load synthesis commands.
+    Trajopt {
+        /// Trajectory optimization command to run.
+        #[command(subcommand)]
+        command: TrajoptCommand,
+    },
     /// Compare a scenario run against external local telemetry CSV / JSON.
     CompareTelemetry {
         /// Scenario TOML file.
@@ -235,6 +241,55 @@ pub enum ReconstructCommand {
         /// Tolerance pack to write.
         #[arg(long = "pack", value_enum, default_value_t = TrajectoryTolerancePack::Strict)]
         pack: TrajectoryTolerancePack,
+    },
+}
+
+/// Offline trajectory-optimization commands.
+#[derive(Debug, Subcommand)]
+pub enum TrajoptCommand {
+    /// Correct tangential cutoff speed to hit a two-body apogee radius.
+    CorrectApogee {
+        /// Initial inertial radius on the x-axis, in m.
+        #[arg(long = "initial-radius-m")]
+        initial_radius_m: f64,
+        /// Target apogee radius from the central body, in m.
+        #[arg(long = "target-apogee-radius-m")]
+        target_apogee_radius_m: f64,
+        /// Initial tangential speed guess on the y-axis, in m/s.
+        ///
+        /// Omit to use the circular speed at `initial-radius-m`.
+        #[arg(long = "initial-speed-m-s")]
+        initial_speed_m_s: Option<f64>,
+        /// Coast duration before residual evaluation, in s.
+        #[arg(long = "coast-duration-s", default_value_t = 0.0)]
+        coast_duration_s: f64,
+        /// Fixed RK4 propagation step, in s.
+        #[arg(long = "step-s", default_value_t = 10.0)]
+        step_s: f64,
+        /// Central-body gravitational parameter, in m^3/s^2.
+        #[arg(long = "mu-m3-s2", default_value_t = 398_600_441_800_000.0)]
+        mu_m3_s2: f64,
+        /// Residual convergence tolerance, in m.
+        #[arg(long = "residual-tolerance-m", default_value_t = 1.0e-2)]
+        residual_tolerance_m: f64,
+        /// Maximum Gauss-Newton iterations.
+        #[arg(long = "max-iterations", default_value_t = 100)]
+        max_iterations: usize,
+        /// Deterministic synthesis seed recorded in the I-load header.
+        #[arg(long = "synthesis-seed", default_value_t = 0)]
+        synthesis_seed: u64,
+        /// Opaque scenario or driver digest recorded in the I-load metadata.
+        #[arg(long = "scenario-digest", default_value = "two-body-apogee-cli")]
+        scenario_digest: String,
+        /// Source revision recorded in the I-load metadata.
+        #[arg(long = "source-revision", default_value = "working-tree")]
+        source_revision: String,
+        /// Producer name recorded in the I-load header.
+        #[arg(long = "producer", default_value = "openbmp-trajopt-cli")]
+        producer: String,
+        /// Postcard I-load output path. Written only when the correction converges.
+        #[arg(long = "output-iload")]
+        output_iload: PathBuf,
     },
 }
 

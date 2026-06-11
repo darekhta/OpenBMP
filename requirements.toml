@@ -211,6 +211,12 @@ statement = "The CLI exposes a conformance command that validates and runs one o
 verification = ["V-CONFORM-001"]
 
 [[requirements]]
+id = "REQ-TRAJOPT-001"
+title = "The offline trajectory corrector has a CLI I-load path"
+statement = "The host-side trajectory optimization crate exposes a deterministic T0 two-body apogee driver that calls the differential corrector with a propagated terminal state, targets only TerminalCondition::ApogeeRadius, writes a postcard I-load only after convergence, reports non-convergence without writing an I-load, and exposes the capability through an offline CLI command with no surface-coordinate inputs."
+verification = ["V-TRAJOPT-001"]
+
+[[requirements]]
 id = "REQ-CONTACT-001"
 title = "Contact substrate exposes deterministic half-space force laws"
 statement = "The contact dynamics substrate is an L2 crate that exposes point and sphere half-space kinematics, Kelvin-Voigt, Hertz, and Hunt-Crossley normal laws, regularized Coulomb friction, a fixed-step penalty-contact stability bound, and energy-audit closure helpers without depending on runner, simulator, or flight-controller crates."
@@ -1387,6 +1393,36 @@ contains = [
   "conform_runs_reference_scenario_without_writing_outputs",
 ]
 requirements = ["REQ-CONFORM-001"]
+
+[[verification]]
+id = "V-TRAJOPT-001"
+kind = "test"
+command = "cargo test -p openbmp-trajopt driver --locked && cargo test -p openbmp-cli --test trajopt_cli --locked"
+paths = [
+  "Cargo.lock",
+  "crates/openbmp-trajopt/src/driver.rs",
+  "crates/openbmp-trajopt/src/lib.rs",
+  "crates/openbmp-cli/Cargo.toml",
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/mod.rs",
+  "crates/openbmp-cli/src/commands/trajopt.rs",
+  "crates/openbmp-cli/src/error.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/tests/trajopt_cli.rs",
+  "docs/parity/07-trajectory-optimization-and-mission-design.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "correct_two_body_apogee",
+  "config.corrector.solve",
+  "TerminalCondition::ApogeeRadius",
+  "encode_iload_payload",
+  "TrajoptCommand::CorrectApogee",
+  "target-apogee-radius-m",
+  "trajopt_correct_apogee_cli_writes_iload",
+  "trajopt_correct_apogee_cli_reports_non_convergence",
+]
+requirements = ["REQ-TRAJOPT-001"]
 
 [[verification]]
 id = "V-CONTACT-001"

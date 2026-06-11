@@ -13,10 +13,12 @@
 extern crate alloc;
 
 pub mod corrector;
+pub mod driver;
 pub mod iload;
 pub mod target;
 
 pub use corrector::{DifferentialCorrection, DifferentialCorrector};
+pub use driver::{TwoBodyApogeeReport, TwoBodyApogeeTargeting, correct_two_body_apogee};
 pub use iload::{
     GainAxis, GainTable, ILoadHeader, ILoadPayload, ILoadSchemaVersion, ReferenceProfileSample,
     SynthesisMetadata, TrajoptError, encode_iload_payload,
