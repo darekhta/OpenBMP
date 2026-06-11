@@ -223,6 +223,12 @@ statement = "Schema-v3 scenarios can opt into a [contact] half-space force with 
 verification = ["V-CONTACT-002"]
 
 [[requirements]]
+id = "REQ-CONTACT-003"
+title = "Contact substrate exposes scalar constraint primitives"
+statement = "The contact dynamics substrate exposes one-sided scalar stop, two-sided backlash gap, and monotone latch primitives with finite-input validation, unilateral no-tension force clamping, exact configured backlash dead-zone width reporting, closed-form Kelvin-Voigt stop restitution evidence, and engage-once latch state transitions without depending on runner, simulator, or flight-controller crates."
+verification = ["V-CONTACT-003"]
+
+[[requirements]]
 id = "REQ-MC-001"
 title = "Seeded Monte-Carlo evidence has a visible CI lane"
 statement = "The repository exposes a scheduled or manually runnable CI lane for the seeded footprint and ascent Monte-Carlo checks, so dispersion acceptance evidence is reproducible outside ad hoc local runs."
@@ -1381,6 +1387,38 @@ contains = [
   "closure_error_j",
 ]
 requirements = ["REQ-CONTACT-002"]
+
+[[verification]]
+id = "V-CONTACT-003"
+kind = "test"
+command = "cargo test -p openbmp-contact scalar_ --locked && cargo test -p openbmp-contact backlash_ --locked && cargo test -p openbmp-contact latch_ --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-contact/Cargo.toml",
+  "crates/openbmp-contact/src/lib.rs",
+  "crates/openbmp-contact/src/stop.rs",
+  "crates/openbmp-contact/src/backlash.rs",
+  "crates/openbmp-contact/src/latch.rs",
+  "docs/parity/14-contact-dynamics-touchdown-and-landing.md",
+]
+contains = [
+  "ScalarStop",
+  "ScalarStopResponse",
+  "StopSide",
+  "closed_form_restitution",
+  "BacklashGap",
+  "BacklashFlank",
+  "BacklashResponse",
+  "dead_zone_width",
+  "MonotoneLatch",
+  "LatchState",
+  "LatchWindow",
+  "LatchTransition",
+  "scalar_stop_restitution_matches_closed_form",
+  "backlash_dead_zone_width_is_exact",
+  "latch_monotone_property_engages_once_and_never_releases",
+]
+requirements = ["REQ-CONTACT-003"]
 
 [[verification]]
 id = "V-MC-001"

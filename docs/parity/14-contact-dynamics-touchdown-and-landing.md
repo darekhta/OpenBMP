@@ -840,6 +840,13 @@ sibling notation (`WP-NN.t`, doc `NN`).
 ### WP-14.2 — Scalar stop / backlash / latch primitives
 
 - **title:** One-sided joint stops, two-sided backlash gap, monotone latch elements on scalar coordinates.
+- **implementation_status:** partial crate-level primitives implemented and
+  traced by `REQ-CONTACT-003` / `V-CONTACT-003`: `openbmp-contact` exposes
+  `ScalarStop`, `BacklashGap`, and `MonotoneLatch` with finite-input
+  validation, unilateral no-tension clamping, exact configured backlash
+  dead-zone width reporting, a closed-form Kelvin-Voigt restitution helper and
+  numerical restitution test, and an engage-once latch property test. Runner
+  scenario fixtures and tree-joint wiring remain later mechanism slices.
 - **goal:** The constraint-primitive vocabulary (§3.3) every articulated
   mechanism needs — gear locks, deploy stops, clearance — defined on scalar
   coordinates now (effector/strut), wired to tree joints in WP-14.6. The latch
