@@ -528,6 +528,12 @@ title = "Monte Carlo propulsion fault campaigns execute sampled overlays"
 statement = "The CLI Monte Carlo layer can run a sampled scheduled-propulsion-fault campaign by reading a base scenario and a PropulsionFaultLibrary TOML manifest, materializing deterministic per-sample PropulsionFaultOverlay fragments, parsing each mutated scenario through the normal scenario validator, executing the standard runner, reading a terminal telemetry metric, writing one CSV row per sample with activated fault ids and success state, and summarizing the metric with Welford statistics plus a Clopper-Pearson success interval."
 verification = ["V-PROP-027"]
 
+[[requirements]]
+id = "REQ-PROP-028"
+title = "Liquid engine performance can be derived from thermochemistry"
+statement = "The propulsion crate exposes a deterministic liquid-engine performance helper that consumes looked-up thermochemical chamber pressure, c*, gamma, and nozzle geometry, computes choked throat mass flow, solves the existing ideal pressure-thrust nozzle model with optional separation, derives max thrust and effective Isp from the same state, validates non-finite and out-of-envelope inputs fail-closed, and can construct a LiquidEngine by replacing only max_thrust_n and isp_s while preserving existing lifecycle and control limits."
+verification = ["V-PROP-028"]
+
 [[verification]]
 id = "V-SIL-001"
 kind = "test"
@@ -2923,3 +2929,24 @@ contains = [
   "openbmp mc propulsion-faults",
 ]
 requirements = ["REQ-PROP-027"]
+
+[[verification]]
+id = "V-PROP-028"
+kind = "test"
+command = "cargo test -p openbmp-propulsion performance --locked"
+paths = [
+  "crates/openbmp-propulsion/src/engine.rs",
+  "crates/openbmp-propulsion/src/lib.rs",
+  "docs/parity/05-propulsion-high-fidelity.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "LiquidEnginePerformance",
+  "LiquidEngineThermochemistry",
+  "LiquidEngineNozzle",
+  "with_liquid_performance",
+  "new_with_performance",
+  "liquid_engine_performance_derives_thrust_and_isp_from_thermochemistry",
+  "liquid_engine_new_with_performance_uses_thermochemical_mass_flow",
+]
+requirements = ["REQ-PROP-028"]

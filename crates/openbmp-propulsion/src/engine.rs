@@ -35,7 +35,7 @@
 //! - Pure arithmetic on `f64`; locked operand order on the gimbal
 //!   rotation; no FMA; no wall-clock; no system RNG; no I/O on the
 //!   hot path.
-//! - All four fault modes are deterministic.
+//! - All fault modes are deterministic.
 //! - The state machine advances deterministically based on
 //!   `elapsed_in_state_s`, accumulated step-by-step from `dt`.
 //!
@@ -59,6 +59,10 @@ use num_traits::Float;
 use openbmp_core::{Duration, EngineId, ValidationStatus};
 
 use crate::error::EngineError;
+use crate::motor::{
+    ChamberState, IdealNozzlePerformance, NozzlePerformance, NozzleSeparationCriterion,
+    NozzleSolution,
+};
 
 /// Standard gravity used for `Isp` → mass-flow conversion.
 /// Matches the [`crate::motor`] convention.
@@ -168,6 +172,127 @@ impl EngineLimits {
             });
         }
         Ok(())
+    }
+
+    /// Return a copy of these limits with thermochemical liquid-engine
+    /// performance applied to `max_thrust_n` and `isp_s`.
+    ///
+    /// The remaining control/lifecycle limits are preserved. This is the
+    /// construction-time bridge from a CEA/Cantera deck lookup plus nozzle
+    /// geometry into the existing [`LiquidEngine`] model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if the resulting limits fail validation.
+    pub fn with_liquid_performance(
+        mut self,
+        performance: LiquidEnginePerformance,
+    ) -> Result<Self, EngineError> {
+        self.max_thrust_n = performance.max_thrust_n;
+        self.isp_s = performance.isp_s;
+        self.require_valid()?;
+        Ok(self)
+    }
+}
+
+// ---------------------------------------------------------------------
+// LiquidEnginePerformance
+// ---------------------------------------------------------------------
+
+/// Thermochemical state consumed by a liquid-engine performance solve.
+///
+/// These are the fields produced by a Schema-1 thermochemistry deck lookup.
+/// The propulsion crate accepts the already-looked-up values to avoid adding
+/// a dependency edge from `openbmp-propulsion` to `openbmp-thermochem`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiquidEngineThermochemistry {
+    /// Chamber pressure in Pa.
+    pub chamber_pressure_pa: f64,
+    /// Ideal characteristic velocity in m/s.
+    pub c_star_m_s: f64,
+    /// Equilibrium gas specific-heat ratio.
+    pub gamma: f64,
+}
+
+/// Nozzle and ambient inputs for a liquid-engine performance solve.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiquidEngineNozzle {
+    /// Nozzle throat area in m².
+    pub throat_area_m2: f64,
+    /// Nozzle exit area in m².
+    pub exit_area_m2: f64,
+    /// Ambient static pressure in Pa for the design/performance point.
+    pub ambient_pressure_pa: f64,
+    /// Optional overexpanded-flow separation criterion.
+    pub separation: NozzleSeparationCriterion,
+}
+
+/// Liquid-engine thrust, mass-flow, and `Isp` derived from thermochemistry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiquidEnginePerformance {
+    /// Full-throttle thrust in N at the declared chamber/nozzle/ambient point.
+    pub max_thrust_n: f64,
+    /// Effective specific impulse in seconds at the declared point.
+    pub isp_s: f64,
+    /// Choked throat mass flow in kg/s, computed as `pc * At / c*`.
+    pub mass_flow_kg_per_s: f64,
+    /// Underlying ideal-nozzle solution used to derive thrust and `Isp`.
+    pub nozzle: NozzleSolution,
+}
+
+impl LiquidEnginePerformance {
+    /// Solve thermochemistry-derived liquid-engine performance.
+    ///
+    /// `max_thrust_n` comes from the same ideal-nozzle pressure-thrust solve
+    /// used by pressure-thrust solid motors. `isp_s` is then tied to the
+    /// thermochemical `c*` through the choked throat mass flow, so liquid
+    /// engine propellant consumption can move with deck-derived `c*`/`gamma`
+    /// instead of a hardcoded `Isp` constant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if any scalar is non-finite or outside the
+    /// nozzle/thermochemistry envelope.
+    pub fn from_thermochemistry(
+        thermochemistry: LiquidEngineThermochemistry,
+        nozzle: LiquidEngineNozzle,
+    ) -> Result<Self, EngineError> {
+        validate_liquid_thermochemistry(thermochemistry)?;
+        validate_liquid_nozzle(nozzle)?;
+
+        let mass_flow_kg_per_s = thermochemistry.chamber_pressure_pa * nozzle.throat_area_m2
+            / thermochemistry.c_star_m_s;
+        if !mass_flow_kg_per_s.is_finite() || mass_flow_kg_per_s <= 0.0 {
+            return Err(EngineError::InvalidParameter {
+                reason: "thermochemical liquid-engine mass flow must be finite and positive",
+            });
+        }
+
+        let solution = IdealNozzlePerformance::new(nozzle.separation)
+            .solve(
+                ChamberState {
+                    chamber_pressure_pa: thermochemistry.chamber_pressure_pa,
+                    mass_flow_kg_s: mass_flow_kg_per_s,
+                    gamma: thermochemistry.gamma,
+                    throat_area_m2: nozzle.throat_area_m2,
+                    exit_area_m2: nozzle.exit_area_m2,
+                },
+                nozzle.ambient_pressure_pa,
+            )
+            .map_err(|_| EngineError::InvalidParameter {
+                reason: "thermochemical liquid-engine nozzle solve failed",
+            })?;
+        if solution.total_thrust_n <= 0.0 || solution.effective_isp_s <= 0.0 {
+            return Err(EngineError::InvalidParameter {
+                reason: "thermochemical liquid-engine performance must produce positive thrust and Isp",
+            });
+        }
+        Ok(Self {
+            max_thrust_n: solution.total_thrust_n,
+            isp_s: solution.effective_isp_s,
+            mass_flow_kg_per_s,
+            nozzle: solution,
+        })
     }
 }
 
@@ -490,6 +615,23 @@ impl LiquidEngine {
         })
     }
 
+    /// Construct a liquid engine after applying thermochemical performance to
+    /// the supplied limits.
+    ///
+    /// Control and lifecycle limits remain those supplied by `limits`; only
+    /// full-throttle thrust and nominal `Isp` are replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] if the performance-updated limits are invalid.
+    pub fn new_with_performance(
+        id: EngineId,
+        limits: EngineLimits,
+        performance: LiquidEnginePerformance,
+    ) -> Result<Self, EngineError> {
+        Self::new(id, limits.with_liquid_performance(performance)?)
+    }
+
     /// Set the restart policy. When `restartable` is `true`, the engine
     /// re-arms to `Idle` after a completed shutdown transient instead of
     /// latching `Shutdown` terminally, so a later `ignite` command starts a
@@ -580,6 +722,63 @@ impl LiquidEngine {
         }
         Ok(())
     }
+}
+
+fn validate_liquid_thermochemistry(
+    thermochemistry: LiquidEngineThermochemistry,
+) -> Result<(), EngineError> {
+    for value in [
+        thermochemistry.chamber_pressure_pa,
+        thermochemistry.c_star_m_s,
+        thermochemistry.gamma,
+    ] {
+        if !value.is_finite() {
+            return Err(EngineError::InvalidParameter {
+                reason: "thermochemical liquid-engine state must be finite",
+            });
+        }
+    }
+    if thermochemistry.chamber_pressure_pa <= 0.0 {
+        return Err(EngineError::InvalidParameter {
+            reason: "thermochemical liquid-engine chamber pressure must be positive",
+        });
+    }
+    if thermochemistry.c_star_m_s <= 0.0 {
+        return Err(EngineError::InvalidParameter {
+            reason: "thermochemical liquid-engine c_star_m_s must be positive",
+        });
+    }
+    if thermochemistry.gamma <= 1.0 {
+        return Err(EngineError::InvalidParameter {
+            reason: "thermochemical liquid-engine gamma must be greater than 1",
+        });
+    }
+    Ok(())
+}
+
+fn validate_liquid_nozzle(nozzle: LiquidEngineNozzle) -> Result<(), EngineError> {
+    for value in [
+        nozzle.throat_area_m2,
+        nozzle.exit_area_m2,
+        nozzle.ambient_pressure_pa,
+    ] {
+        if !value.is_finite() {
+            return Err(EngineError::InvalidParameter {
+                reason: "thermochemical liquid-engine nozzle values must be finite",
+            });
+        }
+    }
+    if nozzle.throat_area_m2 <= 0.0 || nozzle.exit_area_m2 < nozzle.throat_area_m2 {
+        return Err(EngineError::InvalidParameter {
+            reason: "thermochemical liquid-engine nozzle areas must satisfy exit >= throat > 0",
+        });
+    }
+    if nozzle.ambient_pressure_pa < 0.0 {
+        return Err(EngineError::InvalidParameter {
+            reason: "thermochemical liquid-engine ambient pressure must be non-negative",
+        });
+    }
+    Ok(())
 }
 
 /// Apply gimbal rotation to a nominal body-`+z` thrust scalar.
@@ -1324,6 +1523,94 @@ mod tests {
         let snap = e.step(dt()).unwrap();
         let expected = 1000.0 / (STANDARD_GRAVITY_M_S2 * 250.0);
         assert!((snap.mass_flow_kg_per_s - expected).abs() < 1e-12);
+    }
+
+    fn liquid_thermochemistry() -> LiquidEngineThermochemistry {
+        LiquidEngineThermochemistry {
+            chamber_pressure_pa: 3_000_000.0,
+            c_star_m_s: 1_700.0,
+            gamma: 1.22,
+        }
+    }
+
+    fn liquid_nozzle() -> LiquidEngineNozzle {
+        LiquidEngineNozzle {
+            throat_area_m2: 0.02,
+            exit_area_m2: 0.24,
+            ambient_pressure_pa: 101_325.0,
+            separation: NozzleSeparationCriterion::Off,
+        }
+    }
+
+    #[test]
+    fn liquid_engine_performance_derives_thrust_and_isp_from_thermochemistry() {
+        let performance = LiquidEnginePerformance::from_thermochemistry(
+            liquid_thermochemistry(),
+            liquid_nozzle(),
+        )
+        .unwrap();
+        let expected_mass_flow = liquid_thermochemistry().chamber_pressure_pa
+            * liquid_nozzle().throat_area_m2
+            / liquid_thermochemistry().c_star_m_s;
+        let expected_isp = performance.max_thrust_n / (STANDARD_GRAVITY_M_S2 * expected_mass_flow);
+        assert!((performance.mass_flow_kg_per_s - expected_mass_flow).abs() < 1e-12);
+        assert_eq!(
+            performance.max_thrust_n.to_bits(),
+            performance.nozzle.total_thrust_n.to_bits()
+        );
+        assert!((performance.isp_s - expected_isp).abs() < 1e-12);
+        assert!(performance.isp_s > 0.0);
+    }
+
+    #[test]
+    fn liquid_engine_new_with_performance_uses_thermochemical_mass_flow() {
+        let performance = LiquidEnginePerformance::from_thermochemistry(
+            liquid_thermochemistry(),
+            liquid_nozzle(),
+        )
+        .unwrap();
+        let limits = EngineLimits {
+            max_thrust_n: 10.0,
+            isp_s: 1.0,
+            ignition_transient_s: 0.0,
+            ..make_limits()
+        };
+        let mut engine = LiquidEngine::new_with_performance(
+            EngineId::from_path("test.engine"),
+            limits,
+            performance,
+        )
+        .unwrap();
+        engine
+            .apply_command(EngineCommand {
+                throttle_unit: 1.0,
+                gimbal_pitch_rad: 0.0,
+                gimbal_yaw_rad: 0.0,
+                ignite: true,
+                shutdown: false,
+            })
+            .unwrap();
+
+        let snap = engine.step(dt()).unwrap();
+
+        assert_eq!(snap.state, EngineState::Burning);
+        assert_eq!(
+            snap.thrust_body.z.to_bits(),
+            performance.max_thrust_n.to_bits()
+        );
+        assert!((snap.mass_flow_kg_per_s - performance.mass_flow_kg_per_s).abs() < 1e-12);
+    }
+
+    #[test]
+    fn liquid_engine_performance_rejects_invalid_thermochemistry() {
+        let invalid = LiquidEngineThermochemistry {
+            c_star_m_s: 0.0,
+            ..liquid_thermochemistry()
+        };
+        assert!(matches!(
+            LiquidEnginePerformance::from_thermochemistry(invalid, liquid_nozzle()),
+            Err(EngineError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
