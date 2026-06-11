@@ -204,6 +204,7 @@ pub fn run(
     // absent, preserving the byte-stable contract for every
     // existing scenario.
     let runtime_integrator = build_runtime_integrator(document)?;
+    let kernel_step_s = crate::contact::kernel_step_s(document);
     let config = SimulationConfig {
         initial_state,
         integrator: runtime_integrator,
@@ -214,7 +215,7 @@ pub fn run(
             automatic_ground_impact(document),
             EndTime::new(SimTime::from_seconds(document.time.stop_s)),
         ),
-        dt: Duration::from_seconds(document.time.dt_s),
+        dt: Duration::from_seconds(kernel_step_s),
         scenario_seed: document.time.seed,
     };
 
@@ -237,6 +238,14 @@ pub fn run(
         kernel.set_external_mission_state(Some(initial_phase));
     }
     let channel_set = PointMassChannelSet::new(document)?;
+    let contact_evaluator = document
+        .contact
+        .as_ref()
+        .map(crate::contact::ContactDiagnosticsEvaluator::from_config)
+        .transpose()?;
+    let mut contact_accumulator = contact_evaluator
+        .as_ref()
+        .map(|_| crate::contact::ContactRunAccumulator::default());
     let geocentric_surface_radius_m = document_geocentric_surface_radius_m(document);
     let breakdown_atmosphere = if channel_set.has_atmosphere {
         Some(build_document_runtime_atmosphere(document)?)
@@ -302,6 +311,8 @@ pub fn run(
         &kernel,
         &channel_set,
         &breakdown_vehicle,
+        contact_evaluator.as_ref(),
+        contact_accumulator.as_mut(),
         breakdown_atmosphere.as_ref(),
         geocentric_surface_radius_m,
         aerothermal_driver.as_ref().map(|driver| driver.output()),
@@ -362,11 +373,7 @@ pub fn run(
                     field: "vehicle.assembly.engines[*].propellant".to_owned(),
                     reason: err.to_string(),
                 })?;
-            feed_network_rack.apply_to_report(
-                &mut report,
-                document.time.dt_s,
-                kernel.current_step(),
-            )?;
+            feed_network_rack.apply_to_report(&mut report, kernel_step_s, kernel.current_step())?;
             tank_rack.set_propellant_budget_drain_rates(report.tank_drain_rates_kg_per_s.clone());
             engine_rack.apply_propellant_budget(&report)?;
         }
@@ -392,7 +399,7 @@ pub fn run(
         // (no-op for the instantaneous-deploy models).
         if !recovery_rack.is_empty() {
             recovery_rack.apply_deploys(&pending_recovery_events)?;
-            recovery_rack.step(document.time.dt_s)?;
+            recovery_rack.step(kernel_step_s)?;
         }
         // Push the rack's actuals snapshot to the kernel
         // BEFORE `step()` so all four RK4 stages see the same view.
@@ -436,7 +443,7 @@ pub fn run(
         let script_fired = kernel.drain_script_fired_events();
         if let Some(driver) = &mut aerothermal_driver {
             let environment = kernel.current_environment_sample()?;
-            driver.evaluate_point_mass(kernel.current_state(), &environment, document.time.dt_s)?;
+            driver.evaluate_point_mass(kernel.current_state(), &environment, kernel_step_s)?;
         }
         let snapshot = effector_rack.snapshot();
         record_step(
@@ -445,6 +452,8 @@ pub fn run(
             &kernel,
             &channel_set,
             &breakdown_vehicle,
+            contact_evaluator.as_ref(),
+            contact_accumulator.as_mut(),
             breakdown_atmosphere.as_ref(),
             geocentric_surface_radius_m,
             aerothermal_driver.as_ref().map(|driver| driver.output()),
@@ -483,6 +492,10 @@ pub fn run(
         .map(crate::fc_bridge::FcBridge::actuator_stream_report)
         .transpose()?
         .flatten();
+    let contact = contact_accumulator
+        .map(crate::contact::ContactRunAccumulator::finish)
+        .transpose()?
+        .flatten();
 
     Ok(RunOutcome {
         final_step: kernel.current_step().value(),
@@ -491,6 +504,7 @@ pub fn run(
         table,
         realtime: realtime_pacer.finish(),
         actuator_stream,
+        contact,
     })
 }
 
@@ -1088,6 +1102,8 @@ struct PointMassChannelSet {
     fc_reference: Option<FcReferenceTelemetryChannels>,
     /// Force-model components in declared order.
     force_components: ForceComponentChannels,
+    /// Contact diagnostics, present only for `[contact]` scenarios.
+    contact: Option<crate::contact::ContactTelemetryChannels>,
     /// Active per-phase model list, present when phase overrides are
     /// declared.
     active_models: Option<TelemetryChannel<String>>,
@@ -1274,6 +1290,12 @@ impl PointMassChannelSet {
             force_components.push((name.clone(), x_channel, y_channel, z_channel));
         }
 
+        let contact = document
+            .contact
+            .is_some()
+            .then(|| crate::contact::ContactTelemetryChannels::new(&mut alloc))
+            .transpose()?;
+
         let active_models = document
             .forces
             .as_ref()
@@ -1438,6 +1460,7 @@ impl PointMassChannelSet {
             atmosphere_speed_of_sound,
             fc_reference,
             force_components,
+            contact,
             active_models,
             aerothermal,
             effector_actuals,
@@ -1491,6 +1514,9 @@ impl PointMassChannelSet {
             channels.push(y.metadata().clone());
             channels.push(z.metadata().clone());
         }
+        if let Some(contact) = &self.contact {
+            contact.push_metadata(&mut channels);
+        }
         if let Some(active_models) = &self.active_models {
             channels.push(active_models.metadata().clone());
         }
@@ -1535,6 +1561,8 @@ fn record_step<I, F, MM, E, SC>(
     kernel: &SimulationKernel<PointMassState, I, F, MM, E, SC>,
     channels: &PointMassChannelSet,
     breakdown_vehicle: &KernelVehicle<PointMassState>,
+    contact_evaluator: Option<&crate::contact::ContactDiagnosticsEvaluator>,
+    contact_accumulator: Option<&mut crate::contact::ContactRunAccumulator>,
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
     geocentric_surface_radius_m: Option<f64>,
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
@@ -1643,6 +1671,18 @@ where
         row.insert(x_channel, component.x)?;
         row.insert(y_channel, component.y)?;
         row.insert(z_channel, component.z)?;
+    }
+
+    if let Some(contact_channels) = &channels.contact {
+        let evaluator = contact_evaluator.ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "[contact] telemetry requested without a contact evaluator".to_owned(),
+        })?;
+        let diagnostics = evaluator
+            .diagnostics_from_state_vectors(state.position.vector, state.velocity.vector)?;
+        contact_channels.insert(&mut row, diagnostics)?;
+        if let Some(accumulator) = contact_accumulator {
+            accumulator.record(state.time.as_seconds(), diagnostics);
+        }
     }
 
     if let Some(channel) = &channels.active_models {
@@ -2177,6 +2217,13 @@ require_monotonic_time = true
             .unwrap_or_else(|| panic!("channel `{name}` must have an initial value"))
     }
 
+    fn first_row_f64(outcome: &RunOutcome, name: &str) -> f64 {
+        match first_row_value(outcome, name) {
+            TelemetryValue::Float64(value) => *value,
+            other => panic!("unexpected first-row value for {name}: {other:?}"),
+        }
+    }
+
     fn f64_column(outcome: &RunOutcome, name: &str) -> Vec<f64> {
         let channel = outcome
             .table
@@ -2193,6 +2240,15 @@ require_monotonic_time = true
                 Some(TelemetryValue::Float64(value)) => *value,
                 other => panic!("unexpected value in {name}: {other:?}"),
             })
+            .collect()
+    }
+
+    fn row_times_s(outcome: &RunOutcome) -> Vec<f64> {
+        outcome
+            .table
+            .rows()
+            .iter()
+            .map(|row| row.time.as_seconds())
             .collect()
     }
 
@@ -2310,6 +2366,150 @@ require_monotonic_time = true
             contact_z.iter().any(|value| *value > 0.0),
             "contact force should push upward for the initial penetration: {contact_z:?}"
         );
+        assert_eq!(
+            first_row_f64(&outcome, "contact.gap_m").to_bits(),
+            (-0.01_f64).to_bits()
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "contact.penetration_m").to_bits(),
+            0.01_f64.to_bits()
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "contact.normal_velocity_m_s").to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert!((first_row_f64(&outcome, "contact.normal_force_n") - 20.0).abs() <= 1.0e-12);
+
+        let contact = outcome
+            .contact
+            .as_ref()
+            .expect("contact report should be present");
+        assert_eq!(contact.samples as usize, outcome.table.rows().len());
+        assert_eq!(contact.max_penetration_m.to_bits(), 0.01_f64.to_bits());
+        assert!((contact.max_normal_force_n - 20.0).abs() <= 1.0e-12);
+        assert_eq!(
+            contact.outcome,
+            crate::contact::ContactOutcomeKind::Unsettled
+        );
+    }
+
+    #[test]
+    fn point_mass_contact_report_classifies_no_contact() {
+        let scenario_toml = CONTACT_POINT_MASS_SCENARIO
+            .replace(
+                "initial_position_eci_m = [0.0, 0.0, -0.01]",
+                "initial_position_eci_m = [0.0, 0.0, 1.0]",
+            )
+            .replace("gravity_m_s2 = 9.80665", "gravity_m_s2 = 0.0");
+        let scenario = Scenario::from_toml_str(&scenario_toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("contact run succeeds");
+
+        let contact = outcome
+            .contact
+            .as_ref()
+            .expect("contact report should be present");
+        assert_eq!(
+            contact.outcome,
+            crate::contact::ContactOutcomeKind::NoContact
+        );
+        assert_eq!(contact.max_penetration_m.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(contact.max_normal_force_n.to_bits(), 0.0_f64.to_bits());
+        assert!(
+            f64_column(&outcome, "contact.penetration_m")
+                .iter()
+                .all(|value| value.to_bits() == 0.0_f64.to_bits())
+        );
+    }
+
+    #[test]
+    fn point_mass_contact_energy_audit_closes_for_balanced_static_penalty() {
+        let scenario_toml =
+            CONTACT_POINT_MASS_SCENARIO.replace("gravity_m_s2 = 9.80665", "gravity_m_s2 = 20.0");
+        let scenario = Scenario::from_toml_str(&scenario_toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("contact run succeeds");
+
+        let contact = outcome
+            .contact
+            .as_ref()
+            .expect("contact report should be present");
+        assert_eq!(contact.outcome, crate::contact::ContactOutcomeKind::Rest);
+        assert!((contact.energy.initial_elastic_energy_j - 0.1).abs() <= 1.0e-15);
+        assert!((contact.energy.final_elastic_energy_j - 0.1).abs() <= 1.0e-15);
+        assert_eq!(
+            contact.energy.contact_work_on_vehicle_j.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            contact.energy.dissipated_energy_j.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(contact.energy.closure_error_j.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            contact.energy.relative_closure_error.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert!(
+            f64_column(&outcome, "force.contact.z_n")
+                .iter()
+                .all(|value| (*value - 20.0).abs() <= 1.0e-12)
+        );
+    }
+
+    #[test]
+    fn point_mass_contact_substeps_drive_kernel_step_size() {
+        let scenario_toml = CONTACT_POINT_MASS_SCENARIO.replace("substeps = 1", "substeps = 2");
+        let scenario = Scenario::from_toml_str(&scenario_toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("contact run succeeds");
+
+        assert_eq!(outcome.final_step, 4);
+        assert_eq!(outcome.final_time_s.to_bits(), 0.002_f64.to_bits());
+        assert_eq!(outcome.table.rows().len(), 5);
+        assert_eq!(
+            row_times_s(&outcome)
+                .iter()
+                .map(|time_s| time_s.to_bits())
+                .collect::<Vec<_>>(),
+            [0.0_f64, 0.0005, 0.001, 0.0015, 0.002]
+                .iter()
+                .map(|time_s| time_s.to_bits())
+                .collect::<Vec<_>>()
+        );
+        let contact = outcome
+            .contact
+            .as_ref()
+            .expect("contact report should be present");
+        assert_eq!(contact.samples, 5);
+    }
+
+    #[test]
+    fn point_mass_contact_diagnostics_are_golden_stable() {
+        let scenario =
+            Scenario::from_toml_str(CONTACT_POINT_MASS_SCENARIO).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let first = run(&scenario, &resolved_files, None).expect("first contact run succeeds");
+        let second = run(&scenario, &resolved_files, None).expect("second contact run succeeds");
+
+        assert_eq!(first.contact.as_ref(), second.contact.as_ref());
+        for channel in [
+            "force.contact.z_n",
+            "contact.gap_m",
+            "contact.penetration_m",
+            "contact.normal_velocity_m_s",
+            "contact.normal_force_n",
+        ] {
+            let first_bits: Vec<u64> = f64_column(&first, channel)
+                .iter()
+                .map(|value| value.to_bits())
+                .collect();
+            let second_bits: Vec<u64> = f64_column(&second, channel)
+                .iter()
+                .map(|value| value.to_bits())
+                .collect();
+            assert_eq!(first_bits, second_bits, "{channel} should be bit-stable");
+        }
     }
 
     #[test]

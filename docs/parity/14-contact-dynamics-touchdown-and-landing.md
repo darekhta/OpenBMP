@@ -123,8 +123,9 @@ item is the deliverable:
 Verified against the working tree. The honest summary: **touchdown remains a
 stop condition by default, landing guidance primitives exist, footprint Monte
 Carlo exists, the `openbmp-contact` substrate exists, and schema-v3 scenarios
-can now opt into a half-space `contact` force; gear-leg contact, run-level
-contact energy audit, and touchdown outcome classification remain open.**
+can now opt into a half-space `contact` force with scalar diagnostics,
+classification, and run-level energy audit; gear-leg contact and
+leg/survival-class touchdown outcomes remain open.**
 
 ### 2.1 What already exists (the regress-against baseline)
 
@@ -149,8 +150,14 @@ contact energy audit, and touchdown outcome classification remain open.**
   closed on the same penalty-contact stability bound as `openbmp-contact`.
   The point-mass and rigid-body runners wire the contact force through the
   existing force accumulator and standard `force.contact.{x,y,z}_n` telemetry,
-  while disabling the legacy terminal `GroundImpact` stop for that opt-in
-  scenario.
+  publish scalar `contact.gap_m`, `contact.penetration_m`,
+  `contact.normal_velocity_m_s`, and `contact.normal_force_n` diagnostics, and
+  emit a `RunOutcome.contact` report with `NoContact`, `Rest`, or `Unsettled`
+  endpoint classification plus contact elastic-energy/work/dissipation
+  closure audit while disabling the legacy terminal `GroundImpact` stop for
+  that opt-in scenario. The runner divides the kernel step size by
+  `contact.substeps`, so contact evaluation and diagnostics advance on the
+  declared fixed substep lattice.
 - **A runner-side terminal landing throttle controller.**
   `crates/openbmp-runner/src/separated_landing.rs` is a deterministic
   *scenario-director* controller (its own doc comment: "not flight software…
@@ -204,7 +211,7 @@ contact energy audit, and touchdown outcome classification remain open.**
 
 | Sub-dimension | Current | Target tier |
 |---|---|---|
-| Ground contact | `GroundImpact` default; schema-v3 `[contact]` half-space point/sphere force wired through runner | T1 gear/leg contact + friction + outcome classification |
+| Ground contact | `GroundImpact` default; schema-v3 `[contact]` half-space point/sphere force wired through runner with scalar diagnostics and endpoint report | T1 gear/leg contact + friction + leg/survival outcome classification |
 | Stiction / rest | none | T2 anchored stiction + rest detection |
 | Joint stops / backlash / latches | actuator-path deadband only | T1/T2 scalar penalty primitives |
 | Closed kinematic loops | none (doc `01` is tree-only) | T3 CFE + Baumgarte on the tree |
@@ -790,10 +797,13 @@ sibling notation (`WP-NN.t`, doc `NN`).
   Hunt-Crossley normal laws, regularized Coulomb friction, the fixed-step
   stability bound, and energy-audit closure tests. Schema-v3 `[contact]` is now
   scenario-reachable as a point/sphere half-space force in the point-mass and
-  rigid-body runners with standard force telemetry and load-time stability
-  checks. Gear-leg assemblies, run-level contact energy audit, Rest/NoContact
-  outcome classification, and contact substep integration remain future slices
-  before WP-14.1 is complete.
+  rigid-body runners with standard force telemetry, contact diagnostics
+  telemetry, load-time stability checks, and a `RunOutcome.contact` report that
+  classifies half-space runs as `NoContact`, `Rest`, or `Unsettled` and reports
+  a deterministic elastic-energy/contact-work/dissipation closure audit.
+  `contact.substeps` now drives the runner kernel step size as well as the
+  load-time stability bound. Gear-leg assemblies remain a future slice before
+  the contact/landing tier is complete.
 - **goal:** The sim stops ending at the ground. A `ContactPair` registry on the
   existing rigid-body kernel evaluates gap/normal/friction forces into the
   force accumulator at a fixed sub-step rate, with a fail-closed
@@ -811,7 +821,8 @@ sibling notation (`WP-NN.t`, doc `NN`).
   integer sub-steps, locked operand order, no allocation per sub-step.
   `GroundImpact` remains the default; `[contact]` disables the terminal
   ground-impact stop and routes the compliant force through the force stack.
-  Outcome classification (`Rest`/`NoContact` only at this tier) remains open.
+  Outcome classification (`NoContact`/`Rest`/`Unsettled`) and substep kernel
+  integration are wired for the half-space tier.
 - **acceptance:**
   - `[contact]` off by default; canonical goldens byte-identical
   - static penetration `mg/k` to `< 1e-12` rel; undamped Hertz bounce conserves

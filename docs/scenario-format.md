@@ -1215,12 +1215,23 @@ For `normal_law = "hertz"`, use `stiffness_n_m_3_2` plus
 `reference_impact_speed_m_s`. Scenario validation fails closed when
 `dt_s / substeps` violates the contact stability bound derived from
 `stability_stiffness_n_m` or Kelvin-Voigt `stiffness_n_m` and
-`effective_mass_kg`.
+`effective_mass_kg`. The runner also uses `substeps` operationally: when
+`[contact]` is present, the simulation kernel advances at
+`time.dt_s / contact.substeps`, so contact force, diagnostics, and
+`RunOutcome.contact` samples are produced at fixed substep boundaries.
 
 Contact remains off by default. With `[contact]` present, the point-mass
 and rigid-body runners disable the default `GroundImpact` stop and
 publish the standard per-force telemetry channels
-`force.contact.{x,y,z}_n`.
+`force.contact.{x,y,z}_n` plus scalar diagnostics
+`contact.gap_m`, `contact.penetration_m`,
+`contact.normal_velocity_m_s`, and `contact.normal_force_n`. Library callers
+also receive `RunOutcome.contact`, an out-of-band run report with the final
+diagnostics, max penetration, max normal force, sample count, and a closed
+`NoContact` / `Rest` / `Unsettled` classification. The report also carries a
+run-level contact energy audit: initial/final elastic energy, contact work on
+the vehicle, damping/friction dissipation, signed closure error, and relative
+closure error. The report is not part of canonical telemetry bytes.
 
 ### Hash pinning
 
