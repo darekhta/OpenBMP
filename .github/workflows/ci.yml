@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
           components: rustfmt
@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
           components: clippy
@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -88,7 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
           components: llvm-tools-preview
@@ -116,7 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -130,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: taiki-e/install-action@v2
@@ -146,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: taiki-e/install-action@v2
@@ -162,7 +162,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: taiki-e/install-action@v2
@@ -178,7 +178,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -195,7 +195,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -224,7 +224,7 @@ jobs:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -242,7 +242,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -267,7 +267,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -283,7 +283,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -317,7 +317,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -335,7 +335,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -352,7 +352,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -371,7 +371,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -389,7 +389,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -408,7 +408,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -429,7 +429,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -459,7 +459,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -489,7 +489,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -559,7 +559,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
           targets: x86_64-unknown-linux-gnu
@@ -716,7 +716,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
           targets: aarch64-unknown-linux-gnu
@@ -783,7 +783,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
@@ -811,7 +811,7 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
