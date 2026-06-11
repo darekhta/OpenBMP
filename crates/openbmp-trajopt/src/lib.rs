@@ -15,6 +15,8 @@ extern crate alloc;
 pub mod corrector;
 pub mod driver;
 pub mod iload;
+pub mod shooting;
+pub mod stm;
 pub mod target;
 
 pub use corrector::{DifferentialCorrection, DifferentialCorrector};
@@ -24,4 +26,12 @@ pub use iload::{
     SynthesisMetadata, TrajoptError, encode_iload_payload,
 };
 pub use openbmp_physics::profile::TerminalCondition;
+pub use shooting::{
+    MultipleShootingContinuityReport, MultipleShootingNode, evaluate_two_body_multiple_shooting,
+    seed_two_body_multiple_shooting_nodes,
+};
+pub use stm::{
+    StateTransitionMatrix, TwoBodyCartesianState, TwoBodyVariationalPropagation,
+    propagate_two_body_variational,
+};
 pub use target::{TerminalResidual, terminal_residual};

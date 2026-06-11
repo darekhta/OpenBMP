@@ -217,6 +217,12 @@ statement = "The host-side trajectory optimization crate exposes deterministic T
 verification = ["V-TRAJOPT-001"]
 
 [[requirements]]
+id = "REQ-TRAJOPT-002"
+title = "The trajectory optimizer exposes an STM multiple-shooting substrate"
+statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator and a fixed-duration multiple-shooting continuity evaluator whose defects and Jacobian are block-bidiagonal, terminal-condition neutral, and independent of any surface-coordinate target vocabulary."
+verification = ["V-TRAJOPT-002"]
+
+[[requirements]]
 id = "REQ-CONTACT-001"
 title = "Contact substrate exposes deterministic half-space force laws"
 statement = "The contact dynamics substrate is an L2 crate that exposes point and sphere half-space kinematics, Kelvin-Voigt, Hertz, and Hunt-Crossley normal laws, regularized Coulomb friction, a fixed-step penalty-contact stability bound, and energy-audit closure helpers without depending on runner, simulator, or flight-controller crates."
@@ -1432,6 +1438,29 @@ contains = [
   "environment.gravity = \"point_mass\"",
 ]
 requirements = ["REQ-TRAJOPT-001"]
+
+[[verification]]
+id = "V-TRAJOPT-002"
+kind = "test"
+command = "cargo test -p openbmp-trajopt --locked"
+paths = [
+  "crates/openbmp-trajopt/src/stm.rs",
+  "crates/openbmp-trajopt/src/shooting.rs",
+  "crates/openbmp-trajopt/src/lib.rs",
+  "docs/parity/07-trajectory-optimization-and-mission-design.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "propagate_two_body_variational",
+  "two_body_dynamics_jacobian",
+  "stm_matches_central_difference_columns",
+  "seed_two_body_multiple_shooting_nodes",
+  "evaluate_two_body_multiple_shooting",
+  "continuity_jacobian_has_block_bidiagonal_shape",
+  "WP-07.1: **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-TRAJOPT-002"]
 
 [[verification]]
 id = "V-CONTACT-001"

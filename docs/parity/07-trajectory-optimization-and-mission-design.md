@@ -1,7 +1,8 @@
 # Trajectory Optimization & Mission Design
 
 **Status:** `experimental` (WP-07.0 T0 offline two-body and scenario-backed
-corrector driver/CLI paths landed; higher-tier methods remain design intent).
+corrector driver/CLI paths landed; WP-07.1 STM/multiple-shooting substrate is
+partial; higher-tier methods remain design intent).
 **Audience:** the engineer or LLM agent implementing the `openbmp-trajopt` work
 packages, and reviewers checking the forward-only locks.
 **One-line summary:** wire the dead differential corrector to the real
@@ -142,6 +143,15 @@ against):
   with provenance and a tolerance table. This is traced by `REQ-TRAJOPT-001`;
   it is still a toy single-shooting slice, not multiple shooting, collocation,
   or powered-descent optimization.
+- `src/stm.rs` — the first T1 substrate: a deterministic two-body Cartesian
+  variational propagator that integrates state plus 6x6 STM with fixed-step RK4
+  and validates the STM against central-difference columns. It is a sensitivity
+  path only; it adds no target vocabulary.
+- `src/shooting.rs` — a fixed-duration M-segment multiple-shooting continuity
+  evaluator. It seeds dynamically consistent two-body nodes, reports stacked
+  defects `phi_i(x_i) - x_{i+1}`, and builds the row-major block-bidiagonal
+  Jacobian `[STM_i, -I]`. This is traced by `REQ-TRAJOPT-002`; it is not yet a
+  solve loop or full WP-07.1 acceptance closure.
 
 **`crates/openbmp-physics/src/profile.rs` — the vocabulary + propagator pieces.**
 
@@ -184,12 +194,13 @@ against):
 `landing.rs`), Apache-2.0, with deterministic settings wired.
 
 **Summary maturity:** WP-07.0 is implemented: the differential corrector now has
-T0 offline two-body and scenario-backed apogee CLI I-load paths; the closed
+T0 offline two-body and scenario-backed apogee CLI I-load paths; WP-07.1 has a
+partial STM and multiple-shooting continuity substrate; the closed
 terminal-condition vocabulary still holds; a Clarabel SOCP epigraph smoke test,
-a forward propagator, and a PEG-style closed-loop ascent reference exist.
-Nothing above single shooting exists. No NLP transcription, no pseudospectral,
-no LCvx/SCvx horizon problem, no closed-loop wiring of an optimized reference,
-no indirect cross-check.
+a forward propagator, and a PEG-style closed-loop ascent reference exist. No
+multiple-shooting solve loop, NLP transcription, pseudospectral method,
+LCvx/SCvx horizon problem, closed-loop wiring of an optimized reference, or
+indirect cross-check exists.
 
 ---
 
@@ -719,6 +730,13 @@ gates green and answers the §3 per-PR checklist.
 ### WP-07.1 — Multiple shooting with STM / variational Jacobian
 
 - **title:** Generalize the corrector from M=1 to M-segment multiple shooting.
+- **implementation_status:** partial. `src/stm.rs` integrates deterministic
+  two-body variational equations with a state-transition matrix, and
+  `src/shooting.rs` evaluates fixed-duration M-segment continuity defects plus
+  a block-bidiagonal `[STM_i, -I]` Jacobian. Remaining acceptance work: the
+  multiple-shooting solve loop, T0 cross-tier regression tolerance table,
+  STM-vs-complex-step gate, compile-fail no-surface-coordinate tripwire, and
+  box/path penalty handling.
 - **goal:** Robust ascent-to-orbit reference generation that reuses the existing
   physics propagator, replacing the single-shooting limitation with block-
   bidiagonal continuity defects and an STM-based Jacobian.
