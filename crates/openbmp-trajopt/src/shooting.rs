@@ -2,7 +2,8 @@
 //!
 //! The first implementation evaluates fixed-duration two-body segment
 //! continuity and the block-bidiagonal Jacobian built from each segment STM.
-//! It is a solver substrate, not a new target surface.
+//! It also exposes soft node/path penalty rows for the terminal targeting
+//! corrector. It is a solver substrate, not a new target surface.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -47,6 +48,110 @@ pub struct MultipleShootingContinuityReport {
     /// Number of propagated segments.
     pub segment_count: usize,
     /// Number of free node-state variables.
+    pub free_state_count: usize,
+}
+
+/// Scalar soft constraint attached to one multiple-shooting node.
+///
+/// Bounds are enforced as signed exterior-penalty residuals. A satisfied
+/// constraint contributes a zero residual and zero Jacobian row; a lower-bound
+/// violation contributes `sqrt(weight) * (value - lower)`, and an upper-bound
+/// violation contributes `sqrt(weight) * (value - upper)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MultipleShootingSoftConstraint {
+    /// Node index in the multiple-shooting mesh.
+    pub node_index: usize,
+    /// Scalar value extracted from that node.
+    pub kind: MultipleShootingSoftConstraintKind,
+    /// Optional lower bound in the scalar's native units.
+    pub lower: Option<f64>,
+    /// Optional upper bound in the scalar's native units.
+    pub upper: Option<f64>,
+    /// Positive quadratic-penalty weight.
+    pub weight: f64,
+}
+
+impl MultipleShootingSoftConstraint {
+    /// Bound one Cartesian state component at a node.
+    #[must_use]
+    pub const fn state_component_box(
+        node_index: usize,
+        component: usize,
+        lower: Option<f64>,
+        upper: Option<f64>,
+        weight: f64,
+    ) -> Self {
+        Self {
+            node_index,
+            kind: MultipleShootingSoftConstraintKind::StateComponent { component },
+            lower,
+            upper,
+            weight,
+        }
+    }
+
+    /// Bound the inertial radius norm at a node.
+    #[must_use]
+    pub const fn radius_norm_box(
+        node_index: usize,
+        lower: Option<f64>,
+        upper: Option<f64>,
+        weight: f64,
+    ) -> Self {
+        Self {
+            node_index,
+            kind: MultipleShootingSoftConstraintKind::RadiusNorm,
+            lower,
+            upper,
+            weight,
+        }
+    }
+
+    /// Bound the inertial speed norm at a node.
+    #[must_use]
+    pub const fn speed_norm_box(
+        node_index: usize,
+        lower: Option<f64>,
+        upper: Option<f64>,
+        weight: f64,
+    ) -> Self {
+        Self {
+            node_index,
+            kind: MultipleShootingSoftConstraintKind::SpeedNorm,
+            lower,
+            upper,
+            weight,
+        }
+    }
+}
+
+/// Built-in node scalar values for soft path and box penalties.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MultipleShootingSoftConstraintKind {
+    /// One flattened Cartesian state component:
+    /// `[x, y, z, vx, vy, vz]`.
+    StateComponent {
+        /// Flattened component index in `[x, y, z, vx, vy, vz]`.
+        component: usize,
+    },
+    /// Inertial radius norm `|r|`.
+    RadiusNorm,
+    /// Inertial speed norm `|v|`.
+    SpeedNorm,
+}
+
+/// Soft-constraint residual/Jacobian report.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultipleShootingSoftConstraintReport {
+    /// Signed exterior-penalty residuals, one row per configured constraint.
+    pub residuals: Vec<f64>,
+    /// Row-major Jacobian of [`Self::residuals`] with respect to free nodes.
+    pub jacobian: Vec<f64>,
+    /// Euclidean norm of [`Self::residuals`].
+    pub residual_norm: f64,
+    /// Number of configured constraints.
+    pub constraint_count: usize,
+    /// Number of free state variables represented by the columns.
     pub free_state_count: usize,
 }
 
@@ -97,9 +202,12 @@ pub struct MultipleShootingTargetCorrection {
     pub nodes: Vec<MultipleShootingNode>,
     /// Final continuity report for [`Self::nodes`].
     pub continuity_report: MultipleShootingContinuityReport,
+    /// Final soft-constraint residual report.
+    pub soft_constraint_report: MultipleShootingSoftConstraintReport,
     /// Final terminal-condition residual at the last node.
     pub terminal_residual: TerminalResidual,
-    /// Euclidean norm of continuity defects and terminal residual components.
+    /// Euclidean norm of continuity defects, soft-constraint residuals, and
+    /// terminal residual components.
     pub residual_norm: f64,
     /// Number of Gauss-Newton iterations taken.
     pub iterations: usize,
@@ -191,6 +299,37 @@ impl MultipleShootingCorrector {
         step_s: f64,
         mu_m3_s2: f64,
     ) -> Result<MultipleShootingTargetCorrection, TrajoptError> {
+        self.solve_two_body_terminal_condition_with_soft_constraints(
+            condition,
+            initial_nodes,
+            segment_durations_s,
+            step_s,
+            mu_m3_s2,
+            &[],
+        )
+    }
+
+    /// Correct downstream nodes while adding soft path/box penalty residuals.
+    ///
+    /// This keeps the terminal-condition target vocabulary closed while giving
+    /// the T1 solver a first penalty surface for bounds and simple state-path
+    /// limits. The first node remains fixed; constraints on that fixed node are
+    /// reported but have zero free-variable Jacobian columns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrajoptError`] when the configuration, mesh, terminal
+    /// condition, or soft-constraint definitions are invalid, propagation
+    /// fails, or the damped normal equations are singular.
+    pub fn solve_two_body_terminal_condition_with_soft_constraints(
+        &self,
+        condition: &TerminalCondition,
+        initial_nodes: &[MultipleShootingNode],
+        segment_durations_s: &[f64],
+        step_s: f64,
+        mu_m3_s2: f64,
+        soft_constraints: &[MultipleShootingSoftConstraint],
+    ) -> Result<MultipleShootingTargetCorrection, TrajoptError> {
         self.validate_config()?;
         if matches!(condition, TerminalCondition::MaximizePayloadMass) {
             return Err(TrajoptError::InvalidPayload {
@@ -211,6 +350,7 @@ impl MultipleShootingCorrector {
             step_s,
             mu_m3_s2,
             self.finite_difference_step,
+            soft_constraints,
         )?;
         let mut iterations = 0;
 
@@ -235,6 +375,7 @@ impl MultipleShootingCorrector {
                 step_s,
                 mu_m3_s2,
                 self.finite_difference_step,
+                soft_constraints,
             )?;
         }
 
@@ -269,6 +410,7 @@ impl MultipleShootingCorrector {
 #[derive(Clone, Debug, PartialEq)]
 struct TerminalTargetingReport {
     continuity_report: MultipleShootingContinuityReport,
+    soft_constraint_report: MultipleShootingSoftConstraintReport,
     terminal_residual: TerminalResidual,
     residuals: Vec<f64>,
     jacobian: Vec<f64>,
@@ -286,6 +428,7 @@ impl TerminalTargetingReport {
         MultipleShootingTargetCorrection {
             nodes,
             continuity_report: self.continuity_report,
+            soft_constraint_report: self.soft_constraint_report,
             terminal_residual: self.terminal_residual,
             residual_norm: self.residual_norm,
             iterations,
@@ -365,6 +508,61 @@ pub fn evaluate_two_body_multiple_shooting(
     })
 }
 
+/// Evaluate node soft constraints and their free-node Jacobian.
+///
+/// `first_free_node_index` selects the first node represented in the Jacobian
+/// columns. Constraints on earlier fixed nodes are still reported as residuals,
+/// but their rows have zero Jacobian entries.
+///
+/// # Errors
+///
+/// Returns [`TrajoptError`] when a constraint references an invalid node or has
+/// malformed bounds/weight.
+pub fn evaluate_multiple_shooting_soft_constraints(
+    nodes: &[MultipleShootingNode],
+    first_free_node_index: usize,
+    constraints: &[MultipleShootingSoftConstraint],
+) -> Result<MultipleShootingSoftConstraintReport, TrajoptError> {
+    if first_free_node_index > nodes.len() {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft-constraint first free node index is outside the mesh",
+        });
+    }
+    let free_state_count = (nodes.len() - first_free_node_index) * 6;
+    let mut residuals = vec![0.0_f64; constraints.len()];
+    let mut jacobian = vec![0.0_f64; constraints.len() * free_state_count];
+    for (row, constraint) in constraints.iter().enumerate() {
+        validate_soft_constraint(*constraint, nodes.len())?;
+        let (value, gradient) =
+            soft_constraint_value_gradient(nodes[constraint.node_index].state, constraint.kind)?;
+        if let Some(signed_violation) =
+            soft_constraint_signed_violation(value, constraint.lower, constraint.upper)
+        {
+            let scale = constraint.weight.sqrt();
+            residuals[row] = signed_violation * scale;
+            if constraint.node_index >= first_free_node_index {
+                let column_offset = (constraint.node_index - first_free_node_index) * 6;
+                for component in 0..6 {
+                    jacobian[row * free_state_count + column_offset + component] =
+                        gradient[component] * scale;
+                }
+            }
+        }
+    }
+    let residual_norm = residuals
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    Ok(MultipleShootingSoftConstraintReport {
+        residuals,
+        jacobian,
+        residual_norm,
+        constraint_count: constraints.len(),
+        free_state_count,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn evaluate_two_body_terminal_targeting(
     condition: &TerminalCondition,
@@ -373,29 +571,45 @@ fn evaluate_two_body_terminal_targeting(
     step_s: f64,
     mu_m3_s2: f64,
     finite_difference_step: f64,
+    soft_constraints: &[MultipleShootingSoftConstraint],
 ) -> Result<TerminalTargetingReport, TrajoptError> {
     let continuity_report =
         evaluate_two_body_multiple_shooting(nodes, segment_durations_s, step_s, mu_m3_s2)?;
     let terminal_state = nodes[nodes.len() - 1].state;
     let terminal_residual = terminal_residual_for_state(condition, terminal_state, mu_m3_s2)?;
     let continuity_residual_count = continuity_report.defects.len();
+    let soft_constraint_report =
+        evaluate_multiple_shooting_soft_constraints(nodes, 1, soft_constraints)?;
+    let soft_residual_count = soft_constraint_report.residuals.len();
     let terminal_residual_count = terminal_residual.components.len();
-    let residual_count = continuity_residual_count + terminal_residual_count;
     let free_state_count = (nodes.len() - 1) * 6;
+    if soft_constraint_report.free_state_count != free_state_count {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft-constraint free-state count is inconsistent",
+        });
+    }
+    let residual_count = continuity_residual_count + soft_residual_count + terminal_residual_count;
 
     let mut residuals = Vec::with_capacity(residual_count);
     residuals.extend_from_slice(&continuity_report.defects);
+    residuals.extend_from_slice(&soft_constraint_report.residuals);
     residuals.extend_from_slice(&terminal_residual.components);
 
     let mut jacobian = vec![0.0_f64; residual_count * free_state_count];
     insert_downstream_continuity_jacobian(&continuity_report, &mut jacobian, free_state_count)?;
+    insert_soft_constraint_jacobian(
+        &soft_constraint_report,
+        continuity_residual_count,
+        free_state_count,
+        &mut jacobian,
+    )?;
     insert_terminal_residual_jacobian(
         condition,
         terminal_state,
         &terminal_residual.components,
         mu_m3_s2,
         finite_difference_step,
-        continuity_residual_count,
+        continuity_residual_count + soft_residual_count,
         free_state_count,
         &mut jacobian,
     )?;
@@ -407,6 +621,7 @@ fn evaluate_two_body_terminal_targeting(
         .sqrt();
     Ok(TerminalTargetingReport {
         continuity_report,
+        soft_constraint_report,
         terminal_residual,
         residuals,
         jacobian,
@@ -461,6 +676,26 @@ fn insert_downstream_continuity_jacobian(
     Ok(())
 }
 
+fn insert_soft_constraint_jacobian(
+    report: &MultipleShootingSoftConstraintReport,
+    row_offset: usize,
+    free_state_count: usize,
+    jacobian: &mut [f64],
+) -> Result<(), TrajoptError> {
+    if report.free_state_count != free_state_count {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft-constraint Jacobian free-state count is inconsistent",
+        });
+    }
+    for row in 0..report.constraint_count {
+        for column in 0..free_state_count {
+            jacobian[(row_offset + row) * free_state_count + column] =
+                report.jacobian[row * free_state_count + column];
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn insert_terminal_residual_jacobian(
     condition: &TerminalCondition,
@@ -508,6 +743,136 @@ fn terminal_residual_for_state(
         state.velocity_eci_m_s,
         mu_m3_s2,
     )
+}
+
+fn validate_soft_constraint(
+    constraint: MultipleShootingSoftConstraint,
+    node_count: usize,
+) -> Result<(), TrajoptError> {
+    if constraint.node_index >= node_count {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft constraint node index is outside the mesh",
+        });
+    }
+    if matches!(
+        constraint.kind,
+        MultipleShootingSoftConstraintKind::StateComponent { component } if component >= 6
+    ) {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft constraint state component index must be in 0..6",
+        });
+    }
+    if constraint.lower.is_none() && constraint.upper.is_none() {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft constraint requires at least one bound",
+        });
+    }
+    if let Some(lower) = constraint.lower
+        && !lower.is_finite()
+    {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft constraint lower bound must be finite",
+        });
+    }
+    if let Some(upper) = constraint.upper
+        && !upper.is_finite()
+    {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft constraint upper bound must be finite",
+        });
+    }
+    if let (Some(lower), Some(upper)) = (constraint.lower, constraint.upper)
+        && lower > upper
+    {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft constraint lower bound must not exceed upper bound",
+        });
+    }
+    if !constraint.weight.is_finite() || constraint.weight <= 0.0 {
+        return Err(TrajoptError::InvalidPayload {
+            reason: "soft constraint weight must be finite and positive",
+        });
+    }
+    Ok(())
+}
+
+fn soft_constraint_value_gradient(
+    state: TwoBodyCartesianState,
+    kind: MultipleShootingSoftConstraintKind,
+) -> Result<(f64, [f64; 6]), TrajoptError> {
+    match kind {
+        MultipleShootingSoftConstraintKind::StateComponent { component } => {
+            if component >= 6 {
+                return Err(TrajoptError::InvalidPayload {
+                    reason: "soft constraint state component index must be in 0..6",
+                });
+            }
+            let state_array = state.to_array();
+            let mut gradient = [0.0_f64; 6];
+            gradient[component] = 1.0;
+            Ok((state_array[component], gradient))
+        }
+        MultipleShootingSoftConstraintKind::RadiusNorm => {
+            let radius_m = norm3(state.position_eci_m);
+            if radius_m <= f64::EPSILON {
+                return Err(TrajoptError::InvalidPayload {
+                    reason: "soft constraint radius norm is degenerate",
+                });
+            }
+            Ok((
+                radius_m,
+                [
+                    state.position_eci_m[0] / radius_m,
+                    state.position_eci_m[1] / radius_m,
+                    state.position_eci_m[2] / radius_m,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+            ))
+        }
+        MultipleShootingSoftConstraintKind::SpeedNorm => {
+            let speed_m_s = norm3(state.velocity_eci_m_s);
+            if speed_m_s <= f64::EPSILON {
+                return Err(TrajoptError::InvalidPayload {
+                    reason: "soft constraint speed norm is degenerate",
+                });
+            }
+            Ok((
+                speed_m_s,
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    state.velocity_eci_m_s[0] / speed_m_s,
+                    state.velocity_eci_m_s[1] / speed_m_s,
+                    state.velocity_eci_m_s[2] / speed_m_s,
+                ],
+            ))
+        }
+    }
+}
+
+fn soft_constraint_signed_violation(
+    value: f64,
+    lower: Option<f64>,
+    upper: Option<f64>,
+) -> Option<f64> {
+    if let Some(lower) = lower
+        && value < lower
+    {
+        return Some(value - lower);
+    }
+    if let Some(upper) = upper
+        && value > upper
+    {
+        return Some(value - upper);
+    }
+    None
+}
+
+fn norm3(value: [f64; 3]) -> f64 {
+    (value[0] * value[0] + value[1] * value[1] + value[2] * value[2]).sqrt()
 }
 
 fn insert_segment_defect(
@@ -817,6 +1182,98 @@ mod tests {
         );
 
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn soft_constraints_report_box_and_path_penalty_rows() -> Result<(), TrajoptError> {
+        let initial =
+            TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let durations = [40.0, 40.0];
+        let nodes =
+            seed_two_body_multiple_shooting_nodes(initial, &durations, 10.0, WGS84_MU_M3_S2)?;
+        let node = nodes[1].state;
+        let state = node.to_array();
+        let radius_m = norm3(node.position_eci_m);
+        let speed_m_s = norm3(node.velocity_eci_m_s);
+        let constraints = [
+            MultipleShootingSoftConstraint::state_component_box(
+                1,
+                0,
+                None,
+                Some(state[0] - 10.0),
+                4.0,
+            ),
+            MultipleShootingSoftConstraint::radius_norm_box(1, Some(radius_m + 20.0), None, 9.0),
+            MultipleShootingSoftConstraint::speed_norm_box(1, None, Some(speed_m_s - 1.0), 16.0),
+            MultipleShootingSoftConstraint::state_component_box(
+                1,
+                2,
+                Some(state[2] - 1.0),
+                Some(state[2] + 1.0),
+                25.0,
+            ),
+        ];
+
+        let report = evaluate_multiple_shooting_soft_constraints(&nodes, 1, &constraints)?;
+
+        assert_eq!(report.constraint_count, 4);
+        assert_eq!(report.free_state_count, 12);
+        assert_eq!(report.residuals.len(), 4);
+        assert!((report.residuals[0] - 20.0).abs() < 1.0e-9);
+        assert!((report.jacobian[0] - 2.0).abs() < 1.0e-12);
+        assert!((report.residuals[1] + 60.0).abs() < 1.0e-9);
+        assert!((report.jacobian[12] - 3.0 * node.position_eci_m[0] / radius_m).abs() < 1.0e-12);
+        assert!((report.residuals[2] - 4.0).abs() < 1.0e-9);
+        assert!(
+            (report.jacobian[2 * 12 + 4] - 4.0 * node.velocity_eci_m_s[1] / speed_m_s).abs()
+                < 1.0e-12
+        );
+        assert!(report.residuals[3].abs() < f64::EPSILON);
+        assert!(report.jacobian[3 * 12 + 2].abs() < f64::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_condition_solver_reports_soft_constraint_residuals() -> Result<(), TrajoptError> {
+        let initial =
+            TwoBodyCartesianState::new([6_778_000.0, 0.0, 0.0], [0.0, 7_668.635_675, 0.0])?;
+        let durations = [40.0, 40.0];
+        let nodes =
+            seed_two_body_multiple_shooting_nodes(initial, &durations, 10.0, WGS84_MU_M3_S2)?;
+        let terminal = nodes[nodes.len() - 1].state;
+        let condition = TerminalCondition::RendezvousState {
+            position_eci_m: terminal.position_eci_m,
+            velocity_eci_m_s: terminal.velocity_eci_m_s,
+        };
+        let constraints = [MultipleShootingSoftConstraint::state_component_box(
+            1,
+            0,
+            None,
+            Some(nodes[1].state.position_eci_m[0] - 10.0),
+            4.0,
+        )];
+        let corrector = MultipleShootingCorrector {
+            max_iterations: 0,
+            defect_tolerance: 1.0e-12,
+            ..MultipleShootingCorrector::default()
+        };
+
+        let correction = corrector.solve_two_body_terminal_condition_with_soft_constraints(
+            &condition,
+            &nodes,
+            &durations,
+            10.0,
+            WGS84_MU_M3_S2,
+            &constraints,
+        )?;
+
+        assert!(!correction.converged);
+        assert_eq!(correction.iterations, 0);
+        assert!(correction.continuity_report.defect_norm < 1.0e-8);
+        assert!(correction.terminal_residual.norm < 1.0e-8);
+        assert!((correction.soft_constraint_report.residuals[0] - 20.0).abs() < 1.0e-9);
+        assert!(correction.residual_norm >= 20.0);
         Ok(())
     }
 

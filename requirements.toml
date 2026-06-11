@@ -219,7 +219,7 @@ verification = ["V-TRAJOPT-001"]
 [[requirements]]
 id = "REQ-TRAJOPT-002"
 title = "The trajectory optimizer exposes an STM multiple-shooting substrate"
-statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator with complex-step column verification, a fixed-duration multiple-shooting continuity evaluator whose defects and Jacobian are block-bidiagonal, a damped fixed-endpoint interior-node corrector, and a fixed-initial-state terminal-condition corrector that targets only the closed TerminalCondition equality vocabulary, reports non-convergence honestly, and remains independent of any surface-coordinate target vocabulary."
+statement = "The host-side trajectory optimization crate exposes a deterministic two-body variational STM propagator with complex-step column verification, a fixed-duration multiple-shooting continuity evaluator whose defects and Jacobian are block-bidiagonal, soft box/path exterior-penalty rows for node state components and state norms, a damped fixed-endpoint interior-node corrector, and a fixed-initial-state terminal-condition corrector that targets only the closed TerminalCondition equality vocabulary, reports non-convergence honestly, and remains independent of any surface-coordinate target vocabulary."
 verification = ["V-TRAJOPT-002"]
 
 [[requirements]]
@@ -1464,6 +1464,9 @@ contains = [
   "propagate_two_body_complex",
   "seed_two_body_multiple_shooting_nodes",
   "evaluate_two_body_multiple_shooting",
+  "MultipleShootingSoftConstraint",
+  "MultipleShootingSoftConstraintKind",
+  "evaluate_multiple_shooting_soft_constraints",
   "MultipleShootingCorrector",
   "MultipleShootingTargetCorrection",
   "solve_two_body_fixed_endpoint_continuity",
@@ -1474,6 +1477,8 @@ contains = [
   "fixed_endpoint_corrector_reports_non_convergence_for_inconsistent_endpoint",
   "terminal_condition_corrector_restores_perturbed_rendezvous_mesh",
   "terminal_condition_corrector_reports_non_convergence_for_incompatible_target",
+  "soft_constraints_report_box_and_path_penalty_rows",
+  "terminal_condition_solver_reports_soft_constraint_residuals",
   "multiple_shooting_node_cannot_carry_surface_coordinates",
   "target_latitude_rad",
   "target_longitude_rad",

@@ -1,8 +1,8 @@
 # Trajectory Optimization & Mission Design
 
 **Status:** `experimental` (WP-07.0 T0 offline two-body and scenario-backed
-corrector driver/CLI paths landed; WP-07.1 STM/multiple-shooting substrate is
-partial; higher-tier methods remain design intent).
+corrector driver/CLI paths landed; WP-07.1 STM/multiple-shooting substrate and
+soft node/path penalties are partial; higher-tier methods remain design intent).
 **Audience:** the engineer or LLM agent implementing the `openbmp-trajopt` work
 packages, and reviewers checking the forward-only locks.
 **One-line summary:** wire the dead differential corrector to the real
@@ -154,10 +154,12 @@ against):
   loop by holding endpoints fixed and applying damped Gauss-Newton corrections
   to interior nodes through that STM Jacobian, and now also supports a
   fixed-initial-state terminal-condition correction mode using the closed
-  `TerminalCondition` equality vocabulary. This is traced by `REQ-TRAJOPT-002`,
-  including a downstream compile-fail tripwire that refuses surface-coordinate
-  fields on the multiple-shooting node surface; it is not yet full WP-07.1
-  acceptance closure.
+  `TerminalCondition` equality vocabulary. `MultipleShootingSoftConstraint`
+  appends signed exterior-penalty rows for Cartesian state-component boxes plus
+  radius/speed norm path limits; qbar/q-alpha vehicle path mappings remain
+  future work. This is traced by `REQ-TRAJOPT-002`, including a downstream
+  compile-fail tripwire that refuses surface-coordinate fields on the multiple-
+  shooting node surface; it is not yet full WP-07.1 acceptance closure.
 
 **`crates/openbmp-physics/src/profile.rs` — the vocabulary + propagator pieces.**
 
@@ -749,7 +751,7 @@ gates green and answers the §3 per-PR checklist.
   residuals. A trybuild UI test proves the public multiple-shooting node surface
   cannot carry target latitude/longitude fields. Remaining acceptance work: the
   control/free-time part of the full free vector, T0 cross-tier regression
-  tolerance table, and box/path penalty handling.
+  tolerance table, and qbar/q-alpha vehicle path mappings.
 - **goal:** Robust ascent-to-orbit reference generation that reuses the existing
   physics propagator, replacing the single-shooting limitation with block-
   bidiagonal continuity defects and an STM-based Jacobian.
