@@ -558,6 +558,12 @@ title = "Point-mass solid-motor scenarios can opt into plume telemetry"
 statement = "Schema v3 scenarios may declare [aero.plume] as a telemetry-only plume-similarity opt-in without requiring an aerodynamic force source when aero is not active; the point-mass runner validates that opt-in against a runner-sampled atmosphere and a single solid motor, reconstructs chamber state from the pressure-thrust nozzle path, assembles PlumeState from live atmosphere and nozzle state at each row, emits deterministic plume.* telemetry with inactive rows zeroed, and preserves the default channel set when [aero.plume] is absent."
 verification = ["V-PLUME-002"]
 
+[[requirements]]
+id = "REQ-PLUME-003"
+title = "Rigid-body thermochemical liquid-engine scenarios can opt into plume telemetry"
+statement = "Schema v3 rigid-body scenarios may declare [aero.plume] with a runner-sampled atmosphere and thermochemical_performance on every liquid engine; the runner retains thermochemical liquid-engine plume metadata, reconstructs live chamber pressure from runtime engine mass-flow snapshots, solves the ideal nozzle at the sampled ambient pressure, aggregates active-engine nozzle state into a PlumeState with summed thrust and exit area, emits deterministic plume.* telemetry with inactive rows zeroed, and preserves the default channel set when [aero.plume] is absent."
+verification = ["V-PLUME-003"]
+
 [[verification]]
 id = "V-SIL-001"
 kind = "test"
@@ -3101,3 +3107,25 @@ contains = [
   "plume_telemetry_is_opt_in_and_uses_live_nozzle_state",
 ]
 requirements = ["REQ-PLUME-002"]
+
+[[verification]]
+id = "V-PLUME-003"
+kind = "test"
+command = "cargo test -p openbmp-runner rigid_body::tests::rigid_liquid_plume_telemetry_uses_engine_snapshots --locked && cargo test -p openbmp-runner engines::tests::build_engine_applies_thermochemical_performance --locked"
+paths = [
+  "crates/openbmp-runner/src/engines.rs",
+  "crates/openbmp-runner/src/plume.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/15-plume-environments-and-supersonic-retropropulsion.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "LiquidPlumeEngine",
+  "RigidPlumeEvaluator",
+  "liquid_plume_metadata",
+  "thermochemical_performance",
+  "plume.nozzle_pressure_ratio",
+  "rigid_liquid_plume_telemetry_uses_engine_snapshots",
+]
+requirements = ["REQ-PLUME-003"]

@@ -873,8 +873,12 @@ For point-mass solid-motor scenarios with a runner-sampled atmosphere,
 `plume.exit_pressure_ratio`, `plume.thrust_coefficient`,
 `plume.momentum_flux_ratio`, `plume.initial_turn_angle_rad`,
 `plume.merge_distance_m`, `plume.cluster_merged`, and
-`plume.pifs_onset`. Inactive or singular rows, such as a stationary
-pre-burn row with zero dynamic pressure, are emitted as zero/false.
+`plume.pifs_onset`. Rigid-body liquid-engine scenarios may emit the same
+telemetry when every declared liquid engine has
+`[vehicle.assembly.engines.thermochemical_performance]`; the runner uses
+the thermochemical nozzle metadata plus live engine mass-flow snapshots.
+Inactive or singular rows, such as a stationary pre-burn row with zero
+dynamic pressure, are emitted as zero/false.
 
 The shipped decks in `data/aero/` are launch-vehicle fixtures whose
 Mach coverage tops out in the low-supersonic range. Do not use a

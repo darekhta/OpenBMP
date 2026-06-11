@@ -61,6 +61,7 @@ pub struct EngineRack {
     scheduled_faults: Vec<ScheduledEngineFault>,
     cavitation_faults: Vec<CavitationEngineFault>,
     applied_fault_ids: BTreeSet<String>,
+    liquid_plume: BTreeMap<EngineId, crate::plume::LiquidPlumeEngine>,
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +99,7 @@ impl EngineRack {
         let mut mount_points_body: Vec<Position3<Body>> = Vec::new();
         let mut engine_ids: Vec<EngineId> = Vec::new();
         let mut engine_owners: BTreeMap<EngineId, BodyId> = BTreeMap::new();
+        let mut liquid_plume: BTreeMap<EngineId, crate::plume::LiquidPlumeEngine> = BTreeMap::new();
         let assembly = &document.vehicle.assembly;
         let layout = assembly.cluster_layout.unwrap_or_default();
         let thermochem = document
@@ -105,10 +107,14 @@ impl EngineRack {
             .as_ref()
             .and_then(|propulsion| propulsion.thermochem.as_ref());
         for (index, config) in assembly.engines.iter().enumerate() {
-            let engine = build_engine(index, config, thermochem, resolved_files)?;
+            let built = build_engine(index, config, thermochem, resolved_files)?;
+            let engine = built.engine;
             let id = engine.id();
             if let Some(owner) = config.mounted_to.as_deref() {
                 engine_owners.insert(id, body_id_from_scenario_text(owner));
+            }
+            if let Some(plume) = built.liquid_plume {
+                liquid_plume.insert(id, plume);
             }
             engines.push(Box::new(engine));
             mount_points_body.push(Position3::<Body>::new(
@@ -142,6 +148,7 @@ impl EngineRack {
             scheduled_faults,
             cavitation_faults,
             applied_fault_ids: BTreeSet::new(),
+            liquid_plume,
         })
     }
 
@@ -169,6 +176,14 @@ impl EngineRack {
     #[must_use]
     pub fn mount_points_body(&self) -> &[Position3<Body>] {
         self.cluster.mount_points_body()
+    }
+
+    /// Per-engine plume metadata for thermochemical liquid engines.
+    #[must_use]
+    pub(crate) fn liquid_plume_metadata(
+        &self,
+    ) -> &BTreeMap<EngineId, crate::plume::LiquidPlumeEngine> {
+        &self.liquid_plume
     }
 
     /// Replace the set of rigid-body lanes that have been retired
@@ -520,15 +535,20 @@ fn engine_state_index(state: EngineState) -> u8 {
     }
 }
 
-/// Engine resolver: scenario `EngineConfig` →
-/// `LiquidEngine` (the only kind currently supported). Mounts the
-/// optional load-time fault.
+#[derive(Debug)]
+struct BuiltEngine {
+    engine: LiquidEngine,
+    liquid_plume: Option<crate::plume::LiquidPlumeEngine>,
+}
+
+/// Engine resolver: scenario `EngineConfig` → `LiquidEngine` plus optional
+/// plume metadata. Mounts the optional load-time fault.
 fn build_engine(
     index: usize,
     config: &EngineConfig,
     thermochem: Option<&PropulsionThermochemConfig>,
     resolved_files: &BTreeMap<String, ResolvedFile>,
-) -> Result<LiquidEngine, RunnerError> {
+) -> Result<BuiltEngine, RunnerError> {
     let id = EngineId::from_path(&format!("vehicle.assembly.engines.{id}", id = config.id));
     let limits = EngineLimits {
         max_thrust_n: config.limits.max_thrust_n,
@@ -565,6 +585,10 @@ fn build_engine(
             load_liquid_engine_performance(index, performance, thermochem, resolved_files)
         })
         .transpose()?;
+    let (performance, liquid_plume) = match performance {
+        Some((performance, liquid_plume)) => (Some(performance), Some(liquid_plume)),
+        None => (None, None),
+    };
     let mut engine = match performance {
         Some(performance) => LiquidEngine::new_with_performance(id, limits, performance),
         None => LiquidEngine::new(id, limits),
@@ -583,7 +607,10 @@ fn build_engine(
                 reason: err.to_string(),
             })?;
     }
-    Ok(engine)
+    Ok(BuiltEngine {
+        engine,
+        liquid_plume,
+    })
 }
 
 fn load_liquid_engine_performance(
@@ -591,7 +618,7 @@ fn load_liquid_engine_performance(
     config: &EngineThermochemicalPerformanceConfig,
     thermochem: &PropulsionThermochemConfig,
     resolved_files: &BTreeMap<String, ResolvedFile>,
-) -> Result<LiquidEnginePerformance, RunnerError> {
+) -> Result<(LiquidEnginePerformance, crate::plume::LiquidPlumeEngine), RunnerError> {
     let resolved =
         resolved_files
             .get("propulsion.thermochem.file")
@@ -617,7 +644,7 @@ fn load_liquid_engine_performance(
         NozzleSeparationConfig::Summerfield => NozzleSeparationCriterion::Summerfield,
         NozzleSeparationConfig::Schmucker => NozzleSeparationCriterion::Schmucker,
     };
-    LiquidEnginePerformance::from_thermochemistry_with_efficiency(
+    let performance = LiquidEnginePerformance::from_thermochemistry_with_efficiency(
         LiquidEngineThermochemistry {
             chamber_pressure_pa: thermochem.chamber_pressure_pa,
             c_star_m_s: state.c_star_m_s,
@@ -638,7 +665,18 @@ fn load_liquid_engine_performance(
     .map_err(|err| RunnerError::Engine {
         field: format!("vehicle.assembly.engines[{index}].thermochemical_performance"),
         reason: err.to_string(),
-    })
+    })?;
+    Ok((
+        performance,
+        crate::plume::LiquidPlumeEngine {
+            chamber_pressure_pa: thermochem.chamber_pressure_pa,
+            gamma: state.gamma,
+            throat_area_m2: config.throat_area_m2,
+            exit_area_m2: config.exit_area_m2,
+            nominal_mass_flow_kg_per_s: performance.mass_flow_kg_per_s,
+            separation,
+        },
+    ))
 }
 
 fn scheduled_faults(document: &ScenarioDocument) -> Vec<ScheduledEngineFault> {
@@ -775,6 +813,7 @@ mod tests {
                 scheduled_faults: Vec::new(),
                 cavitation_faults: Vec::new(),
                 applied_fault_ids: BTreeSet::new(),
+                liquid_plume: BTreeMap::new(),
             },
             id,
         )
@@ -1016,13 +1055,22 @@ mod tests {
         )
         .unwrap();
 
-        let mut engine = build_engine(0, &config, Some(&thermochem), &resolved_files).unwrap();
+        let built = build_engine(0, &config, Some(&thermochem), &resolved_files).unwrap();
+        let mut engine = built.engine;
+        let plume = built
+            .liquid_plume
+            .expect("thermochemical engine should expose plume metadata");
 
         assert_eq!(
             engine.limits().max_thrust_n.to_bits(),
             expected.max_thrust_n.to_bits()
         );
         assert_eq!(engine.limits().isp_s.to_bits(), expected.isp_s.to_bits());
+        assert_eq!(
+            plume.nominal_mass_flow_kg_per_s.to_bits(),
+            expected.mass_flow_kg_per_s.to_bits()
+        );
+        assert_eq!(plume.gamma.to_bits(), expected_state.gamma.to_bits());
         assert!(expected.c_star_efficiency.nominal < 1.0);
         assert!(expected.mass_flow_band_kg_per_s.max > expected.mass_flow_kg_per_s);
         assert!(expected.isp_band_s.min < expected.isp_s);

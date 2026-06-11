@@ -338,6 +338,10 @@ pub fn run(
     let mut fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
     let mut mission_region_trace =
         crate::MissionRegionTraceState::new(&crate::mission_region_declarations(document));
+    let plume_evaluator = crate::plume::RigidPlumeEvaluator::maybe_new(
+        document,
+        engine_rack.liquid_plume_metadata(),
+    )?;
     record_step(
         document,
         &mut table,
@@ -347,6 +351,7 @@ pub fn run(
         contact_evaluator.as_ref(),
         contact_accumulator.as_mut(),
         breakdown_atmosphere.as_ref(),
+        plume_evaluator.as_ref(),
         geocentric_surface_radius_m,
         aerothermal_driver.as_ref().map(|driver| driver.output()),
         landing_gear_runtime.as_ref(),
@@ -564,6 +569,7 @@ pub fn run(
             contact_evaluator.as_ref(),
             contact_accumulator.as_mut(),
             breakdown_atmosphere.as_ref(),
+            plume_evaluator.as_ref(),
             geocentric_surface_radius_m,
             aerothermal_driver.as_ref().map(|driver| driver.output()),
             landing_gear_runtime.as_ref(),
@@ -2497,6 +2503,7 @@ struct RigidChannelSet {
     landing_gear: Option<crate::landing_gear::LandingGearTelemetryChannels>,
     active_models: Option<TelemetryChannel<String>>,
     aerothermal: Option<AerothermalTelemetryChannels>,
+    plume: Option<crate::plume::PlumeTelemetryChannels>,
     /// Effector deflection channels, in scenario-declared
     /// order. One `effector.<id>.actual` `f64` channel per declared
     /// effector. Allocated AFTER force breakdown channels and BEFORE
@@ -2949,6 +2956,14 @@ impl RigidChannelSet {
             None
         };
 
+        let plume = document
+            .aero
+            .as_ref()
+            .and_then(|aero| aero.plume.as_ref())
+            .is_some()
+            .then(|| crate::plume::PlumeTelemetryChannels::new(&mut alloc))
+            .transpose()?;
+
         // Effector deflection channels, in scenario-declared
         // order. Allocated BEFORE mission markers so adding effectors
         // does not shift marker channel ids.
@@ -3035,6 +3050,7 @@ impl RigidChannelSet {
             landing_gear,
             active_models,
             aerothermal,
+            plume,
             effector_actuals,
             recovery_states,
             mission_markers,
@@ -3139,6 +3155,9 @@ impl RigidChannelSet {
             channels.push(aerothermal.gas_mdot.metadata().clone());
             channels.push(aerothermal.mass_loss.metadata().clone());
         }
+        if let Some(plume) = &self.plume {
+            plume.push_metadata(&mut channels);
+        }
         // Effector deflection channels, in scenario-declared
         // order, between force breakdown and mission markers.
         for actual in &self.effector_actuals {
@@ -3169,6 +3188,7 @@ fn record_step<I, F, MOM, MM, E, SC>(
     contact_evaluator: Option<&crate::contact::ContactDiagnosticsEvaluator>,
     contact_accumulator: Option<&mut crate::contact::ContactRunAccumulator>,
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
+    plume_evaluator: Option<&crate::plume::RigidPlumeEvaluator>,
     geocentric_surface_radius_m: Option<f64>,
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
     landing_gear_runtime: Option<&crate::landing_gear::LandingGearRuntime>,
@@ -3232,12 +3252,14 @@ where
         &channels.separated_bodies,
     )?;
 
+    let mut atmosphere_sample = None;
     if let Some(atmosphere) = breakdown_atmosphere {
         let altitude_m = atmosphere_altitude_m_with_surface_radius(
             state.position.vector,
             geocentric_surface_radius_m,
         );
         let sample = atmosphere.sample(altitude_m, state.time)?;
+        atmosphere_sample = Some(sample);
         if let (Some(d), Some(p), Some(t), Some(s)) = (
             &channels.atmosphere_density,
             &channels.atmosphere_pressure,
@@ -3352,6 +3374,14 @@ where
         )?;
         row.insert(&aerothermal_channels.gas_mdot, sample.gas_mdot_kg_m2_s)?;
         row.insert(&aerothermal_channels.mass_loss, sample.mass_loss_kg_s)?;
+    }
+    if let Some(plume_channels) = &channels.plume {
+        let plume_state = if let Some(evaluator) = plume_evaluator {
+            evaluator.evaluate(state, atmosphere_sample, kernel_engine_snapshot)?
+        } else {
+            None
+        };
+        plume_channels.insert(&mut row, plume_state)?;
     }
 
     // Effector deflection channels, in scenario-declared
@@ -4320,6 +4350,15 @@ require_monotonic_time = true
             .id
     }
 
+    fn has_channel(outcome: &RunOutcome, name: &str) -> bool {
+        outcome
+            .table
+            .schema()
+            .channels()
+            .iter()
+            .any(|channel| channel.name == name)
+    }
+
     fn f64_column(outcome: &RunOutcome, name: &str) -> Vec<f64> {
         let id = channel_id(outcome, name);
         outcome
@@ -4679,6 +4718,80 @@ require_monotonic_time = true
         assert!(
             consumed.windows(2).any(|pair| pair[1] > pair[0]),
             "engine consumed mass telemetry should increase during burn: {consumed:?}"
+        );
+    }
+
+    #[test]
+    fn rigid_liquid_plume_telemetry_uses_engine_snapshots() {
+        let baseline = openbmp_scenario::Scenario::from_toml_str(RIGID_ENGINE_TELEMETRY_SCENARIO)
+            .expect("baseline engine telemetry scenario must parse");
+        let baseline_outcome =
+            crate::run(&baseline).expect("baseline engine telemetry scenario must run");
+        assert!(
+            !has_channel(&baseline_outcome, "plume.nozzle_pressure_ratio"),
+            "rigid plume telemetry must remain opt-in"
+        );
+
+        let toml = RIGID_ENGINE_TELEMETRY_SCENARIO
+            .replace(
+                "initial_velocity_eci_m_s = [0.0, 0.0, 0.0]",
+                "initial_velocity_eci_m_s = [0.0, 0.0, 25.0]",
+            )
+            .replace("atmosphere = \"none\"", "atmosphere = \"piecewise_exponential\"")
+            .replace(
+                "limits = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }\n",
+                "limits = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }\n\
+                 \n\
+                 [vehicle.assembly.engines.thermochemical_performance]\n\
+                 throat_area_m2 = 0.02\n\
+                 exit_area_m2 = 0.24\n\
+                 ambient_pressure_pa = 101325.0\n\
+                 separation = \"off\"\n",
+            )
+            .replace(
+                "[forces]\n",
+                "[atmosphere]\n\
+                 kind = \"piecewise_exponential\"\n\
+                 \n\
+                 [propulsion.thermochem]\n\
+                 file = \"tests/fixtures/thermochem/synthetic-grain.toml\"\n\
+                 file_sha256 = \"fa3ff43bc91d04317d44a141cf5ff28680e4e0b35d89ff3c91d92ee60f1a842b\"\n\
+                 chamber_pressure_pa = 2000000.0\n\
+                 mixture_ratio = 2.5\n\
+                 \n\
+                 [aero]\n\
+                 \n\
+                 [aero.plume]\n\
+                 engine_count = 1\n\
+                 reference_area_m2 = 1.0\n\
+                 exit_area_total_m2 = 0.24\n\
+                 base_area_m2 = 1.0\n\
+                 center_spacing_m = 0.0\n\
+                 merge_evaluation_distance_m = 0.0\n\
+                 pifs_onset_angle_rad = 0.05\n\
+                 \n\
+                 [forces]\n",
+            );
+        let source_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str_with_source_dir(&toml, Some(source_dir))
+                .expect("plume engine telemetry scenario must parse");
+        let resolved_files = scenario
+            .resolved_files()
+            .expect("resolve thermochemistry deck");
+        let outcome = run(&scenario, &resolved_files, None)
+            .expect("plume engine telemetry scenario must run");
+
+        let npr = f64_column(&outcome, "plume.nozzle_pressure_ratio");
+        assert!(
+            npr.iter().any(|value| *value > 1.0),
+            "rigid plume telemetry should emit nozzle pressure ratio during burn: {npr:?}"
+        );
+
+        let thrust_coefficient = f64_column(&outcome, "plume.thrust_coefficient");
+        assert!(
+            thrust_coefficient.iter().any(|value| *value > 0.0),
+            "rigid plume telemetry should emit thrust coefficient during burn: {thrust_coefficient:?}"
         );
     }
 

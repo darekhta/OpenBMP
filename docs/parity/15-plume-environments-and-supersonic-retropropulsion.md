@@ -1,7 +1,7 @@
 # Plume-Induced Environments & Supersonic Retropropulsion
 
-**Status:** `experimental` (design intent; this document ships no code; no
-implementation date is set).
+**Status:** `experimental` (design intent plus partial WP-15.1 implementation;
+runner plume telemetry remains diagnostic-only).
 **Audience:** the engineer or LLM agent implementing the parity work packages.
 **One-line summary:** give OpenBMP the plume discipline that docs `03`/`04`/`05`
 all defer to each other — live plume similarity state (NPR, C_T) computed from
@@ -142,8 +142,9 @@ solver-consumed). No artifact claims `flight-qualified`/`certified`/
 ## 2. Current state in source
 
 Verified against the tree. The honest summary: **OpenBMP has a plume
-similarity substrate and an opt-in point-mass solid-motor telemetry path, but
-no runner-coupled plume force/heating capability today**. The discipline is
+similarity substrate plus opt-in point-mass solid-motor and rigid-body
+thermochemical liquid-engine telemetry paths, but no runner-coupled plume
+force/heating capability today**. The discipline is
 tractable because the needed ingredients now exist or are planned: live nozzle
 exit conditions, cluster geometry, a Knudsen/bridging substrate, a panel-mesh
 plan (doc `03`), and an aerothermal correlation surface (doc `04`).
@@ -155,7 +156,7 @@ plan (doc `03`), and an aerothermal correlation surface (doc `04`).
 | Nozzle exit state | `crates/openbmp-propulsion/src/motor.rs:349-470` (`NozzlePerformance`, `IdealNozzlePerformance`, `NozzleSolution`) | **Shipped** (doc `05` WP-05.1 class): exit Mach, exit static pressure, momentum + pressure thrust, ambient-aware via `AmbientPressureCorrection::PressureThrust`. `NPR` and `p_e/p_∞` are computable live today — the plume similarity inputs already exist. |
 | Solid motor geometry | `crates/openbmp-propulsion/src/grain.rs:368-433` | Throat area + expansion ratio validated at load; `exit_area_m2 = throat·ε` (`grain.rs:522`). |
 | Cluster geometry | `crates/openbmp-propulsion/src/cluster.rs:60-133` (`EngineCluster::mount_points_body`) | Per-engine body-frame mount points exist — the spacing input the multi-engine merge criterion needs. No plume use. |
-| Plume similarity substrate | `crates/openbmp-plume/src/lib.rs` (`PlumeState`, `PlumeNozzle`, `PlumeFreestream`, `PlumeClusterGeometry`); `crates/openbmp-runner/src/plume.rs` | **Partial WP-15.1.** Computes NPR, exit-pressure ratio, `C_T`, momentum-flux ratio, Prandtl-Meyer initial turn angle, reduced cluster-merge distance, and PIFS onset from coordinate-free nozzle/freestream/geometry scalars. Point-mass solid-motor scenarios can opt into telemetry via `[aero.plume]`; liquid-engine, rigid-body, and derived cluster-geometry assembly remain pending. |
+| Plume similarity substrate | `crates/openbmp-plume/src/lib.rs` (`PlumeState`, `PlumeNozzle`, `PlumeFreestream`, `PlumeClusterGeometry`); `crates/openbmp-runner/src/plume.rs` | **Partial WP-15.1.** Computes NPR, exit-pressure ratio, `C_T`, momentum-flux ratio, Prandtl-Meyer initial turn angle, reduced cluster-merge distance, and PIFS onset from coordinate-free nozzle/freestream/geometry scalars. Point-mass solid-motor scenarios can opt into telemetry via `[aero.plume]`; rigid-body thermochemical liquid-engine scenarios can also emit plume telemetry from live engine mass-flow snapshots. Derived cluster-geometry assembly remains pending. |
 | Rarefied substrate | `crates/openbmp-aero/src/knudsen.rs` | Mean free path, Knudsen number, three bridge functions, Schaaf-Chambré free-molecular aero, `HybridAeroMethod`. Built for freestream rarefaction; directly reusable for plume-impingement regime handoff (§3.6). |
 | Aerothermal surface | `crates/openbmp-aerothermal/src/stagnation.rs` | Fay-Riddell, Sutton-Graves, Tauber-Sutton-reserved — **forebody stagnation only**. No base heating, no separated-zone heating, no plume radiation. |
 | Force composition | `crates/openbmp-runner/src/point_mass.rs:59` (`EngineClusterForceAdapter`, `AeroMethodForceAdapter`, `DeckDragForceAdapter`), `crates/openbmp-runner/src/aero.rs` | Thrust and aero are **independent summed adapters** — no coupling. During the Phalcon-9 boostback/entry burn the deck applies full power-off drag while the engine fires retrograde; the SRP drag-collapse physics is absent. This is the headline wrongness this doc exists to fix. |
@@ -697,9 +698,11 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
   similarity primitives are implemented and traced by `REQ-PLUME-001` /
   `V-PLUME-001`; the schema v3 `[aero.plume]` opt-in and point-mass
   solid-motor runner telemetry path are implemented and traced by
-  `REQ-PLUME-002` / `V-PLUME-002`. Liquid-engine and rigid-body assembly,
-  derived multi-engine geometry, and byte-identity golden coverage remain to
-  complete the WP.
+  `REQ-PLUME-002` / `V-PLUME-002`. Rigid-body thermochemical liquid-engine
+  telemetry is implemented with `LiquidPlumeEngine` / `RigidPlumeEvaluator`
+  and traced by `REQ-PLUME-003` / `V-PLUME-003`. Derived multi-engine geometry,
+  broader liquid-engine calibration, and byte-identity golden coverage remain
+  to complete the WP.
 - **goal:** Create the L2 crate (first commit = skeleton + §3.0 placement
   justification, reviewed) and ship `PlumeState` assembled per step from
   `NozzleSolution` + cluster geometry + atmosphere: NPR, exit-pressure ratio,

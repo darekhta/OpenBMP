@@ -1,11 +1,16 @@
 //! Runner-side plume-similarity assembly and telemetry helpers.
 
+use std::collections::BTreeMap;
+
 use openbmp_core::ChannelId;
+use openbmp_core::EngineId;
 use openbmp_physics::atmosphere::AtmosphereSample;
 use openbmp_plume::{PlumeClusterGeometry, PlumeFreestream, PlumeNozzle, PlumeState};
-use openbmp_propulsion::SolidMotor;
+use openbmp_propulsion::{
+    ChamberState, IdealNozzlePerformance, NozzlePerformance, NozzleSeparationCriterion, SolidMotor,
+};
 use openbmp_scenario::{AeroPlumeConfig, ScenarioDocument};
-use openbmp_state::PointMassState;
+use openbmp_state::{PointMassState, RigidBodyState};
 use openbmp_telemetry::{ChannelMetadata, TelemetryChannel, TelemetryRow};
 
 use crate::RunnerError;
@@ -226,5 +231,219 @@ fn plume_geometry(config: &AeroPlumeConfig) -> PlumeClusterGeometry {
         center_spacing_m: config.center_spacing_m,
         merge_evaluation_distance_m: config.merge_evaluation_distance_m,
         pifs_onset_angle_rad: config.pifs_onset_angle_rad,
+    }
+}
+
+/// Static plume metadata retained for thermochemical liquid engines.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LiquidPlumeEngine {
+    /// Nominal chamber pressure in Pa at the thermochemistry lookup point.
+    pub(crate) chamber_pressure_pa: f64,
+    /// Exhaust specific-heat ratio.
+    pub(crate) gamma: f64,
+    /// Nozzle throat area in m^2.
+    pub(crate) throat_area_m2: f64,
+    /// Nozzle exit area in m^2.
+    pub(crate) exit_area_m2: f64,
+    /// Nominal full-throttle mass flow in kg/s.
+    pub(crate) nominal_mass_flow_kg_per_s: f64,
+    /// Optional overexpanded-flow separation criterion.
+    pub(crate) separation: NozzleSeparationCriterion,
+}
+
+impl LiquidPlumeEngine {
+    fn solve_at_snapshot(
+        self,
+        snapshot: &openbmp_sim::EngineSnapshot,
+        ambient_pressure_pa: f64,
+    ) -> Result<Option<NozzleSolutionSample>, RunnerError> {
+        let mass_flow_kg_s = snapshot.mass_flow_kg_per_s;
+        if mass_flow_kg_s <= 0.0 || snapshot.thrust_body.norm() <= 0.0 {
+            return Ok(None);
+        }
+        let pressure_scale = mass_flow_kg_s / self.nominal_mass_flow_kg_per_s;
+        if !pressure_scale.is_finite() || pressure_scale <= 0.0 {
+            return Ok(None);
+        }
+        let chamber = ChamberState {
+            chamber_pressure_pa: self.chamber_pressure_pa * pressure_scale,
+            mass_flow_kg_s,
+            gamma: self.gamma,
+            throat_area_m2: self.throat_area_m2,
+            exit_area_m2: self.exit_area_m2,
+        };
+        let solution = IdealNozzlePerformance::new(self.separation)
+            .solve(chamber, ambient_pressure_pa)
+            .map_err(RunnerError::from)?;
+        Ok(Some(NozzleSolutionSample {
+            chamber_pressure_pa: chamber.chamber_pressure_pa,
+            gamma: chamber.gamma,
+            exit_area_m2: chamber.exit_area_m2,
+            total_thrust_n: solution.total_thrust_n,
+            momentum_thrust_n: solution.momentum_thrust_n,
+            exit_pressure_pa: solution.exit_pressure_pa,
+            exit_mach: solution.exit_mach,
+        }))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NozzleSolutionSample {
+    chamber_pressure_pa: f64,
+    gamma: f64,
+    exit_area_m2: f64,
+    total_thrust_n: f64,
+    momentum_thrust_n: f64,
+    exit_pressure_pa: f64,
+    exit_mach: f64,
+}
+
+/// Rigid-body plume evaluator for thermochemical liquid-engine clusters.
+#[derive(Debug)]
+pub(crate) struct RigidPlumeEvaluator {
+    engines: BTreeMap<EngineId, LiquidPlumeEngine>,
+    reference_area_m2: f64,
+    base_area_m2: f64,
+    center_spacing_m: f64,
+    merge_evaluation_distance_m: f64,
+    pifs_onset_angle_rad: f64,
+}
+
+impl RigidPlumeEvaluator {
+    pub(crate) fn maybe_new(
+        document: &ScenarioDocument,
+        engines: &BTreeMap<EngineId, LiquidPlumeEngine>,
+    ) -> Result<Option<Self>, RunnerError> {
+        let Some(config) = document.aero.as_ref().and_then(|aero| aero.plume.as_ref()) else {
+            return Ok(None);
+        };
+        if !is_runtime_atmosphere_kind(scenario_atmosphere_kind(document)) {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "[aero.plume] requires a runner-sampled atmosphere".to_owned(),
+            });
+        }
+        if document.vehicle.assembly.engines.is_empty() {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "[aero.plume] rigid-body telemetry requires liquid engines".to_owned(),
+            });
+        }
+        for config in &document.vehicle.assembly.engines {
+            let id = EngineId::from_path(&format!("vehicle.assembly.engines.{id}", id = config.id));
+            if !engines.contains_key(&id) {
+                return Err(RunnerError::UnsupportedScenario {
+                    what:
+                        "[aero.plume] rigid-body telemetry currently requires every liquid engine \
+                           to declare thermochemical_performance"
+                            .to_owned(),
+                });
+            }
+        }
+        Ok(Some(Self {
+            engines: engines.clone(),
+            reference_area_m2: config.reference_area_m2,
+            base_area_m2: config.base_area_m2,
+            center_spacing_m: config.center_spacing_m,
+            merge_evaluation_distance_m: config.merge_evaluation_distance_m,
+            pifs_onset_angle_rad: config.pifs_onset_angle_rad,
+        }))
+    }
+
+    pub(crate) fn evaluate(
+        &self,
+        state: &RigidBodyState,
+        atmosphere: Option<AtmosphereSample>,
+        engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    ) -> Result<Option<PlumeState>, RunnerError> {
+        let Some(atmosphere) = atmosphere else {
+            return Ok(None);
+        };
+        if atmosphere.pressure_pa <= 0.0 || atmosphere.density_kg_m3 <= 0.0 {
+            return Ok(None);
+        }
+        let speed_m_s = state.velocity.vector.norm();
+        let dynamic_pressure_pa = 0.5 * atmosphere.density_kg_m3 * speed_m_s * speed_m_s;
+        if !dynamic_pressure_pa.is_finite() || dynamic_pressure_pa <= 0.0 {
+            return Ok(None);
+        }
+
+        let mut aggregate = AggregateNozzle::default();
+        for (id, plume) in &self.engines {
+            let Some(snapshot) = engine_snapshot.get(id) else {
+                continue;
+            };
+            if let Some(sample) = plume.solve_at_snapshot(snapshot, atmosphere.pressure_pa)? {
+                aggregate.add(sample);
+            }
+        }
+        let Some((nozzle, geometry)) = aggregate.finish(self)? else {
+            return Ok(None);
+        };
+        let freestream = PlumeFreestream {
+            ambient_pressure_pa: atmosphere.pressure_pa,
+            dynamic_pressure_pa,
+            reference_area_m2: self.reference_area_m2,
+        };
+        PlumeState::from_inputs(freestream, nozzle, geometry)
+            .map(Some)
+            .map_err(RunnerError::from)
+    }
+}
+
+#[derive(Debug, Default)]
+struct AggregateNozzle {
+    active_count: u32,
+    total_weight_n: f64,
+    total_thrust_n: f64,
+    momentum_thrust_n: f64,
+    exit_area_total_m2: f64,
+    chamber_pressure_weighted_pa_n: f64,
+    exit_pressure_weighted_pa_n: f64,
+    exit_mach_weighted_n: f64,
+    gamma_weighted_n: f64,
+}
+
+impl AggregateNozzle {
+    fn add(&mut self, sample: NozzleSolutionSample) {
+        let weight = sample.total_thrust_n.max(0.0);
+        if weight == 0.0 {
+            return;
+        }
+        self.active_count = self.active_count.saturating_add(1);
+        self.total_weight_n += weight;
+        self.total_thrust_n += sample.total_thrust_n;
+        self.momentum_thrust_n += sample.momentum_thrust_n;
+        self.exit_area_total_m2 += sample.exit_area_m2;
+        self.chamber_pressure_weighted_pa_n += sample.chamber_pressure_pa * weight;
+        self.exit_pressure_weighted_pa_n += sample.exit_pressure_pa * weight;
+        self.exit_mach_weighted_n += sample.exit_mach * weight;
+        self.gamma_weighted_n += sample.gamma * weight;
+    }
+
+    fn finish(
+        self,
+        evaluator: &RigidPlumeEvaluator,
+    ) -> Result<Option<(PlumeNozzle, PlumeClusterGeometry)>, RunnerError> {
+        if self.active_count == 0 || self.total_weight_n <= 0.0 {
+            return Ok(None);
+        }
+        let nozzle = PlumeNozzle {
+            chamber_pressure_pa: self.chamber_pressure_weighted_pa_n / self.total_weight_n,
+            exit_pressure_pa: self.exit_pressure_weighted_pa_n / self.total_weight_n,
+            exit_mach: self.exit_mach_weighted_n / self.total_weight_n,
+            gamma: self.gamma_weighted_n / self.total_weight_n,
+            total_thrust_n: self.total_thrust_n,
+            momentum_thrust_n: self.momentum_thrust_n,
+        };
+        let geometry = PlumeClusterGeometry {
+            engine_count: self.active_count,
+            exit_area_total_m2: self.exit_area_total_m2,
+            base_area_m2: evaluator.base_area_m2,
+            center_spacing_m: evaluator.center_spacing_m,
+            merge_evaluation_distance_m: evaluator.merge_evaluation_distance_m,
+            pifs_onset_angle_rad: evaluator.pifs_onset_angle_rad,
+        };
+        nozzle.validate()?;
+        geometry.validate()?;
+        Ok(Some((nozzle, geometry)))
     }
 }
