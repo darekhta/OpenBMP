@@ -1569,6 +1569,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbmp-contact"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "openbmp-core"
 version = "0.0.1"
 dependencies = [
