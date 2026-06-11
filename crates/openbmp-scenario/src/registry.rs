@@ -157,6 +157,7 @@ impl ModelRegistry {
             // Force terms.
             ModelDescriptor::new("aero", ModelRole::Force),
             ModelDescriptor::new("thrust", ModelRole::Force),
+            ModelDescriptor::new("contact", ModelRole::Force),
             // Inertial sensors.
             ModelDescriptor::new("ideal_state", ModelRole::Sensor),
             ModelDescriptor::new("imu", ModelRole::Sensor),

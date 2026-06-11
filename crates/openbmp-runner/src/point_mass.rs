@@ -92,6 +92,7 @@ const POINT_MASS_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(104);
 // every existing constant-gravity scenario stays byte-stable.
 const POINT_MASS_GRAVITY_MODEL_ID: ModelId = ModelId::new(105);
 const POINT_MASS_AEROTHERMAL_MODEL_ID: ModelId = ModelId::new(106);
+const POINT_MASS_CONTACT_MODEL_ID: ModelId = ModelId::new(107);
 // Distinct model ids for the engine-cluster path so the
 // determinism oracle can tell legacy single-motor scenarios apart
 // from cluster scenarios in the per-model force breakdown.
@@ -494,6 +495,9 @@ pub fn run(
 }
 
 fn automatic_ground_impact(document: &ScenarioDocument) -> GroundImpact {
+    if document.contact.is_some() {
+        return GroundImpact::disabled();
+    }
     if document.environment.gravity == "constant" {
         GroundImpact::sea_level()
     } else {
@@ -525,12 +529,12 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     for name in document.force_model_universe() {
         if !matches!(
             name.as_str(),
-            "gravity" | "aero" | "thrust" | "aerothermal_diagnostics"
+            "gravity" | "aero" | "thrust" | "aerothermal_diagnostics" | "contact"
         ) {
             return Err(RunnerError::UnsupportedScenario {
                 what: format!(
                     "forces.models entry `{name}` (only gravity, aero, thrust, \
-                     aerothermal_diagnostics wired)"
+                     aerothermal_diagnostics, contact wired)"
                 ),
             });
         }
@@ -837,6 +841,21 @@ fn build_vehicle(
                     "aerothermal_diagnostics",
                     Box::new(adapter),
                 ));
+            }
+            "contact" => {
+                let contact =
+                    document
+                        .contact
+                        .as_ref()
+                        .ok_or_else(|| RunnerError::UnsupportedScenario {
+                            what: "forces includes `contact` but [contact] block is missing"
+                                .to_owned(),
+                        })?;
+                let adapter = crate::contact::build_half_space_contact_force_adapter(
+                    contact,
+                    POINT_MASS_CONTACT_MODEL_ID,
+                )?;
+                named.push(NamedForceModel::new("contact", Box::new(adapter)));
             }
             other => unreachable!("require_supported_shape rejects unknown force model `{other}`"),
         }
@@ -1929,6 +1948,63 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const CONTACT_POINT_MASS_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "contact-point-mass-test"
+description = "Synthetic point-mass contact run with an initial half-space penetration."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.002
+dt_s = 0.001
+seed = 11
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, -0.01]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "contact-point-mass-test"
+
+[[vehicle.assembly.bodies]]
+id = "mass"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity", "contact"]
+
+[contact]
+kind = "half_space"
+ground_altitude_m = 0.0
+geometry = "point"
+normal_law = "kelvin_voigt"
+stiffness_n_m = 2000.0
+damping_n_s_m = 0.0
+friction_coefficient = 0.0
+effective_mass_kg = 1.0
+substeps = 1
+
+[telemetry]
+output.csv = "out/contact-point-mass-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     const DYNAMIC_PRESSURE_EVENT_SCENARIO: &str = r#"
 openbmp.scenario = 3
 
@@ -2215,6 +2291,25 @@ require_monotonic_time = true
                 ..
             } if ground_altitude_m == 0.0
         ));
+    }
+
+    #[test]
+    fn point_mass_contact_force_disables_ground_stop_and_publishes_force() {
+        let scenario =
+            Scenario::from_toml_str(CONTACT_POINT_MASS_SCENARIO).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("contact run succeeds");
+
+        assert!(
+            matches!(outcome.stop_reason, StopReason::EndTime { .. }),
+            "contact scenario should run to end time, got {:?}",
+            outcome.stop_reason
+        );
+        let contact_z = f64_column(&outcome, "force.contact.z_n");
+        assert!(
+            contact_z.iter().any(|value| *value > 0.0),
+            "contact force should push upward for the initial penetration: {contact_z:?}"
+        );
     }
 
     #[test]

@@ -80,6 +80,7 @@ const RIGID_BODY_AERO_MODEL_ID: ModelId = ModelId::new(302);
 const RIGID_BODY_THRUST_MODEL_ID: ModelId = ModelId::new(303);
 const RIGID_BODY_MOTOR_MASS_MODEL_ID: ModelId = ModelId::new(304);
 const RIGID_BODY_AEROTHERMAL_MODEL_ID: ModelId = ModelId::new(305);
+const RIGID_BODY_CONTACT_MODEL_ID: ModelId = ModelId::new(306);
 // Distinct model ids for the engine-cluster path on the
 // rigid-body kernel.
 const RIGID_BODY_ENGINE_CLUSTER_THRUST_MODEL_ID: ModelId = ModelId::new(320);
@@ -596,6 +597,9 @@ fn retired_separated_body_ids(
 }
 
 fn automatic_ground_impact(document: &ScenarioDocument) -> GroundImpact {
+    if document.contact.is_some() {
+        return GroundImpact::disabled();
+    }
     if document.environment.gravity == "constant" {
         GroundImpact::sea_level()
     } else {
@@ -667,12 +671,12 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     for name in document.force_model_universe() {
         if !matches!(
             name.as_str(),
-            "gravity" | "aero" | "thrust" | "aerothermal_diagnostics"
+            "gravity" | "aero" | "thrust" | "aerothermal_diagnostics" | "contact"
         ) {
             return Err(RunnerError::UnsupportedScenario {
                 what: format!(
                     "forces.models entry `{name}` (only gravity, aero, thrust, \
-                     aerothermal_diagnostics wired)"
+                     aerothermal_diagnostics, contact wired)"
                 ),
             });
         }
@@ -1850,6 +1854,21 @@ fn build_vehicle(
                     Box::new(adapter),
                 ));
             }
+            "contact" => {
+                let contact =
+                    document
+                        .contact
+                        .as_ref()
+                        .ok_or_else(|| RunnerError::UnsupportedScenario {
+                            what: "forces includes `contact` but [contact] block is missing"
+                                .to_owned(),
+                        })?;
+                let adapter = crate::contact::build_half_space_contact_force_adapter(
+                    contact,
+                    RIGID_BODY_CONTACT_MODEL_ID,
+                )?;
+                named.push(NamedForceModel::new("contact", Box::new(adapter)));
+            }
             other => unreachable!("require_supported_shape rejects unknown force model `{other}`"),
         }
     }
@@ -2231,7 +2250,7 @@ impl RigidMassEitherKind {
 }
 
 /// Fold an inert body's dry mass properties into a running aggregate, using
-/// the same convention as [`mass_properties_from_snapshots`]: masses add,
+/// the same convention as `mass_properties_from_snapshots`: masses add,
 /// the center of mass is the mass-weighted centroid, and the inertia tensor
 /// (expressed about the shared body-frame origin) sums. This is how a
 /// multi-body continuing stack's mass is assembled at a separation so that
@@ -3580,7 +3599,7 @@ initial_phase = "coast"
 id = "coast"
 label = "coast"
 
-[[mission.events]]
+[[scenario_script.events]]
 id = "deploy_rvs"
 trigger = { kind = "at_time", time_s = 0.1 }
 action = { kind = "jettison_bodies", bodies = ["rv1", "rv2"] }
@@ -3750,7 +3769,7 @@ initial_phase = "flight"
 id = "flight"
 label = "flight"
 
-[[mission.events]]
+[[scenario_script.events]]
 id = "ignite"
 trigger = { kind = "at_time", time_s = 0.1 }
 action = { kind = "engine_command", id = "main", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
@@ -3899,7 +3918,7 @@ initial_phase = "coast"
 id = "coast"
 label = "coast"
 
-[[mission.events]]
+[[scenario_script.events]]
 id = "ignite_retired_booster"
 trigger = { kind = "at_time", time_s = 2.0 }
 action = { kind = "engine_command", id = "boost", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }

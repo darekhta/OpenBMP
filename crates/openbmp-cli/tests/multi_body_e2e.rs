@@ -302,13 +302,13 @@ initial_phase = "boost"
 id    = "boost"
 label = "boost"
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "ignite"
 trigger = { kind = "at_time", time_s = 0.05 }
 action  = { kind = "engine_command", id = "engine_a", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
 once    = true
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "stage_separation"
 trigger = { kind = "at_time", time_s = 0.2 }
 action  = { kind = "jettison_stage", body = "lower" }

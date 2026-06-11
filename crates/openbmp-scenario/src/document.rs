@@ -81,6 +81,11 @@ pub struct ScenarioDocument {
     /// declaring `[forces]` as an explicit override.
     #[serde(default)]
     pub forces: Option<ForcesConfig>,
+    /// Optional compliant contact force block. When declared,
+    /// `contact` must appear in the force-model universe and runners
+    /// disable the legacy terminal `GroundImpact` stop for the
+    /// scenario.
+    pub contact: Option<ContactConfig>,
     /// Telemetry output configuration.
     pub telemetry: TelemetryConfig,
     /// Runtime validation switches.
@@ -204,6 +209,9 @@ impl ScenarioDocument {
         if self.aero.is_some() {
             models.push("aero".to_owned());
         }
+        if self.contact.is_some() {
+            models.push("contact".to_owned());
+        }
         models
     }
 
@@ -248,6 +256,9 @@ impl ScenarioDocument {
         self.environment.validate(registry)?;
         if let Some(forces) = &self.forces {
             forces.validate(registry)?;
+        }
+        if let Some(contact) = &self.contact {
+            contact.validate(self.time.dt_s)?;
         }
         self.telemetry.validate()?;
         if let Some(frames) = &self.frames {
@@ -672,6 +683,13 @@ impl ScenarioDocument {
                 found: header,
             });
         }
+        if self.contact.is_some() && header < SCENARIO_VERSION_V3 {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "contact".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
         Ok(())
     }
 
@@ -1076,6 +1094,13 @@ impl ScenarioDocument {
         if self.entry_profile.is_some() {
             return Err(ScenarioError::SchemaVersionFieldReserved {
                 field: "entry_profile".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
+        if self.contact.is_some() {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "contact".to_owned(),
                 required: SCENARIO_VERSION_V3,
                 found: header,
             });
@@ -1951,6 +1976,22 @@ impl ScenarioDocument {
                 field: "aero".to_owned(),
                 role: ModelRole::Force,
                 name: "aero".to_owned(),
+            });
+        }
+        let has_contact_force = force_models.iter().any(|model| model == "contact");
+        if has_contact_force && self.contact.is_none() {
+            return Err(ScenarioError::MissingRequiredField {
+                field: "contact".to_owned(),
+                role: ModelRole::Force,
+                name: "contact".to_owned(),
+            });
+        }
+        if self.contact.is_some() && !has_contact_force {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "contact".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "forces.models".to_owned(),
+                value_b: "no `\"contact\"` entry".to_owned(),
             });
         }
         let has_thrust_force = force_models.iter().any(|model| model == "thrust");
@@ -3244,6 +3285,258 @@ impl EnvironmentConfig {
         } else {
             None
         }
+    }
+}
+
+/// Contact geometry selector for `[contact]`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactGeometryConfig {
+    /// Treat the vehicle state position as the contact point.
+    Point,
+    /// Treat the vehicle state position as a sphere center.
+    Sphere,
+}
+
+/// Normal-force law selector for `[contact]`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactNormalLawConfig {
+    /// Linear Kelvin-Voigt spring-damper contact.
+    KelvinVoigt,
+    /// Undamped Hertzian `F = k x^(3/2)` contact.
+    Hertz,
+    /// Hunt-Crossley nonlinear contact with damping.
+    HuntCrossley,
+}
+
+/// Opt-in compliant contact force block.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ContactConfig {
+    /// Contact evaluator kind. Initially only `half_space` is wired.
+    pub kind: String,
+    /// Half-space plane altitude in the ECI z coordinate. The plane is
+    /// `z = ground_altitude_m` and its normal points toward ECI `+z`.
+    #[serde(default)]
+    pub ground_altitude_m: f64,
+    /// Body contact geometry.
+    pub geometry: ContactGeometryConfig,
+    /// Required when `geometry = "sphere"`; rejected for point contact.
+    pub radius_m: Option<f64>,
+    /// Normal-force law.
+    pub normal_law: ContactNormalLawConfig,
+    /// Linear normal stiffness for `normal_law = "kelvin_voigt"`.
+    pub stiffness_n_m: Option<f64>,
+    /// Linear normal damping for `normal_law = "kelvin_voigt"`.
+    pub damping_n_s_m: Option<f64>,
+    /// Nonlinear normal stiffness for `normal_law = "hertz"` or
+    /// `"hunt_crossley"`.
+    pub stiffness_n_m_3_2: Option<f64>,
+    /// Explicit Hunt-Crossley damping factor. Mutually exclusive with
+    /// restitution-derived damping fields.
+    pub damping_factor_s_m: Option<f64>,
+    /// Hunt-Crossley restitution coefficient when deriving damping.
+    pub restitution: Option<f64>,
+    /// Positive reference impact speed used with `restitution`.
+    pub reference_impact_speed_m_s: Option<f64>,
+    /// Linearized stiffness used by the explicit sub-step stability
+    /// bound. Required for nonlinear normal laws; optional conservative
+    /// override for Kelvin-Voigt.
+    pub stability_stiffness_n_m: Option<f64>,
+    /// Kinetic friction coefficient. Defaults to frictionless contact.
+    #[serde(default)]
+    pub friction_coefficient: f64,
+    /// Positive tanh smoothing speed for Coulomb friction. Defaults
+    /// to 1 mm/s when omitted.
+    pub friction_regularization_speed_m_s: Option<f64>,
+    /// Effective contact mass used in the load-time stability bound.
+    pub effective_mass_kg: f64,
+    /// Fixed integer contact sub-steps per scenario major step.
+    pub substeps: u32,
+}
+
+impl ContactConfig {
+    /// Default tanh smoothing speed for friction.
+    pub const DEFAULT_FRICTION_REGULARIZATION_SPEED_M_S: f64 = 1.0e-3;
+
+    /// Returns the configured friction regularization speed or the
+    /// schema default.
+    #[must_use]
+    pub fn friction_regularization_speed_m_s(&self) -> f64 {
+        self.friction_regularization_speed_m_s
+            .unwrap_or(Self::DEFAULT_FRICTION_REGULARIZATION_SPEED_M_S)
+    }
+
+    fn validate(&self, dt_s: f64) -> Result<(), ScenarioError> {
+        require_supported("contact.kind", &self.kind, &["half_space"])?;
+        require_finite("contact.ground_altitude_m", self.ground_altitude_m)?;
+        self.validate_geometry()?;
+        let stability_stiffness_n_m = self.validate_normal_law()?;
+        require_non_negative("contact.friction_coefficient", self.friction_coefficient)?;
+        require_positive(
+            "contact.friction_regularization_speed_m_s",
+            self.friction_regularization_speed_m_s(),
+        )?;
+        require_positive("contact.effective_mass_kg", self.effective_mass_kg)?;
+        require_positive_u32("contact.substeps", self.substeps)?;
+
+        openbmp_contact::ContactStabilityConfig::new(
+            stability_stiffness_n_m,
+            self.effective_mass_kg,
+            dt_s,
+            self.substeps,
+        )
+        .and_then(openbmp_contact::ContactStabilityConfig::validate)
+        .map_err(|err| ScenarioError::InvalidContact {
+            reason: err.to_string(),
+        })
+    }
+
+    fn validate_geometry(&self) -> Result<(), ScenarioError> {
+        match self.geometry {
+            ContactGeometryConfig::Point => {
+                if self.radius_m.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "contact.radius_m".to_owned(),
+                        role: ModelRole::Force,
+                        name: "contact point".to_owned(),
+                    });
+                }
+            }
+            ContactGeometryConfig::Sphere => {
+                let radius_m = required_contact_field(self.radius_m, "contact.radius_m", "sphere")?;
+                require_non_negative("contact.radius_m", radius_m)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_normal_law(&self) -> Result<f64, ScenarioError> {
+        match self.normal_law {
+            ContactNormalLawConfig::KelvinVoigt => {
+                reject_contact_field(
+                    self.stiffness_n_m_3_2,
+                    "contact.stiffness_n_m_3_2",
+                    "kelvin_voigt",
+                )?;
+                reject_contact_field(
+                    self.damping_factor_s_m,
+                    "contact.damping_factor_s_m",
+                    "kelvin_voigt",
+                )?;
+                reject_contact_field(self.restitution, "contact.restitution", "kelvin_voigt")?;
+                reject_contact_field(
+                    self.reference_impact_speed_m_s,
+                    "contact.reference_impact_speed_m_s",
+                    "kelvin_voigt",
+                )?;
+                let stiffness_n_m = required_contact_field(
+                    self.stiffness_n_m,
+                    "contact.stiffness_n_m",
+                    "kelvin_voigt",
+                )?;
+                require_positive("contact.stiffness_n_m", stiffness_n_m)?;
+                let damping_n_s_m = self.damping_n_s_m.unwrap_or(0.0);
+                require_non_negative("contact.damping_n_s_m", damping_n_s_m)?;
+                if let Some(stability_stiffness_n_m) = self.stability_stiffness_n_m {
+                    require_positive("contact.stability_stiffness_n_m", stability_stiffness_n_m)?;
+                    Ok(stability_stiffness_n_m)
+                } else {
+                    Ok(stiffness_n_m)
+                }
+            }
+            ContactNormalLawConfig::Hertz => {
+                reject_contact_field(self.stiffness_n_m, "contact.stiffness_n_m", "hertz")?;
+                reject_contact_field(self.damping_n_s_m, "contact.damping_n_s_m", "hertz")?;
+                reject_contact_field(
+                    self.damping_factor_s_m,
+                    "contact.damping_factor_s_m",
+                    "hertz",
+                )?;
+                reject_contact_field(self.restitution, "contact.restitution", "hertz")?;
+                reject_contact_field(
+                    self.reference_impact_speed_m_s,
+                    "contact.reference_impact_speed_m_s",
+                    "hertz",
+                )?;
+                let stiffness_n_m_3_2 = required_contact_field(
+                    self.stiffness_n_m_3_2,
+                    "contact.stiffness_n_m_3_2",
+                    "hertz",
+                )?;
+                require_positive("contact.stiffness_n_m_3_2", stiffness_n_m_3_2)?;
+                let stability_stiffness_n_m = required_contact_field(
+                    self.stability_stiffness_n_m,
+                    "contact.stability_stiffness_n_m",
+                    "hertz",
+                )?;
+                require_positive("contact.stability_stiffness_n_m", stability_stiffness_n_m)?;
+                Ok(stability_stiffness_n_m)
+            }
+            ContactNormalLawConfig::HuntCrossley => {
+                reject_contact_field(self.stiffness_n_m, "contact.stiffness_n_m", "hunt_crossley")?;
+                reject_contact_field(self.damping_n_s_m, "contact.damping_n_s_m", "hunt_crossley")?;
+                let stiffness_n_m_3_2 = required_contact_field(
+                    self.stiffness_n_m_3_2,
+                    "contact.stiffness_n_m_3_2",
+                    "hunt_crossley",
+                )?;
+                require_positive("contact.stiffness_n_m_3_2", stiffness_n_m_3_2)?;
+                match (
+                    self.damping_factor_s_m,
+                    self.restitution,
+                    self.reference_impact_speed_m_s,
+                ) {
+                    (Some(damping_factor_s_m), None, None) => {
+                        require_non_negative("contact.damping_factor_s_m", damping_factor_s_m)?;
+                    }
+                    (None, Some(restitution), Some(reference_impact_speed_m_s)) => {
+                        require_in_range("contact.restitution", restitution, 0.0, 1.0)?;
+                        require_positive(
+                            "contact.reference_impact_speed_m_s",
+                            reference_impact_speed_m_s,
+                        )?;
+                    }
+                    _ => {
+                        return Err(ScenarioError::InvalidContact {
+                            reason: "hunt_crossley requires either damping_factor_s_m or both restitution and reference_impact_speed_m_s".to_owned(),
+                        });
+                    }
+                }
+                let stability_stiffness_n_m = required_contact_field(
+                    self.stability_stiffness_n_m,
+                    "contact.stability_stiffness_n_m",
+                    "hunt_crossley",
+                )?;
+                require_positive("contact.stability_stiffness_n_m", stability_stiffness_n_m)?;
+                Ok(stability_stiffness_n_m)
+            }
+        }
+    }
+}
+
+fn required_contact_field<T: Copy>(
+    value: Option<T>,
+    field: &str,
+    name: &str,
+) -> Result<T, ScenarioError> {
+    value.ok_or_else(|| ScenarioError::MissingRequiredField {
+        field: field.to_owned(),
+        role: ModelRole::Force,
+        name: format!("contact {name}"),
+    })
+}
+
+fn reject_contact_field<T>(value: Option<T>, field: &str, name: &str) -> Result<(), ScenarioError> {
+    if value.is_some() {
+        Err(ScenarioError::UnexpectedField {
+            field: field.to_owned(),
+            role: ModelRole::Force,
+            name: format!("contact {name}"),
+        })
+    } else {
+        Ok(())
     }
 }
 

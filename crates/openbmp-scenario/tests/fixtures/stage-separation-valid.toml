@@ -59,7 +59,7 @@ initial_phase = "powered_ascent"
 id    = "powered_ascent"
 label = "powered ascent"
 
-[[mission.events]]
+[[scenario_script.events]]
 id      = "stage_separation"
 trigger = { kind = "at_time", time_s = 0.2 }
 action  = { kind = "jettison_stage", body = "lower" }

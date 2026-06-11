@@ -36,6 +36,7 @@ EXPECTED_FILES = {
     "23-electrical-power-and-avionics-emulation.md",
     "24-postflight-reconstruction-and-model-correlation.md",
     "25-rendezvous-proximity-operations-and-docking.md",
+    "progress.md",
 }
 
 SECTION_PREFIXES = (

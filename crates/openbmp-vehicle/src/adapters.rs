@@ -35,6 +35,7 @@ use nalgebra::Vector3;
 use openbmp_aero::{
     AeroContext, AeroDeck, AeroError, AeroMethod, knudsen_number, mean_free_path_m,
 };
+use openbmp_contact::{ContactPair, HalfSpace};
 use openbmp_models::{
     ForceContext, ForceModel, MassModel, MassPropertiesRate, ModelEvalError, MomentContext,
     MomentModel, RigidMassModel,
@@ -182,6 +183,92 @@ impl<G: GravityModel> ForceModel<RigidBodyState> for GravityForceAdapter<G> {
 
     fn validation(&self) -> ValidationStatus {
         ValidationStatus::Checked
+    }
+}
+
+// ---------------------------------------------------------------------
+// HalfSpaceContactForceAdapter
+// ---------------------------------------------------------------------
+
+/// Wraps an [`openbmp_contact::ContactPair`] as a kernel-side force
+/// model against a fixed half-space.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct HalfSpaceContactForceAdapter {
+    half_space: HalfSpace,
+    pair: ContactPair,
+    model_id: ModelId,
+}
+
+impl HalfSpaceContactForceAdapter {
+    /// Construct from a half-space, contact pair, and stable model id.
+    #[must_use]
+    pub const fn new(half_space: HalfSpace, pair: ContactPair, model_id: ModelId) -> Self {
+        Self {
+            half_space,
+            pair,
+            model_id,
+        }
+    }
+
+    fn force_from_state_vectors(
+        &self,
+        position_m: Vector3<f64>,
+        velocity_m_s: Vector3<f64>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let force = self
+            .pair
+            .evaluate_half_space(
+                self.half_space,
+                [position_m.x, position_m.y, position_m.z],
+                [velocity_m_s.x, velocity_m_s.y, velocity_m_s.z],
+            )
+            .map_err(|err| ModelEvalError::InvalidState {
+                model: self.model_id,
+                reason: Cow::Owned(err.to_string()),
+            })?
+            .total_force_n();
+        let force = Vector3::new(force[0], force[1], force[2]);
+        if force.x.is_finite() && force.y.is_finite() && force.z.is_finite() {
+            Ok(force)
+        } else {
+            Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            })
+        }
+    }
+}
+
+impl ForceModel<PointMassState> for HalfSpaceContactForceAdapter {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, PointMassState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        self.force_from_state_vectors(ctx.state.position.vector, ctx.state.velocity.vector)
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        true
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::ValidatedToy
+    }
+}
+
+impl ForceModel<RigidBodyState> for HalfSpaceContactForceAdapter {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        self.force_from_state_vectors(ctx.state.position.vector, ctx.state.velocity.vector)
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        true
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::ValidatedToy
     }
 }
 

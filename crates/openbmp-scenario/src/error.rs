@@ -312,4 +312,11 @@ pub enum ScenarioError {
         /// Human-readable reason.
         reason: String,
     },
+    /// A scenario `[contact]` block is internally inconsistent
+    /// or violates its fail-closed stability bound.
+    #[error("[contact] block invalid: {reason}")]
+    InvalidContact {
+        /// Human-readable reason.
+        reason: String,
+    },
 }

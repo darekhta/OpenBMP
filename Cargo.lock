@@ -1737,6 +1737,7 @@ dependencies = [
  "openbmp-aero",
  "openbmp-aerothermal",
  "openbmp-bridge",
+ "openbmp-contact",
  "openbmp-core",
  "openbmp-fc",
  "openbmp-feedsystem",
@@ -1765,6 +1766,7 @@ dependencies = [
 name = "openbmp-scenario"
 version = "0.0.1"
 dependencies = [
+ "openbmp-contact",
  "openbmp-core",
  "serde",
  "sha2",
@@ -1925,6 +1927,7 @@ dependencies = [
  "approx",
  "nalgebra",
  "openbmp-aero",
+ "openbmp-contact",
  "openbmp-core",
  "openbmp-models",
  "openbmp-physics",

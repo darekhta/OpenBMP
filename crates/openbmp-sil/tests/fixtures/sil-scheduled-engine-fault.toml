@@ -1,0 +1,68 @@
+openbmp.scenario = 3
+
+[meta]
+name = "sil-scheduled-engine-fault"
+description = "Synthetic SIL scheduled propulsion fault regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.6
+dt_s = 0.1
+seed = 29
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 10.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "sil-scheduled-engine-fault"
+
+[[vehicle.assembly.bodies]]
+id = "core"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 100.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]
+
+[[vehicle.assembly.engines]]
+id = "main"
+mounted_to = "core"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, 0.0]
+limits = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity", "thrust"]
+
+[mission]
+initial_phase = "flight"
+
+[[mission.phases]]
+id = "flight"
+label = "flight"
+
+[scenario_script]
+
+[[scenario_script.events]]
+id = "ignite"
+trigger = { kind = "at_time", time_s = 0.1 }
+action = { kind = "engine_command", id = "main", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+once = true
+
+[telemetry]
+output.csv = "out/sil-scheduled-engine-fault.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true

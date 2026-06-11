@@ -691,7 +691,7 @@ impl<S: SimState> fmt::Debug for PhaseGatedForceModel<S> {
 
 impl<S: SimState> PhaseGatedForceModel<S> {
     /// Construct from a default model and per-phase overrides keyed by
-    /// the stable path-derived [`openbmp_mission::PhaseId`] payload.
+    /// the stable path-derived `openbmp-mission` `PhaseId` payload.
     #[must_use]
     pub fn new(
         default_model: Box<dyn ForceModel<S>>,

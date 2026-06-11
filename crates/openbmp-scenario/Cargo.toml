@@ -9,6 +9,7 @@ authors.workspace       = true
 description             = "OpenBMP scenario format: TOML parser, model registry, validator, and unit/frame lint."
 
 [dependencies]
+openbmp-contact = { workspace = true }
 openbmp-core = { workspace = true }
 serde        = { workspace = true }
 sha2         = { workspace = true }

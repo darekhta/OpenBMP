@@ -21,7 +21,7 @@ std       = [
     "sgp4/std",
     "thiserror/std",
 ]
-synthetic = []
+synthetic = ["std"]
 
 [dependencies]
 nalgebra          = { version = "0.34.2", default-features = false, features = ["libm"] }

@@ -49,6 +49,7 @@ deny = [
         "arrow-array",
         "arrow-cast",
         "parquet",
+        "sgp4",
     ], reason = "prefer jiff for new code; Arrow/Parquet require chrono transitively" },
 ]
 

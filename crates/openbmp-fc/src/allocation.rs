@@ -63,8 +63,9 @@
 //! that depend on iteration order; running the allocator twice on
 //! identical inputs produces bit-identical outputs.
 
-use std::collections::BTreeSet;
-use std::vec::Vec;
+#[cfg(not(feature = "std"))]
+use alloc::vec;
+use std::{collections::BTreeSet, vec::Vec};
 
 use thiserror::Error;
 

@@ -24,6 +24,7 @@ nalgebra            = { workspace = true }
 openbmp-aero        = { workspace = true }
 openbmp-aerothermal = { workspace = true }
 openbmp-bridge      = { workspace = true }
+openbmp-contact     = { workspace = true }
 openbmp-core        = { workspace = true }
 openbmp-feedsystem  = { workspace = true }
 openbmp-fc          = { workspace = true }

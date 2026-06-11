@@ -119,6 +119,9 @@ mission-control operator-training products are out of scope for a
 launch-vehicle simulator; bus-protocol conformance and waveform-level RF stay
 behind `docs/standards-posture.md`.
 
+Per-work-package implementation status against this ledger is tracked in
+`progress.md` (snapshot-dated; updated in the same PR as any WP merge).
+
 ---
 
 ## 3. Non-negotiable invariants

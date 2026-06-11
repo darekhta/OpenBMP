@@ -118,10 +118,10 @@ parsing live here.** Both `openbmp-fc` (controller) and `openbmp-sim`
 
 ## Features
 
-- `default` — enables `synthetic`.
-- `synthetic` — enables `GustWind` (Dryden filter). Hardware adopters
-  on the FC side can disable to compile down to the deterministic-only
-  surface.
+- `default` — enables `std` and `synthetic`.
+- `synthetic` — enables `std` and `GustWind` (Dryden filter). Hardware
+  adopters on the FC side can disable it to compile down to the
+  deterministic-only surface.
 
 ## References
 
