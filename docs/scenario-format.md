@@ -850,6 +850,32 @@ deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27
 Declaring both `deck` and `[aero.buildup]` fails with
 `ScenarioError::AmbiguousAero`.
 
+Schema v3 also accepts an opt-in plume telemetry block under `[aero]`.
+This block is not an aerodynamic coefficient source; it may be declared
+without `deck`, `[aero.buildup]`, or `[aero.method]` only when `aero` is
+not in the active force model list.
+
+```toml
+[aero]
+
+[aero.plume]
+engine_count = 1
+reference_area_m2 = 1.0
+exit_area_total_m2 = 0.002
+base_area_m2 = 1.0
+center_spacing_m = 0.0
+merge_evaluation_distance_m = 0.0
+pifs_onset_angle_rad = 0.05
+```
+
+For point-mass solid-motor scenarios with a runner-sampled atmosphere,
+`[aero.plume]` emits `plume.nozzle_pressure_ratio`,
+`plume.exit_pressure_ratio`, `plume.thrust_coefficient`,
+`plume.momentum_flux_ratio`, `plume.initial_turn_angle_rad`,
+`plume.merge_distance_m`, `plume.cluster_merged`, and
+`plume.pifs_onset`. Inactive or singular rows, such as a stationary
+pre-burn row with zero dynamic pressure, are emitted as zero/false.
+
 The shipped decks in `data/aero/` are launch-vehicle fixtures whose
 Mach coverage tops out in the low-supersonic range. Do not use a
 deck-only method for Mach-20 re-entry unless the deck explicitly covers

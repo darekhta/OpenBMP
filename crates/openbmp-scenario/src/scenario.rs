@@ -4085,6 +4085,58 @@ sweep_rad = 0.52
         assert!(!files.contains_key("aero.deck"));
     }
 
+    fn minimal_with_plume_only_aero() -> String {
+        MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            + r#"
+
+[aero]
+
+[aero.plume]
+engine_count = 1
+reference_area_m2 = 1.0
+exit_area_total_m2 = 0.002
+base_area_m2 = 1.0
+center_spacing_m = 0.0
+merge_evaluation_distance_m = 0.0
+pifs_onset_angle_rad = 0.05
+"#
+    }
+
+    #[test]
+    fn parses_plume_only_aero_without_force_deck() {
+        let scenario = Scenario::from_toml_str(&minimal_with_plume_only_aero()).unwrap();
+        let plume = scenario
+            .document
+            .aero
+            .as_ref()
+            .and_then(|aero| aero.plume.as_ref())
+            .expect("plume config parsed");
+        assert_eq!(plume.engine_count, 1);
+        assert_eq!(plume.reference_area_m2.to_bits(), 1.0_f64.to_bits());
+    }
+
+    #[test]
+    fn rejects_plume_only_aero_as_aero_force_source() {
+        let toml = minimal_with_plume_only_aero()
+            .replace(r#"models = ["gravity"]"#, r#"models = ["gravity", "aero"]"#);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "aero.deck_or_buildup"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_aero_plume_under_v2() {
+        let toml =
+            minimal_with_plume_only_aero().replace("openbmp.scenario = 3", "openbmp.scenario = 2");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::SchemaVersionFieldReserved { ref field, .. } if field == "aero.plume"),
+            "got {err:?}",
+        );
+    }
+
     #[test]
     fn parses_hybrid_aero_method_with_buildup_deck_source() {
         let toml = minimal_with_buildup_aero()

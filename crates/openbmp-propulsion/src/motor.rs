@@ -653,17 +653,36 @@ impl SolidMotor {
         t_since_ignition_s: f64,
         ambient_pressure_pa: f64,
     ) -> Result<Option<NozzleSolution>, MotorError> {
+        let Some(chamber) = self.chamber_state_at(t_since_ignition_s)? else {
+            return Ok(None);
+        };
+        IdealNozzlePerformance::new(self.geometry.separation)
+            .solve(chamber, ambient_pressure_pa)
+            .map(Some)
+    }
+
+    /// Reconstruct the ideal chamber state implied by the stored
+    /// momentum-thrust curve at one motor time.
+    ///
+    /// Returns `Ok(None)` outside the burn window or at zero thrust.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MotorError`] when the motor does not carry the throat area
+    /// and gas specific-heat ratio required for ideal-nozzle reconstruction.
+    pub fn chamber_state_at(
+        &self,
+        t_since_ignition_s: f64,
+    ) -> Result<Option<ChamberState>, MotorError> {
         let momentum_thrust_n = self.thrust_n_at(t_since_ignition_s)?;
         if momentum_thrust_n == 0.0 {
             return Ok(None);
         }
-        let chamber = self.chamber_state_from_momentum_thrust(
+        self.chamber_state_from_momentum_thrust(
             momentum_thrust_n,
             -self.mass_rate_kg_s(t_since_ignition_s)?,
-        )?;
-        IdealNozzlePerformance::new(self.geometry.separation)
-            .solve(chamber, ambient_pressure_pa)
-            .map(Some)
+        )
+        .map(Some)
     }
 
     fn chamber_state_from_momentum_thrust(
@@ -1267,6 +1286,18 @@ mod tests {
             .thrust_n_at_ambient_pressure(2.0, solution_at_vacuum.exit_pressure_pa)
             .unwrap();
         assert_abs_diff_eq!(corrected, optimum, epsilon = 1.0e-12);
+    }
+
+    #[test]
+    fn chamber_state_at_exposes_pressure_thrust_nozzle_inputs() {
+        let m = pressure_thrust_motor();
+        let chamber = m.chamber_state_at(2.0).unwrap().unwrap();
+        assert!(chamber.chamber_pressure_pa > 0.0);
+        assert!(chamber.mass_flow_kg_s > 0.0);
+        assert_eq!(chamber.gamma.to_bits(), 1.2_f64.to_bits());
+        assert_eq!(chamber.throat_area_m2.to_bits(), 1.0e-4_f64.to_bits());
+        assert_eq!(chamber.exit_area_m2.to_bits(), 2.0e-3_f64.to_bits());
+        assert!(m.chamber_state_at(4.5).unwrap().is_none());
     }
 
     #[test]

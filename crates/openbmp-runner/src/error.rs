@@ -10,6 +10,7 @@ use openbmp_aerothermal::AerothermalError;
 use openbmp_bridge::BridgeError;
 use openbmp_feedsystem::FeedSystemError;
 use openbmp_physics::PhysicsError;
+use openbmp_plume::PlumeError;
 use openbmp_propulsion::MotorError;
 use openbmp_scenario::ScenarioError;
 use openbmp_sim::SimulationError;
@@ -94,6 +95,9 @@ pub enum RunnerError {
     /// A live aerothermal model construction or evaluation failed.
     #[error("aerothermal error")]
     Aerothermal(#[from] AerothermalError),
+    /// A plume-similarity model construction or evaluation failed.
+    #[error("plume similarity error")]
+    Plume(#[from] PlumeError),
     /// A schema-2 aero deck axis could not be matched against a
     /// scenario effector at runner build time.
     #[error("aero/effector mismatch at {field}: {reason}")]
@@ -139,6 +143,7 @@ impl RunnerError {
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
             | Self::Aerothermal(_)
+            | Self::Plume(_)
             | Self::AeroEffectorMismatch { .. }
             | Self::Motor(_)
             | Self::Thermochem(_)

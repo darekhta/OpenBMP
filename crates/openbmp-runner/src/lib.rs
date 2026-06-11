@@ -45,6 +45,7 @@ pub mod frames;
 pub mod integrator;
 pub mod landing_gear;
 pub mod mission;
+pub mod plume;
 pub mod pogo;
 pub mod point_mass;
 pub mod propulsion;

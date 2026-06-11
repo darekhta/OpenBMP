@@ -239,6 +239,8 @@ pub fn run(
         kernel.set_external_mission_state(Some(initial_phase));
     }
     let channel_set = PointMassChannelSet::new(document)?;
+    let plume_evaluator =
+        crate::plume::PointMassPlumeEvaluator::maybe_new(document, loaded_models.motor.as_ref())?;
     let contact_evaluator = document
         .contact
         .as_ref()
@@ -317,6 +319,7 @@ pub fn run(
         contact_evaluator.as_ref(),
         contact_accumulator.as_mut(),
         breakdown_atmosphere.as_ref(),
+        plume_evaluator.as_ref(),
         geocentric_surface_radius_m,
         aerothermal_driver.as_ref().map(|driver| driver.output()),
         fc_bridge.as_ref(),
@@ -458,6 +461,7 @@ pub fn run(
             contact_evaluator.as_ref(),
             contact_accumulator.as_mut(),
             breakdown_atmosphere.as_ref(),
+            plume_evaluator.as_ref(),
             geocentric_surface_radius_m,
             aerothermal_driver.as_ref().map(|driver| driver.output()),
             fc_bridge.as_ref(),
@@ -1113,6 +1117,8 @@ struct PointMassChannelSet {
     active_models: Option<TelemetryChannel<String>>,
     /// Live aerothermal diagnostic channels.
     aerothermal: Option<AerothermalTelemetryChannels>,
+    /// Live plume-similarity diagnostic channels.
+    plume: Option<crate::plume::PlumeTelemetryChannels>,
     /// Effector deflection channels, in scenario-declared
     /// order. One `effector.<id>.actual` `f64` channel per declared
     /// effector. Allocated AFTER force breakdown channels and BEFORE
@@ -1387,6 +1393,14 @@ impl PointMassChannelSet {
             None
         };
 
+        let plume = document
+            .aero
+            .as_ref()
+            .and_then(|aero| aero.plume.as_ref())
+            .is_some()
+            .then(|| crate::plume::PlumeTelemetryChannels::new(&mut alloc))
+            .transpose()?;
+
         // Effector deflection channels, in scenario-
         // declared order. One `effector.<id>.actual` channel per
         // declared effector. Allocated BEFORE mission markers so
@@ -1467,6 +1481,7 @@ impl PointMassChannelSet {
             contact,
             active_models,
             aerothermal,
+            plume,
             effector_actuals,
             recovery_states,
             mission_markers,
@@ -1537,6 +1552,9 @@ impl PointMassChannelSet {
             channels.push(aerothermal.gas_mdot.metadata().clone());
             channels.push(aerothermal.mass_loss.metadata().clone());
         }
+        if let Some(plume) = &self.plume {
+            plume.push_metadata(&mut channels);
+        }
         // Effector deflection channels, in scenario-declared
         // order. Allocated AFTER force breakdown channels and BEFORE
         // mission markers — this ordering is the determinism contract.
@@ -1568,6 +1586,7 @@ fn record_step<I, F, MM, E, SC>(
     contact_evaluator: Option<&crate::contact::ContactDiagnosticsEvaluator>,
     contact_accumulator: Option<&mut crate::contact::ContactRunAccumulator>,
     breakdown_atmosphere: Option<&RuntimeAtmosphere>,
+    plume_evaluator: Option<&crate::plume::PointMassPlumeEvaluator<'_>>,
     geocentric_surface_radius_m: Option<f64>,
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
     fc_bridge: Option<&crate::fc_bridge::FcBridge>,
@@ -1607,12 +1626,14 @@ where
     // Atmosphere sample at the post-step state. Match the runtime
     // environment's frame-aware altitude conversion so ECI launches
     // do not report sea-level telemetry density at orbital radius.
+    let mut atmosphere_sample = None;
     if let Some(atmosphere) = breakdown_atmosphere {
         let altitude_m = atmosphere_altitude_m_with_surface_radius(
             state.position.vector,
             geocentric_surface_radius_m,
         );
         let sample = atmosphere.sample(altitude_m, state.time)?;
+        atmosphere_sample = Some(sample);
         if let (Some(d), Some(p), Some(t), Some(s)) = (
             &channels.atmosphere_density,
             &channels.atmosphere_pressure,
@@ -1726,6 +1747,14 @@ where
         )?;
         row.insert(&aerothermal_channels.gas_mdot, sample.gas_mdot_kg_m2_s)?;
         row.insert(&aerothermal_channels.mass_loss, sample.mass_loss_kg_s)?;
+    }
+    if let Some(plume_channels) = &channels.plume {
+        let plume_state = if let Some(evaluator) = plume_evaluator {
+            evaluator.evaluate(state, atmosphere_sample)?
+        } else {
+            None
+        };
+        plume_channels.insert(&mut row, plume_state)?;
     }
 
     // Effector deflection channels. The snapshot is in

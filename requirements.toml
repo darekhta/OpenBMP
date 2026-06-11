@@ -552,6 +552,12 @@ title = "Plume similarity substrate computes live diagnostic state"
 statement = "The L2 openbmp-plume crate exposes coordinate-free plume similarity inputs and deterministic PlumeState assembly from freestream, nozzle, and intrinsic cluster-geometry scalars; it computes nozzle pressure ratio, exit-pressure ratio, thrust coefficient, momentum-flux ratio, Prandtl-Meyer initial turn angle, reduced cluster-merge distance and flag, and a PIFS onset flag while validating non-finite and malformed scalar inputs fail-closed and depending on no runner, simulator, mission, or flight-controller crates."
 verification = ["V-PLUME-001"]
 
+[[requirements]]
+id = "REQ-PLUME-002"
+title = "Point-mass solid-motor scenarios can opt into plume telemetry"
+statement = "Schema v3 scenarios may declare [aero.plume] as a telemetry-only plume-similarity opt-in without requiring an aerodynamic force source when aero is not active; the point-mass runner validates that opt-in against a runner-sampled atmosphere and a single solid motor, reconstructs chamber state from the pressure-thrust nozzle path, assembles PlumeState from live atmosphere and nozzle state at each row, emits deterministic plume.* telemetry with inactive rows zeroed, and preserves the default channel set when [aero.plume] is absent."
+verification = ["V-PLUME-002"]
+
 [[verification]]
 id = "V-SIL-001"
 kind = "test"
@@ -660,6 +666,7 @@ paths = [
   "crates/openbmp-cli/src/main.rs",
   "crates/openbmp-scenario/src/document.rs",
   "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
   "crates/openbmp-scenario/src/scenario.rs",
   "crates/openbmp-fc/Cargo.toml",
   "docs/scenario-format.md",
@@ -3061,3 +3068,36 @@ contains = [
   "plume_state_reports_similarity_scalars",
 ]
 requirements = ["REQ-PLUME-001"]
+
+[[verification]]
+id = "V-PLUME-002"
+kind = "test"
+command = "cargo test -p openbmp-scenario plume --locked && cargo test -p openbmp-propulsion chamber_state_at_exposes_pressure_thrust_nozzle_inputs --locked && cargo test -p openbmp-runner --test pressure_thrust plume_telemetry_is_opt_in_and_uses_live_nozzle_state --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-propulsion/src/motor.rs",
+  "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/error.rs",
+  "crates/openbmp-runner/src/lib.rs",
+  "crates/openbmp-runner/src/plume.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/tests/pressure_thrust.rs",
+  "docs/scenario-format.md",
+  "docs/parity/15-plume-environments-and-supersonic-retropropulsion.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "AeroPlumeConfig",
+  "aero.plume",
+  "parses_plume_only_aero_without_force_deck",
+  "rejects_aero_plume_under_v2",
+  "chamber_state_at",
+  "PointMassPlumeEvaluator",
+  "PlumeTelemetryChannels",
+  "plume.nozzle_pressure_ratio",
+  "plume.thrust_coefficient",
+  "plume_telemetry_is_opt_in_and_uses_live_nozzle_state",
+]
+requirements = ["REQ-PLUME-002"]

@@ -4880,6 +4880,7 @@ require_monotonic_time = true
             buildup: None,
             method: None,
             mounted_to: Some("upper".to_owned()),
+            plume: None,
             deck_sha256: None,
         });
         require_supported_multi_body_shape(&document).expect("owned non-gravity force is allowed");

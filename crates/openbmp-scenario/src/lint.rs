@@ -406,6 +406,9 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     {
         return true;
     }
+    if path.starts_with("$.aero.plume") && key == "engine_count" {
+        return true;
+    }
 
     if path.starts_with("$.aerothermal")
         && matches!(key, "n_nodes" | "gas_yield_fraction" | "lewis_number")

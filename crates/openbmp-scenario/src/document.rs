@@ -308,8 +308,12 @@ impl ScenarioDocument {
             }
         }
         self.validate_frame_epoch_requirements()?;
+        let uses_aero_force = self
+            .force_model_universe()
+            .iter()
+            .any(|model| model == "aero");
         if let Some(aero) = &self.aero {
-            aero.validate()?;
+            aero.validate(uses_aero_force)?;
         }
         if let Some(aerothermal) = &self.aerothermal {
             aerothermal.validate(self.time.dt_s)?;
@@ -683,6 +687,15 @@ impl ScenarioDocument {
         if self.aerothermal.is_some() && header < SCENARIO_VERSION_V3 {
             return Err(ScenarioError::SchemaVersionFieldReserved {
                 field: "aerothermal".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
+        if self.aero.as_ref().is_some_and(|aero| aero.plume.is_some())
+            && header < SCENARIO_VERSION_V3
+        {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "aero.plume".to_owned(),
                 required: SCENARIO_VERSION_V3,
                 found: header,
             });
@@ -5420,13 +5433,17 @@ pub struct AeroConfig {
     /// includes `aero`.
     #[serde(default)]
     pub mounted_to: Option<String>,
+    /// Optional plume-similarity telemetry configuration. This block
+    /// does not provide an aerodynamic coefficient source by itself.
+    #[serde(default)]
+    pub plume: Option<AeroPlumeConfig>,
     /// Optional pinned SHA-256 digest (lower-case hex). When present,
     /// a mismatch with the file's actual digest fails closed.
     pub deck_sha256: Option<String>,
 }
 
 impl AeroConfig {
-    fn validate(&self) -> Result<(), ScenarioError> {
+    fn validate(&self, requires_coefficient_source: bool) -> Result<(), ScenarioError> {
         let method_kind = self
             .method
             .as_ref()
@@ -5434,16 +5451,28 @@ impl AeroConfig {
         if let Some(method) = &self.method {
             method.validate("aero.method")?;
         }
+        if let Some(plume) = &self.plume {
+            plume.validate("aero.plume")?;
+        }
         let method_uses_deck = self.method.as_ref().is_none_or(AeroMethodConfig::uses_deck);
         if method_uses_deck {
             match (&self.deck, &self.buildup) {
                 (Some(_), Some(_)) => return Err(ScenarioError::AmbiguousAero),
                 (None, None) => {
-                    return Err(ScenarioError::MissingRequiredField {
-                        field: "aero.deck_or_buildup".to_owned(),
-                        role: ModelRole::Force,
-                        name: "aero".to_owned(),
-                    });
+                    if self.deck_sha256.is_some() {
+                        return Err(ScenarioError::UnexpectedField {
+                            field: "aero.deck_sha256".to_owned(),
+                            role: ModelRole::Force,
+                            name: "aero".to_owned(),
+                        });
+                    }
+                    if requires_coefficient_source {
+                        return Err(ScenarioError::MissingRequiredField {
+                            field: "aero.deck_or_buildup".to_owned(),
+                            role: ModelRole::Force,
+                            name: "aero".to_owned(),
+                        });
+                    }
                 }
                 (Some(deck), None) => {
                     if deck.as_os_str().is_empty() {
@@ -5475,6 +5504,48 @@ impl AeroConfig {
         if let Some(mounted_to) = &self.mounted_to {
             require_non_empty("aero.mounted_to", mounted_to)?;
         }
+        Ok(())
+    }
+}
+
+/// Opt-in live plume-similarity telemetry configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroPlumeConfig {
+    /// Number of firing nozzles represented by this telemetry state.
+    pub engine_count: u32,
+    /// Aerodynamic reference area used for `C_T`, in m².
+    pub reference_area_m2: f64,
+    /// Total nozzle exit area represented by this state, in m².
+    pub exit_area_total_m2: f64,
+    /// Vehicle base area reserved for later base-pressure consumers, in m².
+    pub base_area_m2: f64,
+    /// Center-to-center spacing between adjacent nozzles, in m.
+    pub center_spacing_m: f64,
+    /// Axial distance where the reduced merge criterion is evaluated, in m.
+    pub merge_evaluation_distance_m: f64,
+    /// Initial turn-angle threshold used as the reduced PIFS onset flag.
+    pub pifs_onset_angle_rad: f64,
+}
+
+impl AeroPlumeConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_positive_u32(&format!("{path}.engine_count"), self.engine_count)?;
+        require_positive(&format!("{path}.reference_area_m2"), self.reference_area_m2)?;
+        require_positive(
+            &format!("{path}.exit_area_total_m2"),
+            self.exit_area_total_m2,
+        )?;
+        require_positive(&format!("{path}.base_area_m2"), self.base_area_m2)?;
+        require_non_negative(&format!("{path}.center_spacing_m"), self.center_spacing_m)?;
+        require_non_negative(
+            &format!("{path}.merge_evaluation_distance_m"),
+            self.merge_evaluation_distance_m,
+        )?;
+        require_non_negative(
+            &format!("{path}.pifs_onset_angle_rad"),
+            self.pifs_onset_angle_rad,
+        )?;
         Ok(())
     }
 }

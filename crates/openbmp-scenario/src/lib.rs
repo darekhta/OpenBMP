@@ -30,7 +30,7 @@ pub use document::{
     AeroBuildupAfterbodyConfig, AeroBuildupConfig, AeroBuildupFinsConfig, AeroBuildupGridConfig,
     AeroBuildupNoseConfig, AeroConfig, AeroFreeMolecularConfig, AeroHybridConfig,
     AeroKnudsenBridgeConfig, AeroLinearMachBridgeConfig, AeroMethodConfig,
-    AeroModifiedNewtonianConfig, AeroTangentConeConfig, AeroTangentWedgeConfig,
+    AeroModifiedNewtonianConfig, AeroPlumeConfig, AeroTangentConeConfig, AeroTangentWedgeConfig,
     AerothermalAblationConfig, AerothermalBackwallConfig, AerothermalConfig,
     AerothermalFayRiddellConfig, AerothermalThermalToyConfig, AssemblyBodyConfig, AssemblyConfig,
     AtmosphereConfig, BaffleModelConfig, BatchConfig, BodyGeometryConfig, ClusterLayoutConfig,

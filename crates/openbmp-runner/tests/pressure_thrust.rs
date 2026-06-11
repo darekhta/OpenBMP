@@ -25,6 +25,15 @@ fn f64_column(outcome: &openbmp_runner::RunOutcome, name: &str) -> Vec<f64> {
         .collect()
 }
 
+fn has_channel(outcome: &openbmp_runner::RunOutcome, name: &str) -> bool {
+    outcome
+        .table
+        .schema()
+        .channels()
+        .iter()
+        .any(|channel| channel.name == name)
+}
+
 fn run_scenario(toml: &str) -> openbmp_runner::RunOutcome {
     let scenario = openbmp_scenario::Scenario::from_toml_str(toml).expect("scenario parses");
     openbmp_runner::run(&scenario).expect("scenario runs")
@@ -35,6 +44,41 @@ fn max_positive_thrust_n(outcome: &openbmp_runner::RunOutcome) -> f64 {
         .into_iter()
         .filter(|value| *value > 0.0)
         .fold(0.0, f64::max)
+}
+
+#[test]
+fn plume_telemetry_is_opt_in_and_uses_live_nozzle_state() {
+    let baseline = run_scenario(include_str!("fixtures/point-mass-pressure-thrust.toml"));
+    assert!(!has_channel(&baseline, "plume.nozzle_pressure_ratio"));
+
+    let plume_enabled = run_scenario(
+        &include_str!("fixtures/point-mass-pressure-thrust.toml").replace(
+            "[forces]",
+            "[aero]\n\
+             \n\
+             [aero.plume]\n\
+             engine_count = 1\n\
+             reference_area_m2 = 1.0\n\
+             exit_area_total_m2 = 0.002\n\
+             base_area_m2 = 1.0\n\
+             center_spacing_m = 0.0\n\
+             merge_evaluation_distance_m = 0.0\n\
+             pifs_onset_angle_rad = 0.05\n\
+             \n\
+             [forces]",
+        ),
+    );
+
+    let nozzle_pressure_ratio = f64_column(&plume_enabled, "plume.nozzle_pressure_ratio");
+    assert!(
+        nozzle_pressure_ratio.iter().any(|value| *value > 1.0),
+        "live plume telemetry should report powered nozzle pressure ratio: {nozzle_pressure_ratio:?}"
+    );
+    let thrust_coefficient = f64_column(&plume_enabled, "plume.thrust_coefficient");
+    assert!(
+        thrust_coefficient.iter().any(|value| *value > 0.0),
+        "live plume telemetry should report powered thrust coefficient: {thrust_coefficient:?}"
+    );
 }
 
 #[test]
@@ -114,7 +158,7 @@ fn inline_grain_thermochem_deck_overrides_propellant_constants() {
             "[propulsion.nozzle]",
             "[propulsion.thermochem]\n\
              file = \"tests/fixtures/thermochem/synthetic-grain.toml\"\n\
-             file_sha256 = \"01984e1e1122f7ceba2859a6c7a2b3771b88e1ece9fbf9e8a75afc7ae7142f64\"\n\
+             file_sha256 = \"fa3ff43bc91d04317d44a141cf5ff28680e4e0b35d89ff3c91d92ee60f1a842b\"\n\
              chamber_pressure_pa = 2000000.0\n\
              mixture_ratio = 2.5\n\
              \n\

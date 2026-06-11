@@ -31,6 +31,7 @@ openbmp-fc          = { workspace = true }
 openbmp-mission     = { workspace = true }
 openbmp-mc          = { workspace = true }
 openbmp-physics     = { workspace = true }
+openbmp-plume       = { workspace = true }
 openbmp-propulsion  = { workspace = true }
 openbmp-rt          = { workspace = true }
 openbmp-scenario    = { workspace = true }

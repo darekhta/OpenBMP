@@ -1755,6 +1755,7 @@ dependencies = [
  "openbmp-mc",
  "openbmp-mission",
  "openbmp-physics",
+ "openbmp-plume",
  "openbmp-propulsion",
  "openbmp-rt",
  "openbmp-scenario",
