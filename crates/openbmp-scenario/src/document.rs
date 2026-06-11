@@ -85,6 +85,8 @@ pub struct ScenarioDocument {
     pub telemetry: TelemetryConfig,
     /// Runtime validation switches.
     pub validation: ValidationConfig,
+    /// Optional host-side realtime frame pacing. Parsed under v3 only.
+    pub realtime: Option<RealtimeConfig>,
     /// Optional epoch metadata.
     pub epoch: Option<EpochConfig>,
     /// Optional frame profile metadata.
@@ -122,6 +124,10 @@ pub struct ScenarioDocument {
     /// Optional offline range-safety landing-footprint
     /// post-processing configuration (v3 only).
     pub landing_footprint: Option<LandingFootprintConfig>,
+    /// Optional synthetic-only rare-event Monte-Carlo manifest
+    /// (v3 only). This is parser-level metadata; execution remains
+    /// limited to the `openbmp-mc` synthetic limit-state library.
+    pub monte_carlo: Option<MonteCarloConfig>,
     /// Optional offline ideal staging budget / mass-optimal split
     /// analysis (v3 only).
     pub staging_analysis: Option<StagingAnalysisConfig>,
@@ -382,6 +388,8 @@ impl ScenarioDocument {
         self.validate_ascent_reference_agreement()?;
         self.validate_effector_references()?;
         self.validate_engine_references()?;
+        self.validate_feed_network_references()?;
+        self.validate_propulsion_fault_references()?;
         self.validate_recovery_references()?;
         self.validate_relative_distance_trigger_references()?;
         self.validate_multi_body_attitude_target_references()?;
@@ -597,6 +605,16 @@ impl ScenarioDocument {
                     .map_or(Ok(()), ScheduleConfig::validate)
             },
         )?;
+        if let Some(realtime) = self.realtime.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "realtime".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            realtime.validate()?;
+        }
         if let Some(multi_body) = self.multi_body.as_ref() {
             if header < SCENARIO_VERSION_V3 {
                 return Err(ScenarioError::SchemaVersionFieldReserved {
@@ -616,6 +634,16 @@ impl ScenarioDocument {
                 });
             }
             landing_footprint.validate()?;
+        }
+        if let Some(monte_carlo) = self.monte_carlo.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "monte_carlo".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            monte_carlo.validate()?;
         }
         if let Some(staging_analysis) = self.staging_analysis.as_ref() {
             if header < SCENARIO_VERSION_V3 {
@@ -720,6 +748,31 @@ impl ScenarioDocument {
                 });
             }
             allocation.validate()?;
+        }
+        if let Some(transport) = fc.transport.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.transport".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            transport.validate()?;
+        }
+        if let Some(transport_faults) = fc.transport_faults.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.transport_faults".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            if fc.transport.is_none() {
+                return Err(ScenarioError::InvalidFc {
+                    reason: "[fc.transport_faults] requires [fc.transport]".to_owned(),
+                });
+            }
+            transport_faults.validate()?;
         }
         if let Some(fdir) = &fc.fdir
             && let Some(detector) = fdir.detector.as_ref()
@@ -1013,6 +1066,13 @@ impl ScenarioDocument {
                 found: header,
             });
         }
+        if self.monte_carlo.is_some() {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "monte_carlo".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
         if self.entry_profile.is_some() {
             return Err(ScenarioError::SchemaVersionFieldReserved {
                 field: "entry_profile".to_owned(),
@@ -1052,6 +1112,13 @@ impl ScenarioDocument {
             if fc.estimator_lanes.is_some() {
                 return Err(ScenarioError::SchemaVersionFieldReserved {
                     field: "fc.estimator_lanes".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            if fc.transport.is_some() {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "fc.transport".to_owned(),
                     required: SCENARIO_VERSION_V3,
                     found: header,
                 });
@@ -1343,6 +1410,166 @@ impl ScenarioDocument {
             }
         }
         Ok(())
+    }
+
+    fn validate_feed_network_references(&self) -> Result<(), ScenarioError> {
+        let Some(propulsion) = &self.propulsion else {
+            return Ok(());
+        };
+        if propulsion.feed_networks.is_empty() {
+            return Ok(());
+        }
+        if self.vehicle.assembly.engines.is_empty() {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "propulsion.feed_network".to_owned(),
+                value_a: format!("{} declared network(s)", propulsion.feed_networks.len()),
+                field_b: "vehicle.assembly.engines".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+        let engines: BTreeMap<&str, &EngineConfig> = self
+            .vehicle
+            .assembly
+            .engines
+            .iter()
+            .map(|engine| (engine.id.as_str(), engine))
+            .collect();
+        for (index, feed_network) in propulsion.feed_networks.iter().enumerate() {
+            let engine_id = feed_network.engine_id();
+            let Some(engine) = engines.get(engine_id) else {
+                return Err(ScenarioError::UnknownEngineReference {
+                    field: format!("propulsion.feed_network[{index}].engine_id"),
+                    id: engine_id.to_owned(),
+                });
+            };
+            if engine.propellant.is_none() {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!("propulsion.feed_network[{index}].engine_id"),
+                    value_a: engine_id.to_owned(),
+                    field_b: format!("vehicle.assembly.engines.{engine_id}.propellant"),
+                    value_b: "missing".to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_propulsion_fault_references(&self) -> Result<(), ScenarioError> {
+        let Some(propulsion) = &self.propulsion else {
+            return Ok(());
+        };
+        let Some(faults) = &propulsion.faults else {
+            return Ok(());
+        };
+        if faults.rules.is_empty()
+            && faults.cavitation_rules.is_empty()
+            && faults.mixture_ratio_runaway_rules.is_empty()
+        {
+            return Ok(());
+        }
+        let engines: BTreeMap<&str, (usize, &EngineConfig)> = self
+            .vehicle
+            .assembly
+            .engines
+            .iter()
+            .enumerate()
+            .map(|(index, engine)| (engine.id.as_str(), (index, engine)))
+            .collect();
+        for (index, rule) in faults.rules.iter().enumerate() {
+            let Some((_, engine)) = engines.get(rule.engine_id.as_str()) else {
+                return Err(ScenarioError::UnknownEngineReference {
+                    field: format!("propulsion.faults.rules[{index}].engine_id"),
+                    id: rule.engine_id.clone(),
+                });
+            };
+            rule.fault.validate_at_path(
+                &format!("propulsion.faults.rules[{index}].fault"),
+                &engine.limits,
+            )?;
+        }
+        for (index, rule) in faults.cavitation_rules.iter().enumerate() {
+            let Some((_, engine)) = engines.get(rule.engine_id.as_str()) else {
+                return Err(ScenarioError::UnknownEngineReference {
+                    field: format!("propulsion.faults.cavitation_rules[{index}].engine_id"),
+                    id: rule.engine_id.clone(),
+                });
+            };
+            rule.fault.validate_at_path(
+                &format!("propulsion.faults.cavitation_rules[{index}].fault"),
+                &engine.limits,
+            )?;
+            if !self.has_cavitation_fault_source(&rule.engine_id, rule.leg) {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!("propulsion.faults.cavitation_rules[{index}].engine_id"),
+                    value_a: rule.engine_id.clone(),
+                    field_b: "propulsion.feed_network".to_owned(),
+                    value_b: "missing matching pump leg".to_owned(),
+                });
+            }
+        }
+        for (index, rule) in faults.mixture_ratio_runaway_rules.iter().enumerate() {
+            if !engines.contains_key(rule.engine_id.as_str()) {
+                return Err(ScenarioError::UnknownEngineReference {
+                    field: format!(
+                        "propulsion.faults.mixture_ratio_runaway_rules[{index}].engine_id"
+                    ),
+                    id: rule.engine_id.clone(),
+                });
+            }
+            if !self.has_transient_feed_network(&rule.engine_id) {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!(
+                        "propulsion.faults.mixture_ratio_runaway_rules[{index}].engine_id"
+                    ),
+                    value_a: rule.engine_id.clone(),
+                    field_b: "propulsion.feed_network".to_owned(),
+                    value_b: "missing transient_dual_valve_chamber".to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn has_transient_feed_network(&self, engine_id: &str) -> bool {
+        self.propulsion.as_ref().is_some_and(|propulsion| {
+            propulsion
+                .feed_networks
+                .iter()
+                .any(|feed_network| match feed_network {
+                    PropulsionFeedNetworkConfig::TransientDualValveChamber {
+                        engine_id: network_engine_id,
+                        ..
+                    } => network_engine_id == engine_id,
+                    PropulsionFeedNetworkConfig::TankValveChamber { .. } => false,
+                })
+        })
+    }
+
+    fn has_cavitation_fault_source(
+        &self,
+        engine_id: &str,
+        leg: PropulsionCavitationFaultLegConfig,
+    ) -> bool {
+        self.propulsion.as_ref().is_some_and(|propulsion| {
+            propulsion
+                .feed_networks
+                .iter()
+                .any(|feed_network| match feed_network {
+                    PropulsionFeedNetworkConfig::TransientDualValveChamber {
+                        engine_id: network_engine_id,
+                        oxidizer_pump,
+                        fuel_pump,
+                        ..
+                    } if network_engine_id == engine_id => match leg {
+                        PropulsionCavitationFaultLegConfig::Any => {
+                            oxidizer_pump.is_some() || fuel_pump.is_some()
+                        }
+                        PropulsionCavitationFaultLegConfig::Oxidizer => oxidizer_pump.is_some(),
+                        PropulsionCavitationFaultLegConfig::Fuel => fuel_pump.is_some(),
+                    },
+                    _ => false,
+                })
+        })
     }
 
     fn validate_recovery_references(&self) -> Result<(), ScenarioError> {
@@ -2249,6 +2476,87 @@ impl TimeConfig {
         }
         Ok(())
     }
+}
+
+/// Host-side realtime pacing configuration (`[realtime]`, v3 only).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RealtimeConfig {
+    /// Pacing mode.
+    pub mode: RealtimeModeConfig,
+    /// Positive target real-time factor. Required only for
+    /// `mode = "paced"`.
+    pub target_rtf: Option<f64>,
+    /// Positive late-jitter budget in seconds.
+    pub jitter_budget_s: f64,
+    /// Optional periodic task budgets for rate-monotonic analysis.
+    #[serde(default, rename = "task")]
+    pub tasks: Vec<RealtimeTaskConfig>,
+}
+
+impl RealtimeConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_positive("realtime.jitter_budget_s", self.jitter_budget_s)?;
+        match self.mode {
+            RealtimeModeConfig::FreeRun | RealtimeModeConfig::RealTime => {
+                if self.target_rtf.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "realtime.target_rtf".to_owned(),
+                        role: ModelRole::Frame,
+                        name: format!("{:?}", self.mode),
+                    });
+                }
+            }
+            RealtimeModeConfig::Paced => {
+                let Some(target_rtf) = self.target_rtf else {
+                    return Err(ScenarioError::MissingRequiredField {
+                        field: "realtime.target_rtf".to_owned(),
+                        role: ModelRole::Frame,
+                        name: "paced".to_owned(),
+                    });
+                };
+                require_positive("realtime.target_rtf", target_rtf)?;
+            }
+        }
+        for (index, task) in self.tasks.iter().enumerate() {
+            task.validate(index)?;
+        }
+        Ok(())
+    }
+}
+
+/// One periodic task budget for `[realtime]` schedulability analysis.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RealtimeTaskConfig {
+    /// Stable human-readable task label.
+    pub label: String,
+    /// Task period in seconds.
+    pub period_s: f64,
+    /// Worst-case execution time budget in seconds.
+    pub wcet_s: f64,
+}
+
+impl RealtimeTaskConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let prefix = format!("realtime.task[{index}]");
+        require_non_empty(&format!("{prefix}.label"), &self.label)?;
+        require_positive(&format!("{prefix}.period_s"), self.period_s)?;
+        require_positive(&format!("{prefix}.wcet_s"), self.wcet_s)?;
+        Ok(())
+    }
+}
+
+/// Realtime pacing mode selector.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealtimeModeConfig {
+    /// Do not sleep; record timing only.
+    FreeRun,
+    /// Pace to one simulation second per wall-clock second.
+    RealTime,
+    /// Pace to `target_rtf` simulation seconds per wall-clock second.
+    Paced,
 }
 
 /// Vehicle model and initial state table.
@@ -3254,6 +3562,189 @@ impl LandingFootprintConfig {
     }
 }
 
+/// Synthetic-only rare-event Monte-Carlo manifest.
+///
+/// This top-level v3 block describes only the analytic limit-state
+/// campaigns supported by `openbmp-mc`. It intentionally has no
+/// vehicle, target, aimpoint, or trajectory binding.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MonteCarloConfig {
+    /// Optional seed override. When absent, `[time].seed` is the
+    /// deterministic campaign seed.
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// Closed synthetic limit-state declaration.
+    #[serde(default)]
+    pub limit_state: Option<MonteCarloLimitStateConfig>,
+    /// Optional Au-Beck subset-simulation estimator configuration.
+    #[serde(default)]
+    pub subset_simulation: Option<MonteCarloSubsetSimulationConfig>,
+    /// Optional cross-entropy Gaussian importance-sampling estimator
+    /// configuration.
+    #[serde(default)]
+    pub cross_entropy: Option<MonteCarloCrossEntropyConfig>,
+}
+
+impl MonteCarloConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        let Some(limit_state) = self.limit_state.as_ref() else {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "monte_carlo".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "monte_carlo.limit_state".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        };
+        limit_state.validate()?;
+        if self.subset_simulation.is_none() && self.cross_entropy.is_none() {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "monte_carlo".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "monte_carlo.subset_simulation_or_cross_entropy".to_owned(),
+                value_b: "missing".to_owned(),
+            });
+        }
+        if let Some(subset) = &self.subset_simulation {
+            subset.validate()?;
+        }
+        if let Some(cross_entropy) = &self.cross_entropy {
+            cross_entropy.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Synthetic rare-event limit-state configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MonteCarloLimitStateConfig {
+    /// Limit-state kind. Currently only `synthetic_linear` is
+    /// accepted.
+    pub kind: String,
+    /// Stable synthetic evidence label. Must be
+    /// `synthetic-limit-state`.
+    pub label: String,
+    /// Reliability index for the analytic linear limit state.
+    pub beta: f64,
+    /// Standard-normal input dimension.
+    pub dimension: u32,
+}
+
+impl MonteCarloLimitStateConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_supported(
+            "monte_carlo.limit_state.kind",
+            &self.kind,
+            &["synthetic_linear"],
+        )?;
+        require_non_empty("monte_carlo.limit_state.label", &self.label)?;
+        if self.label != "synthetic-limit-state" {
+            return Err(ScenarioError::UnsupportedValue {
+                field: "monte_carlo.limit_state.label".to_owned(),
+                value: self.label.clone(),
+            });
+        }
+        require_positive("monte_carlo.limit_state.beta", self.beta)?;
+        require_positive_u32("monte_carlo.limit_state.dimension", self.dimension)?;
+        Ok(())
+    }
+}
+
+/// Au-Beck subset-simulation rare-event estimator configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MonteCarloSubsetSimulationConfig {
+    /// Number of samples per conditional level. Must be at least two.
+    pub samples_per_level: u32,
+    /// Conditional level probability, strictly between zero and one.
+    pub conditional_probability: f64,
+    /// Maximum number of conditional levels.
+    pub max_levels: u32,
+    /// Component-wise modified-Metropolis proposal sigma.
+    pub proposal_sigma: f64,
+    /// Deterministic random-stream dimension id.
+    pub dimension_id: u32,
+}
+
+impl MonteCarloSubsetSimulationConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_at_least_two_u32(
+            "monte_carlo.subset_simulation.samples_per_level",
+            self.samples_per_level,
+        )?;
+        require_open_unit_interval(
+            "monte_carlo.subset_simulation.conditional_probability",
+            self.conditional_probability,
+        )?;
+        require_positive_u32("monte_carlo.subset_simulation.max_levels", self.max_levels)?;
+        require_positive(
+            "monte_carlo.subset_simulation.proposal_sigma",
+            self.proposal_sigma,
+        )?;
+        Ok(())
+    }
+}
+
+/// Cross-entropy Gaussian importance-sampling estimator
+/// configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MonteCarloCrossEntropyConfig {
+    /// Number of samples per adaptation/final-estimation batch. Must
+    /// be at least two.
+    pub samples: u32,
+    /// Elite fraction for proposal updates, strictly between zero and
+    /// one.
+    pub elite_fraction: f64,
+    /// Number of adaptation iterations.
+    pub iterations: u32,
+    /// Exponential smoothing factor, strictly between zero and one.
+    pub smoothing: f64,
+    /// Lower bound for proposal standard deviations.
+    pub min_std_dev: f64,
+    /// Deterministic random-stream dimension id.
+    pub dimension_id: u32,
+}
+
+impl MonteCarloCrossEntropyConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_at_least_two_u32("monte_carlo.cross_entropy.samples", self.samples)?;
+        require_open_unit_interval(
+            "monte_carlo.cross_entropy.elite_fraction",
+            self.elite_fraction,
+        )?;
+        require_positive_u32("monte_carlo.cross_entropy.iterations", self.iterations)?;
+        require_open_unit_interval("monte_carlo.cross_entropy.smoothing", self.smoothing)?;
+        require_positive("monte_carlo.cross_entropy.min_std_dev", self.min_std_dev)?;
+        Ok(())
+    }
+}
+
+fn require_at_least_two_u32(field: &str, value: u32) -> Result<(), ScenarioError> {
+    if value < 2 {
+        Err(ScenarioError::InvalidNumber {
+            field: field.to_owned(),
+            value: f64::from(value),
+            rule: "must be at least two",
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn require_open_unit_interval(field: &str, value: f64) -> Result<(), ScenarioError> {
+    require_finite(field, value)?;
+    if value <= 0.0 || value >= 1.0 {
+        return Err(ScenarioError::InvalidNumber {
+            field: field.to_owned(),
+            value,
+            rule: "must be greater than zero and less than one",
+        });
+    }
+    Ok(())
+}
+
 /// Offline ideal staging budget / optimal split configuration. This
 /// is post-processing only and carries no trajectory, range, target,
 /// or location fields.
@@ -3475,6 +3966,12 @@ pub struct LandingFootprintMonteCarloConfig {
     pub confidence_levels: Vec<f64>,
     /// Declared output paths for the offline analysis products.
     pub output: LandingFootprintMonteCarloOutputConfig,
+    /// Optional UQ credibility evidence sidecar for this campaign.
+    #[serde(default)]
+    pub uq: Option<LandingFootprintMonteCarloUqConfig>,
+    /// Optional nested aleatory/epistemic sampling configuration.
+    #[serde(default)]
+    pub nested: Option<LandingFootprintMonteCarloNestedConfig>,
     /// Optional wind uncertainty source.
     #[serde(default)]
     pub wind: Option<LandingFootprintMonteCarloWindConfig>,
@@ -3503,6 +4000,12 @@ impl LandingFootprintMonteCarloConfig {
             )?;
         }
         self.output.validate()?;
+        if let Some(uq) = &self.uq {
+            uq.validate()?;
+        }
+        if let Some(nested) = &self.nested {
+            nested.validate(self.samples)?;
+        }
         if self.wind.is_none()
             && self.ballistic_coefficient.is_none()
             && self.burnout_state.is_none()
@@ -3523,7 +4026,188 @@ impl LandingFootprintMonteCarloConfig {
         if let Some(burnout_state) = &self.burnout_state {
             burnout_state.validate()?;
         }
+        if self.nested.is_some() && !self.has_epistemic_uncertainty_source() {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint.monte_carlo.nested".to_owned(),
+                value_a: "declared".to_owned(),
+                field_b: "landing_footprint.monte_carlo.uncertainty_class".to_owned(),
+                value_b: "no_epistemic_source".to_owned(),
+            });
+        }
         Ok(())
+    }
+
+    fn has_epistemic_uncertainty_source(&self) -> bool {
+        self.wind
+            .as_ref()
+            .is_some_and(|source| source.uncertainty_class.is_epistemic())
+            || self
+                .ballistic_coefficient
+                .as_ref()
+                .is_some_and(|source| source.uncertainty_class.is_epistemic())
+            || self
+                .burnout_state
+                .as_ref()
+                .is_some_and(|source| source.uncertainty_class.is_epistemic())
+    }
+}
+
+/// UQ credibility sidecar for a Monte-Carlo landing-footprint campaign.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingFootprintMonteCarloUqConfig {
+    /// TOML UQ budget consumed by `openbmp-uq`.
+    pub budget_toml: PathBuf,
+    /// Required binding 7009B credibility floor (`l0`..`l4` or `0`..`4`).
+    #[serde(default)]
+    pub credibility_floor: Option<String>,
+    /// Optional deterministic Markdown credibility report output path.
+    #[serde(default)]
+    pub report_md: Option<PathBuf>,
+}
+
+impl LandingFootprintMonteCarloUqConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.budget_toml.as_os_str().is_empty() {
+            return Err(ScenarioError::EmptyField {
+                field: "landing_footprint.monte_carlo.uq.budget_toml".to_owned(),
+            });
+        }
+        if let Some(floor) = &self.credibility_floor {
+            require_non_empty("landing_footprint.monte_carlo.uq.credibility_floor", floor)?;
+            match floor.trim().to_ascii_lowercase().as_str() {
+                "0" | "l0" | "1" | "l1" | "2" | "l2" | "3" | "l3" | "4" | "l4" => {}
+                _ => {
+                    return Err(ScenarioError::UnsupportedValue {
+                        field: "landing_footprint.monte_carlo.uq.credibility_floor".to_owned(),
+                        value: floor.clone(),
+                    });
+                }
+            }
+        }
+        if self
+            .report_md
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(ScenarioError::EmptyField {
+                field: "landing_footprint.monte_carlo.uq.report_md".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Nested aleatory/epistemic footprint Monte-Carlo analysis configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LandingFootprintMonteCarloNestedConfig {
+    /// Number of outer-loop epistemic conditions.
+    pub epistemic_samples: u32,
+    /// Number of inner-loop aleatory samples under each epistemic condition.
+    pub aleatory_samples: u32,
+    /// Footprint scalar metric reduced into the p-box.
+    pub metric: LandingFootprintMonteCarloNestedMetric,
+    /// Scalar threshold for the lower-tail requirement `P(y <= threshold)`.
+    pub threshold: f64,
+    /// Required lower p-box probability at `threshold`.
+    pub minimum_probability: f64,
+    /// Optional deterministic p-box CSV output path.
+    #[serde(default)]
+    pub pbox_csv: Option<PathBuf>,
+}
+
+impl LandingFootprintMonteCarloNestedConfig {
+    fn validate(&self, total_samples: u32) -> Result<(), ScenarioError> {
+        require_positive_u32(
+            "landing_footprint.monte_carlo.nested.epistemic_samples",
+            self.epistemic_samples,
+        )?;
+        require_positive_u32(
+            "landing_footprint.monte_carlo.nested.aleatory_samples",
+            self.aleatory_samples,
+        )?;
+        let nested_samples = self
+            .epistemic_samples
+            .checked_mul(self.aleatory_samples)
+            .ok_or_else(|| ScenarioError::InvalidNumber {
+                field: "landing_footprint.monte_carlo.nested.epistemic_samples".to_owned(),
+                value: f64::from(self.epistemic_samples),
+                rule: "epistemic_samples * aleatory_samples must fit in u32",
+            })?;
+        if nested_samples != total_samples {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "landing_footprint.monte_carlo.samples".to_owned(),
+                value_a: total_samples.to_string(),
+                field_b: "landing_footprint.monte_carlo.nested.samples".to_owned(),
+                value_b: nested_samples.to_string(),
+            });
+        }
+        require_finite(
+            "landing_footprint.monte_carlo.nested.threshold",
+            self.threshold,
+        )?;
+        require_in_range(
+            "landing_footprint.monte_carlo.nested.minimum_probability",
+            self.minimum_probability,
+            0.0,
+            1.0,
+        )?;
+        if self
+            .pbox_csv
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(ScenarioError::EmptyField {
+                field: "landing_footprint.monte_carlo.nested.pbox_csv".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Scalar footprint metric available for nested p-box analysis.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingFootprintMonteCarloNestedMetric {
+    /// Landing downrange coordinate (m).
+    DownrangeM,
+    /// Landing crossrange coordinate (m).
+    CrossrangeM,
+    /// Radial offset from the nominal landing footprint (m).
+    RadialOffsetFromNominalM,
+    /// Radial distance from the Monte-Carlo sample mean (m).
+    RadialDistanceFromMeanM,
+}
+
+impl LandingFootprintMonteCarloNestedMetric {
+    /// Stable metric label used in generated reports.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DownrangeM => "downrange_m",
+            Self::CrossrangeM => "crossrange_m",
+            Self::RadialOffsetFromNominalM => "radial_offset_from_nominal_m",
+            Self::RadialDistanceFromMeanM => "radial_distance_from_mean_m",
+        }
+    }
+}
+
+/// Whether a footprint Monte-Carlo uncertainty source belongs to the
+/// inner aleatory or outer epistemic loop.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingFootprintMonteCarloUncertaintyClass {
+    /// Source is sampled independently in the inner loop.
+    #[default]
+    Aleatory,
+    /// Source is fixed by outer-loop epistemic condition.
+    Epistemic,
+}
+
+impl LandingFootprintMonteCarloUncertaintyClass {
+    const fn is_epistemic(self) -> bool {
+        matches!(self, Self::Epistemic)
     }
 }
 
@@ -3569,6 +4253,9 @@ impl LandingFootprintMonteCarloOutputConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LandingFootprintMonteCarloWindConfig {
+    /// Nested-UQ classification for this source.
+    #[serde(default)]
+    pub uncertainty_class: LandingFootprintMonteCarloUncertaintyClass,
     /// Wind uncertainty shape.
     pub kind: LandingFootprintMonteCarloWindKind,
     /// Independent one-sigma local-NED additive wind perturbation (m/s).
@@ -3663,6 +4350,9 @@ impl LandingFootprintMonteCarloWindKind {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LandingFootprintMonteCarloBallisticCoefficientConfig {
+    /// Nested-UQ classification for this source.
+    #[serde(default)]
+    pub uncertainty_class: LandingFootprintMonteCarloUncertaintyClass,
     /// Nominal `C_d A / m` value (m²/kg).
     pub nominal_m2_kg: f64,
     /// One-sigma uncertainty (m²/kg).
@@ -3727,6 +4417,9 @@ pub enum LandingFootprintMonteCarloDistribution {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LandingFootprintMonteCarloBurnoutStateConfig {
+    /// Nested-UQ classification for this source.
+    #[serde(default)]
+    pub uncertainty_class: LandingFootprintMonteCarloUncertaintyClass,
     /// Independent one-sigma ECI position perturbations (m).
     #[serde(default)]
     pub position_sigma_eci_m: Option<[f64; 3]>,
@@ -5060,6 +5753,23 @@ impl AeroBuildupFinsConfig {
 pub struct PropulsionConfig {
     /// Optional motor reference.
     pub motor: Option<MotorConfig>,
+    /// Optional thermochemistry deck consumed by inline grain regression.
+    #[serde(default)]
+    pub thermochem: Option<PropulsionThermochemConfig>,
+    /// Optional feed-network declarations for liquid engine clusters.
+    #[serde(default, rename = "feed_network")]
+    pub feed_networks: Vec<PropulsionFeedNetworkConfig>,
+    /// Optional deterministic propulsion fault schedule.
+    #[serde(default)]
+    pub faults: Option<PropulsionFaultsConfig>,
+    /// Optional nozzle-runtime override for the single solid-motor
+    /// path. Omitted means the motor file / grain regression keeps
+    /// its declared correction strategy.
+    #[serde(default)]
+    pub nozzle: Option<PropulsionNozzleConfig>,
+    /// Optional reduced POGO feed-half stability check.
+    #[serde(default)]
+    pub pogo: Option<PropulsionPogoConfig>,
 }
 
 impl PropulsionConfig {
@@ -5067,7 +5777,845 @@ impl PropulsionConfig {
         if let Some(motor) = &self.motor {
             motor.validate(registry)?;
         }
+        if let Some(thermochem) = &self.thermochem {
+            thermochem.validate()?;
+            if self
+                .motor
+                .as_ref()
+                .and_then(|motor| motor.grain.as_ref())
+                .is_none()
+            {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "propulsion.thermochem".to_owned(),
+                    value_a: "declared".to_owned(),
+                    field_b: "propulsion.motor.grain".to_owned(),
+                    value_b: "missing".to_owned(),
+                });
+            }
+        }
+        for (index, feed_network) in self.feed_networks.iter().enumerate() {
+            feed_network.validate(index)?;
+        }
+        if let Some(faults) = &self.faults {
+            faults.validate()?;
+        }
+        let feed_network_engine_ids: Vec<String> = self
+            .feed_networks
+            .iter()
+            .map(|feed_network| feed_network.engine_id().to_owned())
+            .collect();
+        require_unique(
+            "propulsion.feed_network.engine_id",
+            &feed_network_engine_ids,
+        )?;
+        if self.nozzle.is_some() && self.motor.is_none() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "propulsion.nozzle".to_owned(),
+                role: ModelRole::Motor,
+                name: "solid".to_owned(),
+            });
+        }
+        if let Some(nozzle) = &self.nozzle
+            && nozzle.separation != NozzleSeparationConfig::Off
+            && nozzle.ambient_pressure_correction
+                != NozzleAmbientPressureCorrectionConfig::PressureThrust
+        {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "propulsion.nozzle.separation".to_owned(),
+                value_a: nozzle.separation.as_str().to_owned(),
+                field_b: "propulsion.nozzle.ambient_pressure_correction".to_owned(),
+                value_b: "constant".to_owned(),
+            });
+        }
+        if let Some(pogo) = &self.pogo {
+            pogo.validate()?;
+        }
         Ok(())
+    }
+}
+
+/// Optional deterministic propulsion fault schedule (`[propulsion.faults]`).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionFaultsConfig {
+    /// Ordered one-shot fault injection rules.
+    #[serde(default)]
+    pub rules: Vec<PropulsionFaultRuleConfig>,
+    /// One-shot fault injection rules triggered by pump cavitation.
+    #[serde(default)]
+    pub cavitation_rules: Vec<PropulsionCavitationFaultRuleConfig>,
+    /// Deterministic mixture-ratio runaway rules for transient feed networks.
+    #[serde(default)]
+    pub mixture_ratio_runaway_rules: Vec<PropulsionMixtureRatioRunawayRuleConfig>,
+}
+
+impl PropulsionFaultsConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        let ids: Vec<String> = self
+            .rules
+            .iter()
+            .map(|rule| rule.id.clone())
+            .chain(self.cavitation_rules.iter().map(|rule| rule.id.clone()))
+            .chain(
+                self.mixture_ratio_runaway_rules
+                    .iter()
+                    .map(|rule| rule.id.clone()),
+            )
+            .collect();
+        require_unique("propulsion.faults.rules.id", &ids)?;
+        for (index, rule) in self.rules.iter().enumerate() {
+            rule.validate(index)?;
+        }
+        for (index, rule) in self.cavitation_rules.iter().enumerate() {
+            rule.validate(index)?;
+        }
+        for (index, rule) in self.mixture_ratio_runaway_rules.iter().enumerate() {
+            rule.validate(index)?;
+        }
+        Ok(())
+    }
+}
+
+/// Pump leg selector for cavitation-triggered propulsion faults.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum PropulsionCavitationFaultLegConfig {
+    /// Trigger when either configured pump leg cavitates.
+    Any,
+    /// Trigger only from the oxidizer pump leg.
+    Oxidizer,
+    /// Trigger only from the fuel pump leg.
+    Fuel,
+}
+
+/// One pump-cavitation-triggered propulsion fault rule.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionCavitationFaultRuleConfig {
+    /// Stable fault rule id for diagnostics and traces.
+    pub id: String,
+    /// Scenario-text engine id targeted by the rule.
+    pub engine_id: String,
+    /// Pump leg that must cavitate before injection.
+    pub leg: PropulsionCavitationFaultLegConfig,
+    /// Fault payload injected into the engine.
+    pub fault: EngineFaultConfig,
+}
+
+impl PropulsionCavitationFaultRuleConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("propulsion.faults.cavitation_rules[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        require_non_empty(&path("engine_id"), &self.engine_id)?;
+        Ok(())
+    }
+}
+
+/// One deterministic mixture-ratio runaway rule.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionMixtureRatioRunawayRuleConfig {
+    /// Stable fault rule id for diagnostics and traces.
+    pub id: String,
+    /// Scenario-text engine id whose transient feed network receives the drift.
+    pub engine_id: String,
+    /// Kernel step at which the drift starts before the feed network steps.
+    pub start_step: u64,
+    /// Oxidizer valve-command drift in opening-fraction per second.
+    pub oxidizer_open_fraction_rate_per_s: f64,
+    /// Fuel valve-command drift in opening-fraction per second.
+    pub fuel_open_fraction_rate_per_s: f64,
+}
+
+impl PropulsionMixtureRatioRunawayRuleConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path =
+            |field: &str| format!("propulsion.faults.mixture_ratio_runaway_rules[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        require_non_empty(&path("engine_id"), &self.engine_id)?;
+        require_finite(
+            &path("oxidizer_open_fraction_rate_per_s"),
+            self.oxidizer_open_fraction_rate_per_s,
+        )?;
+        require_finite(
+            &path("fuel_open_fraction_rate_per_s"),
+            self.fuel_open_fraction_rate_per_s,
+        )?;
+        if self.oxidizer_open_fraction_rate_per_s == 0.0
+            && self.fuel_open_fraction_rate_per_s == 0.0
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("oxidizer_open_fraction_rate_per_s"),
+                value: self.oxidizer_open_fraction_rate_per_s,
+                rule: "at least one mixture-ratio runaway rate must be non-zero",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// One scheduled propulsion fault injection rule.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionFaultRuleConfig {
+    /// Stable fault rule id for diagnostics and traces.
+    pub id: String,
+    /// Scenario-text engine id targeted by the rule.
+    pub engine_id: String,
+    /// Kernel step at which the fault is injected before the engine rack steps.
+    pub start_step: u64,
+    /// Fault payload injected into the engine.
+    pub fault: EngineFaultConfig,
+}
+
+impl PropulsionFaultRuleConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("propulsion.faults.rules[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        require_non_empty(&path("engine_id"), &self.engine_id)?;
+        Ok(())
+    }
+}
+
+/// Optional reduced POGO stability check (`[propulsion.pogo]`).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionPogoConfig {
+    /// Longitudinal structural-mode natural frequency in rad/s.
+    pub mode_natural_frequency_rad_s: f64,
+    /// Longitudinal structural-mode damping ratio.
+    pub mode_damping_ratio: f64,
+    /// Open-loop modal feedback gain in rad^2/s^2 before accumulator
+    /// attenuation.
+    pub open_loop_gain_rad2_s2: f64,
+    /// First-order feed response time constant in seconds.
+    pub feed_time_constant_s: f64,
+    /// Effective feed zero in seconds representing mass-flow-gain phase lead.
+    pub mass_flow_gain_time_s: f64,
+    /// Cavitation compliance in m^3/Pa.
+    pub cavitation_compliance_m3_per_pa: f64,
+    /// Accumulator compliance in m^3/Pa.
+    pub accumulator_compliance_m3_per_pa: f64,
+    /// When true, the runner rejects unstable reduced POGO verdicts at build
+    /// time. The default records/evaluates the block without gating the run.
+    #[serde(default)]
+    pub require_stable: bool,
+}
+
+impl PropulsionPogoConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        for (field, value) in [
+            (
+                "mode_natural_frequency_rad_s",
+                self.mode_natural_frequency_rad_s,
+            ),
+            ("feed_time_constant_s", self.feed_time_constant_s),
+            (
+                "cavitation_compliance_m3_per_pa",
+                self.cavitation_compliance_m3_per_pa,
+            ),
+        ] {
+            require_finite(&format!("propulsion.pogo.{field}"), value)?;
+            require_positive(&format!("propulsion.pogo.{field}"), value)?;
+        }
+        for (field, value) in [
+            ("mode_damping_ratio", self.mode_damping_ratio),
+            ("open_loop_gain_rad2_s2", self.open_loop_gain_rad2_s2),
+            ("mass_flow_gain_time_s", self.mass_flow_gain_time_s),
+            (
+                "accumulator_compliance_m3_per_pa",
+                self.accumulator_compliance_m3_per_pa,
+            ),
+        ] {
+            require_finite(&format!("propulsion.pogo.{field}"), value)?;
+            require_non_negative(&format!("propulsion.pogo.{field}"), value)?;
+        }
+        Ok(())
+    }
+}
+
+/// One opt-in feed-network declaration under `[[propulsion.feed_network]]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PropulsionFeedNetworkConfig {
+    /// Reduced tank-valve-chamber equilibrium for one liquid engine.
+    TankValveChamber {
+        /// Scenario-text engine id this network drives.
+        engine_id: String,
+        /// Upstream tank/feed pressure in Pa.
+        tank_pressure_pa: f64,
+        /// Single-fluid density in kg/m^3.
+        propellant_density_kg_m3: f64,
+        /// Full-open valve area in m^2.
+        valve_area_m2: f64,
+        /// Valve discharge coefficient in `(0, 1]`.
+        valve_discharge_coefficient: f64,
+        /// Chamber throat area in m^2.
+        throat_area_m2: f64,
+        /// Characteristic velocity in m/s.
+        c_star_m_s: f64,
+        /// Design chamber pressure that maps network `pc` to engine feed scale.
+        reference_chamber_pressure_pa: f64,
+        /// Fixed valve opening fraction in `[0, 1]`.
+        #[serde(default = "default_unit")]
+        valve_open_fraction: f64,
+    },
+    /// Transient oxidizer/fuel tank-valve-chamber network for one liquid engine.
+    TransientDualValveChamber {
+        /// Scenario-text engine id this network drives.
+        engine_id: String,
+        /// Oxidizer upstream tank/feed pressure in Pa.
+        oxidizer_tank_pressure_pa: f64,
+        /// Fuel upstream tank/feed pressure in Pa.
+        fuel_tank_pressure_pa: f64,
+        /// Oxidizer density in kg/m^3.
+        oxidizer_density_kg_m3: f64,
+        /// Fuel density in kg/m^3.
+        fuel_density_kg_m3: f64,
+        /// Oxidizer full-open valve area in m^2.
+        oxidizer_valve_area_m2: f64,
+        /// Fuel full-open valve area in m^2.
+        fuel_valve_area_m2: f64,
+        /// Oxidizer valve discharge coefficient in `(0, 1]`.
+        oxidizer_valve_discharge_coefficient: f64,
+        /// Fuel valve discharge coefficient in `(0, 1]`.
+        fuel_valve_discharge_coefficient: f64,
+        /// Optional oxidizer-side pump map and operating point.
+        oxidizer_pump: Option<PropulsionFeedNetworkTurbopumpConfig>,
+        /// Optional fuel-side pump map and operating point.
+        fuel_pump: Option<PropulsionFeedNetworkTurbopumpConfig>,
+        /// Optional oxidizer-side MOC line transient.
+        oxidizer_line: Option<PropulsionFeedNetworkLineConfig>,
+        /// Optional fuel-side MOC line transient.
+        fuel_line: Option<PropulsionFeedNetworkLineConfig>,
+        /// Lumped chamber free volume in m^3.
+        chamber_volume_m3: f64,
+        /// Effective chamber gas temperature in K.
+        gas_temperature_k: f64,
+        /// Effective chamber gas constant in J/(kg*K).
+        gas_constant_j_per_kg_k: f64,
+        /// Chamber throat area in m^2.
+        throat_area_m2: f64,
+        /// Characteristic velocity in m/s.
+        c_star_m_s: f64,
+        /// Initial chamber pressure in Pa.
+        initial_chamber_pressure_pa: f64,
+        /// Design chamber pressure that maps network `pc` to engine feed scale.
+        reference_chamber_pressure_pa: f64,
+        /// Fixed oxidizer valve opening fraction in `[0, 1]`.
+        #[serde(default = "default_unit")]
+        oxidizer_open_fraction: f64,
+        /// Fixed fuel valve opening fraction in `[0, 1]`.
+        #[serde(default = "default_unit")]
+        fuel_open_fraction: f64,
+        /// Optional pressure/MR controller for the two valve commands.
+        controller: Option<PropulsionFeedNetworkControllerConfig>,
+    },
+}
+
+/// Optional pressure/MR controller for a transient feed network.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionFeedNetworkControllerConfig {
+    /// Chamber pressure setpoint in Pa.
+    pub target_chamber_pressure_pa: f64,
+    /// Optional oxidizer/fuel mixture-ratio setpoint.
+    pub target_mixture_ratio: Option<f64>,
+    /// Proportional gain applied to chamber-pressure error.
+    pub pressure_proportional_gain_per_pa: f64,
+    /// Integral gain applied to accumulated chamber-pressure error.
+    pub pressure_integral_gain_per_pa_s: f64,
+    /// Absolute pressure-integral clamp in Pa*s.
+    pub pressure_integral_limit_pa_s: f64,
+    /// Proportional gain applied to mixture-ratio error.
+    pub mixture_proportional_gain: f64,
+    /// Integral gain applied to accumulated mixture-ratio error.
+    pub mixture_integral_gain_per_s: f64,
+    /// Absolute mixture-ratio integral clamp in seconds.
+    pub mixture_integral_limit_s: f64,
+    /// Minimum valve opening fraction.
+    pub min_open_fraction: f64,
+    /// Maximum valve opening fraction.
+    pub max_open_fraction: f64,
+    /// Maximum valve command slew in opening-fraction per second.
+    pub max_open_fraction_slew_per_s: f64,
+}
+
+/// Optional generic turbopump model for one transient feed-network leg.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionFeedNetworkTurbopumpConfig {
+    /// Design volumetric flow in m^3/s.
+    pub design_volumetric_flow_m3_per_s: f64,
+    /// Design pressure rise in Pa.
+    pub design_pressure_rise_pa: f64,
+    /// Design shaft speed in rad/s.
+    pub design_shaft_speed_rad_per_s: f64,
+    /// Pumped-fluid density in kg/m^3.
+    pub fluid_density_kg_m3: f64,
+    /// Hydraulic efficiency at the design point in `(0, 1]`.
+    pub design_efficiency: f64,
+    /// Required NPSH at the design speed in m.
+    pub required_npsh_m: f64,
+    /// Generic specific-speed map family marker.
+    pub specific_speed: f64,
+    /// Normalized head-ratio quadratic coefficients.
+    pub head_coefficients: [f64; 3],
+    /// Normalized efficiency-ratio quadratic coefficients.
+    pub efficiency_coefficients: [f64; 3],
+    /// Head multiplier applied when cavitating, in `[0, 1]`.
+    pub cavitation_head_multiplier: f64,
+    /// Current volumetric flow in m^3/s.
+    pub operating_volumetric_flow_m3_per_s: f64,
+    /// Current shaft speed in rad/s.
+    pub operating_shaft_speed_rad_per_s: f64,
+    /// Pump inlet pressure in Pa.
+    pub suction_pressure_pa: f64,
+    /// Fluid vapor pressure in Pa.
+    pub vapor_pressure_pa: f64,
+}
+
+/// Optional Method-of-Characteristics feed line for one transient feed leg.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionFeedNetworkLineConfig {
+    /// Pipe length in m.
+    pub length_m: f64,
+    /// Acoustic wave speed in m/s.
+    pub wave_speed_m_s: f64,
+    /// Fluid density in kg/m^3.
+    pub density_kg_m3: f64,
+    /// Pipe cross-sectional flow area in m^2.
+    pub cross_section_area_m2: f64,
+    /// Number of fixed-grid segments.
+    pub segment_count: usize,
+    /// Initial uniform piezometric head in m.
+    pub initial_head_m: f64,
+    /// Initial uniform axial velocity in m/s.
+    pub initial_velocity_m_s: f64,
+    /// Upstream fixed reservoir/source head in m.
+    pub upstream_head_m: f64,
+    /// Downstream valve velocity boundary in m/s.
+    pub downstream_velocity_m_s: f64,
+}
+
+impl PropulsionFeedNetworkConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("propulsion.feed_network[{index}].{field}");
+        match self {
+            Self::TankValveChamber {
+                engine_id,
+                tank_pressure_pa,
+                propellant_density_kg_m3,
+                valve_area_m2,
+                valve_discharge_coefficient,
+                throat_area_m2,
+                c_star_m_s,
+                reference_chamber_pressure_pa,
+                valve_open_fraction,
+            } => {
+                require_non_empty(&path("engine_id"), engine_id)?;
+                require_finite(&path("tank_pressure_pa"), *tank_pressure_pa)?;
+                require_positive(&path("tank_pressure_pa"), *tank_pressure_pa)?;
+                require_finite(&path("propellant_density_kg_m3"), *propellant_density_kg_m3)?;
+                require_positive(&path("propellant_density_kg_m3"), *propellant_density_kg_m3)?;
+                require_finite(&path("valve_area_m2"), *valve_area_m2)?;
+                require_positive(&path("valve_area_m2"), *valve_area_m2)?;
+                require_finite(
+                    &path("valve_discharge_coefficient"),
+                    *valve_discharge_coefficient,
+                )?;
+                if *valve_discharge_coefficient <= 0.0 || *valve_discharge_coefficient > 1.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("valve_discharge_coefficient"),
+                        value: *valve_discharge_coefficient,
+                        rule: "must lie in (0, 1]",
+                    });
+                }
+                require_finite(&path("throat_area_m2"), *throat_area_m2)?;
+                require_positive(&path("throat_area_m2"), *throat_area_m2)?;
+                require_finite(&path("c_star_m_s"), *c_star_m_s)?;
+                require_positive(&path("c_star_m_s"), *c_star_m_s)?;
+                require_finite(
+                    &path("reference_chamber_pressure_pa"),
+                    *reference_chamber_pressure_pa,
+                )?;
+                require_positive(
+                    &path("reference_chamber_pressure_pa"),
+                    *reference_chamber_pressure_pa,
+                )?;
+                require_finite(&path("valve_open_fraction"), *valve_open_fraction)?;
+                if !(0.0..=1.0).contains(valve_open_fraction) {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("valve_open_fraction"),
+                        value: *valve_open_fraction,
+                        rule: "must lie in [0, 1]",
+                    });
+                }
+            }
+            Self::TransientDualValveChamber {
+                engine_id,
+                oxidizer_tank_pressure_pa,
+                fuel_tank_pressure_pa,
+                oxidizer_density_kg_m3,
+                fuel_density_kg_m3,
+                oxidizer_valve_area_m2,
+                fuel_valve_area_m2,
+                oxidizer_valve_discharge_coefficient,
+                fuel_valve_discharge_coefficient,
+                oxidizer_pump,
+                fuel_pump,
+                oxidizer_line,
+                fuel_line,
+                chamber_volume_m3,
+                gas_temperature_k,
+                gas_constant_j_per_kg_k,
+                throat_area_m2,
+                c_star_m_s,
+                initial_chamber_pressure_pa,
+                reference_chamber_pressure_pa,
+                oxidizer_open_fraction,
+                fuel_open_fraction,
+                controller,
+            } => {
+                require_non_empty(&path("engine_id"), engine_id)?;
+                for (field, value) in [
+                    ("oxidizer_tank_pressure_pa", *oxidizer_tank_pressure_pa),
+                    ("fuel_tank_pressure_pa", *fuel_tank_pressure_pa),
+                    ("oxidizer_density_kg_m3", *oxidizer_density_kg_m3),
+                    ("fuel_density_kg_m3", *fuel_density_kg_m3),
+                    ("oxidizer_valve_area_m2", *oxidizer_valve_area_m2),
+                    ("fuel_valve_area_m2", *fuel_valve_area_m2),
+                    ("chamber_volume_m3", *chamber_volume_m3),
+                    ("gas_temperature_k", *gas_temperature_k),
+                    ("gas_constant_j_per_kg_k", *gas_constant_j_per_kg_k),
+                    ("throat_area_m2", *throat_area_m2),
+                    ("c_star_m_s", *c_star_m_s),
+                    (
+                        "reference_chamber_pressure_pa",
+                        *reference_chamber_pressure_pa,
+                    ),
+                ] {
+                    require_finite(&path(field), value)?;
+                    require_positive(&path(field), value)?;
+                }
+                for (field, value) in [
+                    (
+                        "oxidizer_valve_discharge_coefficient",
+                        *oxidizer_valve_discharge_coefficient,
+                    ),
+                    (
+                        "fuel_valve_discharge_coefficient",
+                        *fuel_valve_discharge_coefficient,
+                    ),
+                ] {
+                    require_finite(&path(field), value)?;
+                    if value <= 0.0 || value > 1.0 {
+                        return Err(ScenarioError::InvalidNumber {
+                            field: path(field),
+                            value,
+                            rule: "must lie in (0, 1]",
+                        });
+                    }
+                }
+                require_finite(
+                    &path("initial_chamber_pressure_pa"),
+                    *initial_chamber_pressure_pa,
+                )?;
+                require_non_negative(
+                    &path("initial_chamber_pressure_pa"),
+                    *initial_chamber_pressure_pa,
+                )?;
+                for (field, value) in [
+                    ("oxidizer_open_fraction", *oxidizer_open_fraction),
+                    ("fuel_open_fraction", *fuel_open_fraction),
+                ] {
+                    require_finite(&path(field), value)?;
+                    if !(0.0..=1.0).contains(&value) {
+                        return Err(ScenarioError::InvalidNumber {
+                            field: path(field),
+                            value,
+                            rule: "must lie in [0, 1]",
+                        });
+                    }
+                }
+                if let Some(controller) = controller {
+                    controller.validate(&path("controller"))?;
+                }
+                if let Some(pump) = oxidizer_pump {
+                    pump.validate(&path("oxidizer_pump"))?;
+                }
+                if let Some(pump) = fuel_pump {
+                    pump.validate(&path("fuel_pump"))?;
+                }
+                if let Some(line) = oxidizer_line {
+                    line.validate(&path("oxidizer_line"))?;
+                }
+                if let Some(line) = fuel_line {
+                    line.validate(&path("fuel_line"))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn engine_id(&self) -> &str {
+        match self {
+            Self::TankValveChamber { engine_id, .. } => engine_id,
+            Self::TransientDualValveChamber { engine_id, .. } => engine_id,
+        }
+    }
+}
+
+impl PropulsionFeedNetworkTurbopumpConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        for (field, value) in [
+            (
+                "design_volumetric_flow_m3_per_s",
+                self.design_volumetric_flow_m3_per_s,
+            ),
+            ("design_pressure_rise_pa", self.design_pressure_rise_pa),
+            (
+                "design_shaft_speed_rad_per_s",
+                self.design_shaft_speed_rad_per_s,
+            ),
+            ("fluid_density_kg_m3", self.fluid_density_kg_m3),
+            ("design_efficiency", self.design_efficiency),
+            ("specific_speed", self.specific_speed),
+            (
+                "operating_shaft_speed_rad_per_s",
+                self.operating_shaft_speed_rad_per_s,
+            ),
+        ] {
+            require_finite(&format!("{path}.{field}"), value)?;
+            require_positive(&format!("{path}.{field}"), value)?;
+        }
+        for (field, value) in [
+            ("required_npsh_m", self.required_npsh_m),
+            (
+                "operating_volumetric_flow_m3_per_s",
+                self.operating_volumetric_flow_m3_per_s,
+            ),
+            ("suction_pressure_pa", self.suction_pressure_pa),
+            ("vapor_pressure_pa", self.vapor_pressure_pa),
+        ] {
+            require_finite(&format!("{path}.{field}"), value)?;
+            require_non_negative(&format!("{path}.{field}"), value)?;
+        }
+        if self.design_efficiency > 1.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.design_efficiency"),
+                value: self.design_efficiency,
+                rule: "must lie in (0, 1]",
+            });
+        }
+        require_finite(
+            &format!("{path}.cavitation_head_multiplier"),
+            self.cavitation_head_multiplier,
+        )?;
+        if !(0.0..=1.0).contains(&self.cavitation_head_multiplier) {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.cavitation_head_multiplier"),
+                value: self.cavitation_head_multiplier,
+                rule: "must lie in [0, 1]",
+            });
+        }
+        for (field, coefficients) in [
+            ("head_coefficients", self.head_coefficients),
+            ("efficiency_coefficients", self.efficiency_coefficients),
+        ] {
+            for value in coefficients {
+                require_finite(&format!("{path}.{field}"), value)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PropulsionFeedNetworkLineConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        for (field, value) in [
+            ("length_m", self.length_m),
+            ("wave_speed_m_s", self.wave_speed_m_s),
+            ("density_kg_m3", self.density_kg_m3),
+            ("cross_section_area_m2", self.cross_section_area_m2),
+        ] {
+            require_finite(&format!("{path}.{field}"), value)?;
+            require_positive(&format!("{path}.{field}"), value)?;
+        }
+        for (field, value) in [
+            ("initial_head_m", self.initial_head_m),
+            ("initial_velocity_m_s", self.initial_velocity_m_s),
+            ("upstream_head_m", self.upstream_head_m),
+            ("downstream_velocity_m_s", self.downstream_velocity_m_s),
+        ] {
+            require_finite(&format!("{path}.{field}"), value)?;
+        }
+        if self.segment_count == 0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.segment_count"),
+                value: 0.0,
+                rule: "must be positive",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl PropulsionFeedNetworkControllerConfig {
+    fn validate(&self, path: &str) -> Result<(), ScenarioError> {
+        require_finite(
+            &format!("{path}.target_chamber_pressure_pa"),
+            self.target_chamber_pressure_pa,
+        )?;
+        require_non_negative(
+            &format!("{path}.target_chamber_pressure_pa"),
+            self.target_chamber_pressure_pa,
+        )?;
+        if let Some(target_mixture_ratio) = self.target_mixture_ratio {
+            require_finite(
+                &format!("{path}.target_mixture_ratio"),
+                target_mixture_ratio,
+            )?;
+            require_positive(
+                &format!("{path}.target_mixture_ratio"),
+                target_mixture_ratio,
+            )?;
+        }
+        for (field, value) in [
+            (
+                "pressure_proportional_gain_per_pa",
+                self.pressure_proportional_gain_per_pa,
+            ),
+            (
+                "pressure_integral_gain_per_pa_s",
+                self.pressure_integral_gain_per_pa_s,
+            ),
+            ("mixture_proportional_gain", self.mixture_proportional_gain),
+            (
+                "mixture_integral_gain_per_s",
+                self.mixture_integral_gain_per_s,
+            ),
+            (
+                "max_open_fraction_slew_per_s",
+                self.max_open_fraction_slew_per_s,
+            ),
+        ] {
+            require_finite(&format!("{path}.{field}"), value)?;
+            require_non_negative(&format!("{path}.{field}"), value)?;
+        }
+        for (field, value) in [
+            (
+                "pressure_integral_limit_pa_s",
+                self.pressure_integral_limit_pa_s,
+            ),
+            ("mixture_integral_limit_s", self.mixture_integral_limit_s),
+        ] {
+            require_finite(&format!("{path}.{field}"), value)?;
+            require_positive(&format!("{path}.{field}"), value)?;
+        }
+        for (field, value) in [
+            ("min_open_fraction", self.min_open_fraction),
+            ("max_open_fraction", self.max_open_fraction),
+        ] {
+            require_finite(&format!("{path}.{field}"), value)?;
+            if !(0.0..=1.0).contains(&value) {
+                return Err(ScenarioError::InvalidNumber {
+                    field: format!("{path}.{field}"),
+                    value,
+                    rule: "must lie in [0, 1]",
+                });
+            }
+        }
+        if self.min_open_fraction > self.max_open_fraction {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{path}.min_open_fraction"),
+                value: self.min_open_fraction,
+                rule: "must be less than or equal to max_open_fraction",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Thermochemistry deck selector inside `[propulsion.thermochem]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionThermochemConfig {
+    /// Path to a Schema-1 thermochemistry TOML deck.
+    pub file: PathBuf,
+    /// Optional pinned SHA-256 digest of the deck file.
+    #[serde(default)]
+    pub file_sha256: Option<String>,
+    /// Nominal chamber pressure used for deck lookup, in Pa.
+    pub chamber_pressure_pa: f64,
+    /// Nominal oxidizer/fuel mixture ratio used for deck lookup.
+    pub mixture_ratio: f64,
+}
+
+impl PropulsionThermochemConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.file.as_os_str().is_empty() {
+            return Err(ScenarioError::EmptyField {
+                field: "propulsion.thermochem.file".to_owned(),
+            });
+        }
+        require_finite(
+            "propulsion.thermochem.chamber_pressure_pa",
+            self.chamber_pressure_pa,
+        )?;
+        require_positive(
+            "propulsion.thermochem.chamber_pressure_pa",
+            self.chamber_pressure_pa,
+        )?;
+        require_finite("propulsion.thermochem.mixture_ratio", self.mixture_ratio)?;
+        require_positive("propulsion.thermochem.mixture_ratio", self.mixture_ratio)?;
+        Ok(())
+    }
+}
+
+/// Runtime nozzle override inside `[propulsion.nozzle]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PropulsionNozzleConfig {
+    /// Ambient-pressure correction strategy.
+    pub ambient_pressure_correction: NozzleAmbientPressureCorrectionConfig,
+    /// Optional overexpanded-nozzle separation clipping criterion.
+    #[serde(default)]
+    pub separation: NozzleSeparationConfig,
+}
+
+/// Supported nozzle ambient-pressure correction strategies.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NozzleAmbientPressureCorrectionConfig {
+    /// Preserve the motor thrust curve as-is.
+    Constant,
+    /// Add ideal pressure thrust `(p_e - p_a) A_e` at runtime.
+    PressureThrust,
+}
+
+/// Supported overexpanded-nozzle separation criteria.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NozzleSeparationConfig {
+    /// Disable nozzle separation clipping.
+    #[default]
+    Off,
+    /// Summerfield fixed-ratio separation criterion.
+    Summerfield,
+    /// Schmucker Mach-dependent separation criterion.
+    Schmucker,
+}
+
+impl NozzleSeparationConfig {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Summerfield => "summerfield",
+            Self::Schmucker => "schmucker",
+        }
     }
 }
 
@@ -5143,6 +6691,9 @@ impl MotorConfig {
 pub struct MotorGrainConfig {
     /// Grain geometry kind.
     pub geometry: GrainGeometryConfig,
+    /// Internal-ballistics regression mode.
+    #[serde(default)]
+    pub mode: GrainRegressionModeConfig,
     /// Number of BATES segments.
     #[serde(default)]
     pub segments: Option<u32>,
@@ -5365,6 +6916,17 @@ pub enum GrainGeometryConfig {
     Bates,
     /// User-supplied web/area table.
     Tabulated,
+}
+
+/// Inline solid-grain internal-ballistics regression mode.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum GrainRegressionModeConfig {
+    /// Algebraic equilibrium `pc(Kn)` march. This is the default.
+    #[default]
+    QuasiStatic,
+    /// Explicit lumped-volume chamber-pressure integration.
+    Transient,
 }
 
 /// Grain propellant constants.
@@ -8187,8 +9749,8 @@ impl EngineLimitsConfig {
     }
 }
 
-/// Engine fault tagged enum. Four canonical modes;
-/// load-time injection only.
+/// Engine fault tagged enum. Canonical modes for load-time, scheduled, and
+/// condition-triggered injection.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EngineFaultConfig {
@@ -8204,6 +9766,19 @@ pub enum EngineFaultConfig {
         /// Thrust multiplier.
         factor: f64,
     },
+    /// Ignition transient over-pressure. Scales thrust only while the engine is
+    /// igniting and `elapsed_in_state_s <= duration_s`.
+    HardStartOverpressure {
+        /// Ignition over-pressure multiplier.
+        factor: f64,
+        /// Duration in seconds from ignition start.
+        duration_s: f64,
+    },
+    /// Pump-cavitation thrust loss after a cavitation trigger latches.
+    CavitationThrustLoss {
+        /// Thrust multiplier after cavitation onset.
+        factor: f64,
+    },
     /// Gimbal frozen at the given angles (rad). Both must lie within
     /// `±max_gimbal_rad`.
     GimbalLocked {
@@ -8216,7 +9791,15 @@ pub enum EngineFaultConfig {
 
 impl EngineFaultConfig {
     fn validate(&self, index: usize, limits: &EngineLimitsConfig) -> Result<(), ScenarioError> {
-        let path = |field: &str| format!("vehicle.assembly.engines[{index}].fault.{field}");
+        self.validate_at_path(&format!("vehicle.assembly.engines[{index}].fault"), limits)
+    }
+
+    fn validate_at_path(
+        &self,
+        path_prefix: &str,
+        limits: &EngineLimitsConfig,
+    ) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("{path_prefix}.{field}");
         match *self {
             Self::Stuck { at_throttle } => {
                 require_finite(&path("at_throttle"), at_throttle)?;
@@ -8236,6 +9819,27 @@ impl EngineFaultConfig {
                         field: path("factor"),
                         value: factor,
                         rule: "must be non-negative",
+                    });
+                }
+            }
+            Self::HardStartOverpressure { factor, duration_s } => {
+                require_finite(&path("factor"), factor)?;
+                if factor < 1.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("factor"),
+                        value: factor,
+                        rule: "must be at least 1",
+                    });
+                }
+                require_positive(&path("duration_s"), duration_s)?;
+            }
+            Self::CavitationThrustLoss { factor } => {
+                require_finite(&path("factor"), factor)?;
+                if !(0.0..=1.0).contains(&factor) {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("factor"),
+                        value: factor,
+                        rule: "must lie in [0, 1]",
                     });
                 }
             }
@@ -8901,6 +10505,499 @@ pub struct FcConfig {
     /// which case the run is byte-identical to a normal run.
     #[serde(default)]
     pub sil_stimulus: Option<FcSilStimulusConfig>,
+    /// Optional transport backend for the FC boundary (v3 only).
+    ///
+    /// Absent keeps the legacy in-process direct-call bridge. Present
+    /// routes the FC sensor/actuator exchange through
+    /// `openbmp-bridge` messages.
+    #[serde(default)]
+    pub transport: Option<FcTransportConfig>,
+    /// Optional bridge-level fault transforms for `[fc.transport]`
+    /// scenarios (v3 only).
+    ///
+    /// Absent keeps the transport stream byte-identical. Present
+    /// mutates named scalar bridge fields before the local FC consumes
+    /// sensor packets or before the runner applies command packets.
+    #[serde(default)]
+    pub transport_faults: Option<FcTransportFaultsConfig>,
+}
+
+/// Flight-controller transport declaration (`[fc.transport]`, v3 only).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcTransportConfig {
+    /// Transport mode used by the runner.
+    pub mode: FcTransportModeConfig,
+    /// External process executable for `mode = "external_process"`.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// External process arguments for `mode = "external_process"`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// External process working directory for `mode = "external_process"`.
+    #[serde(default)]
+    pub working_dir: Option<PathBuf>,
+    /// Maximum bridge payload accepted by either side, in bytes.
+    #[serde(default)]
+    pub max_payload_len: Option<u32>,
+    /// Optional peer protocol-version override for fail-closed tests.
+    #[serde(default)]
+    pub peer_protocol_version: Option<u16>,
+}
+
+impl FcTransportConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if let Some(max_payload_len) = self.max_payload_len
+            && max_payload_len == 0
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: "fc.transport.max_payload_len".to_owned(),
+                value: f64::from(max_payload_len),
+                rule: "must be greater than zero",
+            });
+        }
+        match self.mode {
+            FcTransportModeConfig::ExternalProcess => {
+                let Some(command) = &self.command else {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: "[fc.transport] mode = \"external_process\" requires command"
+                            .to_owned(),
+                    });
+                };
+                require_non_empty("fc.transport.command", command)?;
+                for (index, arg) in self.args.iter().enumerate() {
+                    require_non_empty(&format!("fc.transport.args[{index}]"), arg)?;
+                }
+            }
+            FcTransportModeConfig::InProcess
+            | FcTransportModeConfig::TcpLoopback
+            | FcTransportModeConfig::UnixLoopback => {
+                if self.command.is_some() {
+                    return Err(ScenarioError::InvalidFc {
+                        reason:
+                            "[fc.transport] command is only valid for mode = \"external_process\""
+                                .to_owned(),
+                    });
+                }
+                if !self.args.is_empty() {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: "[fc.transport] args is only valid for mode = \"external_process\""
+                            .to_owned(),
+                    });
+                }
+                if self.working_dir.is_some() {
+                    return Err(ScenarioError::InvalidFc {
+                        reason: "[fc.transport] working_dir is only valid for mode = \"external_process\""
+                            .to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// FC transport backend mode.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcTransportModeConfig {
+    /// Use an in-process bridge transport endpoint pair.
+    InProcess,
+    /// Use a local TCP loopback stream transport endpoint pair.
+    TcpLoopback,
+    /// Use a local Unix-domain-socket loopback stream transport endpoint pair.
+    UnixLoopback,
+    /// Spawn an external flight-controller process and couple over stdio.
+    ExternalProcess,
+}
+
+/// Bridge-level fault transforms (`[fc.transport_faults]`, v3 only).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcTransportFaultsConfig {
+    /// Ordered fault rules. Empty is equivalent to no block.
+    #[serde(default)]
+    pub rules: Vec<FcTransportFaultRuleConfig>,
+    /// Ordered packet-level fault rules. Empty is equivalent to no block.
+    #[serde(default)]
+    pub packet_rules: Vec<FcTransportPacketFaultRuleConfig>,
+}
+
+impl FcTransportFaultsConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        let ids = self
+            .rules
+            .iter()
+            .map(|rule| rule.id.clone())
+            .chain(self.packet_rules.iter().map(|rule| rule.id.clone()))
+            .collect::<Vec<_>>();
+        require_unique("fc.transport_faults.rules.id", &ids)?;
+        for rule in &self.rules {
+            rule.validate()?;
+        }
+        for rule in &self.packet_rules {
+            rule.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// One bridge-level transport fault rule.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcTransportFaultRuleConfig {
+    /// Stable rule id reported by the runner when the rule applies.
+    pub id: String,
+    /// First kernel step where this rule is active.
+    pub start_step: u64,
+    /// Last active kernel step, inclusive. Missing means no upper bound.
+    #[serde(default)]
+    pub end_step: Option<u64>,
+    /// Target bridge scalar signal.
+    pub signal: FcTransportFaultSignalConfig,
+    /// Scalar transform to apply.
+    pub transform: FcTransportFaultTransformConfig,
+}
+
+impl FcTransportFaultRuleConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_non_empty("fc.transport_faults.rules.id", &self.id)?;
+        if let Some(end_step) = self.end_step
+            && end_step < self.start_step
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: "fc.transport_faults.rules.end_step".to_owned(),
+                value: end_step as f64,
+                rule: "must be greater than or equal to start_step",
+            });
+        }
+        self.transform.validate()
+    }
+}
+
+/// One bridge-level packet fault rule.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FcTransportPacketFaultRuleConfig {
+    /// Stable rule id reported by the runner when the rule applies.
+    pub id: String,
+    /// First kernel step where this rule is active.
+    pub start_step: u64,
+    /// Last active kernel step, inclusive. Missing means no upper bound.
+    #[serde(default)]
+    pub end_step: Option<u64>,
+    /// Packet direction this rule targets.
+    pub direction: FcTransportPacketDirectionConfig,
+    /// Packet-level transform to apply.
+    pub transform: FcTransportPacketTransformConfig,
+}
+
+impl FcTransportPacketFaultRuleConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_non_empty("fc.transport_faults.packet_rules.id", &self.id)?;
+        if let Some(end_step) = self.end_step
+            && end_step < self.start_step
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: "fc.transport_faults.packet_rules.end_step".to_owned(),
+                value: end_step as f64,
+                rule: "must be greater than or equal to start_step",
+            });
+        }
+        self.transform.validate()
+    }
+}
+
+/// Packet direction for a bridge transport packet fault.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcTransportPacketDirectionConfig {
+    /// Simulator-to-controller sensor frame.
+    Sensor,
+    /// Controller-to-simulator command frame.
+    Command,
+}
+
+/// Packet-level transform for a bridge transport packet fault.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FcTransportPacketTransformConfig {
+    /// Drop the packet at the abstract transport boundary.
+    Drop,
+    /// Duplicate the packet at the abstract transport boundary.
+    Duplicate,
+    /// Delay the packet by a positive number of bridge steps.
+    Delay {
+        /// Positive bridge-step delay.
+        steps: u64,
+    },
+    /// Flip bits in the framed packet with a deterministic non-zero mask.
+    BitFlip {
+        /// Non-zero bit mask.
+        mask: u8,
+    },
+    /// Offset the packet step index before lockstep validation.
+    StepOffset {
+        /// Non-zero signed step offset.
+        offset: i64,
+    },
+    /// Offset the packet simulation timestamp before lockstep validation.
+    TimeOffset {
+        /// Non-zero finite time offset in seconds.
+        offset_s: f64,
+    },
+}
+
+impl FcTransportPacketTransformConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        match *self {
+            Self::Drop | Self::Duplicate => Ok(()),
+            Self::Delay { steps } => {
+                if steps == 0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: "fc.transport_faults.packet_rules.transform.steps".to_owned(),
+                        value: steps as f64,
+                        rule: "must be positive",
+                    });
+                }
+                Ok(())
+            }
+            Self::BitFlip { mask } => {
+                if mask == 0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: "fc.transport_faults.packet_rules.transform.mask".to_owned(),
+                        value: mask as f64,
+                        rule: "must be positive",
+                    });
+                }
+                Ok(())
+            }
+            Self::StepOffset { offset } => {
+                if offset == 0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: "fc.transport_faults.packet_rules.transform.offset".to_owned(),
+                        value: 0.0,
+                        rule: "must be non-zero",
+                    });
+                }
+                Ok(())
+            }
+            Self::TimeOffset { offset_s } => {
+                if !offset_s.is_finite() {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: "fc.transport_faults.packet_rules.transform.offset_s".to_owned(),
+                        value: offset_s,
+                        rule: "must be finite",
+                    });
+                }
+                if offset_s == 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: "fc.transport_faults.packet_rules.transform.offset_s".to_owned(),
+                        value: offset_s,
+                        rule: "must be non-zero",
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Cartesian vector axis selector for bridge fault rules.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcTransportVectorAxisConfig {
+    /// X axis.
+    X,
+    /// Y axis.
+    Y,
+    /// Z axis.
+    Z,
+}
+
+/// Quaternion component selector for bridge fault rules.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FcTransportQuaternionAxisConfig {
+    /// X vector component.
+    X,
+    /// Y vector component.
+    Y,
+    /// Z vector component.
+    Z,
+    /// W scalar component.
+    W,
+}
+
+/// Named bridge scalar signal for a transport fault rule.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FcTransportFaultSignalConfig {
+    /// IMU accelerometer axis in body frame, m/s².
+    ImuAccelBodyMps2 {
+        /// Vector axis.
+        axis: FcTransportVectorAxisConfig,
+    },
+    /// IMU gyro axis in body frame, rad/s.
+    ImuGyroBodyRadS {
+        /// Vector axis.
+        axis: FcTransportVectorAxisConfig,
+    },
+    /// Barometric altitude, m.
+    BaroAltitudeM,
+    /// Barometric pressure, Pa.
+    BaroPressurePa,
+    /// Barometer bias, Pa.
+    BaroBiasPa,
+    /// GNSS ECI position axis, m.
+    GnssPositionEciM {
+        /// Vector axis.
+        axis: FcTransportVectorAxisConfig,
+    },
+    /// GNSS ECI velocity axis, m/s.
+    GnssVelocityEciMS {
+        /// Vector axis.
+        axis: FcTransportVectorAxisConfig,
+    },
+    /// GNSS ECI position-bias axis, m.
+    GnssPositionBiasEciM {
+        /// Vector axis.
+        axis: FcTransportVectorAxisConfig,
+    },
+    /// Magnetometer body-frame axis, tesla.
+    MagBodyTesla {
+        /// Vector axis.
+        axis: FcTransportVectorAxisConfig,
+    },
+    /// Magnetometer body-frame axis, nT.
+    MagBodyNt {
+        /// Vector axis.
+        axis: FcTransportVectorAxisConfig,
+    },
+    /// Magnetometer hard-iron body-frame axis, nT.
+    MagHardIronBodyNt {
+        /// Vector axis.
+        axis: FcTransportVectorAxisConfig,
+    },
+    /// Star-tracker ECI-to-body quaternion component in `[x, y, z, w]`.
+    StarTrackerAttitudeEciToBody {
+        /// Quaternion component.
+        axis: FcTransportQuaternionAxisConfig,
+    },
+    /// Normalized effector command by scenario-assigned effector id.
+    EffectorCommand {
+        /// Scenario-assigned effector id.
+        effector_id: u32,
+    },
+    /// Engine throttle command by scenario-assigned engine id.
+    EngineThrottle {
+        /// Scenario-assigned engine id.
+        engine_id: u32,
+    },
+    /// Engine pitch-gimbal command by scenario-assigned engine id.
+    EngineGimbalPitch {
+        /// Scenario-assigned engine id.
+        engine_id: u32,
+    },
+    /// Engine yaw-gimbal command by scenario-assigned engine id.
+    EngineGimbalYaw {
+        /// Scenario-assigned engine id.
+        engine_id: u32,
+    },
+}
+
+/// Scalar transform for a bridge transport fault rule.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FcTransportFaultTransformConfig {
+    /// Add a fixed offset to the signal.
+    AdditiveBias {
+        /// Offset added to the signal.
+        offset: f64,
+    },
+    /// Multiply the signal by a fixed factor.
+    Scale {
+        /// Multiplicative factor.
+        factor: f64,
+    },
+    /// Replace the signal with a fixed value.
+    Stuck {
+        /// Replacement value.
+        value: f64,
+    },
+    /// Clamp the signal to an inclusive range.
+    Saturate {
+        /// Inclusive lower bound.
+        min: f64,
+        /// Inclusive upper bound.
+        max: f64,
+    },
+    /// Quantize the signal to the nearest multiple of `quantum`.
+    Quantize {
+        /// Positive finite quantization step.
+        quantum: f64,
+    },
+    /// Add a deterministic linear drift relative to a reference time.
+    Drift {
+        /// Drift rate in signal units per second.
+        rate_per_s: f64,
+        /// Reference simulation time where the drift contribution is zero.
+        reference_time_s: f64,
+    },
+    /// Add bounded deterministic noise from a rule-local stream.
+    NoiseBurst {
+        /// Positive maximum absolute noise contribution.
+        amplitude: f64,
+        /// Explicit deterministic stream seed.
+        seed: u64,
+    },
+    /// Multiply the signal by `-1`.
+    ReverseSign,
+}
+
+impl FcTransportFaultTransformConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        match *self {
+            Self::AdditiveBias { offset } => {
+                require_finite("fc.transport_faults.rules.transform.offset", offset)
+            }
+            Self::Scale { factor } => {
+                require_finite("fc.transport_faults.rules.transform.factor", factor)
+            }
+            Self::Stuck { value } => {
+                require_finite("fc.transport_faults.rules.transform.value", value)
+            }
+            Self::Saturate { min, max } => {
+                require_finite("fc.transport_faults.rules.transform.min", min)?;
+                require_finite("fc.transport_faults.rules.transform.max", max)?;
+                if min > max {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: "fc.transport_faults.rules.transform.max".to_owned(),
+                        value: max,
+                        rule: "must be greater than or equal to min",
+                    });
+                }
+                Ok(())
+            }
+            Self::Quantize { quantum } => {
+                require_positive("fc.transport_faults.rules.transform.quantum", quantum)
+            }
+            Self::Drift {
+                rate_per_s,
+                reference_time_s,
+            } => {
+                require_finite("fc.transport_faults.rules.transform.rate_per_s", rate_per_s)?;
+                require_finite(
+                    "fc.transport_faults.rules.transform.reference_time_s",
+                    reference_time_s,
+                )
+            }
+            Self::NoiseBurst { amplitude, .. } => {
+                require_positive("fc.transport_faults.rules.transform.amplitude", amplitude)
+            }
+            Self::ReverseSign => Ok(()),
+        }
+    }
 }
 
 /// Software-in-the-loop fault-injection schedule (`[fc.sil_stimulus]`).
@@ -9401,6 +11498,9 @@ impl FcConfig {
         }
         if let Some(fdir) = &self.fdir {
             fdir.validate()?;
+        }
+        if let Some(transport_faults) = &self.transport_faults {
+            transport_faults.validate()?;
         }
         Ok(())
     }
@@ -11422,9 +13522,11 @@ impl FcTrajectoryConfig {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod fc_string_tests {
+    use std::path::PathBuf;
+
     use serde::{Deserialize, Serialize};
 
-    use super::{FcFdirDetectorKind, FcTrajectoryKind};
+    use super::{FcFdirDetectorKind, FcTrajectoryKind, FcTransportConfig, FcTransportModeConfig};
 
     #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
     struct TrajectoryWrapper {
@@ -11434,6 +13536,11 @@ mod fc_string_tests {
     #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
     struct DetectorWrapper {
         detector_kind: FcFdirDetectorKind,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct TransportWrapper {
+        transport_kind: FcTransportModeConfig,
     }
 
     #[test]
@@ -11465,6 +13572,70 @@ mod fc_string_tests {
         assert!(
             toml::from_str::<DetectorWrapper>("detector_kind = \"single-sample-glrt\"").is_err()
         );
+
+        let transport: TransportWrapper =
+            toml::from_str("transport_kind = \"unix_loopback\"").unwrap();
+        assert_eq!(
+            transport.transport_kind,
+            FcTransportModeConfig::UnixLoopback
+        );
+        assert!(toml::from_str::<TransportWrapper>("transport_kind = \"unix-loopback\"").is_err());
+    }
+
+    #[test]
+    fn fc_transport_accepts_tcp_loopback_mode() {
+        let transport: FcTransportConfig = toml::from_str(
+            r#"
+mode = "tcp_loopback"
+max_payload_len = 4096
+"#,
+        )
+        .unwrap();
+        assert_eq!(transport.mode, FcTransportModeConfig::TcpLoopback);
+        transport.validate().unwrap();
+    }
+
+    #[test]
+    fn fc_transport_accepts_unix_loopback_mode() {
+        let transport: FcTransportConfig = toml::from_str(
+            r#"
+mode = "unix_loopback"
+max_payload_len = 4096
+"#,
+        )
+        .unwrap();
+        assert_eq!(transport.mode, FcTransportModeConfig::UnixLoopback);
+        transport.validate().unwrap();
+    }
+
+    #[test]
+    fn fc_transport_accepts_external_process_mode() {
+        let transport: FcTransportConfig = toml::from_str(
+            r#"
+mode = "external_process"
+command = "openbmp-fc-stdio"
+args = ["--bridge-stdio"]
+working_dir = "."
+max_payload_len = 4096
+"#,
+        )
+        .unwrap();
+        assert_eq!(transport.mode, FcTransportModeConfig::ExternalProcess);
+        assert_eq!(transport.command.as_deref(), Some("openbmp-fc-stdio"));
+        assert_eq!(transport.args, ["--bridge-stdio"]);
+        assert_eq!(transport.working_dir, Some(PathBuf::from(".")));
+        transport.validate().unwrap();
+    }
+
+    #[test]
+    fn fc_transport_external_process_requires_command() {
+        let transport: FcTransportConfig = toml::from_str(
+            r#"
+mode = "external_process"
+"#,
+        )
+        .unwrap();
+        assert!(transport.validate().is_err());
     }
 }
 

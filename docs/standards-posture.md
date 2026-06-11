@@ -28,10 +28,14 @@ It also exposes a portable `ModelPort` abstraction, an FMI co-simulation
 adapter boundary, and a restricted stored-entry `.fmu` archive reader used by a
 deterministic toy co-simulation equivalence test. The host-only `openbmp-fmi`
 crate can materialize an explicit FMU binary entry, load it as a shared
-library, call `fmi3GetVersion`, and verify a small FMI 3 co-simulation smoke
-symbol set including Float64 get/set entry points. These are interchange
-surfaces, not conformance claims: OpenBMP does not currently claim ASAM XIL,
-FMI, XTCE, CCSDS, PUS, ECSS, DO-178C, ISO 26262, or IEC 61508 compliance.
+library, call `fmi3GetVersion`, verify a small FMI 3 co-simulation smoke
+symbol set, bind typed Float64/UInt64 value references from
+`modelDescription.xml`, exercise typed get/set plus `doStep` wrappers, and run
+a single-FMU typed macro-step helper over an already-instantiated component.
+Optional FMU-state wrappers expose save/restore handles for rollback-capable
+FMUs. These are interchange surfaces, not conformance claims: OpenBMP does not
+currently claim ASAM XIL, FMI, XTCE, CCSDS, PUS, ECSS, DO-178C, ISO 26262, or
+IEC 61508 compliance.
 
 The upstream repository can provide architecture, source code, tests,
 golden comparisons, requirements traceability, HAL contracts, and

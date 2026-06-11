@@ -8,6 +8,9 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "Host-only FMI adapter boundary for OpenBMP model-port import smoke tests."
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 libloading     = { workspace = true }
 openbmp-models = { workspace = true }

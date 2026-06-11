@@ -39,6 +39,7 @@
 
 use std::path::{Path, PathBuf};
 
+use openbmp_mc::{SampleRng, ScalarOutcome, run_scalar_campaign};
 use openbmp_physics::frames::WGS84_MU_M3_S2;
 use openbmp_runner as runner;
 use openbmp_scenario::Scenario;
@@ -53,6 +54,8 @@ const EARTH_MEAN_RADIUS_M: f64 = 6_371_000.0;
 
 /// Number of dispersed samples. Sample 0 is the undispersed nominal.
 const SAMPLES: u64 = 16;
+/// Campaign seed for the synthetic Phalcon-9 robustness Monte Carlo.
+const CAMPAIGN_SEED: u64 = 0x0B19_C900_0000_0000;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -64,51 +67,6 @@ fn workspace_root() -> PathBuf {
 
 fn scenario_path() -> PathBuf {
     workspace_root().join("scenarios/phalcon9/phalcon9-orbit.toml")
-}
-
-/// `SplitMix64` — a tiny, fully deterministic PRNG. Self-contained so the
-/// harness needs no RNG dependency; identical seed => identical stream,
-/// which keeps the whole Monte-Carlo byte-reproducible.
-struct SplitMix64 {
-    state: u64,
-    spare_normal: Option<f64>,
-}
-
-impl SplitMix64 {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: seed,
-            spare_normal: None,
-        }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Uniform in [0, 1).
-    fn uniform(&mut self) -> f64 {
-        // Top 53 bits → exact double in [0, 1).
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
-    }
-
-    /// Standard-normal draw (Box-Muller, cached pair).
-    fn normal(&mut self) -> f64 {
-        if let Some(z) = self.spare_normal.take() {
-            return z;
-        }
-        // Avoid log(0).
-        let u1 = self.uniform().max(f64::MIN_POSITIVE);
-        let u2 = self.uniform();
-        let r = (-2.0 * u1.ln()).sqrt();
-        let theta = std::f64::consts::TAU * u2;
-        self.spare_normal = Some(r * theta.sin());
-        r * theta.cos()
-    }
 }
 
 /// Insertion metrics derived from a single dispersed run's final state.
@@ -219,23 +177,19 @@ fn constant_wind(wind_ned_m_s: [f64; 3]) -> WindConfig {
 
 /// Run sample `idx`. Sample 0 is the undispersed nominal; samples >= 1 are
 /// dispersed deterministically from `idx`.
-fn run_sample(idx: u64) -> Insertion {
+fn run_sample(idx: u64, rng: &mut SampleRng) -> Insertion {
     let mut scenario = Scenario::from_file(scenario_path()).expect("load phalcon9-orbit");
     let doc = &mut scenario.document;
 
     if idx > 0 {
-        // Deterministic per-sample stream — fixed base XOR sample index.
-        let mut rng =
-            SplitMix64::new(0x0B19_C900_0000_0000u64 ^ idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-
         // (1) Full reseed → fresh sensor + process-noise realisation.
         doc.time.seed ^= rng.next_u64() | 1;
 
         // (2) Stage common-mode performance (Isp ~0.4%, thrust ~1.2% 1σ).
-        let s1_isp = 1.0 + 0.004 * rng.normal();
-        let s1_thrust = 1.0 + 0.012 * rng.normal();
-        let s2_isp = 1.0 + 0.004 * rng.normal();
-        let s2_thrust = 1.0 + 0.012 * rng.normal();
+        let s1_isp = 1.0 + 0.004 * rng.standard_normal();
+        let s1_thrust = 1.0 + 0.012 * rng.standard_normal();
+        let s2_isp = 1.0 + 0.004 * rng.standard_normal();
+        let s2_thrust = 1.0 + 0.012 * rng.standard_normal();
         for eng in &mut doc.vehicle.assembly.engines {
             let (kisp, kthr) = if eng.id.starts_with("eng_s1_") {
                 (s1_isp, s1_thrust)
@@ -248,19 +202,19 @@ fn run_sample(idx: u64) -> Insertion {
 
         // (3) Structural dry mass (~1.5% 1σ per body).
         for body in &mut doc.vehicle.assembly.bodies {
-            body.dry_mass_kg *= 1.0 + 0.015 * rng.normal();
+            body.dry_mass_kg *= 1.0 + 0.015 * rng.standard_normal();
         }
 
         // (4) Propellant load — underfill only so fill stays in [0, 1].
         for tank in &mut doc.vehicle.assembly.tanks {
-            let underfill = 0.004 * rng.normal().abs();
+            let underfill = 0.004 * rng.standard_normal().abs();
             tank.initial_fill_fraction = (tank.initial_fill_fraction - underfill).clamp(0.0, 1.0);
         }
 
         // (5) Initial-state offsets (position ~30 m, velocity ~0.5 m/s 1σ).
         for k in 0..3 {
-            doc.vehicle.initial_position_eci_m[k] += 30.0 * rng.normal();
-            doc.vehicle.initial_velocity_eci_m_s[k] += 0.5 * rng.normal();
+            doc.vehicle.initial_position_eci_m[k] += 30.0 * rng.standard_normal();
+            doc.vehicle.initial_velocity_eci_m_s[k] += 0.5 * rng.standard_normal();
         }
 
         // (6) WINDS — a per-sample horizontal wind (~12 m/s 1σ each axis, no
@@ -272,7 +226,11 @@ fn run_sample(idx: u64) -> Insertion {
         //     anyway, where a constant wind is a fair approximation. The
         //     scenario carries [frames.local_origin], required to rotate the
         //     NED wind into ECI for the air-relative aerodynamics.
-        let wind_ned = [12.0 * rng.normal(), 12.0 * rng.normal(), 0.0];
+        let wind_ned = [
+            12.0 * rng.standard_normal(),
+            12.0 * rng.standard_normal(),
+            0.0,
+        ];
         "constant".clone_into(&mut doc.environment.wind);
         doc.wind = Some(constant_wind(wind_ned));
     }
@@ -282,17 +240,32 @@ fn run_sample(idx: u64) -> Insertion {
     insertion_from_state(r, v)
 }
 
+fn run_indexed_sample(idx: u64) -> Insertion {
+    let mut rng = SampleRng::new(CAMPAIGN_SEED, idx, 0);
+    run_sample(idx, &mut rng)
+}
+
 #[test]
 fn phalcon9_orbit_monte_carlo_robustness() {
-    let results: Vec<Insertion> = (0..SAMPLES).map(run_sample).collect();
+    let mut results = Vec::with_capacity(SAMPLES as usize);
+    let report = run_scalar_campaign(CAMPAIGN_SEED, SAMPLES, 0, |sample_index, rng| {
+        let insertion = run_sample(sample_index, rng);
+        let outcome = ScalarOutcome::new(insertion.perigee_km, insertion.sustainable())?;
+        results.push(insertion);
+        Ok(outcome)
+    })
+    .expect("run MC campaign");
 
     let bound = results.iter().filter(|r| r.bound()).count();
-    let sustainable = results.iter().filter(|r| r.sustainable()).count();
+    let sustainable = report.success_stats.successes();
 
     let perigees: Vec<f64> = results.iter().map(|r| r.perigee_km).collect();
     let peri_min = perigees.iter().copied().fold(f64::INFINITY, f64::min);
     let peri_max = perigees.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let peri_mean = perigees.iter().sum::<f64>() / perigees.len() as f64;
+    let peri_mean = report.value_stats.mean();
+    let sustainable_ci = report
+        .success_interval(0.95)
+        .expect("valid sustainable Clopper-Pearson interval");
     let ecc_max = results.iter().map(|r| r.eccentricity).fold(0.0, f64::max);
     let incl_min = results
         .iter()
@@ -306,8 +279,10 @@ fn phalcon9_orbit_monte_carlo_robustness() {
     println!(
         "phalcon9-orbit Monte-Carlo: {SAMPLES} samples\n  \
          bound: {bound}/{SAMPLES}, sustainable LEO: {sustainable}/{SAMPLES}\n  \
+         sustainable 95% Clopper-Pearson [{:.3}, {:.3}]\n  \
          perigee km [min {peri_min:.1}, mean {peri_mean:.1}, max {peri_max:.1}]\n  \
-         max eccentricity {ecc_max:.4}, inclination deg [{incl_min:.2}, {incl_max:.2}]"
+         max eccentricity {ecc_max:.4}, inclination deg [{incl_min:.2}, {incl_max:.2}]",
+        sustainable_ci.lower, sustainable_ci.upper,
     );
     for (i, r) in results.iter().enumerate() {
         println!(
@@ -359,8 +334,8 @@ fn phalcon9_orbit_monte_carlo_is_deterministic() {
     // The whole ensemble is a pure function of the sample index, so a
     // given sample reproduces bit-for-bit. Guards against any hidden
     // nondeterminism leaking into the dispersed runs.
-    let a = run_sample(3);
-    let b = run_sample(3);
+    let a = run_indexed_sample(3);
+    let b = run_indexed_sample(3);
     assert_eq!(
         a.perigee_km.to_bits(),
         b.perigee_km.to_bits(),

@@ -8,8 +8,9 @@
 //! 1. **Inline TOML scenario / data fixtures in `*.rs` source.** Any
 //!    multi-line Rust string literal in a `*.rs` file whose body
 //!    contains an OpenBMP schema header (`openbmp.scenario`,
-//!    `openbmp.aero_deck`, `openbmp.motor`, `openbmp.imu_noise_budget`,
-//!    `openbmp.benchmark`) or a `[[metric]]` table marker is
+//!    `openbmp.aero_deck`, `openbmp.thermochem_deck`, `openbmp.motor`,
+//!    `openbmp.imu_noise_budget`, `openbmp.benchmark`) or a `[[metric]]`
+//!    table marker is
 //!    forbidden, regardless of enclosing context (module-level
 //!    `const`, function-local `let`, or `fn` returning `String`). TOML
 //!    fixtures must live in sibling files under `tests/fixtures/<name>.toml`
@@ -77,6 +78,7 @@ fn is_scan_extension(path: &Path) -> bool {
 const TOML_SCHEMA_MARKERS: &[&str] = &[
     "openbmp.scenario",
     "openbmp.aero_deck",
+    "openbmp.thermochem_deck",
     "openbmp.motor",
     "openbmp.imu_noise_budget",
     "openbmp.benchmark",
@@ -1007,6 +1009,7 @@ const SCENARIO_SCHEMA_MARKERS: &[&str] = &["openbmp.scenario", "openbmp.benchmar
 /// Data-shaped schema markers that belong only under `data/`.
 const DATA_SCHEMA_MARKERS: &[&str] = &[
     "openbmp.aero_deck",
+    "openbmp.thermochem_deck",
     "openbmp.motor",
     "openbmp.imu_noise_budget",
 ];
@@ -1107,6 +1110,10 @@ fn schema_marker_detector_recognises_canonical_forms() {
     assert!(toml_declares_schema_marker(
         "openbmp.scenario\t=\t1\n",
         "openbmp.scenario",
+    ));
+    assert!(toml_declares_schema_marker(
+        "openbmp.thermochem_deck = 1\n",
+        "openbmp.thermochem_deck",
     ));
 }
 

@@ -1,0 +1,73 @@
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-pressure-thrust"
+description = "Synthetic pressure-thrust runner regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.3
+dt_s = 0.1
+seed = 31
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-pressure-thrust"
+
+[[vehicle.assembly.bodies]]
+id = "core"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 10.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "piecewise_exponential"
+wind = "none"
+
+[atmosphere]
+kind = "piecewise_exponential"
+
+[propulsion.motor]
+variant = "solid"
+ignite_at_s = 0.0
+mounted_to = "core"
+
+[propulsion.motor.grain]
+geometry = "end_burner"
+cross_section_area_m2 = 0.02
+length_m = 0.05
+throat_radius_m = 0.005641895835477563
+expansion_ratio = 20.0
+dry_mass_kg = 0.2
+name = "pressure-thrust-regression-grain"
+provenance = "synthetic pressure-thrust runner regression"
+
+[propulsion.motor.grain.propellant]
+label = "synthetic_textbook"
+density_kg_m3 = 1700.0
+burn_rate_a = 0.00004
+burn_rate_n = 0.32
+c_star_m_s = 1400.0
+gamma = 1.2
+web_steps = 64
+
+[propulsion.nozzle]
+ambient_pressure_correction = "pressure_thrust"
+
+[forces]
+models = ["gravity", "thrust"]
+
+[telemetry]
+output.csv = "out/point-mass-pressure-thrust.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true

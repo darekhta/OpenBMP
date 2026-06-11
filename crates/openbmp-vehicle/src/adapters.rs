@@ -259,13 +259,13 @@ impl<M: Motor> ForceModel<PointMassState> for MotorThrustForceAdapter<M> {
             return Ok(Vector3::zeros());
         }
         let t_since = ctx.time.as_seconds() - self.ignition_time_s;
-        let thrust_n =
-            self.motor
-                .thrust_n_at(t_since)
-                .map_err(|_| ModelEvalError::OutOfEnvelope {
-                    model: self.model_id,
-                    reason: Cow::Borrowed("motor thrust query failed"),
-                })?;
+        let thrust_n = self
+            .motor
+            .thrust_n_at_ambient_pressure(t_since, ctx.environment.atmosphere_pressure_pa)
+            .map_err(|_| ModelEvalError::OutOfEnvelope {
+                model: self.model_id,
+                reason: Cow::Borrowed("motor thrust query failed"),
+            })?;
         if !thrust_n.is_finite() {
             return Err(ModelEvalError::NonFinite {
                 model: self.model_id,
@@ -293,13 +293,13 @@ impl<M: Motor> ForceModel<RigidBodyState> for MotorThrustForceAdapter<M> {
             return Ok(Vector3::zeros());
         }
         let t_since = ctx.time.as_seconds() - self.ignition_time_s;
-        let thrust_n =
-            self.motor
-                .thrust_n_at(t_since)
-                .map_err(|_| ModelEvalError::OutOfEnvelope {
-                    model: self.model_id,
-                    reason: Cow::Borrowed("motor thrust query failed"),
-                })?;
+        let thrust_n = self
+            .motor
+            .thrust_n_at_ambient_pressure(t_since, ctx.environment.atmosphere_pressure_pa)
+            .map_err(|_| ModelEvalError::OutOfEnvelope {
+                model: self.model_id,
+                reason: Cow::Borrowed("motor thrust query failed"),
+            })?;
         if !thrust_n.is_finite() {
             return Err(ModelEvalError::NonFinite {
                 model: self.model_id,

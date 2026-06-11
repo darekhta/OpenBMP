@@ -306,6 +306,117 @@ jobs:
       - run: python3 scripts/check_requirements_traceability.py
 
   # ----------------------------------------------------------------------
+  # FMI export schema gate
+  #
+  # Validates the generated point-mass exporter metadata against the
+  # repository's restricted XSD contract and the pinned official FMI 3.0
+  # XSD set. This is not the FMI conformance suite.
+  # ----------------------------------------------------------------------
+  fmi-export-schema:
+    name: FMI export schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+      - run: python3 scripts/check_fmi_export_schema.py
+
+  # ----------------------------------------------------------------------
+  # FMI import point-mass smoke
+  #
+  # Packages the current-platform point-mass FMU, loads it through the
+  # OpenBMP importer, and compares the output to the native tolerance table.
+  # ----------------------------------------------------------------------
+  fmi-import-point-mass:
+    name: FMI import point-mass
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: python3 scripts/check_fmi_import_point_mass.py
+
+  # ----------------------------------------------------------------------
+  # FMI import FMPy cross-check
+  #
+  # Packages the current-platform point-mass FMU, runs it through OpenBMP's
+  # importer and FMPy, and compares both final samples.
+  # ----------------------------------------------------------------------
+  fmi-import-fmpy:
+    name: FMI import FMPy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: python3 -m pip install --disable-pip-version-check FMPy==0.3.26
+      - run: python3 scripts/check_fmi_import_fmpy.py
+
+  # ----------------------------------------------------------------------
+  # FMI Reference-FMU smoke
+  #
+  # Downloads the pinned Modelica Reference-FMUs release, checks its
+  # SHA-256, imports a small supported FMU matrix through OpenBMP, and
+  # compares to FMPy.
+  # ----------------------------------------------------------------------
+  fmi-reference-smoke:
+    name: FMI Reference-FMU smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: python3 -m pip install --disable-pip-version-check FMPy==0.3.26
+      - run: python3 scripts/check_fmi_reference_smoke.py
+
+  # ----------------------------------------------------------------------
+  # FMI export FMPy smoke
+  #
+  # Packages the current-platform point-mass FMU, executes it through
+  # FMPy, and compares the output to the native tolerance table.
+  # ----------------------------------------------------------------------
+  fmi-export-fmpy:
+    name: FMI export FMPy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: python3 -m pip install --disable-pip-version-check FMPy==0.3.26
+      - run: python3 scripts/check_fmi_export_fmpy.py
+
+  # ----------------------------------------------------------------------
+  # Data/scenario provenance
+  #
+  # Fails closed when source data or scenario files lose their sibling
+  # `provenance.md` record. Generated scenario `out/` telemetry directories
+  # are skipped by the CLI walker.
+  # ----------------------------------------------------------------------
+  provenance:
+    name: data and scenario provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: cargo build -p openbmp-cli --locked
+      - run: ./target/debug/openbmp check-provenance data
+      - run: ./target/debug/openbmp check-provenance scenarios
+
+  # ----------------------------------------------------------------------
   # Native SIL evidence + interchange smoke
   #
   # Exercises the industry-shaped package/testbench path directly:

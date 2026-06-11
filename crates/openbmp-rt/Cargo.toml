@@ -1,0 +1,15 @@
+[package]
+name                    = "openbmp-rt"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP host-side soft real-time frame pacing and jitter accounting."
+
+[dependencies]
+openbmp-core = { workspace = true }
+
+[lints]
+workspace = true

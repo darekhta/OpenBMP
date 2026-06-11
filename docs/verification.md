@@ -72,10 +72,79 @@ The heavier seeded dispersion evidence has its own CI lane:
 test and the Phalcon-9-class seeded ascent dispersion checks on a weekly
 schedule or manual workflow dispatch.
 
+Reusable Monte Carlo primitives live in `openbmp-mc`. Campaign sample streams
+come from `DeterministicRng::for_mc_sample(campaign_seed, sample_index,
+dimension_id)`, so a sample is independent of worker count and completion
+order. The crate also owns the shared Welford and Clopper-Pearson reducers
+used by seeded dispersion tests. The serial `run_scalar_campaign` helper
+emits ordered samples, a Welford convergence trace, and a Bernoulli success
+summary; `openbmp mc summarize` applies the same reducers to local scalar
+sample CSV files for lightweight campaign evidence review. Wilks sample-size
+planning is available through `openbmp mc wilks`, and `ConvergenceGate`
+evaluates the convergence trace using a deterministic relative CI half-width
+window without changing the underlying run. The first design-of-experiments
+primitive is `LatinHypercube`, which emits a `DesignMatrix` with one sample in
+each marginal stratum per dispersion dimension while preserving deterministic
+campaign seeding; `openbmp mc lhs` writes that unit-cube design to a local CSV.
+`ImanConover` can then reorder a design against a target correlation matrix;
+marginal values are preserved exactly and the transform is exposed as
+`openbmp mc iman-conover` for local CSV evidence workflows.
+The native unscrambled Sobol base generator is exposed through `SobolSequence`
+and `openbmp mc sobol`; it parses the provenance-pinned Joe/Kuo
+`data/sobol/new-joe-kuo-6.21201` direction-number asset. `OwenScramble` adds
+deterministic nested bit scramble support through
+`openbmp mc sobol --scramble-seed`.
+
+The reusable code-verification gate is `openbmp verify-order`. It runs the real
+fixed-step RK4 and DOP853 integrators against the testkit's smooth
+manufactured scalar ODE `y(t)=0.75+sin(0.3t)+0.05t^3`, where
+`dy/dt=-lambda*y+source(t)` and
+`source(t)=y_exact'(t)+lambda*y_exact(t)`. The command reports observed order
+from `h, h/2, h/4`, Richardson error, and Roache GCI; it fails closed outside
+the RK4 `[3.8, 4.2]` and DOP853 `[7.5, 8.5]` order bands or if GCI stops being
+monotone/bracketing. `--output-toml` writes deterministic local evidence.
+
+The first reconstruction-consistency gate is
+`openbmp reconstruct synthetic-linear`. It runs a deterministic
+linear-Gaussian fixture through testkit NEES/NIS reducers, an RTS backward
+smoother, and a linear batch Gauss-Newton solve. The command fails closed unless
+both NEES and NIS in-bounds fractions are inside `[0.93, 0.97]` and the batch
+update recovers the known synthetic truth; `--output-toml` writes local
+evidence. This is synthetic consistency evidence, not a real BET.
+
+For real in-loop FC diagnostics, `openbmp reconstruct observe-fc <scenario.toml>`
+runs the scenario with the read-only SIL monitor and reduces the existing
+`estimator.status` innovation histories. GNSS, barometer, and magnetometer NIS
+samples are checked against the same testkit chi-square bands when those updates
+are present. The same command also consumes covariance diagonal blocks published
+by `estimator.status` and computes position, velocity, and attitude
+estimate-vs-truth NEES samples when those blocks are finite and positive. It
+reports rejected-innovation counts and covariance condition-proxy maxima. This
+is diagnostic evidence from the current FC run, not an automatic validation
+claim.
+
+The code-to-code trajectory export surface is
+`openbmp reconstruct export-trajectory <scenario.toml> --output-csv <path>`.
+It runs the scenario and writes a deterministic CSV with `time_s`, `step`, ECI
+position, and ECI velocity columns for the primary body. The command fails
+closed if those primary trajectory channels are absent or no complete samples
+are produced. External solver runs remain local; compare exported or
+externally generated trajectories with `openbmp compare-telemetry` and a local
+mapping file. `openbmp reconstruct export-trajectory-mapping --output-toml
+<path>` writes that local mapping file for exported trajectory CSVs; `--pack
+strict` is covered by a self-comparison round-trip test, while `--pack
+leo-research` is a starter tolerance pack for local Orekit/GMAT-style exchange.
+
 Static bus dictionary evidence is also traceable: canonical FC topics
 declare stable `Topic::INDEX` slots, the scheduler overrun topic uses
 the same index table, and the dictionary dumps those indices alongside
 topic names and schema versions.
+
+Data and scenario provenance is enforced by the `provenance` CI job. The job
+builds `openbmp-cli`, runs `openbmp check-provenance data`, and runs
+`openbmp check-provenance scenarios`; generated scenario `out/` telemetry
+directories are skipped by the CLI walker because they are outputs, not source
+data.
 
 Scheduler budget enforcement is traceable FDIR evidence. The cyclic
 scheduler publishes `scheduler.overrun` when a due job's declared budget

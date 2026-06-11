@@ -44,6 +44,32 @@ pub enum TestkitError {
         /// Invalid value.
         value: f64,
     },
+    /// A code-verification input was non-finite, non-positive, or
+    /// structurally invalid.
+    #[error("invalid verification input '{field}'={value}: {rule}")]
+    InvalidVerificationInput {
+        /// Invalid field name.
+        field: &'static str,
+        /// Invalid value.
+        value: f64,
+        /// Required rule.
+        rule: &'static str,
+    },
+    /// A reconstruction / filter-consistency input had invalid shape,
+    /// dimension, or numeric content.
+    #[error("invalid reconstruction input '{field}': {rule}")]
+    InvalidReconstructionInput {
+        /// Invalid field name.
+        field: &'static str,
+        /// Required rule.
+        rule: &'static str,
+    },
+    /// A reconstruction / filter-consistency linear solve failed.
+    #[error("reconstruction solve failed for '{field}'")]
+    ReconstructionSolveFailed {
+        /// Failed solve context.
+        field: &'static str,
+    },
     /// A named metric was not declared in the tolerance table.
     #[error("metric '{name}' is not present in the tolerance table")]
     UnknownMetric {

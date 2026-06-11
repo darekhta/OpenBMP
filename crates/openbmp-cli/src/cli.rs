@@ -60,6 +60,21 @@ pub enum Command {
         #[arg(required = true)]
         scenarios: Vec<PathBuf>,
     },
+    /// Verify integrator observed order and Richardson/GCI behavior.
+    VerifyOrder {
+        /// Integrator method to verify.
+        #[arg(long = "method", value_enum, default_value_t = VerifyOrderMethod::All)]
+        method: VerifyOrderMethod,
+        /// Optional deterministic TOML evidence output path.
+        #[arg(long = "output-toml")]
+        output_toml: Option<PathBuf>,
+    },
+    /// Run offline reconstruction and filter-consistency evidence commands.
+    Reconstruct {
+        /// Reconstruction command to run.
+        #[command(subcommand)]
+        command: ReconstructCommand,
+    },
     /// Compare a scenario run against external local telemetry CSV / JSON.
     CompareTelemetry {
         /// Scenario TOML file.
@@ -80,11 +95,35 @@ pub enum Command {
     FootprintMc {
         /// Scenario TOML file.
         scenario: PathBuf,
+        /// Optional checkpoint JSON path for resumable footprint MC.
+        #[arg(long = "checkpoint-json")]
+        checkpoint_json: Option<PathBuf>,
+        /// Maximum new samples to propagate when checkpointing is enabled.
+        #[arg(long = "max-new-samples")]
+        max_new_samples: Option<u32>,
+        /// Toolchain / determinism profile recorded in checkpoint metadata.
+        #[arg(long = "toolchain-profile", default_value = "host-clean")]
+        toolchain_profile: String,
+        /// Optional UQ budget TOML to attach to this campaign report.
+        #[arg(long = "uq-toml")]
+        uq_toml: Option<PathBuf>,
+        /// Required binding credibility floor for the UQ budget.
+        #[arg(long = "credibility-floor", default_value = "l0")]
+        credibility_floor: String,
+        /// Optional Markdown output path for the UQ credibility report.
+        #[arg(long = "credibility-report-md")]
+        credibility_report_md: Option<PathBuf>,
     },
-    /// Walk a data tree and verify provenance records.
+    /// Monte Carlo utility commands.
+    Mc {
+        /// Monte Carlo command to run.
+        #[command(subcommand)]
+        command: McCommand,
+    },
+    /// Walk a data/scenario tree and verify provenance records.
     ///
-    /// Lists files without a sibling `provenance.md` so the project can
-    /// audit a fresh data tree.
+    /// Lists source files without a sibling `provenance.md` so the project can
+    /// audit a fresh data or scenario tree.
     CheckProvenance {
         /// Root directory to walk.
         root: PathBuf,
@@ -152,6 +191,62 @@ pub enum DictFormat {
     Xtce,
 }
 
+/// Integrator selection for `openbmp verify-order`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum VerifyOrderMethod {
+    /// Verify every method covered by the code-verification gate.
+    All,
+    /// Verify the fixed-step classical fourth-order Runge-Kutta integrator.
+    Rk4,
+    /// Verify the fixed-step Dormand-Prince 8(5,3) integrator.
+    Dop853,
+}
+
+/// Offline reconstruction evidence commands.
+#[derive(Debug, Subcommand)]
+pub enum ReconstructCommand {
+    /// Run the synthetic linear-Gaussian RTS/GN/NEES-NIS fixture.
+    SyntheticLinear {
+        /// Optional deterministic TOML evidence output path.
+        #[arg(long = "output-toml")]
+        output_toml: Option<PathBuf>,
+    },
+    /// Reduce estimator innovation histories from a monitored FC scenario run.
+    ObserveFc {
+        /// Scenario TOML file with an `[fc]` block.
+        scenario: PathBuf,
+        /// Optional deterministic TOML evidence output path.
+        #[arg(long = "output-toml")]
+        output_toml: Option<PathBuf>,
+    },
+    /// Export an OpenBMP run trajectory CSV for code-to-code comparison tools.
+    ExportTrajectory {
+        /// Scenario TOML file to run.
+        scenario: PathBuf,
+        /// Deterministic trajectory CSV output path.
+        #[arg(long = "output-csv")]
+        output_csv: PathBuf,
+    },
+    /// Write a compare-telemetry mapping for exported trajectory CSVs.
+    ExportTrajectoryMapping {
+        /// Deterministic mapping TOML output path.
+        #[arg(long = "output-toml")]
+        output_toml: PathBuf,
+        /// Tolerance pack to write.
+        #[arg(long = "pack", value_enum, default_value_t = TrajectoryTolerancePack::Strict)]
+        pack: TrajectoryTolerancePack,
+    },
+}
+
+/// Built-in trajectory code-to-code comparison tolerance packs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum TrajectoryTolerancePack {
+    /// Round-trip tolerance for OpenBMP-generated trajectory CSVs.
+    Strict,
+    /// Starter LEO code-to-code tolerance for external Orekit/GMAT-style exchanges.
+    LeoResearch,
+}
+
 /// Mission package subcommands.
 #[derive(Debug, Subcommand)]
 pub enum PackageCommand {
@@ -165,6 +260,205 @@ pub enum PackageCommand {
         /// Mission package manifest.
         package: PathBuf,
     },
+}
+
+/// Monte Carlo utility subcommands.
+#[derive(Debug, Subcommand)]
+pub enum McCommand {
+    /// Summarize a scalar sample CSV with Welford and Clopper-Pearson statistics.
+    Summarize {
+        /// CSV file containing one row per sample.
+        samples_csv: PathBuf,
+        /// Column containing the scalar quantity of interest.
+        #[arg(long = "value-column")]
+        value_column: String,
+        /// Optional column containing a boolean success outcome.
+        #[arg(long = "success-column")]
+        success_column: Option<String>,
+        /// Confidence level for the Clopper-Pearson success interval.
+        #[arg(long = "confidence", default_value_t = 0.95)]
+        confidence: f64,
+        /// Optional UQ budget TOML to attach to this campaign summary.
+        #[arg(long = "uq-toml")]
+        uq_toml: Option<PathBuf>,
+        /// Required binding credibility floor for the UQ budget.
+        #[arg(long = "credibility-floor", default_value = "l0")]
+        credibility_floor: String,
+        /// Optional Markdown output path for the UQ credibility report.
+        #[arg(long = "credibility-report-md")]
+        credibility_report_md: Option<PathBuf>,
+    },
+    /// Summarize nested aleatory/epistemic scalar samples into a p-box.
+    NestedSummarize {
+        /// CSV file containing one row per nested sample.
+        samples_csv: PathBuf,
+        /// Column identifying the epistemic outer-loop condition.
+        #[arg(long = "epistemic-column")]
+        epistemic_column: String,
+        /// Column containing the scalar quantity of interest.
+        #[arg(long = "value-column")]
+        value_column: String,
+        /// Scalar threshold for the lower-tail requirement `P(y <= threshold)`.
+        #[arg(long = "threshold")]
+        threshold: f64,
+        /// Required lower-bound probability for the lower-tail requirement.
+        #[arg(long = "minimum-probability")]
+        minimum_probability: f64,
+        /// Optional deterministic p-box CSV output path.
+        #[arg(long = "pbox-csv")]
+        pbox_csv: Option<PathBuf>,
+    },
+    /// Run synthetic rare-event estimators declared in a scenario.
+    RareEvent {
+        /// Scenario TOML file with a v3 `[monte_carlo]` block.
+        scenario: PathBuf,
+        /// Optional deterministic TOML evidence output path.
+        #[arg(long = "output-toml")]
+        output_toml: Option<PathBuf>,
+    },
+    /// Compute a Wilks tolerance-bound sample size.
+    Wilks {
+        /// Population coverage proportion, for example 0.99865 for a 3-sigma
+        /// normal-equivalent content target.
+        #[arg(long = "coverage")]
+        coverage: f64,
+        /// Confidence level for the tolerance bound.
+        #[arg(long = "confidence")]
+        confidence: f64,
+        /// One-sided or two-sided Wilks bound.
+        #[arg(long = "side", value_enum, default_value_t = McWilksSide::TwoSided)]
+        side: McWilksSide,
+    },
+    /// Generate a deterministic Latin hypercube unit-cube design CSV.
+    Lhs {
+        /// Number of sample rows.
+        #[arg(long = "samples")]
+        samples: u64,
+        /// Number of dispersion dimensions.
+        #[arg(long = "dimensions")]
+        dimensions: u32,
+        /// Campaign seed for deterministic design generation.
+        #[arg(long = "seed")]
+        seed: u64,
+        /// Output CSV path.
+        #[arg(long = "output-csv")]
+        output_csv: PathBuf,
+    },
+    /// Generate an unscrambled Sobol unit-cube design CSV.
+    Sobol {
+        /// Number of sample rows.
+        #[arg(long = "samples")]
+        samples: u64,
+        /// Number of dispersion dimensions.
+        #[arg(long = "dimensions")]
+        dimensions: u32,
+        /// Optional Owen scramble seed.
+        #[arg(long = "scramble-seed")]
+        scramble_seed: Option<u64>,
+        /// Output CSV path.
+        #[arg(long = "output-csv")]
+        output_csv: PathBuf,
+    },
+    /// Reorder a unit-cube design CSV with Iman-Conover rank correlation.
+    ImanConover {
+        /// Input design CSV with sample_index,u0,u1,... columns.
+        #[arg(long = "design-csv")]
+        design_csv: PathBuf,
+        /// Headerless numeric square correlation matrix CSV.
+        #[arg(long = "correlation-csv")]
+        correlation_csv: PathBuf,
+        /// Output CSV path.
+        #[arg(long = "output-csv")]
+        output_csv: PathBuf,
+    },
+    /// Run sampled scheduled propulsion faults through scenario execution.
+    PropulsionFaults {
+        /// Base scenario TOML file.
+        scenario: PathBuf,
+        /// Fault-library TOML with `[[faults]]` templates.
+        #[arg(long = "library-toml")]
+        library_toml: PathBuf,
+        /// Number of samples to execute.
+        #[arg(long = "samples")]
+        samples: u64,
+        /// Campaign seed for deterministic fault activation.
+        #[arg(long = "campaign-seed")]
+        campaign_seed: u64,
+        /// Dimension id used for deterministic per-sample activation streams.
+        #[arg(long = "dimension-id", default_value_t = 0)]
+        dimension_id: u32,
+        /// Telemetry channel to read from the terminal row.
+        #[arg(long = "metric-channel")]
+        metric_channel: String,
+        /// Inclusive lower success bound for the terminal metric.
+        #[arg(long = "success-min")]
+        success_min: Option<f64>,
+        /// Inclusive upper success bound for the terminal metric.
+        #[arg(long = "success-max")]
+        success_max: Option<f64>,
+        /// Output CSV path.
+        #[arg(long = "output-csv")]
+        output_csv: PathBuf,
+        /// Confidence level for the Clopper-Pearson success interval.
+        #[arg(long = "confidence", default_value_t = 0.95)]
+        confidence: f64,
+        /// Optional UQ budget TOML to attach to this campaign report.
+        #[arg(long = "uq-toml")]
+        uq_toml: Option<PathBuf>,
+        /// Required binding credibility floor for the UQ budget.
+        #[arg(long = "credibility-floor", default_value = "l0")]
+        credibility_floor: String,
+        /// Optional Markdown output path for the UQ credibility report.
+        #[arg(long = "credibility-report-md")]
+        credibility_report_md: Option<PathBuf>,
+    },
+    /// Resume a scalar checkpoint from a precomputed sample CSV.
+    ResumeScalar {
+        /// CSV file containing one row per sample.
+        samples_csv: PathBuf,
+        /// Checkpoint JSON path to load or create.
+        #[arg(long = "checkpoint-json")]
+        checkpoint_json: PathBuf,
+        /// Column containing the scalar quantity of interest.
+        #[arg(long = "value-column")]
+        value_column: String,
+        /// Optional column containing a boolean success outcome.
+        #[arg(long = "success-column")]
+        success_column: Option<String>,
+        /// Total campaign sample count.
+        #[arg(long = "sample-count")]
+        sample_count: u64,
+        /// Campaign seed bound into checkpoint metadata.
+        #[arg(long = "campaign-seed")]
+        campaign_seed: u64,
+        /// Dimension id used for deterministic per-sample streams.
+        #[arg(long = "dimension-id", default_value_t = 0)]
+        dimension_id: u32,
+        /// Scenario SHA-256 digest bound into checkpoint metadata.
+        #[arg(long = "scenario-sha256")]
+        scenario_sha256: String,
+        /// Toolchain / determinism profile bound into checkpoint metadata.
+        #[arg(long = "toolchain-profile")]
+        toolchain_profile: String,
+        /// Maximum missing samples to record this invocation.
+        #[arg(long = "max-new-samples")]
+        max_new_samples: u64,
+        /// Number of worker threads used while recording missing samples.
+        #[arg(long = "workers", default_value_t = 1)]
+        workers: usize,
+        /// Confidence level for the final Clopper-Pearson success interval.
+        #[arg(long = "confidence", default_value_t = 0.95)]
+        confidence: f64,
+    },
+}
+
+/// Wilks tolerance-bound side.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum McWilksSide {
+    /// One-sided first-order tolerance bound.
+    OneSided,
+    /// Two-sided min/max tolerance interval.
+    TwoSided,
 }
 
 /// Native SIL testbench subcommands.

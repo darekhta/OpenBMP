@@ -1,0 +1,8 @@
+# export-point-mass-trace.toml
+# Deterministic native-trace tolerance case for the restricted OpenBMP FMI 3 export ABI.
+case = "exported-fmi-point-mass-trace"
+throttle = 0.65
+step_s = 0.125
+steps = 8
+absolute_tolerance = 1.0e-12
+relative_tolerance = 1.0e-12

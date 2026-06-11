@@ -19,7 +19,13 @@ Commands:
   conform            Run one or more scenarios as a fork-runnable conformance smoke suite
   compare-telemetry  Compare a scenario run against external local telemetry CSV / JSON
   footprint-mc       Run offline landing-footprint Monte Carlo post-processing
-  check-provenance   Walk a data tree and verify provenance records
+  mc                 Monte Carlo utility commands
+  check-provenance   Walk a data/scenario tree and verify provenance records
+  dict               Export command/telemetry dictionaries
+  package            Validate mission package manifests
+  run-package        Run a mission package test case through the native SIL path
+  sil                Native SIL testbench operations
+  migrate            Rewrite scenario documents to newer schema shapes
   help               Print this message or the help of the given subcommand(s)
 
 Options:

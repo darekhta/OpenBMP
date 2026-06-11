@@ -11,7 +11,11 @@
 
 use std::fs;
 
-use openbmp_sil::MissionPackage;
+use openbmp_bridge::{
+    CaptureTrigger, EesPort, ElectricalErrorType, FaultWindow, MaPort, PinId, SignalId,
+    TestbenchTransition, XilValue,
+};
+use openbmp_sil::{InMemoryXilBench, MissionPackage};
 
 const FC_SCENARIO: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -47,9 +51,13 @@ fn observed_run_populates_estimate_vs_truth_residuals() {
 
     // The full-fidelity summary covers every tick; samples (decimation 1)
     // record every tick too.
-    assert!(observations.summary.ticks > 0, "must observe at least one tick");
+    assert!(
+        observations.summary.ticks > 0,
+        "must observe at least one tick"
+    );
     assert_eq!(
-        observations.samples.len() as u64, observations.summary.ticks,
+        observations.samples.len() as u64,
+        observations.summary.ticks,
         "decimation 1 records every tick"
     );
 
@@ -90,5 +98,60 @@ fn installed_monitor_does_not_change_telemetry() {
     assert_eq!(
         plain.telemetry, observed.telemetry,
         "installing the SIL monitor must not change the telemetry table"
+    );
+}
+
+#[test]
+fn observed_run_can_attach_xil_evidence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let package = load_package(dir.path());
+    let mut xil = InMemoryXilBench::new();
+    xil.declare_signal("fc.gnss.x", XilValue::Float64(0.0));
+    xil.declare_pin("gnss.vcc");
+    xil.transition(TestbenchTransition::Initialize)
+        .expect("initialize XIL bench");
+    xil.transition(TestbenchTransition::Connect)
+        .expect("connect XIL bench");
+    xil.transition(TestbenchTransition::Start)
+        .expect("start XIL bench");
+    xil.write(SignalId::from("fc.gnss.x"), XilValue::Float64(5.0))
+        .expect("write XIL signal");
+    xil.create_capture(&[SignalId::from("fc.gnss.x")], CaptureTrigger::Immediate, 1)
+        .expect("create XIL capture");
+    xil.set_error(
+        PinId::from("gnss.vcc"),
+        ElectricalErrorType::Open,
+        FaultWindow::new(10, Some(12)).expect("valid XIL fault window"),
+    )
+    .expect("set XIL EES error");
+
+    let report = package
+        .run_case_observed_with_xil(None, 1, &xil)
+        .expect("observed run with XIL evidence succeeds");
+
+    assert!(
+        report.evidence.observations.is_some(),
+        "observed run must keep estimate-vs-truth evidence"
+    );
+    assert!(
+        report
+            .evidence
+            .stimuli
+            .iter()
+            .any(|record| record.kind == "xil.ma.write" && record.target == "fc.gnss.x")
+    );
+    assert!(
+        report
+            .evidence
+            .bus_frames
+            .iter()
+            .any(|frame| frame.stream == "xil.lifecycle" && frame.value == "Running")
+    );
+    assert!(
+        report
+            .evidence
+            .bus_frames
+            .iter()
+            .any(|frame| frame.stream == "xil.ees.error" && frame.subject == "gnss.vcc")
     );
 }

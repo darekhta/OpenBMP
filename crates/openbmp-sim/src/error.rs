@@ -5,7 +5,7 @@
 //! [`IntegratorError`], [`TimeError`], [`StateError`], and
 //! [`ModelEvalError`].
 
-use openbmp_core::{StepIndex, TimeError};
+use openbmp_core::{FpEnvironmentDirty, StepIndex, TimeError};
 use openbmp_mission::{MissionGraphError, PhaseId};
 use openbmp_state::StateError;
 use thiserror::Error;
@@ -60,7 +60,7 @@ pub enum SimulationError {
         reason: String,
     },
     /// The floating-point environment was not in the strictly defined
-    /// state required by the determinism contract (FTZ / DAZ off,
+    /// state required by the determinism contract (FTZ / DAZ / FZ16 off,
     /// round-to-nearest-ties-to-even rounding mode).
     #[error(
         "floating-point environment is dirty (ftz={ftz}, daz={daz}, \
@@ -74,6 +74,16 @@ pub enum SimulationError {
         /// MXCSR rounding-mode bits (00 = round-to-nearest-even).
         rounding_mode: u32,
     },
+}
+
+impl From<FpEnvironmentDirty> for SimulationError {
+    fn from(error: FpEnvironmentDirty) -> Self {
+        Self::FpEnvironmentDirty {
+            ftz: error.flush_to_zero() || error.half_precision_flush_to_zero(),
+            daz: error.denormals_are_zero(),
+            rounding_mode: error.rounding_mode(),
+        }
+    }
 }
 
 /// Errors produced by an [`crate::Integrator`] implementation.
@@ -92,6 +102,20 @@ pub enum IntegratorError {
     InvalidStep {
         /// The offending `dt` in seconds.
         dt_seconds: f64,
+    },
+    /// A dense-output interpolation query was outside the covered
+    /// accepted-step interval.
+    #[error(
+        "dense-output query time {query_s} s is outside covered interval \
+         [{start_s}, {end_s}] s"
+    )]
+    DenseOutputTimeOutOfRange {
+        /// Requested interpolation time in seconds.
+        query_s: f64,
+        /// Segment start time in seconds.
+        start_s: f64,
+        /// Segment end time in seconds.
+        end_s: f64,
     },
     /// A model returned a typed evaluation error mid-step.
     #[error(transparent)]

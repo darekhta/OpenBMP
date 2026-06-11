@@ -1,8 +1,11 @@
-//! Bridge codec error type.
+//! Bridge codec, lockstep, and transport error type.
 
 use thiserror::Error;
 
-/// Errors raised while encoding, decoding, or framing bridge messages.
+use crate::packet::BridgeEndpointRole;
+
+/// Errors raised while encoding, decoding, framing, validating, or
+/// transporting bridge messages.
 #[derive(Debug, Error)]
 pub enum BridgeError {
     /// `postcard` failed to serialize a message.
@@ -26,6 +29,38 @@ pub enum BridgeError {
     PrefixIncomplete {
         /// Bytes currently available.
         have: usize,
+    },
+    /// A framed bridge payload exceeded the transport's configured limit.
+    #[error("bridge payload too large: max {max} bytes, got {got}")]
+    PayloadTooLarge {
+        /// Maximum payload bytes accepted by the transport.
+        max: usize,
+        /// Payload bytes declared or produced by the peer.
+        got: usize,
+    },
+    /// The peer closed the transport before a complete message arrived.
+    #[error("bridge transport closed")]
+    TransportClosed,
+    /// The underlying stream transport returned an I/O error.
+    #[error("bridge transport I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    /// A peer sent a different message kind than the current lockstep
+    /// phase permits.
+    #[error("bridge unexpected message: expected {expected}, got {got}")]
+    UnexpectedMessage {
+        /// Message kind expected by the lockstep phase.
+        expected: &'static str,
+        /// Message kind received from the peer.
+        got: &'static str,
+    },
+    /// A peer advertised a role that cannot satisfy this side of the
+    /// lockstep exchange.
+    #[error("bridge endpoint role mismatch: expected {expected:?}, got {got:?}")]
+    RoleMismatch {
+        /// Endpoint role expected by this side.
+        expected: BridgeEndpointRole,
+        /// Endpoint role advertised by the peer.
+        got: BridgeEndpointRole,
     },
     /// Peer reported an incompatible wire protocol version.
     #[error("bridge protocol mismatch: expected version {expected}, got {got}")]

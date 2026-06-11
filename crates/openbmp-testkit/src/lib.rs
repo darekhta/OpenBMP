@@ -16,6 +16,10 @@
 //! - [`fc_lints`] — tripwires that fail CI if
 //!   `openbmp-fc` imports `std::time` wall-clock APIs or regresses
 //!   known hot-path allocation fixes.
+//! - [`verification`] — manufactured-solution, observed-order, and
+//!   Richardson/GCI reducers for code-verification gates.
+//! - [`reconstruction`] — linear-Gaussian RTS smoothing, batch
+//!   Gauss-Newton, and NEES/NIS consistency helpers.
 //!
 //! All helpers respect the OpenBMP determinism contract: no
 //! wall-clock time, no system RNG, seeded RNG only.
@@ -25,7 +29,9 @@ pub mod determinism;
 pub mod error;
 pub mod fc_lints;
 pub mod filters;
+pub mod reconstruction;
 pub mod strategies;
 pub mod tolerance;
+pub mod verification;
 
 pub use error::TestkitError;

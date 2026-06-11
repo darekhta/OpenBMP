@@ -32,18 +32,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use openbmp_core::{Body, BodyId, Duration, EngineId, Position3};
+use openbmp_core::{Body, BodyId, Duration, EngineId, Position3, StepIndex};
 use openbmp_propulsion::{
     ClusterLayout as PropulsionClusterLayout, EngineCluster, EngineFault, EngineLimits,
     EngineModel, EngineState, LiquidEngine,
 };
 use openbmp_scenario::{
-    ClusterLayoutConfig, EngineConfig, EngineFaultConfig, EngineKindConfig, ScenarioDocument,
+    ClusterLayoutConfig, EngineConfig, EngineFaultConfig, EngineKindConfig,
+    PropulsionCavitationFaultLegConfig, ScenarioDocument,
 };
 use openbmp_sim::{EngineSnapshot, FiredEvent, ScenarioScriptAction};
 use openbmp_vehicle::PropellantBudgetReport;
 
 use crate::error::RunnerError;
+use crate::feed_network::{FeedPumpCavitationEvent, FeedPumpLeg};
 
 /// Runner-side engine rack. Built once per `openbmp run` invocation;
 /// consumed by the per-step kernel loop.
@@ -53,6 +55,25 @@ pub struct EngineRack {
     dt: Duration,
     engine_owners: BTreeMap<EngineId, BodyId>,
     retired_bodies: BTreeSet<BodyId>,
+    scheduled_faults: Vec<ScheduledEngineFault>,
+    cavitation_faults: Vec<CavitationEngineFault>,
+    applied_fault_ids: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ScheduledEngineFault {
+    id: String,
+    engine_id: EngineId,
+    start_step: u64,
+    fault: EngineFault,
+}
+
+#[derive(Clone, Debug)]
+struct CavitationEngineFault {
+    id: String,
+    engine_id: EngineId,
+    leg: PropulsionCavitationFaultLegConfig,
+    fault: EngineFault,
 }
 
 impl EngineRack {
@@ -95,6 +116,8 @@ impl EngineRack {
             ClusterLayoutConfig::Custom => PropulsionClusterLayout::Custom,
         };
 
+        let scheduled_faults = scheduled_faults(document);
+        let cavitation_faults = cavitation_faults(document);
         let cluster = EngineCluster::new(engines, mount_points_body, engine_ids, propulsion_layout)
             .map_err(|err| RunnerError::Engine {
                 field: "vehicle.assembly".to_owned(),
@@ -106,6 +129,9 @@ impl EngineRack {
             dt,
             engine_owners,
             retired_bodies: BTreeSet::new(),
+            scheduled_faults,
+            cavitation_faults,
+            applied_fault_ids: BTreeSet::new(),
         })
     }
 
@@ -277,6 +303,57 @@ impl EngineRack {
                     field: "fc.actuator.engine_cmds".to_owned(),
                     reason: err.to_string(),
                 })?;
+        }
+        Ok(())
+    }
+
+    /// Inject scheduled propulsion faults whose start step has arrived.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::Engine`] if a scheduled rule targets an engine
+    /// missing from this rack or the underlying engine rejects the fault payload.
+    pub fn apply_scheduled_faults(&mut self, step: StepIndex) -> Result<(), RunnerError> {
+        for fault in &self.scheduled_faults {
+            if step.value() < fault.start_step || self.applied_fault_ids.contains(&fault.id) {
+                continue;
+            }
+            self.cluster
+                .inject_fault(fault.engine_id, fault.fault)
+                .map_err(|err| RunnerError::Engine {
+                    field: format!("propulsion.faults.rules.{}", fault.id),
+                    reason: err.to_string(),
+                })?;
+            self.applied_fault_ids.insert(fault.id.clone());
+        }
+        Ok(())
+    }
+
+    /// Inject one-shot propulsion faults whose pump-cavitation trigger is active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::Engine`] if a triggered rule targets an engine
+    /// missing from this rack or the underlying engine rejects the fault payload.
+    pub fn apply_cavitation_faults(
+        &mut self,
+        events: &[FeedPumpCavitationEvent],
+    ) -> Result<(), RunnerError> {
+        for fault in &self.cavitation_faults {
+            if self.applied_fault_ids.contains(&fault.id)
+                || !events
+                    .iter()
+                    .any(|event| cavitation_rule_matches(fault, *event))
+            {
+                continue;
+            }
+            self.cluster
+                .inject_fault(fault.engine_id, fault.fault)
+                .map_err(|err| RunnerError::Engine {
+                    field: format!("propulsion.faults.cavitation_rules.{}", fault.id),
+                    reason: err.to_string(),
+                })?;
+            self.applied_fault_ids.insert(fault.id.clone());
         }
         Ok(())
     }
@@ -466,14 +543,7 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Run
         })?
         .with_restart_policy(config.limits.restartable);
     if let Some(fault_config) = &config.fault {
-        let fault = match *fault_config {
-            EngineFaultConfig::Stuck { at_throttle } => EngineFault::Stuck { at_throttle },
-            EngineFaultConfig::HardOff => EngineFault::HardOff,
-            EngineFaultConfig::OverThrust { factor } => EngineFault::OverThrust { factor },
-            EngineFaultConfig::GimbalLocked { pitch_rad, yaw_rad } => {
-                EngineFault::GimbalLocked { pitch_rad, yaw_rad }
-            }
-        };
+        let fault = engine_fault_from_config(*fault_config);
         engine
             .inject_fault(fault)
             .map_err(|err| RunnerError::Engine {
@@ -482,6 +552,80 @@ fn build_engine(index: usize, config: &EngineConfig) -> Result<LiquidEngine, Run
             })?;
     }
     Ok(engine)
+}
+
+fn scheduled_faults(document: &ScenarioDocument) -> Vec<ScheduledEngineFault> {
+    document
+        .propulsion
+        .as_ref()
+        .and_then(|propulsion| propulsion.faults.as_ref())
+        .map(|faults| {
+            faults
+                .rules
+                .iter()
+                .map(|rule| ScheduledEngineFault {
+                    id: rule.id.clone(),
+                    engine_id: EngineId::from_path(&format!(
+                        "vehicle.assembly.engines.{engine_id}",
+                        engine_id = rule.engine_id
+                    )),
+                    start_step: rule.start_step,
+                    fault: engine_fault_from_config(rule.fault),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn cavitation_faults(document: &ScenarioDocument) -> Vec<CavitationEngineFault> {
+    document
+        .propulsion
+        .as_ref()
+        .and_then(|propulsion| propulsion.faults.as_ref())
+        .map(|faults| {
+            faults
+                .cavitation_rules
+                .iter()
+                .map(|rule| CavitationEngineFault {
+                    id: rule.id.clone(),
+                    engine_id: EngineId::from_path(&format!(
+                        "vehicle.assembly.engines.{engine_id}",
+                        engine_id = rule.engine_id
+                    )),
+                    leg: rule.leg,
+                    fault: engine_fault_from_config(rule.fault),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn cavitation_rule_matches(rule: &CavitationEngineFault, event: FeedPumpCavitationEvent) -> bool {
+    if rule.engine_id != event.engine_id {
+        return false;
+    }
+    match rule.leg {
+        PropulsionCavitationFaultLegConfig::Any => true,
+        PropulsionCavitationFaultLegConfig::Oxidizer => event.leg == FeedPumpLeg::Oxidizer,
+        PropulsionCavitationFaultLegConfig::Fuel => event.leg == FeedPumpLeg::Fuel,
+    }
+}
+
+fn engine_fault_from_config(config: EngineFaultConfig) -> EngineFault {
+    match config {
+        EngineFaultConfig::Stuck { at_throttle } => EngineFault::Stuck { at_throttle },
+        EngineFaultConfig::HardOff => EngineFault::HardOff,
+        EngineFaultConfig::OverThrust { factor } => EngineFault::OverThrust { factor },
+        EngineFaultConfig::HardStartOverpressure { factor, duration_s } => {
+            EngineFault::HardStartOverpressure { factor, duration_s }
+        }
+        EngineFaultConfig::CavitationThrustLoss { factor } => {
+            EngineFault::CavitationThrustLoss { factor }
+        }
+        EngineFaultConfig::GimbalLocked { pitch_rad, yaw_rad } => {
+            EngineFault::GimbalLocked { pitch_rad, yaw_rad }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -522,6 +666,9 @@ mod tests {
                 dt: Duration::from_seconds(0.001),
                 engine_owners: BTreeMap::new(),
                 retired_bodies: BTreeSet::new(),
+                scheduled_faults: Vec::new(),
+                cavitation_faults: Vec::new(),
+                applied_fault_ids: BTreeSet::new(),
             },
             id,
         )
@@ -610,5 +757,87 @@ mod tests {
         assert_eq!(snapshot.lifecycle_state_index, 1);
         assert!(snapshot.thrust_body.z > 0.0);
         assert!(snapshot.mass_flow_kg_per_s > 0.0);
+    }
+
+    #[test]
+    fn scheduled_fault_injects_once_when_step_arrives() {
+        let (mut rack, id) = one_engine_rack();
+        rack.scheduled_faults.push(ScheduledEngineFault {
+            id: "fail-main".to_owned(),
+            engine_id: id,
+            start_step: 2,
+            fault: EngineFault::HardOff,
+        });
+
+        rack.apply_scheduled_faults(StepIndex::new(1)).unwrap();
+        rack.step().unwrap();
+        assert_eq!(rack.snapshot_map()[&id].lifecycle_state_index, 0);
+
+        rack.apply_scheduled_faults(StepIndex::new(2)).unwrap();
+        rack.apply_scheduled_faults(StepIndex::new(2)).unwrap();
+        rack.step().unwrap();
+
+        assert_eq!(rack.snapshot_map()[&id].lifecycle_state_index, 4);
+        assert!(rack.applied_fault_ids.contains("fail-main"));
+        assert_eq!(rack.applied_fault_ids.len(), 1);
+    }
+
+    #[test]
+    fn engine_fault_config_maps_hard_start_overpressure() {
+        let fault = engine_fault_from_config(EngineFaultConfig::HardStartOverpressure {
+            factor: 1.75,
+            duration_s: 0.08,
+        });
+
+        assert!(matches!(
+            fault,
+            EngineFault::HardStartOverpressure { factor, duration_s }
+                if factor.to_bits() == 1.75_f64.to_bits()
+                    && duration_s.to_bits() == 0.08_f64.to_bits()
+        ));
+    }
+
+    #[test]
+    fn cavitation_fault_injects_once_when_event_matches() {
+        let (mut rack, id) = one_engine_rack();
+        rack.cavitation_faults.push(CavitationEngineFault {
+            id: "oxidizer-cavitation".to_owned(),
+            engine_id: id,
+            leg: PropulsionCavitationFaultLegConfig::Oxidizer,
+            fault: EngineFault::CavitationThrustLoss { factor: 0.5 },
+        });
+
+        rack.apply_cavitation_faults(&[FeedPumpCavitationEvent {
+            engine_id: id,
+            leg: FeedPumpLeg::Fuel,
+        }])
+        .unwrap();
+        assert!(rack.applied_fault_ids.is_empty());
+
+        rack.apply_cavitation_faults(&[FeedPumpCavitationEvent {
+            engine_id: id,
+            leg: FeedPumpLeg::Oxidizer,
+        }])
+        .unwrap();
+        rack.apply_cavitation_faults(&[FeedPumpCavitationEvent {
+            engine_id: id,
+            leg: FeedPumpLeg::Oxidizer,
+        }])
+        .unwrap();
+
+        assert!(rack.applied_fault_ids.contains("oxidizer-cavitation"));
+        assert_eq!(rack.applied_fault_ids.len(), 1);
+    }
+
+    #[test]
+    fn engine_fault_config_maps_cavitation_thrust_loss() {
+        let fault =
+            engine_fault_from_config(EngineFaultConfig::CavitationThrustLoss { factor: 0.35 });
+
+        assert!(matches!(
+            fault,
+            EngineFault::CavitationThrustLoss { factor }
+                if factor.to_bits() == 0.35_f64.to_bits()
+        ));
     }
 }

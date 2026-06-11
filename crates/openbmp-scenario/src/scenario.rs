@@ -167,6 +167,37 @@ impl Scenario {
                 );
             }
         }
+        if let Some(uq) = self
+            .document
+            .landing_footprint
+            .as_ref()
+            .and_then(|footprint| footprint.monte_carlo.as_ref())
+            .and_then(|monte_carlo| monte_carlo.uq.as_ref())
+        {
+            paths.insert(
+                "landing_footprint.monte_carlo.uq.budget_toml".to_owned(),
+                self.resolve_path(&uq.budget_toml),
+            );
+            if let Some(path) = &uq.report_md {
+                paths.insert(
+                    "landing_footprint.monte_carlo.uq.report_md".to_owned(),
+                    self.resolve_path(path),
+                );
+            }
+        }
+        if let Some(nested) = self
+            .document
+            .landing_footprint
+            .as_ref()
+            .and_then(|footprint| footprint.monte_carlo.as_ref())
+            .and_then(|monte_carlo| monte_carlo.nested.as_ref())
+            && let Some(path) = &nested.pbox_csv
+        {
+            paths.insert(
+                "landing_footprint.monte_carlo.nested.pbox_csv".to_owned(),
+                self.resolve_path(path),
+            );
+        }
         paths
     }
 
@@ -208,6 +239,17 @@ impl Scenario {
             let resolved = ResolvedFile::load(self.resolve_path(file))?;
             resolved.verify_pin(motor.file_sha256.as_deref())?;
             files.insert("propulsion.motor.file".to_owned(), resolved);
+        }
+
+        if let Some(thermochem) = self
+            .document
+            .propulsion
+            .as_ref()
+            .and_then(|prop| prop.thermochem.as_ref())
+        {
+            let resolved = ResolvedFile::load(self.resolve_path(&thermochem.file))?;
+            resolved.verify_pin(thermochem.file_sha256.as_deref())?;
+            files.insert("propulsion.thermochem.file".to_owned(), resolved);
         }
 
         if let Some(sensors) = &self.document.sensors {
@@ -585,7 +627,9 @@ mod tests {
     use crate::document::{
         EventTriggerConfig, FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig,
         FcFdirDetectorKindV5, FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind,
-        GrainGeometryConfig, MissionScope, MissionScopeKind, WGS84_J2_DEFAULT,
+        GrainGeometryConfig, GrainRegressionModeConfig, MissionScope, MissionScopeKind,
+        NozzleAmbientPressureCorrectionConfig, NozzleSeparationConfig, PropulsionFeedNetworkConfig,
+        WGS84_J2_DEFAULT,
     };
     use openbmp_core::ValidationStatus;
 
@@ -711,6 +755,23 @@ upper_delta_v_body_m_s = [0.0, 0.0, 0.5]
 lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
 "#;
 
+    const REALTIME_BLOCK: &str = r#"
+[realtime]
+mode = "paced"
+target_rtf = 1000.0
+jitter_budget_s = 0.001
+
+[[realtime.task]]
+label = "estimator"
+period_s = 0.01
+wcet_s = 0.001
+
+[[realtime.task]]
+label = "autopilot"
+period_s = 0.02
+wcet_s = 0.002
+"#;
+
     #[test]
     fn schedule_block_is_v3_only() {
         let toml_v2 = format!("{MINIMAL}{SCHEDULE_BLOCK}");
@@ -728,6 +789,80 @@ lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
             matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
                 if field_a == "multi_body.separation" && field_b == "mission.events"),
             "expected multi_body to require matching mission events under v3, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn realtime_block_is_v3_only_and_validates_under_v3() {
+        let toml_v2 = format!("{MINIMAL}{REALTIME_BLOCK}");
+        assert_v3_block_reserved_under_v2(&toml_v2, "realtime");
+        let v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&v3).expect("realtime block validates under v3");
+        let realtime = scenario.document.realtime.expect("realtime parsed");
+        assert_eq!(realtime.mode, crate::RealtimeModeConfig::Paced);
+        assert_eq!(
+            realtime.target_rtf.map(f64::to_bits),
+            Some(1000.0_f64.to_bits())
+        );
+        assert_eq!(realtime.tasks.len(), 2);
+        assert_eq!(realtime.tasks[0].label, "estimator");
+        assert_eq!(realtime.tasks[1].period_s.to_bits(), 0.02_f64.to_bits());
+    }
+
+    #[test]
+    fn realtime_paced_mode_requires_target_rtf() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[realtime]
+mode = "paced"
+jitter_budget_s = 0.001
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "realtime.target_rtf"),
+            "expected missing realtime.target_rtf, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn realtime_non_paced_mode_rejects_target_rtf() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[realtime]
+mode = "real_time"
+target_rtf = 1.0
+jitter_budget_s = 0.001
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "realtime.target_rtf"),
+            "expected unexpected realtime.target_rtf, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn realtime_task_budgets_are_validated() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[realtime]
+mode = "real_time"
+jitter_budget_s = 0.001
+
+[[realtime.task]]
+label = "estimator"
+period_s = 0.0
+wcet_s = 0.001
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "realtime.task[0].period_s"),
+            "expected invalid realtime.task[0].period_s, got {err:?}",
         );
     }
 
@@ -1034,6 +1169,469 @@ axis_priority = ["roll", "yaw", "pitch"]
             alloc.kind,
             crate::document::FcAutopilotAllocationKind::PrioritisedRedistributed
         );
+    }
+
+    #[test]
+    fn fc_transport_block_is_v3_only_and_validates_under_v3() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+max_payload_len = 4096
+peer_protocol_version = 2
+"#;
+        let toml = append(fc_v2_scenario(), block);
+        assert_v3_block_reserved_under_v2(&toml, "fc.transport");
+
+        let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&v3).expect("v3 fc.transport block validates");
+        let transport = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.transport.as_ref())
+            .expect("transport block present");
+        assert_eq!(
+            transport.mode,
+            crate::document::FcTransportModeConfig::InProcess
+        );
+        assert_eq!(transport.max_payload_len, Some(4096));
+        assert_eq!(transport.peer_protocol_version, Some(2));
+    }
+
+    #[test]
+    fn fc_transport_accepts_tcp_loopback_mode() {
+        let block = r#"
+[fc.transport]
+mode = "tcp_loopback"
+max_payload_len = 4096
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&v3).expect("v3 tcp_loopback transport validates");
+        let transport = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.transport.as_ref())
+            .expect("transport block present");
+        assert_eq!(
+            transport.mode,
+            crate::document::FcTransportModeConfig::TcpLoopback
+        );
+    }
+
+    #[test]
+    fn fc_transport_rejects_zero_payload_limit() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+max_payload_len = 0
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber {
+                ref field,
+                value: 0.0,
+                ..
+            } if field == "fc.transport.max_payload_len"
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_block_is_v3_only_and_validates_under_v3() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.rules]]
+id         = "imu-x-bias"
+start_step = 3
+end_step   = 7
+signal     = { kind = "imu_accel_body_mps2", axis = "x" }
+transform  = { kind = "additive_bias", offset = 0.25 }
+
+[[fc.transport_faults.rules]]
+id         = "engine-limit"
+start_step = 4
+signal     = { kind = "engine_throttle", engine_id = 2 }
+transform  = { kind = "saturate", min = 0.0, max = 0.5 }
+
+[[fc.transport_faults.rules]]
+id         = "gyro-z-quantize"
+start_step = 5
+signal     = { kind = "imu_gyro_body_rad_s", axis = "z" }
+transform  = { kind = "quantize", quantum = 0.01 }
+
+[[fc.transport_faults.rules]]
+id         = "baro-drift"
+start_step = 6
+signal     = { kind = "baro_pressure_pa" }
+transform  = { kind = "drift", rate_per_s = 2.5, reference_time_s = 0.5 }
+
+[[fc.transport_faults.rules]]
+id         = "gyro-noise"
+start_step = 7
+signal     = { kind = "imu_gyro_body_rad_s", axis = "z" }
+transform  = { kind = "noise_burst", amplitude = 0.05, seed = 99 }
+
+[[fc.transport_faults.packet_rules]]
+id         = "drop-sensor-frame"
+start_step = 6
+end_step   = 8
+direction  = "sensor"
+transform  = { kind = "drop" }
+
+[[fc.transport_faults.packet_rules]]
+id         = "duplicate-command-frame"
+start_step = 9
+direction  = "command"
+transform  = { kind = "duplicate" }
+
+[[fc.transport_faults.packet_rules]]
+id         = "delay-sensor-frame"
+start_step = 10
+direction  = "sensor"
+transform  = { kind = "delay", steps = 2 }
+
+[[fc.transport_faults.packet_rules]]
+id         = "bit-flip-command-frame"
+start_step = 11
+direction  = "command"
+transform  = { kind = "bit_flip", mask = 5 }
+"#;
+        let toml = append(fc_v2_scenario(), block);
+        assert_v3_block_reserved_under_v2(&toml, "fc.transport");
+
+        let v3 = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&v3).expect("v3 transport faults validate");
+        let faults = scenario
+            .document
+            .fc
+            .as_ref()
+            .and_then(|fc| fc.transport_faults.as_ref())
+            .expect("transport faults block present");
+
+        assert_eq!(faults.rules.len(), 5);
+        assert_eq!(faults.rules[0].id, "imu-x-bias");
+        assert_eq!(
+            faults.rules[0].signal,
+            crate::document::FcTransportFaultSignalConfig::ImuAccelBodyMps2 {
+                axis: crate::document::FcTransportVectorAxisConfig::X,
+            }
+        );
+        assert!(matches!(
+            faults.rules[1].transform,
+            crate::document::FcTransportFaultTransformConfig::Saturate { .. }
+        ));
+        assert!(matches!(
+            faults.rules[2].transform,
+            crate::document::FcTransportFaultTransformConfig::Quantize { .. }
+        ));
+        assert!(matches!(
+            faults.rules[3].transform,
+            crate::document::FcTransportFaultTransformConfig::Drift { .. }
+        ));
+        assert!(matches!(
+            faults.rules[4].transform,
+            crate::document::FcTransportFaultTransformConfig::NoiseBurst { .. }
+        ));
+        assert_eq!(faults.packet_rules.len(), 4);
+        assert_eq!(faults.packet_rules[0].id, "drop-sensor-frame");
+        assert_eq!(
+            faults.packet_rules[0].direction,
+            crate::document::FcTransportPacketDirectionConfig::Sensor
+        );
+        assert!(matches!(
+            faults.packet_rules[0].transform,
+            crate::document::FcTransportPacketTransformConfig::Drop
+        ));
+        assert_eq!(faults.packet_rules[1].id, "duplicate-command-frame");
+        assert_eq!(
+            faults.packet_rules[1].direction,
+            crate::document::FcTransportPacketDirectionConfig::Command
+        );
+        assert!(matches!(
+            faults.packet_rules[1].transform,
+            crate::document::FcTransportPacketTransformConfig::Duplicate
+        ));
+        assert_eq!(faults.packet_rules[2].id, "delay-sensor-frame");
+        assert!(matches!(
+            faults.packet_rules[2].transform,
+            crate::document::FcTransportPacketTransformConfig::Delay { steps: 2 }
+        ));
+        assert_eq!(faults.packet_rules[3].id, "bit-flip-command-frame");
+        assert!(matches!(
+            faults.packet_rules[3].transform,
+            crate::document::FcTransportPacketTransformConfig::BitFlip { mask: 5 }
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_require_transport_block() {
+        let block = r#"
+[[fc.transport_faults.rules]]
+id         = "imu-x-bias"
+start_step = 3
+signal     = { kind = "imu_accel_body_mps2", axis = "x" }
+transform  = { kind = "additive_bias", offset = 0.25 }
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidFc { ref reason }
+                if reason == "[fc.transport_faults] requires [fc.transport]"
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_reject_invalid_saturation_range() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.rules]]
+id         = "bad-saturation"
+start_step = 3
+signal     = { kind = "engine_throttle", engine_id = 2 }
+transform  = { kind = "saturate", min = 0.9, max = 0.1 }
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber {
+                ref field,
+                rule: "must be greater than or equal to min",
+                ..
+            } if field == "fc.transport_faults.rules.transform.max"
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_reject_invalid_quantization_step() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.rules]]
+id         = "bad-quantum"
+start_step = 3
+signal     = { kind = "imu_accel_body_mps2", axis = "x" }
+transform  = { kind = "quantize", quantum = 0.0 }
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber {
+                ref field,
+                rule: "must be positive",
+                ..
+            } if field == "fc.transport_faults.rules.transform.quantum"
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_reject_invalid_drift_rate() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.rules]]
+id         = "bad-drift"
+start_step = 3
+signal     = { kind = "baro_pressure_pa" }
+transform  = { kind = "drift", rate_per_s = inf, reference_time_s = 0.0 }
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber {
+                ref field,
+                rule: "must be finite",
+                ..
+            } if field == "fc.transport_faults.rules.transform.rate_per_s"
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_reject_invalid_noise_amplitude() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.rules]]
+id         = "bad-noise"
+start_step = 3
+signal     = { kind = "imu_gyro_body_rad_s", axis = "z" }
+transform  = { kind = "noise_burst", amplitude = 0.0, seed = 99 }
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber {
+                ref field,
+                rule: "must be positive",
+                ..
+            } if field == "fc.transport_faults.rules.transform.amplitude"
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_reject_packet_rule_end_before_start() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.packet_rules]]
+id         = "bad-drop-window"
+start_step = 10
+end_step   = 9
+direction  = "command"
+transform  = { kind = "drop" }
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber {
+                ref field,
+                rule: "must be greater than or equal to start_step",
+                ..
+            } if field == "fc.transport_faults.packet_rules.end_step"
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_reject_invalid_packet_delay() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.packet_rules]]
+id         = "bad-delay"
+start_step = 10
+direction  = "sensor"
+transform  = { kind = "delay", steps = 0 }
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber {
+                ref field,
+                rule: "must be positive",
+                ..
+            } if field == "fc.transport_faults.packet_rules.transform.steps"
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_reject_invalid_bit_flip_mask() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.packet_rules]]
+id         = "bad-bit-flip"
+start_step = 10
+direction  = "command"
+transform  = { kind = "bit_flip", mask = 0 }
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber {
+                ref field,
+                rule: "must be positive",
+                ..
+            } if field == "fc.transport_faults.packet_rules.transform.mask"
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_reject_invalid_packet_step_offset() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.packet_rules]]
+id         = "bad-step-offset"
+start_step = 10
+direction  = "command"
+transform  = { kind = "step_offset", offset = 0 }
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber {
+                ref field,
+                rule: "must be non-zero",
+                ..
+            } if field == "fc.transport_faults.packet_rules.transform.offset"
+        ));
+    }
+
+    #[test]
+    fn fc_transport_faults_reject_invalid_packet_time_offset() {
+        let block = r#"
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.packet_rules]]
+id         = "bad-time-offset"
+start_step = 10
+direction  = "command"
+transform  = { kind = "time_offset", offset_s = 0.0 }
+"#;
+        let v3 =
+            append(fc_v2_scenario(), block).replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+
+        let err = Scenario::from_toml_str(&v3).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber {
+                ref field,
+                rule: "must be non-zero",
+                ..
+            } if field == "fc.transport_faults.packet_rules.transform.offset_s"
+        ));
     }
 
     #[test]
@@ -2508,6 +3106,7 @@ kind = "piecewise_exponential"
              \n\
              [propulsion.motor.grain]\n\
              geometry = \"end_burner\"\n\
+             mode = \"transient\"\n\
              cross_section_area_m2 = 0.001\n\
              length_m = 0.05\n\
              throat_radius_m = 0.003\n\
@@ -2531,7 +3130,191 @@ kind = "piecewise_exponential"
             .and_then(|motor| motor.grain.as_ref())
             .expect("grain motor parsed");
         assert_eq!(grain.geometry, GrainGeometryConfig::EndBurner);
+        assert_eq!(grain.mode, GrainRegressionModeConfig::Transient);
         assert!(grain.propellant.web_steps == 64);
+    }
+
+    #[test]
+    fn parses_propulsion_thermochem_schema() {
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                r#"models = ["gravity"]"#,
+                r#"models = ["gravity", "thrust"]"#,
+            );
+        let toml = format!(
+            "{toml}\n\
+             [propulsion.motor]\n\
+             variant = \"solid\"\n\
+             ignite_at_s = 0.0\n\
+             mounted_to = \"main\"\n\
+             \n\
+             [propulsion.motor.grain]\n\
+             geometry = \"end_burner\"\n\
+             cross_section_area_m2 = 0.001\n\
+             length_m = 0.05\n\
+             throat_radius_m = 0.003\n\
+             expansion_ratio = 8.0\n\
+             \n\
+             [propulsion.motor.grain.propellant]\n\
+             label = \"synthetic_textbook\"\n\
+             density_kg_m3 = 1700.0\n\
+             burn_rate_a = 0.00004\n\
+             burn_rate_n = 0.32\n\
+             c_star_m_s = 1400.0\n\
+             gamma = 1.2\n\
+             web_steps = 64\n\
+             \n\
+             [propulsion.thermochem]\n\
+             file = \"thermochem/synthetic.toml\"\n\
+             chamber_pressure_pa = 2000000.0\n\
+             mixture_ratio = 2.5\n"
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let thermochem = scenario
+            .document
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.thermochem.as_ref())
+            .expect("thermochem parsed");
+        assert_eq!(thermochem.file.as_os_str(), "thermochem/synthetic.toml");
+        assert_eq!(
+            thermochem.chamber_pressure_pa.to_bits(),
+            2_000_000.0_f64.to_bits()
+        );
+        assert_eq!(thermochem.mixture_ratio.to_bits(), 2.5_f64.to_bits());
+    }
+
+    #[test]
+    fn rejects_propulsion_thermochem_without_inline_grain() {
+        let toml = format!(
+            "{}\n\
+             [propulsion.motor]\n\
+             variant = \"solid\"\n\
+             ignite_at_s = 0.0\n\
+             file = \"motor.toml\"\n\
+             \n\
+             [propulsion.thermochem]\n\
+             file = \"thermochem/synthetic.toml\"\n\
+             chamber_pressure_pa = 2000000.0\n\
+             mixture_ratio = 2.5\n",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "propulsion.thermochem"
+                    && field_b == "propulsion.motor.grain"
+        ));
+    }
+
+    #[test]
+    fn parses_propulsion_nozzle_override_schema() {
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                r#"models = ["gravity"]"#,
+                r#"models = ["gravity", "thrust"]"#,
+            );
+        let toml = format!(
+            "{toml}\n\
+             [propulsion.motor]\n\
+             variant = \"solid\"\n\
+             ignite_at_s = 0.0\n\
+             mounted_to = \"main\"\n\
+             \n\
+             [propulsion.motor.grain]\n\
+             geometry = \"end_burner\"\n\
+             cross_section_area_m2 = 0.001\n\
+             length_m = 0.05\n\
+             throat_radius_m = 0.003\n\
+             expansion_ratio = 8.0\n\
+             \n\
+             [propulsion.motor.grain.propellant]\n\
+             label = \"synthetic_textbook\"\n\
+             density_kg_m3 = 1700.0\n\
+             burn_rate_a = 0.00004\n\
+             burn_rate_n = 0.32\n\
+             c_star_m_s = 1400.0\n\
+             gamma = 1.2\n\
+             web_steps = 64\n\
+             \n\
+             [propulsion.nozzle]\n\
+             ambient_pressure_correction = \"pressure_thrust\"\n\
+             separation = \"summerfield\"\n"
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let nozzle = scenario
+            .document
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.nozzle.as_ref())
+            .expect("nozzle override parsed");
+        assert_eq!(
+            nozzle.ambient_pressure_correction,
+            NozzleAmbientPressureCorrectionConfig::PressureThrust
+        );
+        assert_eq!(nozzle.separation, NozzleSeparationConfig::Summerfield);
+    }
+
+    #[test]
+    fn rejects_propulsion_nozzle_without_motor() {
+        let toml = format!(
+            "{}\n\
+             [propulsion.nozzle]\n\
+             ambient_pressure_correction = \"pressure_thrust\"\n",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::UnexpectedField { ref field, .. } if field == "propulsion.nozzle"
+        ));
+    }
+
+    #[test]
+    fn rejects_propulsion_nozzle_separation_without_pressure_thrust() {
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                r#"models = ["gravity"]"#,
+                r#"models = ["gravity", "thrust"]"#,
+            );
+        let toml = format!(
+            "{toml}\n\
+             [propulsion.motor]\n\
+             variant = \"solid\"\n\
+             ignite_at_s = 0.0\n\
+             mounted_to = \"main\"\n\
+             \n\
+             [propulsion.motor.grain]\n\
+             geometry = \"end_burner\"\n\
+             cross_section_area_m2 = 0.001\n\
+             length_m = 0.05\n\
+             throat_radius_m = 0.003\n\
+             expansion_ratio = 8.0\n\
+             \n\
+             [propulsion.motor.grain.propellant]\n\
+             label = \"synthetic_textbook\"\n\
+             density_kg_m3 = 1700.0\n\
+             burn_rate_a = 0.00004\n\
+             burn_rate_n = 0.32\n\
+             c_star_m_s = 1400.0\n\
+             gamma = 1.2\n\
+             web_steps = 64\n\
+             \n\
+             [propulsion.nozzle]\n\
+             ambient_pressure_correction = \"constant\"\n\
+             separation = \"summerfield\"\n"
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "propulsion.nozzle.separation"
+                    && field_b == "propulsion.nozzle.ambient_pressure_correction"
+        ));
     }
 
     #[test]
@@ -5050,6 +5833,613 @@ action  = { kind = "stop", label = "max-q" }
         );
     }
 
+    fn assembly_with_engine_propellant_budget() -> String {
+        ASSEMBLY_WITH_ENGINE_CLUSTER
+            .replace(
+                "[[vehicle.assembly.engines]]\n\
+                 id                  = \"engine_a\"",
+                "[[vehicle.assembly.tanks]]\n\
+                 id = \"fuel\"\n\
+                 mounted_to = \"main\"\n\
+                 mount_point_body_m = [0.0, 0.0, 0.0]\n\
+                 geometry = { kind = \"sphere\", radius_m = 0.5 }\n\
+                 propellant = { label = \"synthetic_water\", density_kg_m3 = 1000.0 }\n\
+                 initial_fill_fraction = 0.8\n\
+                 moving_mass = { kind = \"rigid_liquid\" }\n\
+                 \n\
+                 [[vehicle.assembly.engines]]\n\
+                 id                  = \"engine_a\"\n\
+                 mounted_to          = \"main\"",
+            )
+            .replace(
+                "limits              = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.087 }\n\
+                 \n\
+                 [[vehicle.assembly.engines]]\n\
+                 id                  = \"engine_b\"",
+                "limits              = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.1, shutdown_transient_s = 0.1, max_gimbal_rad = 0.087 }\n\
+                 \n\
+                 [vehicle.assembly.engines.propellant]\n\
+                 oxidizer_fuel_ratio = 0.0\n\
+                 fuel_tank = \"fuel\"\n\
+                 feed = \"regulated\"\n\
+                 \n\
+                 [[vehicle.assembly.engines]]\n\
+                 id                  = \"engine_b\"",
+            )
+    }
+
+    fn feed_network_block(engine_id: &str) -> String {
+        format!(
+            "\n[[propulsion.feed_network]]\n\
+             kind = \"tank_valve_chamber\"\n\
+             engine_id = \"{engine_id}\"\n\
+             tank_pressure_pa = 4000000.0\n\
+             propellant_density_kg_m3 = 810.0\n\
+             valve_area_m2 = 0.00008\n\
+             valve_discharge_coefficient = 0.72\n\
+             throat_area_m2 = 0.00012\n\
+             c_star_m_s = 1600.0\n\
+             reference_chamber_pressure_pa = 4000000.0\n\
+             valve_open_fraction = 1.0\n"
+        )
+    }
+
+    fn transient_feed_network_block(engine_id: &str) -> String {
+        format!(
+            "\n[[propulsion.feed_network]]\n\
+             kind = \"transient_dual_valve_chamber\"\n\
+             engine_id = \"{engine_id}\"\n\
+             oxidizer_tank_pressure_pa = 4000000.0\n\
+             fuel_tank_pressure_pa = 3500000.0\n\
+             oxidizer_density_kg_m3 = 810.0\n\
+             fuel_density_kg_m3 = 720.0\n\
+             oxidizer_valve_area_m2 = 0.00008\n\
+             fuel_valve_area_m2 = 0.00004\n\
+             oxidizer_valve_discharge_coefficient = 0.72\n\
+             fuel_valve_discharge_coefficient = 0.68\n\
+             chamber_volume_m3 = 0.08\n\
+             gas_temperature_k = 3400.0\n\
+             gas_constant_j_per_kg_k = 360.0\n\
+             throat_area_m2 = 0.00012\n\
+             c_star_m_s = 1600.0\n\
+             initial_chamber_pressure_pa = 500000.0\n\
+             reference_chamber_pressure_pa = 4000000.0\n\
+             oxidizer_open_fraction = 1.0\n\
+             fuel_open_fraction = 0.8\n"
+        )
+    }
+
+    fn transient_feed_network_controller_block(engine_id: &str) -> String {
+        format!(
+            "{}\
+             controller = {{ target_chamber_pressure_pa = 3000000.0, target_mixture_ratio = 2.0, pressure_proportional_gain_per_pa = 0.0000001, pressure_integral_gain_per_pa_s = 0.0, pressure_integral_limit_pa_s = 10000000.0, mixture_proportional_gain = 0.1, mixture_integral_gain_per_s = 0.0, mixture_integral_limit_s = 10.0, min_open_fraction = 0.0, max_open_fraction = 1.0, max_open_fraction_slew_per_s = 10.0 }}\n",
+            transient_feed_network_block(engine_id)
+        )
+    }
+
+    fn transient_feed_network_pump_block(engine_id: &str) -> String {
+        format!(
+            "{}\
+             oxidizer_pump = {{ design_volumetric_flow_m3_per_s = 0.05, design_pressure_rise_pa = 6000000.0, design_shaft_speed_rad_per_s = 3000.0, fluid_density_kg_m3 = 810.0, design_efficiency = 0.70, required_npsh_m = 20.0, specific_speed = 0.8, head_coefficients = [1.2, -0.2, 0.0], efficiency_coefficients = [0.8, 0.4, -0.2], cavitation_head_multiplier = 0.25, operating_volumetric_flow_m3_per_s = 0.05, operating_shaft_speed_rad_per_s = 3000.0, suction_pressure_pa = 1000000.0, vapor_pressure_pa = 30000.0 }}\n",
+            transient_feed_network_block(engine_id)
+        )
+    }
+
+    fn transient_feed_network_line_block(engine_id: &str) -> String {
+        format!(
+            "{}\
+             oxidizer_line = {{ length_m = 40.0, wave_speed_m_s = 1000.0, density_kg_m3 = 810.0, cross_section_area_m2 = 0.01, segment_count = 4, initial_head_m = 100.0, initial_velocity_m_s = 2.0, upstream_head_m = 100.0, downstream_velocity_m_s = 0.0 }}\n\
+             fuel_line = {{ length_m = 20.0, wave_speed_m_s = 900.0, density_kg_m3 = 720.0, cross_section_area_m2 = 0.008, segment_count = 2, initial_head_m = 80.0, initial_velocity_m_s = 1.5, upstream_head_m = 80.0, downstream_velocity_m_s = 0.5 }}\n",
+            transient_feed_network_block(engine_id)
+        )
+    }
+
+    fn pogo_block(require_stable: bool) -> String {
+        format!(
+            "\n[propulsion.pogo]\n\
+             mode_natural_frequency_rad_s = 60.0\n\
+             mode_damping_ratio = 0.04\n\
+             open_loop_gain_rad2_s2 = 500.0\n\
+             feed_time_constant_s = 0.02\n\
+             mass_flow_gain_time_s = 0.004\n\
+             cavitation_compliance_m3_per_pa = 0.000000001\n\
+             accumulator_compliance_m3_per_pa = 0.0\n\
+             require_stable = {require_stable}\n"
+        )
+    }
+
+    fn propulsion_faults_block(engine_id: &str) -> String {
+        format!(
+            "\n[propulsion.faults]\n\
+             [[propulsion.faults.rules]]\n\
+             id = \"main-hardoff\"\n\
+             engine_id = \"{engine_id}\"\n\
+             start_step = 2\n\
+             fault = {{ kind = \"hard_off\" }}\n"
+        )
+    }
+
+    fn hard_start_propulsion_faults_block(engine_id: &str, duration_s: f64) -> String {
+        format!(
+            "\n[propulsion.faults]\n\
+             [[propulsion.faults.rules]]\n\
+             id = \"main-hard-start\"\n\
+             engine_id = \"{engine_id}\"\n\
+             start_step = 2\n\
+             fault = {{ kind = \"hard_start_overpressure\", factor = 1.5, duration_s = {duration_s} }}\n"
+        )
+    }
+
+    fn cavitation_propulsion_faults_block(engine_id: &str, leg: &str, factor: f64) -> String {
+        format!(
+            "\n[propulsion.faults]\n\
+             [[propulsion.faults.cavitation_rules]]\n\
+             id = \"main-cavitation\"\n\
+             engine_id = \"{engine_id}\"\n\
+             leg = \"{leg}\"\n\
+             fault = {{ kind = \"cavitation_thrust_loss\", factor = {factor} }}\n"
+        )
+    }
+
+    fn mixture_ratio_runaway_faults_block(engine_id: &str) -> String {
+        format!(
+            "\n[propulsion.faults]\n\
+             [[propulsion.faults.mixture_ratio_runaway_rules]]\n\
+             id = \"main-mr-runaway\"\n\
+             engine_id = \"{engine_id}\"\n\
+             start_step = 3\n\
+             oxidizer_open_fraction_rate_per_s = 0.4\n\
+             fuel_open_fraction_rate_per_s = -0.2\n"
+        )
+    }
+
+    #[test]
+    fn parses_propulsion_feed_network_schema() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            feed_network_block("engine_a")
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let feed_networks = &scenario
+            .document
+            .propulsion
+            .as_ref()
+            .expect("propulsion parsed")
+            .feed_networks;
+
+        assert_eq!(feed_networks.len(), 1);
+        match &feed_networks[0] {
+            PropulsionFeedNetworkConfig::TankValveChamber {
+                engine_id,
+                tank_pressure_pa,
+                valve_open_fraction,
+                ..
+            } => {
+                assert_eq!(engine_id, "engine_a");
+                assert_eq!(tank_pressure_pa.to_bits(), 4_000_000.0_f64.to_bits());
+                assert_eq!(valve_open_fraction.to_bits(), 1.0_f64.to_bits());
+            }
+            other => panic!("unexpected feed-network variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_transient_propulsion_feed_network_schema() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            transient_feed_network_block("engine_a")
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let feed_networks = &scenario
+            .document
+            .propulsion
+            .as_ref()
+            .expect("propulsion parsed")
+            .feed_networks;
+
+        assert_eq!(feed_networks.len(), 1);
+        match &feed_networks[0] {
+            PropulsionFeedNetworkConfig::TransientDualValveChamber {
+                engine_id,
+                initial_chamber_pressure_pa,
+                fuel_open_fraction,
+                ..
+            } => {
+                assert_eq!(engine_id, "engine_a");
+                assert_eq!(
+                    initial_chamber_pressure_pa.to_bits(),
+                    500_000.0_f64.to_bits()
+                );
+                assert_eq!(fuel_open_fraction.to_bits(), 0.8_f64.to_bits());
+            }
+            other => panic!("unexpected feed-network variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_transient_propulsion_feed_network_controller_schema() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            transient_feed_network_controller_block("engine_a")
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let feed_networks = &scenario
+            .document
+            .propulsion
+            .as_ref()
+            .expect("propulsion parsed")
+            .feed_networks;
+
+        match &feed_networks[0] {
+            PropulsionFeedNetworkConfig::TransientDualValveChamber {
+                controller: Some(controller),
+                ..
+            } => {
+                assert_eq!(
+                    controller.target_chamber_pressure_pa.to_bits(),
+                    3_000_000.0_f64.to_bits()
+                );
+                assert_eq!(
+                    controller.target_mixture_ratio.unwrap().to_bits(),
+                    2.0_f64.to_bits()
+                );
+            }
+            other => panic!("unexpected feed-network variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_transient_propulsion_feed_network_pump_schema() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            transient_feed_network_pump_block("engine_a")
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let feed_networks = &scenario
+            .document
+            .propulsion
+            .as_ref()
+            .expect("propulsion parsed")
+            .feed_networks;
+
+        match &feed_networks[0] {
+            PropulsionFeedNetworkConfig::TransientDualValveChamber {
+                oxidizer_pump: Some(pump),
+                ..
+            } => {
+                assert_eq!(
+                    pump.design_pressure_rise_pa.to_bits(),
+                    6_000_000.0_f64.to_bits()
+                );
+                for (actual, expected) in pump
+                    .head_coefficients
+                    .iter()
+                    .zip([1.2_f64, -0.2_f64, 0.0_f64])
+                {
+                    assert_eq!(actual.to_bits(), expected.to_bits());
+                }
+            }
+            other => panic!("unexpected feed-network variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_transient_propulsion_feed_network_line_schema() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            transient_feed_network_line_block("engine_a")
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let feed_networks = &scenario
+            .document
+            .propulsion
+            .as_ref()
+            .expect("propulsion parsed")
+            .feed_networks;
+
+        match &feed_networks[0] {
+            PropulsionFeedNetworkConfig::TransientDualValveChamber {
+                oxidizer_line: Some(oxidizer_line),
+                fuel_line: Some(fuel_line),
+                ..
+            } => {
+                assert_eq!(oxidizer_line.segment_count, 4);
+                assert_eq!(
+                    oxidizer_line.initial_velocity_m_s.to_bits(),
+                    2.0_f64.to_bits()
+                );
+                assert_eq!(fuel_line.segment_count, 2);
+                assert_eq!(
+                    fuel_line.downstream_velocity_m_s.to_bits(),
+                    0.5_f64.to_bits()
+                );
+            }
+            other => panic!("unexpected feed-network variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_propulsion_pogo_schema() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            pogo_block(true)
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let pogo = scenario
+            .document
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.pogo.as_ref())
+            .expect("pogo parsed");
+
+        assert_eq!(
+            pogo.mode_natural_frequency_rad_s.to_bits(),
+            60.0_f64.to_bits()
+        );
+        assert_eq!(pogo.mode_damping_ratio.to_bits(), 0.04_f64.to_bits());
+        assert!(pogo.require_stable);
+    }
+
+    #[test]
+    fn rejects_propulsion_pogo_invalid_numeric_values() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            pogo_block(false).replace("feed_time_constant_s = 0.02", "feed_time_constant_s = 0.0")
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InvalidNumber { ref field, .. }
+                    if field == "propulsion.pogo.feed_time_constant_s"
+            ),
+            "expected invalid propulsion.pogo.feed_time_constant_s, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parses_propulsion_fault_schedule_schema() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            propulsion_faults_block("engine_a")
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let faults = scenario
+            .document
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.faults.as_ref())
+            .expect("propulsion faults parsed");
+
+        assert_eq!(faults.rules.len(), 1);
+        assert_eq!(faults.rules[0].id, "main-hardoff");
+        assert_eq!(faults.rules[0].engine_id, "engine_a");
+        assert_eq!(faults.rules[0].start_step, 2);
+        assert!(matches!(
+            faults.rules[0].fault,
+            crate::EngineFaultConfig::HardOff
+        ));
+    }
+
+    #[test]
+    fn parses_propulsion_fault_hard_start_overpressure_schema() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            hard_start_propulsion_faults_block("engine_a", 0.08)
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let fault = scenario
+            .document
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.faults.as_ref())
+            .and_then(|faults| faults.rules.first())
+            .map(|rule| rule.fault)
+            .expect("hard-start fault parsed");
+
+        assert!(matches!(
+            fault,
+            crate::EngineFaultConfig::HardStartOverpressure { factor, duration_s }
+                if factor.to_bits() == 1.5_f64.to_bits()
+                    && duration_s.to_bits() == 0.08_f64.to_bits()
+        ));
+    }
+
+    #[test]
+    fn rejects_propulsion_fault_hard_start_invalid_duration() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            hard_start_propulsion_faults_block("engine_a", 0.0)
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InvalidNumber { ref field, .. }
+                    if field == "propulsion.faults.rules[0].fault.duration_s"
+            ),
+            "expected invalid hard-start duration, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parses_propulsion_fault_cavitation_rule_schema() {
+        let toml = format!(
+            "{}{}{}",
+            assembly_with_engine_propellant_budget(),
+            transient_feed_network_pump_block("engine_a"),
+            cavitation_propulsion_faults_block("engine_a", "oxidizer", 0.35)
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let rule = scenario
+            .document
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.faults.as_ref())
+            .and_then(|faults| faults.cavitation_rules.first())
+            .expect("cavitation fault parsed");
+
+        assert_eq!(rule.id, "main-cavitation");
+        assert_eq!(rule.engine_id, "engine_a");
+        assert_eq!(
+            rule.leg,
+            crate::PropulsionCavitationFaultLegConfig::Oxidizer
+        );
+        assert!(matches!(
+            rule.fault,
+            crate::EngineFaultConfig::CavitationThrustLoss { factor }
+                if factor.to_bits() == 0.35_f64.to_bits()
+        ));
+    }
+
+    #[test]
+    fn rejects_propulsion_fault_cavitation_rule_without_matching_pump() {
+        let toml = format!(
+            "{}{}{}",
+            assembly_with_engine_propellant_budget(),
+            transient_feed_network_block("engine_a"),
+            cavitation_propulsion_faults_block("engine_a", "oxidizer", 0.35)
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InconsistentSection { ref field_a, .. }
+                    if field_a == "propulsion.faults.cavitation_rules[0].engine_id"
+            ),
+            "expected cavitation fault without pump to fail, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parses_propulsion_fault_mixture_ratio_runaway_schema() {
+        let toml = format!(
+            "{}{}{}",
+            assembly_with_engine_propellant_budget(),
+            transient_feed_network_block("engine_a"),
+            mixture_ratio_runaway_faults_block("engine_a")
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let rule = scenario
+            .document
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.faults.as_ref())
+            .and_then(|faults| faults.mixture_ratio_runaway_rules.first())
+            .expect("MR-runaway fault parsed");
+
+        assert_eq!(rule.id, "main-mr-runaway");
+        assert_eq!(rule.engine_id, "engine_a");
+        assert_eq!(rule.start_step, 3);
+        assert_eq!(
+            rule.oxidizer_open_fraction_rate_per_s.to_bits(),
+            0.4_f64.to_bits()
+        );
+        assert_eq!(
+            rule.fuel_open_fraction_rate_per_s.to_bits(),
+            (-0.2_f64).to_bits()
+        );
+    }
+
+    #[test]
+    fn rejects_propulsion_fault_mixture_ratio_runaway_without_transient_network() {
+        let toml = format!(
+            "{}{}{}",
+            assembly_with_engine_propellant_budget(),
+            feed_network_block("engine_a"),
+            mixture_ratio_runaway_faults_block("engine_a")
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InconsistentSection { ref field_a, .. }
+                    if field_a == "propulsion.faults.mixture_ratio_runaway_rules[0].engine_id"
+            ),
+            "expected MR-runaway fault without transient network to fail, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_propulsion_fault_mixture_ratio_runaway_zero_rates() {
+        let toml = format!(
+            "{}{}{}",
+            assembly_with_engine_propellant_budget(),
+            transient_feed_network_block("engine_a"),
+            mixture_ratio_runaway_faults_block("engine_a")
+                .replace("0.4", "0.0")
+                .replace("-0.2", "0.0")
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InvalidNumber { ref field, .. }
+                    if field == "propulsion.faults.mixture_ratio_runaway_rules[0].oxidizer_open_fraction_rate_per_s"
+            ),
+            "expected MR-runaway zero rates to fail, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_propulsion_fault_schedule_unknown_engine() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            propulsion_faults_block("missing")
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::UnknownEngineReference { ref field, ref id }
+                    if field == "propulsion.faults.rules[0].engine_id" && id == "missing"
+            ),
+            "expected unknown scheduled propulsion fault engine, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_propulsion_feed_network_unknown_engine() {
+        let toml = format!(
+            "{}{}",
+            assembly_with_engine_propellant_budget(),
+            feed_network_block("missing")
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::UnknownEngineReference { ref field, ref id }
+                if field == "propulsion.feed_network[0].engine_id" && id == "missing"
+        ));
+    }
+
+    #[test]
+    fn rejects_propulsion_feed_network_without_engine_propellant_budget() {
+        let toml = format!(
+            "{}{}",
+            ASSEMBLY_WITH_ENGINE_CLUSTER,
+            feed_network_block("engine_a")
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "propulsion.feed_network[0].engine_id"
+                    && field_b == "vehicle.assembly.engines.engine_a.propellant"
+        ));
+    }
+
     #[test]
     fn rejects_engine_with_zero_thrust() {
         let toml =
@@ -5695,6 +7085,130 @@ file = "../sensors/star-tracker-textbook.toml""#,
     }
 
     #[test]
+    fn parses_landing_footprint_monte_carlo_uq_config_and_paths() {
+        let toml = format!(
+            "{COAST_FOOTPRINT_MC_SCENARIO}\n\
+             [landing_footprint.monte_carlo.uq]\n\
+             budget_toml = \"uq/footprint-budget.toml\"\n\
+             credibility_floor = \"l2\"\n\
+             report_md = \"out/footprint-credibility.md\"\n"
+        );
+        let source_dir = PathBuf::from("/tmp/openbmp-footprint");
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(&source_dir)).unwrap();
+        let uq = scenario
+            .document
+            .landing_footprint
+            .as_ref()
+            .and_then(|footprint| footprint.monte_carlo.as_ref())
+            .and_then(|monte_carlo| monte_carlo.uq.as_ref())
+            .unwrap();
+        assert_eq!(uq.budget_toml, PathBuf::from("uq/footprint-budget.toml"));
+        assert_eq!(uq.credibility_floor.as_deref(), Some("l2"));
+        assert_eq!(
+            uq.report_md.as_deref(),
+            Some(Path::new("out/footprint-credibility.md")),
+        );
+
+        let paths = scenario.resolved_paths();
+        assert_eq!(
+            paths.get("landing_footprint.monte_carlo.uq.budget_toml"),
+            Some(&source_dir.join("uq/footprint-budget.toml")),
+        );
+        assert_eq!(
+            paths.get("landing_footprint.monte_carlo.uq.report_md"),
+            Some(&source_dir.join("out/footprint-credibility.md")),
+        );
+    }
+
+    #[test]
+    fn parses_landing_footprint_nested_monte_carlo_config_and_paths() {
+        let toml = COAST_FOOTPRINT_MC_SCENARIO
+            .replace(
+                "[landing_footprint.monte_carlo.wind]\nkind = \"constant\"",
+                "[landing_footprint.monte_carlo.wind]\nuncertainty_class = \"epistemic\"\nkind = \"constant\"",
+            )
+            + "\n[landing_footprint.monte_carlo.nested]\n\
+               epistemic_samples = 4\n\
+               aleatory_samples = 8\n\
+               metric = \"radial_offset_from_nominal_m\"\n\
+               threshold = 1.0e9\n\
+               minimum_probability = 1.0\n\
+               pbox_csv = \"out/footprint-pbox.csv\"\n";
+        let source_dir = PathBuf::from("/tmp/openbmp-footprint");
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(&source_dir)).unwrap();
+        let monte_carlo = scenario
+            .document
+            .landing_footprint
+            .as_ref()
+            .and_then(|footprint| footprint.monte_carlo.as_ref())
+            .unwrap();
+        let nested = monte_carlo.nested.as_ref().unwrap();
+        assert_eq!(nested.epistemic_samples, 4);
+        assert_eq!(nested.aleatory_samples, 8);
+        assert_eq!(
+            nested.metric,
+            crate::LandingFootprintMonteCarloNestedMetric::RadialOffsetFromNominalM,
+        );
+        assert_eq!(
+            monte_carlo.wind.as_ref().unwrap().uncertainty_class,
+            crate::LandingFootprintMonteCarloUncertaintyClass::Epistemic,
+        );
+        assert_eq!(
+            monte_carlo
+                .ballistic_coefficient
+                .as_ref()
+                .unwrap()
+                .uncertainty_class,
+            crate::LandingFootprintMonteCarloUncertaintyClass::Aleatory,
+        );
+
+        let paths = scenario.resolved_paths();
+        assert_eq!(
+            paths.get("landing_footprint.monte_carlo.nested.pbox_csv"),
+            Some(&source_dir.join("out/footprint-pbox.csv")),
+        );
+    }
+
+    #[test]
+    fn rejects_landing_footprint_nested_monte_carlo_sample_mismatch() {
+        let toml = COAST_FOOTPRINT_MC_SCENARIO
+            .replace(
+                "[landing_footprint.monte_carlo.wind]\nkind = \"constant\"",
+                "[landing_footprint.monte_carlo.wind]\nuncertainty_class = \"epistemic\"\nkind = \"constant\"",
+            )
+            + "\n[landing_footprint.monte_carlo.nested]\n\
+               epistemic_samples = 3\n\
+               aleatory_samples = 8\n\
+               metric = \"radial_offset_from_nominal_m\"\n\
+               threshold = 1.0e9\n\
+               minimum_probability = 1.0\n";
+        let err = Scenario::from_toml_str(&toml).expect_err("sample product mismatch");
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "landing_footprint.monte_carlo.samples"
+                    && field_b == "landing_footprint.monte_carlo.nested.samples"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_landing_footprint_monte_carlo_uq_invalid_floor() {
+        let toml = format!(
+            "{COAST_FOOTPRINT_MC_SCENARIO}\n\
+             [landing_footprint.monte_carlo.uq]\n\
+             budget_toml = \"uq/footprint-budget.toml\"\n\
+             credibility_floor = \"l5\"\n"
+        );
+        let err = Scenario::from_toml_str(&toml).expect_err("invalid UQ floor");
+        assert!(
+            matches!(err, ScenarioError::UnsupportedValue { ref field, ref value }
+                if field == "landing_footprint.monte_carlo.uq.credibility_floor"
+                    && value == "l5"),
+            "{err:?}",
+        );
+    }
+
+    #[test]
     fn rejects_landing_footprint_monte_carlo_without_uncertainty_source() {
         let toml = COAST_FOOTPRINT_MC_SCENARIO
             .split("[landing_footprint.monte_carlo.wind]")
@@ -5705,6 +7219,130 @@ file = "../sensors/star-tracker-textbook.toml""#,
             matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
                 if field_a == "landing_footprint.monte_carlo"
                     && field_b == "landing_footprint.monte_carlo.uncertainty_source"),
+            "got {err:?}",
+        );
+    }
+
+    const RARE_EVENT_MONTE_CARLO_BLOCK: &str = r#"
+[monte_carlo]
+seed = 777
+
+[monte_carlo.limit_state]
+kind = "synthetic_linear"
+label = "synthetic-limit-state"
+beta = 3.0
+dimension = 4
+
+[monte_carlo.subset_simulation]
+samples_per_level = 4096
+conditional_probability = 0.1
+max_levels = 6
+proposal_sigma = 0.8
+dimension_id = 19
+
+[monte_carlo.cross_entropy]
+samples = 4096
+elite_fraction = 0.1
+iterations = 5
+smoothing = 0.8
+min_std_dev = 0.2
+dimension_id = 23
+"#;
+
+    fn rare_event_monte_carlo_toml(block: &str) -> String {
+        format!(
+            "{}\n{}",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            block
+        )
+    }
+
+    #[test]
+    fn parses_rare_event_monte_carlo_config() {
+        let toml = rare_event_monte_carlo_toml(RARE_EVENT_MONTE_CARLO_BLOCK);
+        let scenario = Scenario::from_toml_str(&toml).expect("rare-event MC manifest");
+        let monte_carlo = scenario.document.monte_carlo.as_ref().unwrap();
+        assert_eq!(monte_carlo.seed, Some(777));
+
+        let limit_state = monte_carlo.limit_state.as_ref().unwrap();
+        assert_eq!(limit_state.kind, "synthetic_linear");
+        assert_eq!(limit_state.label, "synthetic-limit-state");
+        assert_eq!(limit_state.beta.to_bits(), 3.0_f64.to_bits());
+        assert_eq!(limit_state.dimension, 4);
+
+        let subset = monte_carlo.subset_simulation.as_ref().unwrap();
+        assert_eq!(subset.samples_per_level, 4096);
+        assert_eq!(subset.conditional_probability.to_bits(), 0.1_f64.to_bits());
+        assert_eq!(subset.max_levels, 6);
+        assert_eq!(subset.proposal_sigma.to_bits(), 0.8_f64.to_bits());
+        assert_eq!(subset.dimension_id, 19);
+
+        let cross_entropy = monte_carlo.cross_entropy.as_ref().unwrap();
+        assert_eq!(cross_entropy.samples, 4096);
+        assert_eq!(cross_entropy.elite_fraction.to_bits(), 0.1_f64.to_bits());
+        assert_eq!(cross_entropy.iterations, 5);
+        assert_eq!(cross_entropy.smoothing.to_bits(), 0.8_f64.to_bits());
+        assert_eq!(cross_entropy.min_std_dev.to_bits(), 0.2_f64.to_bits());
+        assert_eq!(cross_entropy.dimension_id, 23);
+    }
+
+    #[test]
+    fn rejects_rare_event_monte_carlo_under_v2_schema() {
+        let toml = format!("{MINIMAL}\n{RARE_EVENT_MONTE_CARLO_BLOCK}");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::SchemaVersionFieldReserved { ref field, .. } if field == "monte_carlo"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_rare_event_monte_carlo_without_estimator() {
+        let toml = rare_event_monte_carlo_toml(
+            r#"
+[monte_carlo]
+
+[monte_carlo.limit_state]
+kind = "synthetic_linear"
+label = "synthetic-limit-state"
+beta = 3.0
+dimension = 4
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                if field_a == "monte_carlo"
+                    && field_b == "monte_carlo.subset_simulation_or_cross_entropy"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_rare_event_monte_carlo_ground_aimpoint_label() {
+        let toml = rare_event_monte_carlo_toml(&RARE_EVENT_MONTE_CARLO_BLOCK.replace(
+            r#"label = "synthetic-limit-state""#,
+            r#"label = "ground-aimpoint""#,
+        ));
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnsupportedValue { ref field, ref value }
+                if field == "$.monte_carlo.limit_state.label" && value == "ground-aimpoint"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_rare_event_monte_carlo_target_key_by_lint() {
+        let toml = rare_event_monte_carlo_toml(
+            &RARE_EVENT_MONTE_CARLO_BLOCK
+                .replace("dimension = 4", "dimension = 4\ntarget_latitude_deg = 0.0"),
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnsupportedValue { ref field, ref value }
+                if field == "$.monte_carlo.limit_state.target_latitude_deg"
+                    && value == "target_latitude_deg"),
             "got {err:?}",
         );
     }

@@ -23,10 +23,12 @@ deterministic runner, not a live real-time rig.
   content, and the flight-controller I-load round-trips through the real
   HAL `OBIL` CRC/version envelope.
 - `SilTestbench` — load / reset / `run` / `step` / `run_until` /
-  `*_with_stimulation`, returning a `SilRunReport`.
+  `*_with_stimulation` / `run_observed_with_stimulation`, returning a
+  `SilRunReport`.
 - `SilStimulation` — pre-run scenario stimulation: `FaultInjection`
-  (plant engine/effector faults), `ParameterOverride` (dotted TOML path),
-  and `CommandWrite` (scheduled engine/effector commands).
+  (plant engine/effector load-time faults or scheduled propulsion engine
+  rules), `ParameterOverride` (dotted TOML path), and `CommandWrite`
+  (scheduled engine/effector commands).
 - `EvidenceBundle` — a reviewable JSON artifact: provenance
   (git/toolchain/host + per-file hashes), mission event / phase / region
   / command traces, synthesized bus frames, requirement verdicts, and a

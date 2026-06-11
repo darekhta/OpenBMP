@@ -22,6 +22,8 @@ and the architecture; reach for the others as needed.
   controller, telemetry, and the testing taxonomy.
 - [Roadmap](roadmap.md) — what is shipped and validated, shipped at research
   grade, and deferred.
+- [Parity Program](parity/00-overview.md) — capability-parity constitution,
+  per-discipline design specs, and the work-package execution playbook.
 
 ## Contracts and policy
 
@@ -42,6 +44,9 @@ and the architecture; reach for the others as needed.
   dependency checks, and build-provenance expectations.
 - [Modeling Guide](modeling-guide.md) — the model-author contract:
   documentation template, validation evidence, and scope posture.
+- [Parity Execution Playbook](parity/13-agent-execution-playbook.md) — the
+  PR-level invariants, gate set, work-package schema, and solver-consumer rule
+  for the parity program.
 
 ## Reference
 

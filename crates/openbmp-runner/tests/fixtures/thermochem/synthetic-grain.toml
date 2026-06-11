@@ -1,0 +1,42 @@
+openbmp.thermochem_deck = 1
+
+[meta]
+propellant_pair = "synthetic-oxygen-hydrocarbon"
+provenance = "synthetic ideal-gas thermochemistry runner fixture; values generated from c* closed form"
+validation = "checked"
+
+[axes]
+chamber_pressure_pa = [1000000.0, 4000000.0]
+mixture_ratio = [2.0, 3.0]
+
+[[state]]
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 2.0
+chamber_temperature_k = 3000.0
+gamma = 1.2
+molecular_weight_kg_per_mol = 0.024
+c_star_m_s = 1571.959108027441
+
+[[state]]
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 3.0
+chamber_temperature_k = 3100.0
+gamma = 1.21
+molecular_weight_kg_per_mol = 0.023
+c_star_m_s = 1627.4569656993267
+
+[[state]]
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 2.0
+chamber_temperature_k = 3200.0
+gamma = 1.22
+molecular_weight_kg_per_mol = 0.022
+c_star_m_s = 1685.682799213349
+
+[[state]]
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 3.0
+chamber_temperature_k = 3300.0
+gamma = 1.23
+molecular_weight_kg_per_mol = 0.021
+c_star_m_s = 1746.9971429933705

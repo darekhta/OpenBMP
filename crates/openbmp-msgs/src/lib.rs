@@ -481,6 +481,21 @@ pub struct EstimatorStatus {
     pub mag_updated_this_tick: bool,
     /// Maximum attitude-error covariance diagonal entry, rad².
     pub attitude_variance_max_rad2: f64,
+    /// Position error-state covariance diagonal, ECI axes, m².
+    ///
+    /// A zero entry means that the active estimator does not expose that
+    /// block and downstream NEES reducers must skip it.
+    pub position_variance_eci_m2: [f64; 3],
+    /// Velocity error-state covariance diagonal, ECI axes, (m/s)².
+    ///
+    /// A zero entry means that the active estimator does not expose that
+    /// block and downstream NEES reducers must skip it.
+    pub velocity_variance_eci_m2_s2: [f64; 3],
+    /// Attitude error-state covariance diagonal, rad².
+    ///
+    /// A zero entry means that the active estimator does not expose that
+    /// block and downstream NEES reducers must skip it.
+    pub attitude_variance_rad2: [f64; 3],
     /// Diagonal covariance condition proxy (`max_diag / min_diag`).
     pub covariance_condition_proxy: f64,
     /// `true` when the attitude covariance indicates under-observable

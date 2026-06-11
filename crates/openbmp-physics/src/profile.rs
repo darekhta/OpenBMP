@@ -2053,6 +2053,57 @@ pub struct FootprintMonteCarloResult {
     pub nominal_radial_error_quantiles: Vec<FootprintQuantile>,
 }
 
+impl FootprintMonteCarloResult {
+    /// Rebuild a footprint Monte-Carlo result from completed sample rows.
+    ///
+    /// This is used by checkpoint/resume paths that persist individual sample
+    /// outcomes and then need to reconstruct the deterministic campaign summary
+    /// without re-running completed propagations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when `samples` is empty, the requested
+    /// confidence levels are invalid, or reconstructed statistics are
+    /// non-finite.
+    pub fn from_samples(
+        nominal: LandingFootprint,
+        samples: Vec<FootprintSample>,
+        failures: Vec<FootprintSampleFailure>,
+        confidence_levels: &[f64],
+    ) -> Result<Self, PhysicsError> {
+        if samples.is_empty() {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "footprint Monte Carlo produced no successful samples",
+            });
+        }
+        for level in confidence_levels {
+            if !level.is_finite() || *level <= 0.0 || *level >= 1.0 {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "footprint Monte Carlo confidence levels must be in (0, 1)",
+                });
+            }
+        }
+        let stats = footprint_sample_statistics(&nominal, &samples, confidence_levels)?;
+        Ok(Self {
+            nominal,
+            samples,
+            failures,
+            mean_downrange_m: stats.mean_downrange_m,
+            mean_crossrange_m: stats.mean_crossrange_m,
+            radial_dispersion_p50_m: stats.radial_dispersion_p50_m,
+            mean_offset_downrange_from_nominal_m: stats.mean_offset_downrange_from_nominal_m,
+            mean_offset_crossrange_from_nominal_m: stats.mean_offset_crossrange_from_nominal_m,
+            mean_radial_offset_from_nominal_m: stats.mean_radial_offset_from_nominal_m,
+            covariance_downrange_downrange_m2: stats.covariance_downrange_downrange_m2,
+            covariance_downrange_crossrange_m2: stats.covariance_downrange_crossrange_m2,
+            covariance_crossrange_crossrange_m2: stats.covariance_crossrange_crossrange_m2,
+            dispersion_ellipse: stats.dispersion_ellipse,
+            quantiles: stats.quantiles,
+            nominal_radial_error_quantiles: stats.nominal_radial_error_quantiles,
+        })
+    }
+}
+
 /// Constant-gravity closed-form footprint model.
 ///
 /// This is the first consumed offline footprint implementation: a
@@ -3227,24 +3278,7 @@ where
             reason: "footprint Monte Carlo produced no successful samples",
         });
     }
-    let stats = footprint_sample_statistics(&nominal, &samples, &input.confidence_levels)?;
-    Ok(FootprintMonteCarloResult {
-        nominal,
-        samples,
-        failures,
-        mean_downrange_m: stats.mean_downrange_m,
-        mean_crossrange_m: stats.mean_crossrange_m,
-        radial_dispersion_p50_m: stats.radial_dispersion_p50_m,
-        mean_offset_downrange_from_nominal_m: stats.mean_offset_downrange_from_nominal_m,
-        mean_offset_crossrange_from_nominal_m: stats.mean_offset_crossrange_from_nominal_m,
-        mean_radial_offset_from_nominal_m: stats.mean_radial_offset_from_nominal_m,
-        covariance_downrange_downrange_m2: stats.covariance_downrange_downrange_m2,
-        covariance_downrange_crossrange_m2: stats.covariance_downrange_crossrange_m2,
-        covariance_crossrange_crossrange_m2: stats.covariance_crossrange_crossrange_m2,
-        dispersion_ellipse: stats.dispersion_ellipse,
-        quantiles: stats.quantiles,
-        nominal_radial_error_quantiles: stats.nominal_radial_error_quantiles,
-    })
+    FootprintMonteCarloResult::from_samples(nominal, samples, failures, &input.confidence_levels)
 }
 
 struct FootprintSampleStatistics {

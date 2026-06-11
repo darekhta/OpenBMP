@@ -15,7 +15,13 @@
 //!   of a state. Exposes primitive linear arithmetic; RK4 combines
 //!   stages in the integrator.
 //! * [`Integrator`] — trait for numerical integrators. Ships
-//!   [`Rk4FixedStep`].
+//!   [`Rk4FixedStep`], [`Dopri54FixedStep`], [`Dopri54Adaptive`],
+//!   [`Dopri853FixedStep`], and [`Dopri853Adaptive`].
+//! * [`DenseOutput`] — opt-in adaptive dense-output trait. DOPRI5
+//!   currently exposes [`Dopri54DenseOutput`] /
+//!   [`Dopri54AdaptiveDenseOutput`], and DOP853 exposes
+//!   [`Dopri853DenseOutput`] / [`Dopri853AdaptiveDenseOutput`] for
+//!   state-stable interpolation.
 //! * [`ForceModel`], [`MomentModel`], [`MassModel`], [`RigidMassModel`],
 //!   [`EnvironmentModel`] — model trait surfaces. The crate ships
 //!   [`ConstantGravityForce`], [`ZeroForce`], [`ZeroMoment`],
@@ -37,8 +43,8 @@
 //! * Locked weighted-sum order in the RK4 stage combination.
 //! * Time advances by canonical `start + step * dt` multiplication
 //!   (not accumulation) to avoid O(N · ε) drift.
-//! * MXCSR (FTZ / DAZ / rounding mode) is asserted clean at kernel
-//!   construction on x86_64.
+//! * The floating-point control environment is asserted clean at kernel
+//!   construction on supported architectures.
 //! * No `f64::mul_add` anywhere on the hot path.
 //! * Tracing-emitted bytes are not part of deterministic output; the
 //!   determinism CI gate verifies this.
@@ -63,8 +69,9 @@ pub use events::{
     PhaseTransition, RegionId, RelativeDistanceKey, ScenarioScriptAction, StateId,
 };
 pub use integrator::{
-    AdaptiveIntegratorError, Dopri54Adaptive, Dopri54FixedStep, Dopri853Adaptive,
-    Dopri853FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep,
+    AdaptiveIntegratorError, DenseOutput, Dopri54Adaptive, Dopri54AdaptiveDenseOutput,
+    Dopri54DenseOutput, Dopri54FixedStep, Dopri853Adaptive, Dopri853AdaptiveDenseOutput,
+    Dopri853DenseOutput, Dopri853FixedStep, Integrator, IntegratorDeterminism, Rk4FixedStep,
 };
 pub use kernel::{
     InitialRigidBodyLane, PointMassKernel, ProfiledPointMassKernel, ProfiledRigidBodyKernel,

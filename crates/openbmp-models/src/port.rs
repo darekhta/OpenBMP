@@ -18,7 +18,10 @@ use core::marker::PhantomData;
 #[cfg(feature = "std")]
 use core::{error::Error, fmt};
 #[cfg(feature = "std")]
-use std::path::{Path, PathBuf};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 use crate::ModelEvalError;
 
@@ -248,6 +251,166 @@ impl FmuCoSimulationPortSpec {
     }
 }
 
+/// FMI scalar-variable causality parsed from `modelDescription.xml`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FmiVariableCausality {
+    /// Tunable parameter supplied before initialization.
+    Parameter,
+    /// Calculated parameter supplied by the FMU.
+    CalculatedParameter,
+    /// Input consumed by the FMU.
+    Input,
+    /// Output produced by the FMU.
+    Output,
+    /// Local internal variable.
+    Local,
+    /// Independent variable, usually time.
+    Independent,
+}
+
+impl FmiVariableCausality {
+    /// Return the FMI spelling for this causality.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Parameter => "parameter",
+            Self::CalculatedParameter => "calculatedParameter",
+            Self::Input => "input",
+            Self::Output => "output",
+            Self::Local => "local",
+            Self::Independent => "independent",
+        }
+    }
+
+    #[cfg(feature = "std")]
+    fn parse(raw: &str) -> Result<Self, FmuArchiveError> {
+        match raw {
+            "parameter" => Ok(Self::Parameter),
+            "calculatedParameter" => Ok(Self::CalculatedParameter),
+            "input" => Ok(Self::Input),
+            "output" => Ok(Self::Output),
+            "local" => Ok(Self::Local),
+            "independent" => Ok(Self::Independent),
+            _ => Err(FmuArchiveError::new(format!(
+                "modelDescription.xml has unsupported ScalarVariable causality {raw}"
+            ))),
+        }
+    }
+}
+
+/// FMI scalar-variable storage type supported by OpenBMP import metadata.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FmiVariableType {
+    /// FMI 3 `Float64` variable.
+    Float64,
+    /// FMI 3 `Int32` variable.
+    Int32,
+    /// FMI 3 `UInt64` variable.
+    UInt64,
+}
+
+impl FmiVariableType {
+    /// Return the FMI type tag for this scalar variable.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Float64 => "Float64",
+            Self::Int32 => "Int32",
+            Self::UInt64 => "UInt64",
+        }
+    }
+}
+
+/// FMI 3 Clock `intervalVariability` value.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FmiClockIntervalVariability {
+    /// Time-based periodic clock with constant interval.
+    Constant,
+    /// Time-based periodic clock with fixed interval set during initialization.
+    Fixed,
+    /// Time-based periodic clock with tunable interval.
+    Tunable,
+    /// Time-based aperiodic clock with changing interval.
+    Changing,
+    /// Time-based aperiodic countdown clock.
+    Countdown,
+    /// Triggered clock without an a-priori time interval.
+    Triggered,
+}
+
+impl FmiClockIntervalVariability {
+    /// Return the FMI XML spelling for this clock interval variability.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Constant => "constant",
+            Self::Fixed => "fixed",
+            Self::Tunable => "tunable",
+            Self::Changing => "changing",
+            Self::Countdown => "countdown",
+            Self::Triggered => "triggered",
+        }
+    }
+
+    #[cfg(feature = "std")]
+    fn parse(raw: &str) -> Result<Self, FmuArchiveError> {
+        match raw {
+            "constant" => Ok(Self::Constant),
+            "fixed" => Ok(Self::Fixed),
+            "tunable" => Ok(Self::Tunable),
+            "changing" => Ok(Self::Changing),
+            "countdown" => Ok(Self::Countdown),
+            "triggered" => Ok(Self::Triggered),
+            _ => Err(FmuArchiveError::new(format!(
+                "modelDescription.xml has unsupported Clock intervalVariability {raw}"
+            ))),
+        }
+    }
+}
+
+/// Typed FMI scalar variable with its value reference.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FmiScalarVariable {
+    /// Variable name.
+    pub name: String,
+    /// FMI value reference.
+    pub value_reference: u32,
+    /// Variable causality.
+    pub causality: FmiVariableCausality,
+    /// Variable storage type.
+    pub variable_type: FmiVariableType,
+}
+
+/// FMI 3 Clock variable metadata parsed from `modelDescription.xml`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FmiClockVariable {
+    /// Clock variable name.
+    pub name: String,
+    /// FMI value reference.
+    pub value_reference: u32,
+    /// Clock causality. FMI 3 restricts Clock causality to input,
+    /// output, or local.
+    pub causality: FmiVariableCausality,
+    /// Declared clock interval variability.
+    pub interval_variability: FmiClockIntervalVariability,
+    /// Optional decimal interval attribute preserved as XML text.
+    pub interval_decimal: Option<String>,
+    /// Optional decimal shift attribute preserved as XML text.
+    pub shift_decimal: Option<String>,
+}
+
+/// FMI variable that declares one or more governing Clocks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FmiClockedVariable {
+    /// Variable name.
+    pub name: String,
+    /// FMI value reference of the clocked variable.
+    pub value_reference: u32,
+    /// Clock value references listed in the variable's `clocks`
+    /// attribute.
+    pub clock_references: Vec<u32>,
+}
+
 /// Error raised while loading a restricted FMU archive.
 #[cfg(feature = "std")]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -288,8 +451,16 @@ pub struct FmuModelDescription {
     pub fmi_version: String,
     /// FMI model name declared by the archive.
     pub model_name: String,
+    /// FMI 3 instantiation token declared by the root model description.
+    pub instantiation_token: Option<String>,
     /// Co-simulation model identifier.
     pub model_identifier: String,
+    /// Typed scalar variables in document order.
+    pub scalar_variables: Vec<FmiScalarVariable>,
+    /// FMI 3 Clock variables in document order.
+    pub clock_variables: Vec<FmiClockVariable>,
+    /// Scalar variables that declare governing Clocks.
+    pub clocked_variables: Vec<FmiClockedVariable>,
     /// Input variable names.
     pub input_variables: Vec<String>,
     /// Output variable names.
@@ -298,10 +469,11 @@ pub struct FmuModelDescription {
 
 /// Restricted FMU archive reader used for import smoke tests.
 ///
-/// This loader supports uncompressed ZIP entries only. It validates the
+/// This loader supports stored and deflated ZIP entries. It validates the
 /// presence of `modelDescription.xml`, parses the FMI version,
-/// co-simulation model identifier, and scalar-variable causality, and
-/// exposes resource text for deterministic adapter tests. It does not
+/// co-simulation model identifier, scalar-variable causality, supported
+/// scalar types, and value references, and exposes resource text for
+/// deterministic adapter tests. It does not
 /// call platform binaries and does not claim FMI conformance.
 #[cfg(feature = "std")]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -318,13 +490,13 @@ impl FmuArchive {
     /// # Errors
     ///
     /// Returns [`FmuArchiveError`] when the archive cannot be read,
-    /// when it is not a supported stored-entry ZIP, or when required
+    /// when it is not a supported ZIP archive, or when required
     /// FMI co-simulation metadata is absent.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, FmuArchiveError> {
         let path = path.as_ref();
         let bytes = std::fs::read(path)
             .map_err(|source| FmuArchiveError::new(format!("read {}: {source}", path.display())))?;
-        let entries = read_stored_zip_entries(&bytes)?;
+        let entries = read_zip_entries(&bytes)?;
         let Some(model_description_bytes) = entries.get("modelDescription.xml") else {
             return Err(FmuArchiveError::new(
                 "FMU archive is missing modelDescription.xml",
@@ -360,6 +532,13 @@ impl FmuArchive {
         self.entries.get(name).map(Vec::as_slice)
     }
 
+    /// Iterate over raw archive entries in deterministic path order.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.entries
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+    }
+
     /// Decode an archive entry as UTF-8 text.
     ///
     /// # Errors
@@ -379,7 +558,7 @@ impl FmuArchive {
 }
 
 #[cfg(feature = "std")]
-fn read_stored_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, FmuArchiveError> {
+fn read_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, FmuArchiveError> {
     let eocd = find_eocd(bytes)?;
     let entry_count = usize::from(read_u16(bytes, eocd + 10)?);
     let central_dir_size = usize::try_from(read_u32(bytes, eocd + 12)?)
@@ -400,8 +579,11 @@ fn read_stored_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, Fm
     for _ in 0..entry_count {
         ensure_signature(bytes, cursor, 0x0201_4b50, "central directory header")?;
         let method = read_u16(bytes, cursor + 10)?;
+        let general_purpose_flag = read_u16(bytes, cursor + 8)?;
         let compressed_size = usize::try_from(read_u32(bytes, cursor + 20)?)
             .map_err(|_| FmuArchiveError::new("compressed size overflows usize"))?;
+        let uncompressed_size = usize::try_from(read_u32(bytes, cursor + 24)?)
+            .map_err(|_| FmuArchiveError::new("uncompressed size overflows usize"))?;
         let name_len = usize::from(read_u16(bytes, cursor + 28)?);
         let extra_len = usize::from(read_u16(bytes, cursor + 30)?);
         let comment_len = usize::from(read_u16(bytes, cursor + 32)?);
@@ -419,12 +601,24 @@ fn read_stored_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, Fm
         let name = core::str::from_utf8(&bytes[name_start..name_end])
             .map_err(|source| FmuArchiveError::new(format!("entry name UTF-8: {source}")))?
             .to_owned();
-        if method != 0 {
+        if general_purpose_flag & 0x0001 != 0 {
             return Err(FmuArchiveError::new(format!(
-                "entry {name} uses unsupported compression method {method}; only stored entries are supported"
+                "entry {name} uses ZIP encryption, which is unsupported"
             )));
         }
-        let data = read_stored_zip_entry(bytes, local_header_offset, compressed_size)?;
+        if method != 0 && method != 8 {
+            return Err(FmuArchiveError::new(format!(
+                "entry {name} uses unsupported compression method {method}; only stored and deflated entries are supported"
+            )));
+        }
+        let data = read_zip_entry(
+            bytes,
+            local_header_offset,
+            compressed_size,
+            uncompressed_size,
+            method,
+            name.as_str(),
+        )?;
         entries.insert(name, data);
         cursor = name_end
             .checked_add(extra_len)
@@ -435,12 +629,21 @@ fn read_stored_zip_entries(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, Fm
 }
 
 #[cfg(feature = "std")]
-fn read_stored_zip_entry(
+fn read_zip_entry(
     bytes: &[u8],
     local_header_offset: usize,
     compressed_size: usize,
+    uncompressed_size: usize,
+    method: u16,
+    name: &str,
 ) -> Result<Vec<u8>, FmuArchiveError> {
     ensure_signature(bytes, local_header_offset, 0x0403_4b50, "local file header")?;
+    let local_method = read_u16(bytes, local_header_offset + 8)?;
+    if local_method != method {
+        return Err(FmuArchiveError::new(format!(
+            "entry {name} local compression method {local_method} does not match central directory method {method}"
+        )));
+    }
     let name_len = usize::from(read_u16(bytes, local_header_offset + 26)?);
     let extra_len = usize::from(read_u16(bytes, local_header_offset + 28)?);
     let data_start = local_header_offset
@@ -456,7 +659,26 @@ fn read_stored_zip_entry(
             "local-entry data extends beyond archive",
         ));
     }
-    Ok(bytes[data_start..data_end].to_vec())
+    let compressed = &bytes[data_start..data_end];
+    let data = match method {
+        0 => compressed.to_vec(),
+        8 => {
+            let mut decoder = flate2::read::DeflateDecoder::new(compressed);
+            let mut data = Vec::with_capacity(uncompressed_size);
+            decoder.read_to_end(&mut data).map_err(|source| {
+                FmuArchiveError::new(format!("entry {name} deflate decode failed: {source}"))
+            })?;
+            data
+        }
+        _ => unreachable!("unsupported ZIP compression method was checked earlier"),
+    };
+    if data.len() != uncompressed_size {
+        return Err(FmuArchiveError::new(format!(
+            "entry {name} decoded to {} bytes, expected {uncompressed_size}",
+            data.len()
+        )));
+    }
+    Ok(data)
 }
 
 #[cfg(feature = "std")]
@@ -519,12 +741,52 @@ fn parse_model_description(xml: &str) -> Result<FmuModelDescription, FmuArchiveE
     let fmi_version = xml_attr(root, "fmiVersion")
         .ok_or_else(|| FmuArchiveError::new("modelDescription.xml missing fmiVersion"))?;
     let model_name = xml_attr(root, "modelName").unwrap_or_default();
+    let instantiation_token = xml_attr(root, "instantiationToken");
     let co_sim = find_xml_tag(xml, "CoSimulation")?;
     let model_identifier = xml_attr(co_sim, "modelIdentifier").ok_or_else(|| {
         FmuArchiveError::new("modelDescription.xml CoSimulation missing modelIdentifier")
     })?;
+    let variables_body = xml_element_body(xml, "ModelVariables")?;
+    let (scalar_variables, clock_variables, clocked_variables) =
+        if variables_body.contains("<ScalarVariable") {
+            (
+                parse_legacy_scalar_variables(variables_body)?,
+                Vec::new(),
+                Vec::new(),
+            )
+        } else {
+            let (scalar_variables, clocked_variables) = parse_fmi3_typed_variables(variables_body)?;
+            (
+                scalar_variables,
+                parse_fmi3_clock_variables(variables_body)?,
+                clocked_variables,
+            )
+        };
     let mut input_variables = Vec::new();
     let mut output_variables = Vec::new();
+    for variable in &scalar_variables {
+        match variable.causality {
+            FmiVariableCausality::Input => input_variables.push(variable.name.clone()),
+            FmiVariableCausality::Output => output_variables.push(variable.name.clone()),
+            _ => {}
+        }
+    }
+    Ok(FmuModelDescription {
+        fmi_version,
+        model_name,
+        instantiation_token,
+        model_identifier,
+        scalar_variables,
+        clock_variables,
+        clocked_variables,
+        input_variables,
+        output_variables,
+    })
+}
+
+#[cfg(feature = "std")]
+fn parse_legacy_scalar_variables(xml: &str) -> Result<Vec<FmiScalarVariable>, FmuArchiveError> {
+    let mut scalar_variables = Vec::new();
     let mut rest = xml;
     while let Some(start) = rest.find("<ScalarVariable") {
         rest = &rest[start..];
@@ -534,22 +796,240 @@ fn parse_model_description(xml: &str) -> Result<FmuModelDescription, FmuArchiveE
             ));
         };
         let tag = &rest[..=end];
-        if let (Some(name), Some(causality)) = (xml_attr(tag, "name"), xml_attr(tag, "causality")) {
-            match causality.as_str() {
-                "input" => input_variables.push(name),
-                "output" => output_variables.push(name),
-                _ => {}
-            }
-        }
-        rest = &rest[end + 1..];
+        let name = xml_attr(tag, "name")
+            .ok_or_else(|| FmuArchiveError::new("ScalarVariable is missing name"))?;
+        let value_reference_text = xml_attr(tag, "valueReference").ok_or_else(|| {
+            FmuArchiveError::new(format!("ScalarVariable {name} is missing valueReference"))
+        })?;
+        let value_reference = value_reference_text.parse::<u32>().map_err(|source| {
+            FmuArchiveError::new(format!(
+                "ScalarVariable {name} has invalid valueReference {value_reference_text}: {source}"
+            ))
+        })?;
+        let causality_text = xml_attr(tag, "causality").unwrap_or_else(|| "local".to_owned());
+        let causality = FmiVariableCausality::parse(&causality_text)?;
+        let (body, next_rest) = scalar_variable_body(rest, end, &name)?;
+        let variable_type = parse_scalar_variable_type(body, &name)?;
+
+        scalar_variables.push(FmiScalarVariable {
+            name,
+            value_reference,
+            causality,
+            variable_type,
+        });
+        rest = next_rest;
     }
-    Ok(FmuModelDescription {
-        fmi_version,
-        model_name,
-        model_identifier,
-        input_variables,
-        output_variables,
+    Ok(scalar_variables)
+}
+
+#[cfg(feature = "std")]
+fn parse_fmi3_typed_variables(
+    xml: &str,
+) -> Result<(Vec<FmiScalarVariable>, Vec<FmiClockedVariable>), FmuArchiveError> {
+    let mut scalar_variables = Vec::new();
+    let mut clocked_variables = Vec::new();
+    let mut rest = xml;
+    while let Some((start, variable_type)) = next_supported_fmi3_variable(rest) {
+        rest = &rest[start..];
+        let Some(end) = rest.find('>') else {
+            return Err(FmuArchiveError::new(
+                "modelDescription.xml has unterminated FMI 3 variable tag",
+            ));
+        };
+        let tag = &rest[..=end];
+        let type_name = variable_type.as_str();
+        let name = xml_attr(tag, "name")
+            .ok_or_else(|| FmuArchiveError::new(format!("{type_name} variable is missing name")))?;
+        let value_reference_text = xml_attr(tag, "valueReference").ok_or_else(|| {
+            FmuArchiveError::new(format!(
+                "{type_name} variable {name} is missing valueReference"
+            ))
+        })?;
+        let value_reference = value_reference_text.parse::<u32>().map_err(|source| {
+            FmuArchiveError::new(format!(
+                "{type_name} variable {name} has invalid valueReference {value_reference_text}: {source}"
+            ))
+        })?;
+        let causality_text = xml_attr(tag, "causality").unwrap_or_else(|| "local".to_owned());
+        let causality = FmiVariableCausality::parse(&causality_text)?;
+        let clock_references = parse_clock_reference_list(tag, type_name, &name)?;
+
+        scalar_variables.push(FmiScalarVariable {
+            name: name.clone(),
+            value_reference,
+            causality,
+            variable_type,
+        });
+        if !clock_references.is_empty() {
+            clocked_variables.push(FmiClockedVariable {
+                name,
+                value_reference,
+                clock_references,
+            });
+        }
+        rest = if tag.trim_end().ends_with("/>") {
+            &rest[end + 1..]
+        } else {
+            let close = format!("</{type_name}>");
+            let Some(close_start) = rest[end + 1..].find(&close) else {
+                return Err(FmuArchiveError::new(format!(
+                    "{type_name} variable is missing closing {close}"
+                )));
+            };
+            &rest[end + 1 + close_start + close.len()..]
+        };
+    }
+    Ok((scalar_variables, clocked_variables))
+}
+
+#[cfg(feature = "std")]
+fn parse_fmi3_clock_variables(xml: &str) -> Result<Vec<FmiClockVariable>, FmuArchiveError> {
+    let mut clock_variables = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<Clock") {
+        rest = &rest[start..];
+        let Some(end) = rest.find('>') else {
+            return Err(FmuArchiveError::new(
+                "modelDescription.xml has unterminated Clock variable tag",
+            ));
+        };
+        let tag = &rest[..=end];
+        let name = xml_attr(tag, "name")
+            .ok_or_else(|| FmuArchiveError::new("Clock variable is missing name"))?;
+        let value_reference_text = xml_attr(tag, "valueReference").ok_or_else(|| {
+            FmuArchiveError::new(format!("Clock variable {name} is missing valueReference"))
+        })?;
+        let value_reference = value_reference_text.parse::<u32>().map_err(|source| {
+            FmuArchiveError::new(format!(
+                "Clock variable {name} has invalid valueReference {value_reference_text}: {source}"
+            ))
+        })?;
+        let causality_text = xml_attr(tag, "causality").unwrap_or_else(|| "local".to_owned());
+        let causality = FmiVariableCausality::parse(&causality_text)?;
+        if !matches!(
+            causality,
+            FmiVariableCausality::Input
+                | FmiVariableCausality::Output
+                | FmiVariableCausality::Local
+        ) {
+            return Err(FmuArchiveError::new(format!(
+                "Clock variable {name} has unsupported causality {}",
+                causality.as_str()
+            )));
+        }
+        let interval_variability_text = xml_attr(tag, "intervalVariability").ok_or_else(|| {
+            FmuArchiveError::new(format!(
+                "Clock variable {name} is missing intervalVariability"
+            ))
+        })?;
+        let interval_variability = FmiClockIntervalVariability::parse(&interval_variability_text)?;
+
+        clock_variables.push(FmiClockVariable {
+            name,
+            value_reference,
+            causality,
+            interval_variability,
+            interval_decimal: xml_attr(tag, "intervalDecimal"),
+            shift_decimal: xml_attr(tag, "shiftDecimal"),
+        });
+        rest = if tag.trim_end().ends_with("/>") {
+            &rest[end + 1..]
+        } else {
+            let close = "</Clock>";
+            let Some(close_start) = rest[end + 1..].find(close) else {
+                return Err(FmuArchiveError::new(
+                    "Clock variable is missing closing </Clock>",
+                ));
+            };
+            &rest[end + 1 + close_start + close.len()..]
+        };
+    }
+    Ok(clock_variables)
+}
+
+#[cfg(feature = "std")]
+fn parse_clock_reference_list(
+    tag: &str,
+    type_name: &str,
+    name: &str,
+) -> Result<Vec<u32>, FmuArchiveError> {
+    let Some(clocks) = xml_attr(tag, "clocks") else {
+        return Ok(Vec::new());
+    };
+    let mut references = Vec::new();
+    for raw in clocks.split_whitespace() {
+        let value_reference = raw.parse::<u32>().map_err(|source| {
+            FmuArchiveError::new(format!(
+                "{type_name} variable {name} has invalid clocks valueReference {raw}: {source}"
+            ))
+        })?;
+        references.push(value_reference);
+    }
+    if references.is_empty() {
+        return Err(FmuArchiveError::new(format!(
+            "{type_name} variable {name} has empty clocks attribute"
+        )));
+    }
+    Ok(references)
+}
+
+#[cfg(feature = "std")]
+fn next_supported_fmi3_variable(xml: &str) -> Option<(usize, FmiVariableType)> {
+    [
+        ("Float64", FmiVariableType::Float64),
+        ("Int32", FmiVariableType::Int32),
+        ("UInt64", FmiVariableType::UInt64),
+    ]
+    .into_iter()
+    .filter_map(|(tag, variable_type)| {
+        xml.find(&format!("<{tag}"))
+            .map(|index| (index, variable_type))
     })
+    .min_by_key(|(index, _variable_type)| *index)
+}
+
+#[cfg(feature = "std")]
+fn scalar_variable_body<'a>(
+    rest: &'a str,
+    opening_tag_end: usize,
+    name: &str,
+) -> Result<(&'a str, &'a str), FmuArchiveError> {
+    let tag = &rest[..=opening_tag_end];
+    let after_opening_tag = &rest[opening_tag_end + 1..];
+    if tag.trim_end().ends_with("/>") {
+        return Err(FmuArchiveError::new(format!(
+            "ScalarVariable {name} is missing a supported type child"
+        )));
+    }
+    let Some(close_start) = after_opening_tag.find("</ScalarVariable>") else {
+        return Err(FmuArchiveError::new(format!(
+            "ScalarVariable {name} is missing closing </ScalarVariable>"
+        )));
+    };
+    let body = &after_opening_tag[..close_start];
+    let next_rest = &after_opening_tag[close_start + "</ScalarVariable>".len()..];
+    Ok((body, next_rest))
+}
+
+#[cfg(feature = "std")]
+fn parse_scalar_variable_type(body: &str, name: &str) -> Result<FmiVariableType, FmuArchiveError> {
+    let supported = [
+        ("Float64", FmiVariableType::Float64),
+        ("Int32", FmiVariableType::Int32),
+        ("UInt64", FmiVariableType::UInt64),
+    ]
+    .into_iter()
+    .filter_map(|(tag, variable_type)| body.contains(&format!("<{tag}")).then_some(variable_type))
+    .collect::<Vec<_>>();
+    match supported.as_slice() {
+        [variable_type] => Ok(*variable_type),
+        [] => Err(FmuArchiveError::new(format!(
+            "ScalarVariable {name} is missing supported Float64, Int32, or UInt64 child type"
+        ))),
+        _ => Err(FmuArchiveError::new(format!(
+            "ScalarVariable {name} declares more than one supported type child"
+        ))),
+    }
 }
 
 #[cfg(feature = "std")]
@@ -567,6 +1047,29 @@ fn find_xml_tag<'a>(xml: &'a str, tag: &str) -> Result<&'a str, FmuArchiveError>
         )));
     };
     Ok(&rest[..=end])
+}
+
+#[cfg(feature = "std")]
+fn xml_element_body<'a>(xml: &'a str, tag: &str) -> Result<&'a str, FmuArchiveError> {
+    let opening_tag = find_xml_tag(xml, tag)?;
+    if opening_tag.trim_end().ends_with("/>") {
+        return Err(FmuArchiveError::new(format!(
+            "modelDescription.xml <{tag}> must not be empty"
+        )));
+    }
+    let Some(open_start) = xml.find(opening_tag) else {
+        return Err(FmuArchiveError::new(format!(
+            "modelDescription.xml missing <{tag}>"
+        )));
+    };
+    let body_start = open_start + opening_tag.len();
+    let close = format!("</{tag}>");
+    let Some(close_start) = xml[body_start..].find(&close) else {
+        return Err(FmuArchiveError::new(format!(
+            "modelDescription.xml missing closing {close}"
+        )));
+    };
+    Ok(&xml[body_start..body_start + close_start])
 }
 
 #[cfg(feature = "std")]
@@ -590,7 +1093,7 @@ mod tests {
         let mut port = NativeModelPort::new("gain", |dt_s, input: &f64| Ok(input + dt_s));
 
         assert_eq!(port.metadata().kind, ModelPortKind::Native);
-        assert_eq!(port.step(0.25, &2.0).unwrap(), 2.25);
+        assert_eq!(port.step(0.25, &2.0).unwrap().to_bits(), 2.25_f64.to_bits());
     }
 
     #[test]
@@ -643,9 +1146,9 @@ mod tests {
         for input in [0.0, 1.0, 2.5] {
             let native_output = native.step(0.25, &input).unwrap();
             let fmu_output = fmu.step(0.25, &input).unwrap();
-            assert_eq!(native_output, fmu_output);
+            assert_eq!(native_output.to_bits(), fmu_output.to_bits());
         }
-        assert_eq!(fmu.current_time_s(), 0.75);
+        assert_eq!(fmu.current_time_s().to_bits(), 0.75_f64.to_bits());
     }
 
     #[cfg(feature = "std")]
@@ -691,8 +1194,8 @@ mod tests {
 <fmiModelDescription fmiVersion="3.0" modelName="gain">
   <CoSimulation modelIdentifier="gain"/>
   <ModelVariables>
-    <ScalarVariable name="x" causality="input"><Float64/></ScalarVariable>
-    <ScalarVariable name="y" causality="output"><Float64/></ScalarVariable>
+    <ScalarVariable name="x" valueReference="1" causality="input"><Float64/></ScalarVariable>
+    <ScalarVariable name="y" valueReference="2" causality="output"><Float64/></ScalarVariable>
   </ModelVariables>
 </fmiModelDescription>
 "#;
@@ -716,10 +1219,246 @@ mod tests {
         for input in [0.0, 1.25, 3.5] {
             let native_output = native.step(0.5, &input).unwrap();
             let fmu_output = fmu.step(0.5, &input).unwrap();
-            assert_eq!(native_output, fmu_output);
+            assert_eq!(native_output.to_bits(), fmu_output.to_bits());
         }
-        assert_eq!(fmu.current_time_s(), 1.5);
+        assert_eq!(fmu.current_time_s().to_bits(), 1.5_f64.to_bits());
 
+        std::fs::remove_file(path).ok();
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn deflated_fmu_archive_parses_metadata_and_resources() {
+        let path = temp_fmu_path("deflated-gain");
+        let model_description = br#"<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription fmiVersion="3.0" modelName="gain" instantiationToken="gain-token">
+  <CoSimulation modelIdentifier="gain"/>
+  <ModelVariables>
+    <Float64 name="x" valueReference="1" causality="input"/>
+    <Float64 name="y" valueReference="2" causality="output"/>
+  </ModelVariables>
+</fmiModelDescription>
+"#;
+        write_deflated_zip(
+            &path,
+            &[
+                ("modelDescription.xml", model_description.as_slice()),
+                ("resources/openbmp-gain.txt", b"3.0"),
+            ],
+        )
+        .expect("write deflated fmu");
+
+        let archive = FmuArchive::load(&path).expect("load deflated fmu archive");
+        let description = archive.model_description();
+
+        assert_eq!(description.instantiation_token, Some("gain-token".into()));
+        assert_eq!(description.model_identifier, "gain");
+        assert_eq!(description.input_variables, vec!["x"]);
+        assert_eq!(description.output_variables, vec!["y"]);
+        assert_eq!(
+            archive
+                .entry_text("resources/openbmp-gain.txt")
+                .expect("read deflated resource"),
+            "3.0"
+        );
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn fmu_archive_parses_typed_value_references() {
+        let path = temp_fmu_path("typed-vrs");
+        let model_description = br#"<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription fmiVersion="3.0" modelName="engine" instantiationToken="engine-token">
+  <CoSimulation modelIdentifier="engine" canHandleVariableCommunicationStepSize="true"/>
+  <ModelVariables>
+    <Float64 name="throttle" valueReference="10" causality="input"/>
+    <Int32 name="mode" valueReference="12" causality="input"/>
+    <UInt64 name="command_seq" valueReference="11" causality="input"/>
+    <Float64 name="thrust" valueReference="20" causality="output"/>
+    <Int32 name="status" valueReference="22" causality="output"/>
+    <UInt64 name="sample_seq" valueReference="21" causality="output"/>
+  </ModelVariables>
+  <ModelStructure>
+    <Output valueReference="20"/>
+    <Output valueReference="22"/>
+    <Output valueReference="21"/>
+  </ModelStructure>
+</fmiModelDescription>
+"#;
+        write_stored_zip(
+            &path,
+            &[("modelDescription.xml", model_description.as_slice())],
+        )
+        .expect("write fmu");
+
+        let archive = FmuArchive::load(&path).expect("load fmu archive");
+        let description = archive.model_description();
+
+        assert_eq!(description.instantiation_token, Some("engine-token".into()));
+        assert_eq!(
+            description.input_variables,
+            vec!["throttle", "mode", "command_seq"]
+        );
+        assert_eq!(
+            description.output_variables,
+            vec!["thrust", "status", "sample_seq"]
+        );
+        assert_eq!(
+            description.scalar_variables,
+            vec![
+                FmiScalarVariable {
+                    name: "throttle".into(),
+                    value_reference: 10,
+                    causality: FmiVariableCausality::Input,
+                    variable_type: FmiVariableType::Float64,
+                },
+                FmiScalarVariable {
+                    name: "mode".into(),
+                    value_reference: 12,
+                    causality: FmiVariableCausality::Input,
+                    variable_type: FmiVariableType::Int32,
+                },
+                FmiScalarVariable {
+                    name: "command_seq".into(),
+                    value_reference: 11,
+                    causality: FmiVariableCausality::Input,
+                    variable_type: FmiVariableType::UInt64,
+                },
+                FmiScalarVariable {
+                    name: "thrust".into(),
+                    value_reference: 20,
+                    causality: FmiVariableCausality::Output,
+                    variable_type: FmiVariableType::Float64,
+                },
+                FmiScalarVariable {
+                    name: "status".into(),
+                    value_reference: 22,
+                    causality: FmiVariableCausality::Output,
+                    variable_type: FmiVariableType::Int32,
+                },
+                FmiScalarVariable {
+                    name: "sample_seq".into(),
+                    value_reference: 21,
+                    causality: FmiVariableCausality::Output,
+                    variable_type: FmiVariableType::UInt64,
+                },
+            ]
+        );
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn fmu_archive_parses_fmi3_clock_subset_metadata() {
+        let path = temp_fmu_path("clock-subset");
+        let model_description = br#"<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription fmiVersion="3.0" modelName="clocked" instantiationToken="clock-token">
+  <CoSimulation modelIdentifier="clocked"/>
+  <ModelVariables>
+    <Clock name="sample_clock" valueReference="100" causality="input" intervalVariability="constant" intervalDecimal="0.1" shiftDecimal="0.0"/>
+    <Float64 name="sampled_thrust" valueReference="20" causality="output" clocks="100"/>
+    <Clock name="done_clock" valueReference="101" causality="output" intervalVariability="triggered"/>
+  </ModelVariables>
+</fmiModelDescription>
+"#;
+        write_stored_zip(
+            &path,
+            &[("modelDescription.xml", model_description.as_slice())],
+        )
+        .expect("write fmu");
+
+        let archive = FmuArchive::load(&path).expect("load fmu archive");
+        let description = archive.model_description();
+
+        assert_eq!(
+            description.clock_variables,
+            vec![
+                FmiClockVariable {
+                    name: "sample_clock".into(),
+                    value_reference: 100,
+                    causality: FmiVariableCausality::Input,
+                    interval_variability: FmiClockIntervalVariability::Constant,
+                    interval_decimal: Some("0.1".into()),
+                    shift_decimal: Some("0.0".into()),
+                },
+                FmiClockVariable {
+                    name: "done_clock".into(),
+                    value_reference: 101,
+                    causality: FmiVariableCausality::Output,
+                    interval_variability: FmiClockIntervalVariability::Triggered,
+                    interval_decimal: None,
+                    shift_decimal: None,
+                },
+            ]
+        );
+        assert_eq!(
+            description.clocked_variables,
+            vec![FmiClockedVariable {
+                name: "sampled_thrust".into(),
+                value_reference: 20,
+                clock_references: vec![100],
+            }]
+        );
+        assert_eq!(description.output_variables, vec!["sampled_thrust"]);
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn fmu_archive_rejects_invalid_clock_reference_list() {
+        let path = temp_fmu_path("bad-clock-ref");
+        let model_description = br#"<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription fmiVersion="3.0" modelName="clocked">
+  <CoSimulation modelIdentifier="clocked"/>
+  <ModelVariables>
+    <Clock name="sample_clock" valueReference="100" causality="input" intervalVariability="constant" intervalDecimal="0.1"/>
+    <Float64 name="sampled_thrust" valueReference="20" causality="output" clocks="sample_clock"/>
+  </ModelVariables>
+</fmiModelDescription>
+"#;
+        write_stored_zip(
+            &path,
+            &[("modelDescription.xml", model_description.as_slice())],
+        )
+        .expect("write fmu");
+
+        let err = FmuArchive::load(&path).expect_err("invalid clock reference should fail");
+
+        assert!(
+            err.summary().contains("invalid clocks valueReference"),
+            "unexpected error: {err}"
+        );
+        std::fs::remove_file(path).ok();
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn fmu_archive_rejects_scalar_variable_without_value_reference() {
+        let path = temp_fmu_path("missing-vr");
+        let model_description = br#"<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription fmiVersion="3.0" modelName="bad">
+  <CoSimulation modelIdentifier="bad"/>
+  <ModelVariables>
+    <ScalarVariable name="x" causality="input"><Float64/></ScalarVariable>
+  </ModelVariables>
+</fmiModelDescription>
+"#;
+        write_stored_zip(
+            &path,
+            &[("modelDescription.xml", model_description.as_slice())],
+        )
+        .expect("write fmu");
+
+        let err = FmuArchive::load(&path).expect_err("missing valueReference should fail");
+
+        assert!(
+            err.summary().contains("missing valueReference"),
+            "unexpected error: {err}"
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -769,6 +1508,70 @@ mod tests {
             central_directory.write_all(name_bytes)?;
 
             offset += 30 + name_bytes.len() as u32 + data.len() as u32;
+        }
+
+        let central_directory_offset = offset;
+        file.write_all(&central_directory)?;
+        write_u32(&mut file, 0x0605_4b50)?;
+        write_u16(&mut file, 0)?;
+        write_u16(&mut file, 0)?;
+        write_u16(&mut file, entries.len() as u16)?;
+        write_u16(&mut file, entries.len() as u16)?;
+        write_u32(&mut file, central_directory.len() as u32)?;
+        write_u32(&mut file, central_directory_offset)?;
+        write_u16(&mut file, 0)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "std")]
+    fn write_deflated_zip(
+        path: &std::path::Path,
+        entries: &[(&str, &[u8])],
+    ) -> std::io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        let mut central_directory = Vec::new();
+        let mut offset = 0_u32;
+        for (name, data) in entries {
+            let name_bytes = name.as_bytes();
+            let mut encoder =
+                flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(data)?;
+            let compressed = encoder.finish()?;
+
+            write_u32(&mut file, 0x0403_4b50)?;
+            write_u16(&mut file, 20)?;
+            write_u16(&mut file, 0)?;
+            write_u16(&mut file, 8)?;
+            write_u16(&mut file, 0)?;
+            write_u16(&mut file, 0)?;
+            write_u32(&mut file, 0)?;
+            write_u32(&mut file, compressed.len() as u32)?;
+            write_u32(&mut file, data.len() as u32)?;
+            write_u16(&mut file, name_bytes.len() as u16)?;
+            write_u16(&mut file, 0)?;
+            file.write_all(name_bytes)?;
+            file.write_all(&compressed)?;
+
+            write_u32(&mut central_directory, 0x0201_4b50)?;
+            write_u16(&mut central_directory, 20)?;
+            write_u16(&mut central_directory, 20)?;
+            write_u16(&mut central_directory, 0)?;
+            write_u16(&mut central_directory, 8)?;
+            write_u16(&mut central_directory, 0)?;
+            write_u16(&mut central_directory, 0)?;
+            write_u32(&mut central_directory, 0)?;
+            write_u32(&mut central_directory, compressed.len() as u32)?;
+            write_u32(&mut central_directory, data.len() as u32)?;
+            write_u16(&mut central_directory, name_bytes.len() as u16)?;
+            write_u16(&mut central_directory, 0)?;
+            write_u16(&mut central_directory, 0)?;
+            write_u16(&mut central_directory, 0)?;
+            write_u16(&mut central_directory, 0)?;
+            write_u32(&mut central_directory, 0)?;
+            write_u32(&mut central_directory, offset)?;
+            central_directory.write_all(name_bytes)?;
+
+            offset += 30 + name_bytes.len() as u32 + compressed.len() as u32;
         }
 
         let central_directory_offset = offset;

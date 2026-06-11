@@ -7,13 +7,16 @@ use openbmp_physics::{
     IdealStagingBudgetAnalysis, StageMassProperties, StagingBudgetAnalysis, StagingBudgetInput,
 };
 use openbmp_propulsion::{
-    BatesGrain, EndBurnerGrain, EquilibriumInternalBallistics, GrainPropellant,
-    GrainRegressionModel, MotorError, SolidMotor, TabulatedGrain, Validation,
+    AmbientPressureCorrection, BatesGrain, EndBurnerGrain, EquilibriumInternalBallistics,
+    GrainPropellant, GrainRegressionMode, GrainRegressionModel, MotorError,
+    NozzleSeparationCriterion, SolidMotor, TabulatedGrain, Validation,
 };
 use openbmp_scenario::{
-    FeedModeConfig, GrainGeometryConfig, MotorConfig, MotorGrainConfig, ResolvedFile,
-    ScenarioDocument, StagingAnalysisMode,
+    FeedModeConfig, GrainGeometryConfig, GrainRegressionModeConfig, MotorConfig, MotorGrainConfig,
+    NozzleAmbientPressureCorrectionConfig, NozzleSeparationConfig, PropulsionThermochemConfig,
+    ResolvedFile, ScenarioDocument, StagingAnalysisMode,
 };
+use openbmp_thermochem::{ThermochemDeck, ThermochemQuery, ThermochemTable};
 use openbmp_vehicle::{EnginePropellantBinding, FeedMode, PropellantBudget};
 
 use crate::error::RunnerError;
@@ -23,14 +26,33 @@ pub(crate) fn load_solid_motor(
     document: &ScenarioDocument,
     resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<Option<SolidMotor>, RunnerError> {
-    let Some(config) = document
-        .propulsion
-        .as_ref()
-        .and_then(|propulsion| propulsion.motor.as_ref())
-    else {
+    let Some(propulsion) = document.propulsion.as_ref() else {
         return Ok(None);
     };
-    load_motor_config(config, resolved_files).map(Some)
+    let Some(config) = propulsion.motor.as_ref() else {
+        return Ok(None);
+    };
+    let mut motor = load_motor_config(config, propulsion.thermochem.as_ref(), resolved_files)?;
+    if let Some(nozzle) = document
+        .propulsion
+        .as_ref()
+        .and_then(|propulsion| propulsion.nozzle.as_ref())
+    {
+        let correction = match nozzle.ambient_pressure_correction {
+            NozzleAmbientPressureCorrectionConfig::Constant => AmbientPressureCorrection::Constant,
+            NozzleAmbientPressureCorrectionConfig::PressureThrust => {
+                AmbientPressureCorrection::PressureThrust
+            }
+        };
+        motor = motor.with_ambient_pressure_correction(correction)?;
+        let separation = match nozzle.separation {
+            NozzleSeparationConfig::Off => NozzleSeparationCriterion::Off,
+            NozzleSeparationConfig::Summerfield => NozzleSeparationCriterion::Summerfield,
+            NozzleSeparationConfig::Schmucker => NozzleSeparationCriterion::Schmucker,
+        };
+        motor = motor.with_nozzle_separation(separation)?;
+    }
+    Ok(Some(motor))
 }
 
 /// Build the optional vehicle-side propellant budget from engine
@@ -144,6 +166,7 @@ pub(crate) fn append_staging_analysis_metadata(
 
 fn load_motor_config(
     config: &MotorConfig,
+    thermochem: Option<&PropulsionThermochemConfig>,
     resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<SolidMotor, RunnerError> {
     if config.file.is_some() {
@@ -168,11 +191,15 @@ fn load_motor_config(
         .ok_or_else(|| RunnerError::UnsupportedScenario {
             what: "[propulsion.motor] declared without file or grain".to_owned(),
         })?;
-    build_grain_motor(grain)
+    build_grain_motor(grain, thermochem, resolved_files)
 }
 
-fn build_grain_motor(config: &MotorGrainConfig) -> Result<SolidMotor, RunnerError> {
-    let propellant = GrainPropellant {
+fn build_grain_motor(
+    config: &MotorGrainConfig,
+    thermochem: Option<&PropulsionThermochemConfig>,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<SolidMotor, RunnerError> {
+    let mut propellant = GrainPropellant {
         label: config.propellant.label.clone(),
         density_kg_m3: config.propellant.density_kg_m3,
         burn_rate_a: config.propellant.burn_rate_a,
@@ -180,6 +207,28 @@ fn build_grain_motor(config: &MotorGrainConfig) -> Result<SolidMotor, RunnerErro
         c_star_m_s: config.propellant.c_star_m_s,
         gamma: config.propellant.gamma,
     };
+    if let Some(thermochem) = thermochem {
+        let resolved =
+            resolved_files
+                .get("propulsion.thermochem.file")
+                .ok_or_else(|| RunnerError::UnsupportedScenario {
+                    what: "internal invariant: resolved file `propulsion.thermochem.file` missing after pin verification".to_owned(),
+                })?;
+        let text =
+            std::str::from_utf8(&resolved.bytes).map_err(|e| RunnerError::UnsupportedScenario {
+                what: format!(
+                    "could not read thermochemistry deck {} as UTF-8: {e}",
+                    resolved.path.display()
+                ),
+            })?;
+        let deck = ThermochemTable::load_from_str(text)?;
+        let state = deck.lookup(ThermochemQuery {
+            chamber_pressure_pa: thermochem.chamber_pressure_pa,
+            mixture_ratio: thermochem.mixture_ratio,
+        })?;
+        propellant.c_star_m_s = state.c_star_m_s;
+        propellant.gamma = state.gamma;
+    }
     let throat_area_m2 = std::f64::consts::PI * config.throat_radius_m * config.throat_radius_m;
     let name = config
         .name
@@ -188,6 +237,10 @@ fn build_grain_motor(config: &MotorGrainConfig) -> Result<SolidMotor, RunnerErro
     let provenance = config.provenance.clone().unwrap_or_else(|| {
         "synthetic/textbook inline grain regression declared in scenario".to_owned()
     });
+    let mode = match config.mode {
+        GrainRegressionModeConfig::QuasiStatic => GrainRegressionMode::QuasiStatic,
+        GrainRegressionModeConfig::Transient => GrainRegressionMode::Transient,
+    };
     let solver = EquilibriumInternalBallistics::new(
         propellant,
         throat_area_m2,
@@ -197,7 +250,8 @@ fn build_grain_motor(config: &MotorGrainConfig) -> Result<SolidMotor, RunnerErro
         name,
         provenance,
         Validation::Research,
-    )?;
+    )?
+    .with_regression_mode(mode);
     match config.geometry {
         GrainGeometryConfig::EndBurner => solver
             .regress(&EndBurnerGrain::new(

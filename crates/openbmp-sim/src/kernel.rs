@@ -10,8 +10,8 @@
 //! 1. Time advances by `start + step * dt` (canonical multiplication)
 //!    — not by accumulating `t += dt` — to avoid O(N · ε) drift.
 //! 2. Floating-point environment is asserted clean at construction
-//!    (FTZ / DAZ flushed to zero, round-to-nearest-ties-to-even
-//!    rounding mode) on x86_64.
+//!    (flush-to-zero modes off, round-to-nearest-ties-to-even rounding
+//!    mode) on supported architectures.
 //! 3. The integrator's locked weighted-sum order plus the FMA-disabled
 //!    target features make every step bit-stable across reruns on the
 //!    same platform profile.
@@ -26,7 +26,7 @@
 
 use std::{borrow::Cow, collections::BTreeMap};
 
-use openbmp_core::{BodyId, Duration, ModelId, SimTime, StepIndex};
+use openbmp_core::{BodyId, Duration, FpEnvironment, ModelId, SimTime, StepIndex};
 use openbmp_state::{MassProperties, PointMassState};
 use uom::si::mass::kilogram;
 
@@ -458,9 +458,9 @@ where
     /// Returns [`SimulationError::InvalidConfig`] if `dt` is not
     /// strictly positive and finite, [`SimulationError::State`] if the
     /// initial state fails validation, or
-    /// [`SimulationError::FpEnvironmentDirty`] on x86_64 if the
-    /// MXCSR register is not in the canonical (round-to-nearest,
-    /// FTZ/DAZ off) state required for bit-stable replay.
+    /// [`SimulationError::FpEnvironmentDirty`] if the floating-point
+    /// environment is not in the canonical (round-to-nearest, flush-to-zero
+    /// off) state required for bit-stable replay.
     pub fn new(
         config: SimulationConfig<PointMassState, I, F, MM, E, SC>,
     ) -> Result<Self, SimulationError> {
@@ -471,7 +471,7 @@ where
             });
         }
         config.initial_state.require_valid()?;
-        assert_clean_mxcsr()?;
+        FpEnvironment::assert_current_clean()?;
         let initial_time_s = config.initial_state.time.as_seconds();
         let initial_mass_kg = config.initial_state.mass.get::<kilogram>();
         Ok(Self {
@@ -1432,7 +1432,7 @@ where
     /// # Errors
     ///
     /// Same shape as the point-mass `new`: rejects non-positive `dt`,
-    /// invalid initial state, or dirty MXCSR.
+    /// invalid initial state, or a dirty floating-point environment.
     pub fn new_rigid(
         config: SimulationConfig<openbmp_state::RigidBodyState, I, F, RigidModels<MOM, MM>, E, SC>,
     ) -> Result<Self, SimulationError> {
@@ -1456,7 +1456,7 @@ where
                     .into(),
             });
         }
-        assert_clean_mxcsr()?;
+        FpEnvironment::assert_current_clean()?;
         let initial_time_s = config.initial_state.time.as_seconds();
         let initial_mass_kg = config.initial_state.mass_props.mass.get::<kilogram>();
         Ok(Self {
@@ -2486,47 +2486,6 @@ fn rigid_body_altitudes_m(
         );
     }
     altitudes
-}
-
-// ---------------------------------------------------------------------
-// Floating-point environment guard
-// ---------------------------------------------------------------------
-
-#[cfg(target_arch = "x86_64")]
-#[allow(unsafe_code)]
-fn assert_clean_mxcsr() -> Result<(), SimulationError> {
-    let mut csr = 0_u32;
-    let csr_ptr = core::ptr::addr_of_mut!(csr);
-    // SAFETY: `stmxcsr` stores the MXCSR control register into the
-    // provided 32-bit memory location. `csr_ptr` points to a live local
-    // `u32`, is properly aligned, and is valid for this single write.
-    unsafe {
-        core::arch::asm!(
-            "stmxcsr [{0}]",
-            in(reg) csr_ptr,
-            options(nostack, preserves_flags),
-        );
-    }
-    let ftz = (csr >> 15) & 1;
-    let daz = (csr >> 6) & 1;
-    let rounding_mode = (csr >> 13) & 0b11;
-    if ftz != 0 || daz != 0 || rounding_mode != 0 {
-        return Err(SimulationError::FpEnvironmentDirty {
-            ftz: ftz != 0,
-            daz: daz != 0,
-            rounding_mode,
-        });
-    }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-#[allow(clippy::unnecessary_wraps)] // signature parity with x86_64 path
-fn assert_clean_mxcsr() -> Result<(), SimulationError> {
-    // No portable equivalent for non-x86_64. The kernel trusts the
-    // OS/runtime FP environment on aarch64, etc. Documented in the
-    // determinism profile.
-    Ok(())
 }
 
 #[cfg(test)]
@@ -3787,14 +3746,13 @@ mod tests {
         );
     }
 
-    /// Some build configurations (notably `cargo nextest run` on x86_64
-    /// macOS or Linux) leave MXCSR in the default round-to-nearest /
-    /// FTZ-off / DAZ-off state. This test confirms the kernel
-    /// constructs successfully against that baseline. If a future test
-    /// run fails here, look for an upstream library mutating MXCSR.
+    /// Some build configurations leave the FP control environment in the
+    /// default round-to-nearest / flush-to-zero-off state. This test confirms
+    /// the kernel constructs successfully against that baseline. If a future
+    /// test run fails here, look for an upstream library mutating FP control
+    /// state.
     #[test]
-    #[cfg(target_arch = "x86_64")]
-    fn mxcsr_is_clean_under_default_test_runner() {
+    fn fp_environment_is_clean_under_default_test_runner() {
         let kernel = one_kg_drop_kernel(0.01, 0.01);
         // Simply constructing did not error.
         let _ = kernel.current_step();

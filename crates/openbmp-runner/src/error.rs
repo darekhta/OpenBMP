@@ -7,11 +7,14 @@
 
 use openbmp_aero::AeroError;
 use openbmp_aerothermal::AerothermalError;
+use openbmp_bridge::BridgeError;
+use openbmp_feedsystem::FeedSystemError;
 use openbmp_physics::PhysicsError;
 use openbmp_propulsion::MotorError;
 use openbmp_scenario::ScenarioError;
 use openbmp_sim::SimulationError;
 use openbmp_telemetry::TelemetryError;
+use openbmp_thermochem::ThermochemError;
 use thiserror::Error;
 
 /// Errors surfaced while building or running a scenario.
@@ -68,6 +71,17 @@ pub enum RunnerError {
     /// A telemetry channel, schema, or exporter failed.
     #[error("telemetry error")]
     Telemetry(#[from] TelemetryError),
+    /// Host realtime pacing could not be configured.
+    #[error("realtime pacing error at {field}: {reason}")]
+    Realtime {
+        /// Scenario field path where the failure occurred.
+        field: String,
+        /// Human-readable realtime configuration failure.
+        reason: String,
+    },
+    /// The optional HIL/SIL bridge transport failed.
+    #[error("bridge transport error")]
+    Bridge(#[from] BridgeError),
     /// The scenario uses a model or shape the runner does not support.
     #[error("unsupported scenario: {what}")]
     UnsupportedScenario {
@@ -94,6 +108,12 @@ pub enum RunnerError {
     /// A motor-file loader or thrust-curve evaluation failed.
     #[error("motor error")]
     Motor(#[from] MotorError),
+    /// A thermochemistry deck loader or sample evaluation failed.
+    #[error("thermochemistry deck error")]
+    Thermochem(#[from] ThermochemError),
+    /// A feed-network solve or configuration failed.
+    #[error("feed-system network error")]
+    FeedSystem(#[from] FeedSystemError),
     /// A physics-model construction or evaluation failed.
     #[error("physics error")]
     Env(#[from] PhysicsError),
@@ -114,11 +134,15 @@ impl RunnerError {
             | Self::Engine { .. }
             | Self::Tank { .. }
             | Self::Recovery { .. }
+            | Self::Realtime { .. }
+            | Self::Bridge(_)
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
             | Self::Aerothermal(_)
             | Self::AeroEffectorMismatch { .. }
             | Self::Motor(_)
+            | Self::Thermochem(_)
+            | Self::FeedSystem(_)
             | Self::Env(_) => 2,
             Self::Simulation(_) | Self::Telemetry(_) => 4,
         }

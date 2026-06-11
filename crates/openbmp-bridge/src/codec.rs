@@ -80,7 +80,13 @@ mod tests {
             baro_altitude_m: Some(1234.5),
             gnss_position_eci_m: Some([1.0e6, 2.0e6, 3.0e6]),
             gnss_velocity_eci_m_s: None,
+            gnss_position_bias_eci_m: Some([1.0, 2.0, 3.0]),
             mag_body_tesla: Some([2.1e-5, 0.0, 4.2e-5]),
+            mag_body_nt: Some([21_000.0, 0.0, 42_000.0]),
+            mag_hard_iron_body_nt: Some([10.0, -5.0, 2.0]),
+            baro_pressure_pa: Some(89_000.0),
+            baro_bias_pa: Some(12.0),
+            star_tracker_attitude_eci_to_body_xyzw: Some([0.0, 0.0, 0.0, 1.0]),
         };
         let bytes = encode(&pkt).unwrap();
         let back: SensorPacket = decode(&bytes).unwrap();
@@ -94,6 +100,14 @@ mod tests {
             step: 100,
             effector_commands: vec![(0, 0.5), (1, -0.5), (2, 0.0)],
             engine_throttles: vec![(0, 1.0), (1, 0.25)],
+            engine_commands: vec![crate::packet::EngineCommandPacket {
+                engine_id: 7,
+                throttle_unit: 0.8,
+                gimbal_pitch_rad: 0.01,
+                gimbal_yaw_rad: -0.02,
+                ignite: true,
+                shutdown: false,
+            }],
         };
         let bytes = encode(&cmd).unwrap();
         let back: ActuatorCommandPacket = decode(&bytes).unwrap();
@@ -152,6 +166,7 @@ mod tests {
             step: 300,
             effector_commands: vec![(7, 0.33)],
             engine_throttles: vec![],
+            engine_commands: vec![],
         };
         let framed = frame(&encode(&cmd).unwrap());
         let (payload, _) = deframe(&framed).unwrap();

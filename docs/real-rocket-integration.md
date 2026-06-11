@@ -655,7 +655,7 @@ reference's known accuracy.
 
 For HIL-style integration with a lab test rig (engine controller test
 stand, sensor breadboard, GNC processor evaluation board, etc.), the
-optional `openbmp-bridge` crate provides a **generic in-house socket
+optional `openbmp-bridge` crate provides a **generic in-house bridge
 transport**:
 
 ```text
@@ -671,11 +671,45 @@ transport**:
 
 The OpenBMP-side half (`openbmp-bridge`) is generic and ships
 `postcard`-encoded `SensorPacket`, `ActuatorCommandPacket`,
-`BridgeHelloPacket`, `StepAckPacket`, and `BridgeMessage` types. The
-lockstep contract is explicit: the simulator emits one sensor frame for step
-`N` and must not advance the plant past `N` until the external controller
-returns either an `ActuatorCommandPacket` or `StepAckPacket` with the exact
-same `step` and `sim_time_s`; mismatches are rejected by the bridge validators.
+`BridgeHelloPacket`, `StepAckPacket`, and `BridgeMessage` types plus a
+message-level `Transport` trait. The included `InProcessTransport` pair
+is for deterministic host tests, `StreamTransport<S: Read + Write>`
+frames the same messages over caller-owned streams, and `TcpBridgeListener`
+/ `StreamTransport::connect_tcp` plus Unix-domain-socket helpers cover
+generic host loopback cases.
+`LockstepSimMaster` implements the simulator-side
+hello/version/role check and the blocking step-and-ack exchange. The
+lockstep contract is explicit: the simulator emits one sensor frame for
+step `N` and must not advance the plant past `N` until the external
+controller returns either an `ActuatorCommandPacket` or `StepAckPacket`
+with the exact same `step` and `sim_time_s`; mismatches are rejected by
+the bridge validators and reported as fail-closed faults.
+For fault-injection studies, `BridgeFaultTransformSet`,
+`BridgeFaultRule`, `BridgeScalarSignal`, and `BridgeScalarTransform`
+provide ordered, step-windowed scalar transforms over named
+`SensorPacket` and `ActuatorCommandPacket` fields. Applied rule ids are
+returned for evidence capture, absent optional signals are skipped, and
+invalid saturation ranges or quantization steps fail closed. Supported
+deterministic transforms include bias, scale, stuck value, saturation,
+quantization, drift, bounded noise-burst, and sign reversal. Noise-burst
+draws use a deterministic rule-local bridge-fault stream keyed by seed, step,
+signal, and rule id. These are abstract wire-level signal transforms;
+packet-level rules can also drop, duplicate, delay, or mark as bit-flipped
+abstract sensor or command frames, and the runner treats those dispositions as
+fail-closed lockstep faults. They
+are not device-driver faults or electrical bus models.
+Scenarios enable this path with v3 `[fc.transport_faults]` rules; the block is
+valid only when `[fc.transport]` is present.
+`openbmp-bridge::MaPort` and `openbmp-bridge::EesPort` define the
+ASAM-XIL-shaped model-access and electrical-error-simulation trait surface,
+with symbolic `SignalMapping` entries and a deterministic testbench lifecycle
+FSM. `openbmp-sil::InMemoryXilBench` is the native host implementation used for
+tests and evidence capture. `MissionPackage::run_case_with_xil` and
+`run_case_observed_with_xil` attach those XIL actions to the run evidence,
+including observed runs with `EstimateVsTruthMonitor` output; a lab bench still
+supplies its own adapter from those symbolic ids to the real protocol.
+The runner also exposes an opt-in v3 `[fc.transport] mode = "in_process"`
+path for the currently lossless sensor/effector/engine-command subset.
 **You write the lab-side adapter** that translates your specific test
 rig's protocol to the in-house wire format. That adapter lives in your
 repository, with your protocol stack, your timing posture, your

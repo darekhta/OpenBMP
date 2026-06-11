@@ -53,6 +53,7 @@ fields over compact syntax.
 | `[faults]` | no | Scenario-injected fault models |
 | `[batch]` | no | Batch or Monte Carlo sweep metadata |
 | `[landing_footprint]` | no | Schema-v3 offline range-safety footprint post-processing |
+| `[monte_carlo]` | no | Schema-v3 synthetic rare-event Monte Carlo manifest |
 | `[staging_analysis]` | no | Schema-v3 offline ideal ΔV budget / mass-optimal staging analysis |
 | `[entry_profile]` | no | Schema-v3 descent / entry handoff and entry diagnostics |
 
@@ -300,6 +301,35 @@ Allowed `validation` values are `experimental`, `checked`,
 the base step and must be declared under subsystem-specific `rate_hz` fields.
 For `environment.gravity = "constant"` scenarios, runner simulations
 also install an automatic sea-level ground-impact stop condition.
+
+### Realtime Pacing
+
+`[realtime]` is optional and v3-only. When absent, the runner does not read the
+wall clock. When present, the runner paces each kernel frame through
+`openbmp-rt` while keeping timing observations outside telemetry:
+
+```toml
+[realtime]
+mode = "paced"          # "free_run" | "real_time" | "paced"
+target_rtf = 1000.0     # required only for mode = "paced"
+jitter_budget_s = 0.001
+
+[[realtime.task]]
+label = "estimator"
+period_s = 0.01
+wcet_s = 0.001
+```
+
+The minor-frame period is always `[time].dt_s`. `mode = "free_run"` records
+jitter without sleeping; `mode = "real_time"` targets one simulation second per
+wall-clock second; `mode = "paced"` targets `target_rtf` simulation seconds per
+wall-clock second. Realtime jitter, overruns, host frame-execution percentiles,
+and frame-budget overrun counts are reported by the runner and CLI, not written
+into canonical telemetry. Optional `[[realtime.task]]` entries declare periodic
+task budgets for the runner's Liu-Layland rate-monotonic schedulability
+advisory; the advisory is reported outside canonical telemetry with the timing
+record.
+
 `stop_s` remains the upper time bound; a descending local-altitude
 trajectory that crosses `position.z <= 0` stops earlier with a
 `ground-impact` stop reason, even without a manual mission event.
@@ -330,7 +360,7 @@ rtol = 1.0e-9
 atol = 1.0e-12
 min_dt_s = 1.0e-5
 max_dt_s = 0.1
-dense_output = true
+dense_output = true               # adaptive dopri54 | dopri853
 
 [solver.source_terms]
 chemistry_method = "implicit-euler" # implicit-euler | rosenbrock-wanner | bdf
@@ -344,6 +374,13 @@ nonlinear_max_iter = 12
 The parser rejects adaptive or implicit profiles without explicit tolerances.
 For `bit-stable` scenarios, adaptive fields must be absent unless the method is
 used only to generate a non-golden reference run.
+`solver.adaptive.dense_output = true` is state-stable and opt-in: the runner
+accepts it for `adaptive-explicit` + `dopri54` or `dopri853`, where
+`openbmp-sim` provides method-specific dense segments for event localization and
+output resampling (`Dopri54Adaptive::advance_with_dense_output` quartic DOPRI5,
+`Dopri853Adaptive::advance_with_dense_output` order-7 DOP853). The runner
+rejects dense output for fixed-step profiles and for adaptive methods without a
+wired interpolant.
 
 ## Data Packages
 
@@ -946,6 +983,7 @@ mounted_to  = "upper"
 
 [propulsion.motor.grain]
 geometry              = "bates"       # end_burner | bates | tabulated
+mode                  = "quasi_static" # quasi_static | transient
 segments              = 4
 outer_radius_m        = 0.025
 core_radius_m         = 0.010
@@ -965,11 +1003,46 @@ gamma          = 1.131
 web_steps      = 200
 ```
 
+`mode` defaults to `quasi_static`, the algebraic equilibrium `pc(Kn)` march.
+`transient` emits the same `SolidMotor` surface through an explicit
+lumped-volume chamber-pressure integration with deterministic ignition
+transient and the reduced erosive-burn-rate hook available in the propulsion
+API.
+
 `end_burner` uses `cross_section_area_m2` and `length_m`; `bates` uses
 `segments`, `outer_radius_m`, `core_radius_m`, and `segment_length_m`;
 `tabulated` uses `points = [[web_m, burn_area_m2], ...]` plus
 `propellant_volume_m3`. All parameters are synthetic/textbook/public and are
-rejected if non-finite or outside the quasi-steady envelope.
+rejected if non-finite or outside the selected regression envelope.
+
+Inline grain motors may also declare a pinned Schema-1 thermochemistry
+deck. The runner resolves the deck through the same referenced-file SHA-256
+path as aero and motor files, samples it at the declared nominal chamber
+pressure and mixture ratio, and uses the returned `c_star_m_s` and `gamma`
+for the generated motor curve. When the block is omitted, the inline
+`[propulsion.motor.grain.propellant]` constants are preserved.
+
+```toml
+[propulsion.thermochem]
+file = "../../data/thermochem/synthetic/schema-1.toml"
+file_sha256 = "<64 hex chars>"
+chamber_pressure_pa = 2000000.0
+mixture_ratio = 2.5
+```
+
+`[propulsion.nozzle]` is an optional runtime override for the single
+solid-motor path:
+
+```toml
+[propulsion.nozzle]
+ambient_pressure_correction = "pressure_thrust" # constant | pressure_thrust
+```
+
+`constant` preserves the motor thrust curve exactly. `pressure_thrust`
+treats the stored curve as momentum thrust and adds `(p_e - p_a) A_e`
+from the runner's sampled atmosphere pressure. Inline grain motors carry
+the required throat area and gas `gamma`; motor-file users must provide
+`geometry.throat_area_m2` and `geometry.gamma` before opting in.
 
 ### Wind block
 
@@ -1914,6 +1987,152 @@ default. `feed = "blowdown"` requires each bound tank to declare
 `ullage = { initial_pressure_pa = ..., gas_gamma = ... }`; delivered thrust
 and Isp scale with the isentropic ullage pressure ratio.
 
+An engine with a propellant budget may opt into a reduced feed-network
+override through `[[propulsion.feed_network]]`. The first wired kind is
+`tank_valve_chamber`, a single-fluid tank-valve-chamber equilibrium
+solve from `openbmp-feedsystem`. The runner samples it each rack tick
+with the declared fixed valve opening and maps the solved chamber
+pressure to the existing engine feed scale as
+`chamber_pressure_pa / reference_chamber_pressure_pa`. Existing
+regulated/blowdown depletion handling still owns tank drain and
+shutdown; depletion keeps the feed scale at zero.
+
+```toml
+[[propulsion.feed_network]]
+kind = "tank_valve_chamber"
+engine_id = "main"
+tank_pressure_pa = 4000000.0
+propellant_density_kg_m3 = 810.0
+valve_area_m2 = 0.00008
+valve_discharge_coefficient = 0.72
+throat_area_m2 = 0.00012
+c_star_m_s = 1600.0
+reference_chamber_pressure_pa = 4000000.0
+valve_open_fraction = 1.0
+```
+
+`engine_id` must name a declared `[[vehicle.assembly.engines]]` entry
+that also declares a `propellant` sub-table. Multiple feed networks may
+be declared, but each engine id may appear at most once.
+
+For a stateful two-propellant transient chamber, use
+`kind = "transient_dual_valve_chamber"`. The runner stores the chamber
+pressure state in the feed-network rack, advances it once per simulation
+tick with the scenario `time.dt_s`, and maps the updated pressure to the
+same feed scale `chamber_pressure_pa / reference_chamber_pressure_pa`.
+The oxidizer and fuel valve openings are fixed commands in this first
+scenario-facing tier; controller wiring remains separate.
+
+```toml
+[[propulsion.feed_network]]
+kind = "transient_dual_valve_chamber"
+engine_id = "main"
+oxidizer_tank_pressure_pa = 4000000.0
+fuel_tank_pressure_pa = 3500000.0
+oxidizer_density_kg_m3 = 810.0
+fuel_density_kg_m3 = 720.0
+oxidizer_valve_area_m2 = 0.00008
+fuel_valve_area_m2 = 0.00004
+oxidizer_valve_discharge_coefficient = 0.72
+fuel_valve_discharge_coefficient = 0.68
+chamber_volume_m3 = 0.08
+gas_temperature_k = 3400.0
+gas_constant_j_per_kg_k = 360.0
+throat_area_m2 = 0.00012
+c_star_m_s = 1600.0
+initial_chamber_pressure_pa = 500000.0
+reference_chamber_pressure_pa = 4000000.0
+oxidizer_open_fraction = 1.0
+fuel_open_fraction = 0.8
+```
+
+Add `controller = { ... }` to the transient block to close a deterministic
+pressure/MR loop over the two valve commands. The pressure loop moves both
+valves together; the mixture loop biases oxidizer and fuel in opposite
+directions. Valve bounds and slew limits are enforced by `openbmp-feedsystem`.
+
+```toml
+controller = {
+  target_chamber_pressure_pa = 3000000.0,
+  target_mixture_ratio = 2.0,
+  pressure_proportional_gain_per_pa = 0.0000001,
+  pressure_integral_gain_per_pa_s = 0.0,
+  pressure_integral_limit_pa_s = 10000000.0,
+  mixture_proportional_gain = 0.1,
+  mixture_integral_gain_per_s = 0.0,
+  mixture_integral_limit_s = 10.0,
+  min_open_fraction = 0.0,
+  max_open_fraction = 1.0,
+  max_open_fraction_slew_per_s = 10.0,
+}
+```
+
+Add `oxidizer_pump = { ... }` and/or `fuel_pump = { ... }` to the transient
+block to solve a generic normalized turbopump map before the run starts. The
+runner adds the solved pressure rise to that leg's declared tank pressure; the
+pump NPSH gate can derate the pressure rise through
+`cavitation_head_multiplier`.
+
+```toml
+oxidizer_pump = {
+  design_volumetric_flow_m3_per_s = 0.05,
+  design_pressure_rise_pa = 6000000.0,
+  design_shaft_speed_rad_per_s = 3000.0,
+  fluid_density_kg_m3 = 810.0,
+  design_efficiency = 0.70,
+  required_npsh_m = 20.0,
+  specific_speed = 0.8,
+  head_coefficients = [1.2, -0.2, 0.0],
+  efficiency_coefficients = [0.8, 0.4, -0.2],
+  cavitation_head_multiplier = 0.25,
+  operating_volumetric_flow_m3_per_s = 0.05,
+  operating_shaft_speed_rad_per_s = 3000.0,
+  suction_pressure_pa = 1000000.0,
+  vapor_pressure_pa = 30000.0,
+}
+```
+
+Add `oxidizer_line = { ... }` and/or `fuel_line = { ... }` to the
+transient block to couple a frictionless fixed-grid MOC feed line into that
+leg. The runner advances one line step per rack tick and applies the
+downstream pressure perturbation around the leg's tank-plus-pump feed
+pressure before the valve/chamber step. The line grid must be Courant-exact
+with the scenario time step:
+`time.dt_s = length_m / segment_count / wave_speed_m_s`.
+
+```toml
+oxidizer_line = {
+  length_m = 40.0,
+  wave_speed_m_s = 1000.0,
+  density_kg_m3 = 810.0,
+  cross_section_area_m2 = 0.01,
+  segment_count = 4,
+  initial_head_m = 100.0,
+  initial_velocity_m_s = 2.0,
+  upstream_head_m = 100.0,
+  downstream_velocity_m_s = 0.0,
+}
+```
+
+`[propulsion.pogo]` runs the reduced feed-half POGO stability primitive at
+runner startup. The block is optional and has no effect when omitted. It
+couples one longitudinal structural mode to a first-order feed response,
+attenuates the open-loop gain with accumulator compliance, and can fail the
+run at build time when `require_stable = true` and the reduced verdict is
+unstable.
+
+```toml
+[propulsion.pogo]
+mode_natural_frequency_rad_s = 60.0
+mode_damping_ratio = 0.04
+open_loop_gain_rad2_s2 = 500.0
+feed_time_constant_s = 0.02
+mass_flow_gain_time_s = 0.004
+cavitation_compliance_m3_per_pa = 0.000000001
+accumulator_compliance_m3_per_pa = 0.0
+require_stable = true
+```
+
 #### Mount geometry
 
 `mount_point_body_m: [x, y, z]` — body-frame mount position in
@@ -1931,17 +2150,72 @@ fault scenarios or controller-side allocation tables.
 
 #### Faults
 
-`fault` is optional and load-time only: a fault
-declared in the scenario is injected at construction and persists
-for the run. Run-time fault injection is not supported
-(mirrors the effector faults).
+Per-engine `fault` is optional and load-time only: a fault declared on
+`[[vehicle.assembly.engines]]` is injected at construction and persists for the
+run. Use `[propulsion.faults]` for deterministic mid-run engine fault
+injection.
 
 | `fault.kind` | Required fields | Semantics |
 |---|---|---|
 | `stuck` | `at_throttle: f64` (in `[0, 1]`) | Throttle stuck at `at_throttle`; engine ignores command throttle but still honours ignite / shutdown lifecycle. |
 | `hard_off` | — | Engine commanded off and never restarts. Sets state to `Failed` on first step. |
 | `over_thrust` | `factor: f64` (finite, `>= 0`) | Thrust scaled by `factor`. `>= 1` → over-thrust; `< 1` → under-thrust. |
+| `hard_start_overpressure` | `factor: f64` (finite, `>= 1`), `duration_s: f64` (positive) | Ignition transient over-pressure. Scales thrust only while the engine is igniting and its in-state timer is within `duration_s`. |
+| `cavitation_thrust_loss` | `factor: f64` (finite, in `[0, 1]`) | Pump-cavitation thrust loss. Scales thrust once injected by a cavitation trigger or explicit rule. |
 | `gimbal_locked` | `pitch_rad: f64`, `yaw_rad: f64` (each in `±max_gimbal_rad`) | Gimbal frozen at the given angles regardless of command. |
+
+Scheduled propulsion faults are declared under `[propulsion.faults]`. Each
+`[[propulsion.faults.rules]]` rule injects one engine fault before the engine
+rack steps at `start_step`; the injected fault then persists according to the
+engine fault semantics. Rule ids must be unique, and `engine_id` must reference
+a declared engine. Native SIL package runs can append the same rule shape in
+memory with `FaultTarget::ScheduledEngine`; the package scenario file is not
+modified, and the normal scenario parser still validates the resulting rule.
+
+```toml
+[propulsion.faults]
+
+[[propulsion.faults.rules]]
+id = "main-engine-out"
+engine_id = "main"
+start_step = 250
+fault = { kind = "hard_off" }
+```
+
+Cavitation-triggered propulsion faults are also declared under
+`[propulsion.faults]`. Each `[[propulsion.faults.cavitation_rules]]` rule
+injects one engine fault the first time a configured transient feed-network
+turbopump reports `NPSH_available < NPSH_required`. `leg` is
+`oxidizer | fuel | any`; scenario validation requires a matching
+`[[propulsion.feed_network]]` entry with the selected pump leg.
+
+```toml
+[propulsion.faults]
+
+[[propulsion.faults.cavitation_rules]]
+id = "main-ox-pump-cavitation"
+engine_id = "main"
+leg = "oxidizer"
+fault = { kind = "cavitation_thrust_loss", factor = 0.45 }
+```
+
+Mixture-ratio runaway faults are feed-network faults, not engine faults:
+`[[propulsion.faults.mixture_ratio_runaway_rules]]` targets a
+`transient_dual_valve_chamber` feed network and starts a deterministic valve
+command drift at `start_step`. Positive oxidizer and negative fuel rates drive
+oxidizer-rich excursions; the opposite drives fuel-rich excursions. Commands are
+clamped to `[0, 1]` after drift.
+
+```toml
+[propulsion.faults]
+
+[[propulsion.faults.mixture_ratio_runaway_rules]]
+id = "main-mr-runaway"
+engine_id = "main"
+start_step = 320
+oxidizer_open_fraction_rate_per_s = 0.4
+fuel_open_fraction_rate_per_s = -0.2
+```
 
 #### Lifecycle and command resolution
 
@@ -1996,8 +2270,13 @@ Enforced at scenario-parse time:
 - `mount_point_body_m` finite components.
 - `kind.kind` is a wired variant (`liquid_engine`).
 - `fault` when present: `stuck.at_throttle` in `[0, 1]`;
-  `over_thrust.factor` non-negative; `gimbal_locked.{pitch,yaw}_rad`
-  in `±max_gimbal_rad`.
+  `over_thrust.factor` non-negative; `hard_start_overpressure.factor`
+  at least `1`; `hard_start_overpressure.duration_s` positive;
+  `cavitation_thrust_loss.factor` in `[0, 1]`;
+  `gimbal_locked.{pitch,yaw}_rad` in `±max_gimbal_rad`.
+- `[propulsion.faults].mixture_ratio_runaway_rules` requires finite drift
+  rates, at least one non-zero rate, and a matching
+  `transient_dual_valve_chamber` feed network.
 - Cross-validate `scenario_script.events[*].action.id` (when action kind
   is `engine_command`) against declared engine ids.
 - Reject engine clusters that omit `thrust` from `forces.models`;
@@ -2016,7 +2295,8 @@ Enforced at scenario-parse time:
   `consumed_kg` from the body that owns that engine. Inertia
   evolution from engine propellant geometry is not modelled; tanks
   carry their own moving-mass inertia contribution.
-- Faults are load-time only.
+- Per-engine `fault` declarations are load-time only. Mid-run engine faults use
+  `[propulsion.faults]` scheduled or cavitation-triggered rules.
 - Only the `liquid_engine` kind ships.
 - Per-engine `command_schedule` (effector-style declarative
   scripts) is out of scope; engines drive only via
@@ -2226,6 +2506,11 @@ samples_csv = "out/footprint-mc-samples.csv"
 samples_parquet = "out/footprint-mc-samples.parquet"
 summary_toml = "out/footprint-mc-summary.toml"
 
+[landing_footprint.monte_carlo.uq]
+budget_toml = "uq/footprint-budget.toml"
+credibility_floor = "l2"
+report_md = "out/footprint-mc-credibility.md"
+
 [landing_footprint.monte_carlo.wind]
 kind = "constant"
 sigma_ned_m_s = [2.0, 1.0, 0.0]
@@ -2275,6 +2560,16 @@ dispersion. `wind.kind` accepts `constant`, `layered`, `hwm14`, or
 `ensemble`; the current offline propagator consumes the sampled local-NED
 perturbation as the constant wind vector for that footprint sample.
 
+`[landing_footprint.monte_carlo.uq]` is optional. When present,
+`budget_toml` points to an `openbmp-uq` TOML budget with source-tagged
+one-sigma terms and NASA-STD-7009B credibility factors;
+`credibility_floor` accepts `l0` through `l4` (or `0` through `4`) and
+defaults to `l0`; `report_md` optionally writes the deterministic Markdown
+credibility report. `openbmp footprint-mc` fail-closes before accepting final
+sample/summary evidence when the budget's binding credibility level is below
+the configured floor. CLI `--uq-toml` options can still be used as a sidecar
+override for ad hoc runs.
+
 The Monte-Carlo summary includes an output-only `[dispersion_statistics]` block:
 `radial_dispersion_p50_m` is the empirical 50% radial dispersion about the successful sample
 mean, while `mean_radial_offset_from_nominal_m` is the radial offset from
@@ -2286,6 +2581,64 @@ radial-distance quantiles;
 `[[nominal_radial_offset_quantiles]]` are radial-error quantiles about the
 nominal forward footprint. These diagnostics are written after propagation and
 do not change simulator commands.
+
+### Synthetic rare-event Monte Carlo
+
+`[monte_carlo]` is a schema-v3 manifest for synthetic rare-event estimator
+studies in `openbmp-mc`. It is consumed by `openbmp mc rare-event`; the block is
+not a vehicle risk statement, is not bound to a named vehicle or mission, and
+cannot declare a ground target or aimpoint.
+
+```toml
+[monte_carlo]
+seed = 777
+
+[monte_carlo.limit_state]
+kind = "synthetic_linear"
+label = "synthetic-limit-state"
+beta = 3.0
+dimension = 4
+
+[monte_carlo.subset_simulation]
+samples_per_level = 4096
+conditional_probability = 0.1
+max_levels = 6
+proposal_sigma = 0.8
+dimension_id = 19
+
+[monte_carlo.cross_entropy]
+samples = 4096
+elite_fraction = 0.1
+iterations = 5
+smoothing = 0.8
+min_std_dev = 0.2
+dimension_id = 23
+```
+
+The required `[monte_carlo.limit_state]` block accepts only
+`kind = "synthetic_linear"` and `label = "synthetic-limit-state"`.
+`beta` is the reliability index for the analytic linear standard-normal
+limit state, and `dimension` is the standard-normal input dimension.
+At least one estimator block,
+`[monte_carlo.subset_simulation]` or `[monte_carlo.cross_entropy]`, must be
+present. Sample counts must be at least two, probabilities and smoothing
+factors must be strictly between zero and one, and sigma/std-dev controls must
+be positive.
+
+The pre-serde consumer-agreement lint rejects target-like vocabulary under
+`[monte_carlo.limit_state]`, including ground-aimpoint, aimpoint, target, CEP,
+impact, and miss-distance terms. Neutral uses of those words outside this
+limit-state block remain governed by the normal typed schema.
+
+Run the manifest with:
+
+```bash
+openbmp mc rare-event scenario.toml --output-toml out/rare-event-report.toml
+```
+
+The optional TOML evidence file records each estimator report, subset-simulation
+threshold levels, and cross-entropy adaptation rows with deterministic numeric
+formatting.
 
 ### Staging analysis
 
@@ -2625,6 +2978,139 @@ The allocator derives capacity only from `direct_torque`
 effectors with exact symmetric limits (`max == -min`). Phase authority is
 applied before the proportional split, so disallowed effectors receive
 zero commands and do not contribute capacity.
+
+#### `[fc.transport]` — opt-in FC bridge transport
+
+```toml
+[fc.transport]
+mode = "in_process" # "in_process" | "tcp_loopback" | "unix_loopback" | "external_process"
+command = "path/to/fc-peer" # required only for mode = "external_process"
+args = ["--bridge-stdio"] # optional, external_process only
+working_dir = "." # optional, external_process only
+max_payload_len = 4096 # optional, bytes
+peer_protocol_version = 2 # optional; normally omit
+```
+
+`[fc.transport]` is v3-only. When absent, `[fc]` uses the legacy direct
+in-process bridge and existing telemetry is unchanged. `mode = "in_process"`
+routes the FC boundary through `openbmp-bridge` `BridgeMessage` packets over an
+in-process endpoint pair; `mode = "tcp_loopback"` uses the same local simulator
+and controller endpoints over a framed TCP loopback stream; `mode = "unix_loopback"`
+uses a temporary Unix-domain socket on Unix platforms. `mode = "external_process"`
+spawns `command` with `args`, couples the bridge over child stdin/stdout, and
+kills the child if it is still running when the session drops. All transport
+modes validate the bridge hello before exchanging sensor and actuator frames.
+
+The current runner wiring is deliberately lossless: opt-in transport scenarios
+must include an IMU and may also carry GNSS position/velocity/bias, barometer
+pressure/bias, magnetometer nT/hard-iron state, and star-tracker attitude
+through the bridge packet. Effector commands and full engine throttle, gimbal,
+ignition, and shutdown commands are carried in the actuator packet.
+The runner reports an actuator command-stream SHA-256 digest outside canonical
+telemetry so direct, in-process, and TCP-loopback paths can be compared without
+changing telemetry bytes. `max_payload_len`, when present, must be greater than
+zero. `peer_protocol_version` is a negative-test hook for protocol-mismatch
+scenarios; omit it for normal runs.
+
+#### `[fc.transport_faults]` — bridge-level signal transforms
+
+```toml
+[fc.transport]
+mode = "in_process"
+
+[[fc.transport_faults.rules]]
+id         = "imu-x-bias"
+start_step = 100
+end_step   = 250 # optional, inclusive
+signal     = { kind = "imu_accel_body_mps2", axis = "x" }
+transform  = { kind = "additive_bias", offset = 0.25 }
+
+[[fc.transport_faults.rules]]
+id         = "engine-throttle-limit"
+start_step = 150
+signal     = { kind = "engine_throttle", engine_id = 0 }
+transform  = { kind = "saturate", min = 0.0, max = 0.5 }
+
+[[fc.transport_faults.rules]]
+id         = "baro-pressure-drift"
+start_step = 200
+signal     = { kind = "baro_pressure_pa" }
+transform  = { kind = "drift", rate_per_s = 2.0, reference_time_s = 0.0 }
+
+[[fc.transport_faults.rules]]
+id         = "gyro-noise-burst"
+start_step = 250
+end_step   = 300
+signal     = { kind = "imu_gyro_body_rad_s", axis = "z" }
+transform  = { kind = "noise_burst", amplitude = 0.01, seed = 42 }
+
+[[fc.transport_faults.packet_rules]]
+id         = "drop-first-sensor-frame"
+start_step = 0
+end_step   = 0
+direction  = "sensor"
+transform  = { kind = "drop" }
+
+[[fc.transport_faults.packet_rules]]
+id         = "duplicate-first-command-frame"
+start_step = 0
+direction  = "command"
+transform  = { kind = "duplicate" }
+
+[[fc.transport_faults.packet_rules]]
+id         = "delay-sensor-frame"
+start_step = 12
+direction  = "sensor"
+transform  = { kind = "delay", steps = 2 }
+
+[[fc.transport_faults.packet_rules]]
+id         = "bit-flip-command-frame"
+start_step = 15
+direction  = "command"
+transform  = { kind = "bit_flip", mask = 5 }
+
+[[fc.transport_faults.packet_rules]]
+id         = "skew-command-step"
+start_step = 20
+direction  = "command"
+transform  = { kind = "step_offset", offset = 1 }
+
+[[fc.transport_faults.packet_rules]]
+id         = "skew-command-time"
+start_step = 25
+direction  = "command"
+transform  = { kind = "time_offset", offset_s = 0.001 }
+```
+
+`[fc.transport_faults]` is v3-only and requires `[fc.transport]`. Rules are
+evaluated in declaration order while `start_step <= step <= end_step` (or with
+no upper bound when `end_step` is omitted). The runner translates these rules
+to `openbmp-bridge` scalar transforms at the FC transport boundary: sensor
+rules mutate `SensorPacket` fields before the controller consumes them, and
+command rules mutate `ActuatorCommandPacket` fields before the simulator
+applies them.
+
+Supported transforms are `additive_bias`, `scale`, `stuck`, `saturate`,
+`reverse_sign`, deterministic scalar `quantize`, deterministic time-ramp
+`drift`, and deterministic bounded `noise_burst`. Numeric transform parameters
+must be finite; `saturate` also requires `min <= max`, `quantize` requires a
+positive `quantum`, and `noise_burst` requires a positive `amplitude`.
+`noise_burst` draws from a rule-local deterministic bridge-fault RNG stream
+keyed by `seed`, step, signal, and rule id, so adding a sibling fault does not
+shift its draws. Supported vector axes are `x`, `y`, and `z`; star-tracker
+quaternion signals also accept `w`.
+
+Packet-level `packet_rules` currently support `direction = "sensor"` or
+`"command"` with `drop`, `duplicate`, `delay`, `bit_flip`, `step_offset`, or
+`time_offset` transforms. Delay transforms require a positive `steps` count,
+bit-flip transforms require a non-zero `mask`, `step_offset` requires a
+non-zero signed `offset`, and `time_offset` requires a finite non-zero
+`offset_s`. The current runner treats configured packet drop, duplicate, delay,
+or bit-flip dispositions as fail-closed lockstep behavior and rejects command
+step/time skew through the bridge lockstep validator.
+
+These are abstract message-level signal transforms. They do not model any
+specific sensor product, actuator hardware, electrical fault, or bus protocol.
 
 #### `[fc.fdir.detector]` — FDIR detector tuning
 

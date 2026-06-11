@@ -67,6 +67,7 @@ crates/
   openbmp-state/        L1  PointMassState, RigidBodyState, MassProperties
   openbmp-models/       L1  force / moment / mass / environment trait surface
   openbmp-mission/      L1  mission state machine + event triggers (HAL-portable)
+  openbmp-uq/           L1  uncertainty budgets and credibility records
   openbmp-physics/      L2  gravity, atmosphere, magnetics, wind, real-gas, re-entry
   openbmp-vehicle/      L2  rigid-body composition, mass models, force/moment sum
   openbmp-aero/         L2  aero decks + continuum buildup + hypersonic methods
@@ -148,6 +149,7 @@ data provenance rules, and validation labels are documented in
 |---|---|
 | [Design Concept](docs/design-concept.md) | Purpose, principles, vehicle classes, capabilities. |
 | [Software Architecture](docs/software-architecture.md) | Layered design, kernel, integrators, frames, models, controller, telemetry. |
+| [Parity Program](docs/parity/00-overview.md) | Capability-parity constitution, per-discipline design specs, and execution playbook. |
 | [Scenario Format](docs/scenario-format.md) | The TOML scenario contract: tables, parsing rules, unit and frame lint. |
 | [Verification](docs/verification.md) | Validation labels, golden telemetry, tolerance tables, fuzzing. |
 | [Scope Boundaries](docs/safety-boundaries.md) | Project scope, validation limits, hardware boundary, and provenance rules. |

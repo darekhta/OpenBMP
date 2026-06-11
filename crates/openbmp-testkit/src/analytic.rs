@@ -114,6 +114,51 @@ impl ConstantAccelerationDrop {
     }
 }
 
+/// Smooth scalar manufactured ODE for code-verification.
+///
+/// The exact state is
+/// `y(t) = 0.75 + sin(0.3 t) + 0.05 t^3`.
+/// The verified first-order ODE is
+/// `dy/dt = -lambda * y + source(t)`, where
+/// `source(t) = y_exact'(t) + lambda * y_exact(t)`.
+/// This supplies a data-free MMS case: the source term is derived from
+/// the manufactured state, so any integration error is numerical
+/// truncation error rather than model-data error.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ManufacturedScalarOde {
+    /// Stable linear decay coefficient in 1/s.
+    pub lambda_per_s: f64,
+}
+
+impl ManufacturedScalarOde {
+    /// Standard smooth MMS case used by the order-verification CLI.
+    pub const STANDARD: Self = Self { lambda_per_s: 1.0 };
+
+    /// Exact manufactured state at time `t`.
+    #[must_use]
+    pub fn exact_at(&self, t: f64) -> f64 {
+        0.75 + (0.3 * t).sin() + 0.05 * t * t * t
+    }
+
+    /// Exact time derivative of the manufactured state at time `t`.
+    #[must_use]
+    pub fn exact_derivative_at(&self, t: f64) -> f64 {
+        0.3 * (0.3 * t).cos() + 0.15 * t * t
+    }
+
+    /// MMS source term at time `t`.
+    #[must_use]
+    pub fn source_at(&self, t: f64) -> f64 {
+        self.exact_derivative_at(t) + self.lambda_per_s * self.exact_at(t)
+    }
+
+    /// ODE right-hand side at `(t, y)`.
+    #[must_use]
+    pub fn rhs(&self, t: f64, y: f64) -> f64 {
+        -self.lambda_per_s * y + self.source_at(t)
+    }
+}
+
 /// Simple harmonic oscillator: `ẍ + ω²·x = 0`.
 ///
 /// Position: `x(t) = A·cos(ω·t + φ)`

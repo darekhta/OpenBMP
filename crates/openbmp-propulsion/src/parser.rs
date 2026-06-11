@@ -22,7 +22,10 @@
 //!
 //! [geometry]
 //! exit_area_m2                 = 0.0019
+//! throat_area_m2               = 0.0002375 # optional; required for pressure_thrust
+//! gamma                        = 1.2       # optional; required for pressure_thrust
 //! ambient_pressure_correction  = "constant"
+//! separation                   = "off"     # off | summerfield | schmucker
 //! ```
 //!
 //! `serde(deny_unknown_fields)` is enforced everywhere so a typo'd
@@ -36,8 +39,8 @@ use serde::Deserialize;
 
 use crate::error::MotorError;
 use crate::motor::{
-    AmbientPressureCorrection, BurnSpec, MotorGeometry, MotorMeta, SolidMotor, ThrustCurve,
-    Validation,
+    AmbientPressureCorrection, BurnSpec, MotorGeometry, MotorMeta, NozzleSeparationCriterion,
+    SolidMotor, ThrustCurve, Validation,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -86,7 +89,13 @@ struct ThrustCurveSection {
 #[serde(deny_unknown_fields)]
 struct GeometrySection {
     exit_area_m2: f64,
+    #[serde(default)]
+    throat_area_m2: Option<f64>,
+    #[serde(default)]
+    gamma: Option<f64>,
     ambient_pressure_correction: String,
+    #[serde(default)]
+    separation: Option<String>,
 }
 
 impl SolidMotor {
@@ -124,9 +133,20 @@ impl SolidMotor {
         let ambient_pressure_correction = match parsed.geometry.ambient_pressure_correction.as_str()
         {
             "constant" => AmbientPressureCorrection::Constant,
+            "pressure_thrust" => AmbientPressureCorrection::PressureThrust,
             _ => {
                 return Err(MotorError::MalformedMotor {
-                    reason: "geometry.ambient_pressure_correction must be \"constant\"",
+                    reason: "geometry.ambient_pressure_correction must be \"constant\" or \"pressure_thrust\"",
+                });
+            }
+        };
+        let separation = match parsed.geometry.separation.as_deref().unwrap_or("off") {
+            "off" => NozzleSeparationCriterion::Off,
+            "summerfield" => NozzleSeparationCriterion::Summerfield,
+            "schmucker" => NozzleSeparationCriterion::Schmucker,
+            _ => {
+                return Err(MotorError::MalformedMotor {
+                    reason: "geometry.separation must be \"off\", \"summerfield\", or \"schmucker\"",
                 });
             }
         };
@@ -145,7 +165,10 @@ impl SolidMotor {
         let curve = ThrustCurve::new(parsed.thrust_curve.points)?;
         let geometry = MotorGeometry {
             exit_area_m2: parsed.geometry.exit_area_m2,
+            throat_area_m2: parsed.geometry.throat_area_m2,
+            gamma: parsed.geometry.gamma,
             ambient_pressure_correction,
+            separation,
         };
         SolidMotor::new(meta, burn, curve, geometry)
     }
@@ -233,6 +256,52 @@ mod tests {
         assert!(matches!(
             SolidMotor::load_from_str(&toml_str),
             Err(MotorError::MalformedMotor { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_accepts_pressure_thrust_with_nozzle_state() {
+        let toml_str = minimal_motor_toml().replace(
+            "exit_area_m2                 = 0.0019\nambient_pressure_correction  = \"constant\"",
+            "exit_area_m2                 = 0.0019\nthroat_area_m2               = 0.0002375\ngamma                        = 1.2\nambient_pressure_correction  = \"pressure_thrust\"\nseparation                   = \"summerfield\"",
+        );
+        let m = SolidMotor::load_from_str(&toml_str).unwrap();
+        assert_eq!(
+            m.geometry().ambient_pressure_correction,
+            AmbientPressureCorrection::PressureThrust
+        );
+        assert_eq!(
+            m.geometry().throat_area_m2.unwrap().to_bits(),
+            0.0002375_f64.to_bits()
+        );
+        assert_eq!(m.geometry().gamma.unwrap().to_bits(), 1.2_f64.to_bits());
+        assert_eq!(
+            m.geometry().separation,
+            NozzleSeparationCriterion::Summerfield
+        );
+    }
+
+    #[test]
+    fn parser_rejects_unknown_separation() {
+        let toml_str = minimal_motor_toml().replace(
+            "ambient_pressure_correction  = \"constant\"",
+            "ambient_pressure_correction  = \"constant\"\nseparation                   = \"side_load\"",
+        );
+        assert!(matches!(
+            SolidMotor::load_from_str(&toml_str),
+            Err(MotorError::MalformedMotor { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_pressure_thrust_without_nozzle_state() {
+        let toml_str = minimal_motor_toml().replace(
+            "ambient_pressure_correction  = \"constant\"",
+            "ambient_pressure_correction  = \"pressure_thrust\"",
+        );
+        assert!(matches!(
+            SolidMotor::load_from_str(&toml_str),
+            Err(MotorError::InvalidParameter { .. }),
         ));
     }
 

@@ -54,9 +54,21 @@ pub enum CliError {
         /// Short, human-readable failure summary.
         summary: String,
     },
+    /// A Monte Carlo utility command failed.
+    #[error("monte-carlo error: {summary}")]
+    MonteCarlo {
+        /// Short, human-readable failure summary.
+        summary: String,
+    },
     /// Dictionary export failed before writing output.
     #[error("dictionary error: {summary}")]
     Dictionary {
+        /// Short, human-readable failure summary.
+        summary: String,
+    },
+    /// A code-verification command failed acceptance or could not run.
+    #[error("code verification: {summary}")]
+    CodeVerification {
         /// Short, human-readable failure summary.
         summary: String,
     },
@@ -126,10 +138,12 @@ impl CliError {
     pub const fn exit_code(&self) -> u8 {
         match self {
             Self::Diff { .. } | Self::TelemetryCompare { .. } => 1,
+            Self::CodeVerification { .. } => 1,
             Self::Scenario(_)
             | Self::TelemetryCompareConfig { .. }
             | Self::MigrateToml { .. }
             | Self::Migrate { .. }
+            | Self::MonteCarlo { .. }
             | Self::Dictionary { .. } => 2,
             Self::Run(err) => err.exit_code(),
             Self::Io { .. } | Self::Csv { .. } => 3,

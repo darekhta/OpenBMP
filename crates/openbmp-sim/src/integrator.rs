@@ -121,6 +121,32 @@ pub trait Integrator<S: SimState> {
         F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>;
 }
 
+/// Local dense-output interpolant over one or more accepted adaptive
+/// sub-steps.
+///
+/// Dense output is intentionally separate from [`Integrator`]: the
+/// fixed-step bit-stable path never calls it, while adaptive consumers
+/// can opt in for event localization or output resampling. The
+/// interpolation itself is state-stable, not a cross-platform
+/// byte-stability guarantee.
+pub trait DenseOutput<S: SimState> {
+    /// First covered time stamp.
+    #[must_use]
+    fn start_time(&self) -> SimTime;
+
+    /// Last covered time stamp.
+    #[must_use]
+    fn end_time(&self) -> SimTime;
+
+    /// Interpolate the state at `time`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IntegratorError::DenseOutputTimeOutOfRange`] when
+    /// `time` is outside the covered interval.
+    fn interpolate(&self, time: SimTime) -> Result<S, IntegratorError>;
+}
+
 /// Canonical fixed-step Runge-Kutta 4 integrator.
 ///
 /// 4th-order accurate, single-stage, four derivative evaluations per
@@ -287,6 +313,47 @@ mod dopri54_tableau {
     pub const E5: f64 = -17_253.0 / 339_200.0;
     pub const E6: f64 = 22.0 / 525.0;
     pub const E7: f64 = -1.0 / 40.0;
+
+    // Quartic dense-output coefficient matrix P, rows k1..k7,
+    // columns θ¹..θ⁴. Pinned to SciPy RK45's Dormand-Prince 5(4)
+    // implementation, which cites Shampine (1986), "Some Practical
+    // Runge-Kutta Formulas", and uses the optimum c_6 value from that
+    // paper. Dense interpolation evaluates:
+    //
+    //   y(θ) = y₀ + h · Σ_i k_i · (P_i1 θ + P_i2 θ² + P_i3 θ³ + P_i4 θ⁴)
+    //
+    // using the already-computed accepted-step stages k1..k7.
+    pub const P11: f64 = 1.0;
+    pub const P12: f64 = -8_048_581_381.0 / 2_820_520_608.0;
+    pub const P13: f64 = 8_663_915_743.0 / 2_820_520_608.0;
+    pub const P14: f64 = -12_715_105_075.0 / 11_282_082_432.0;
+
+    // Row k2 is all zero.
+
+    pub const P31: f64 = 0.0;
+    pub const P32: f64 = 131_558_114_200.0 / 32_700_410_799.0;
+    pub const P33: f64 = -68_118_460_800.0 / 10_900_136_933.0;
+    pub const P34: f64 = 87_487_479_700.0 / 32_700_410_799.0;
+
+    pub const P41: f64 = 0.0;
+    pub const P42: f64 = -1_754_552_775.0 / 470_086_768.0;
+    pub const P43: f64 = 14_199_869_525.0 / 1_410_260_304.0;
+    pub const P44: f64 = -10_690_763_975.0 / 1_880_347_072.0;
+
+    pub const P51: f64 = 0.0;
+    pub const P52: f64 = 127_303_824_393.0 / 49_829_197_408.0;
+    pub const P53: f64 = -318_862_633_887.0 / 49_829_197_408.0;
+    pub const P54: f64 = 701_980_252_875.0 / 199_316_789_632.0;
+
+    pub const P61: f64 = 0.0;
+    pub const P62: f64 = -282_668_133.0 / 205_662_961.0;
+    pub const P63: f64 = 2_019_193_451.0 / 616_988_883.0;
+    pub const P64: f64 = -1_453_857_185.0 / 822_651_844.0;
+
+    pub const P71: f64 = 0.0;
+    pub const P72: f64 = 40_617_522.0 / 29_380_423.0;
+    pub const P73: f64 = -110_615_467.0 / 29_380_423.0;
+    pub const P74: f64 = 69_997_945.0 / 29_380_423.0;
 }
 
 /// Dormand-Prince 5(4) fixed-step integrator (5th-order accurate).
@@ -505,6 +572,155 @@ pub struct Dopri54Adaptive {
     last_err_prev: Cell<Option<f64>>,
 }
 
+/// Quartic dense-output segment over one accepted
+/// [`Dopri54Adaptive`] sub-step.
+///
+/// The segment stores the start state, accepted 5th-order endpoint,
+/// and the seven DOPRI5 stages (`k1..k7`). Interpolation evaluates
+/// the Shampine/SciPy quartic continuous extension as
+/// `state + h * Σ b_i(theta) * k_i`. This keeps the generic state
+/// abstraction intact: it only needs [`SimState::advance_by`] plus
+/// derivative addition/scalar multiplication.
+#[derive(Clone, Debug)]
+pub struct Dopri54DenseOutput<S: SimState> {
+    start_state: S,
+    end_state: S,
+    h_s: f64,
+    k1: S::Derivative,
+    k3: S::Derivative,
+    k4: S::Derivative,
+    k5: S::Derivative,
+    k6: S::Derivative,
+    k7: S::Derivative,
+}
+
+impl<S: SimState> Dopri54DenseOutput<S> {
+    /// Accepted sub-step start state.
+    #[must_use]
+    pub fn start_state(&self) -> S {
+        self.start_state
+    }
+
+    /// Accepted sub-step end state.
+    #[must_use]
+    pub fn end_state(&self) -> S {
+        self.end_state
+    }
+
+    /// Accepted sub-step size in seconds.
+    #[must_use]
+    pub fn step_seconds(&self) -> f64 {
+        self.h_s
+    }
+}
+
+impl<S: SimState> DenseOutput<S> for Dopri54DenseOutput<S> {
+    fn start_time(&self) -> SimTime {
+        self.start_state.time()
+    }
+
+    fn end_time(&self) -> SimTime {
+        self.end_state.time()
+    }
+
+    fn interpolate(&self, time: SimTime) -> Result<S, IntegratorError> {
+        use dopri54_tableau::{
+            P11, P12, P13, P14, P31, P32, P33, P34, P41, P42, P43, P44, P51, P52, P53, P54, P61,
+            P62, P63, P64, P71, P72, P73, P74,
+        };
+
+        let start_s = self.start_time().as_seconds();
+        let end_s = self.end_time().as_seconds();
+        let query_s = time.as_seconds();
+        if !query_s.is_finite() || query_s < start_s || query_s > end_s {
+            return Err(IntegratorError::DenseOutputTimeOutOfRange {
+                query_s,
+                start_s,
+                end_s,
+            });
+        }
+        if query_s.to_bits() == start_s.to_bits() {
+            return Ok(self.start_state);
+        }
+        if query_s.to_bits() == end_s.to_bits() {
+            return Ok(self.end_state);
+        }
+
+        let theta = (query_s - start_s) / self.h_s;
+        let theta2 = theta * theta;
+        let theta3 = theta2 * theta;
+        let theta4 = theta2 * theta2;
+
+        let w1 = ((P11 * theta) + (P12 * theta2)) + ((P13 * theta3) + (P14 * theta4));
+        let w3 = ((P31 * theta) + (P32 * theta2)) + ((P33 * theta3) + (P34 * theta4));
+        let w4 = ((P41 * theta) + (P42 * theta2)) + ((P43 * theta3) + (P44 * theta4));
+        let w5 = ((P51 * theta) + (P52 * theta2)) + ((P53 * theta3) + (P54 * theta4));
+        let w6 = ((P61 * theta) + (P62 * theta2)) + ((P63 * theta3) + (P64 * theta4));
+        let w7 = ((P71 * theta) + (P72 * theta2)) + ((P73 * theta3) + (P74 * theta4));
+
+        let weighted = (((((self.k1 * w1) + (self.k3 * w3)) + (self.k4 * w4)) + (self.k5 * w5))
+            + (self.k6 * w6))
+            + (self.k7 * w7);
+        let mut interpolated = self.start_state.advance_by(self.h_s, &weighted);
+        interpolated.project();
+        interpolated = interpolated.with_time(time);
+        if !interpolated.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        Ok(interpolated)
+    }
+}
+
+/// Dense output for one public [`Dopri54Adaptive::advance_with_dense_output`]
+/// call.
+#[derive(Clone, Debug)]
+pub struct Dopri54AdaptiveDenseOutput<S: SimState> {
+    final_state: S,
+    segments: Vec<Dopri54DenseOutput<S>>,
+}
+
+impl<S: SimState> Dopri54AdaptiveDenseOutput<S> {
+    /// Integrated endpoint returned by the adaptive step.
+    #[must_use]
+    pub fn final_state(&self) -> S {
+        self.final_state
+    }
+
+    /// Accepted sub-step dense-output segments in chronological order.
+    #[must_use]
+    pub fn segments(&self) -> &[Dopri54DenseOutput<S>] {
+        &self.segments
+    }
+}
+
+impl<S: SimState> DenseOutput<S> for Dopri54AdaptiveDenseOutput<S> {
+    fn start_time(&self) -> SimTime {
+        self.segments
+            .first()
+            .map_or_else(|| self.final_state.time(), DenseOutput::start_time)
+    }
+
+    fn end_time(&self) -> SimTime {
+        self.final_state.time()
+    }
+
+    fn interpolate(&self, time: SimTime) -> Result<S, IntegratorError> {
+        let query_s = time.as_seconds();
+        for segment in &self.segments {
+            let start_s = segment.start_time().as_seconds();
+            let end_s = segment.end_time().as_seconds();
+            if query_s >= start_s && query_s <= end_s {
+                return segment.interpolate(time);
+            }
+        }
+        Err(IntegratorError::DenseOutputTimeOutOfRange {
+            query_s,
+            start_s: self.start_time().as_seconds(),
+            end_s: self.end_time().as_seconds(),
+        })
+    }
+}
+
 /// PI-controller exponents (Gustafsson 1991, recommended for 5th-order
 /// embedded RK pairs).
 const PI_ALPHA_DEFAULT: f64 = 0.7;
@@ -577,14 +793,14 @@ impl Dopri54Adaptive {
     }
 
     /// Single DOPRI5(4) sub-step from `state` of size `h`. Returns
-    /// `(new_state_5th_order, scaled_error_norm)`. Does NOT mutate
+    /// `(dense_output_segment, scaled_error_norm)`. Does NOT mutate
     /// the controller's persistent state — that's the caller's job.
-    fn try_substep<S, F>(
+    fn try_dense_substep<S, F>(
         &self,
         state: &S,
         derive_fn: &F,
         h: f64,
-    ) -> Result<(S, f64), IntegratorError>
+    ) -> Result<(Dopri54DenseOutput<S>, f64), IntegratorError>
     where
         S: SimState,
         F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
@@ -686,7 +902,133 @@ impl Dopri54Adaptive {
         let scaled_err =
             new_state.weighted_error_norm(state, &error_deriv, h, self.atol, self.rtol);
 
-        Ok((new_state, scaled_err))
+        Ok((
+            Dopri54DenseOutput {
+                start_state: *state,
+                end_state: new_state,
+                h_s: h,
+                k1,
+                k3,
+                k4,
+                k5,
+                k6,
+                k7,
+            },
+            scaled_err,
+        ))
+    }
+
+    /// Single DOPRI5(4) sub-step from `state` of size `h`. Returns
+    /// `(new_state_5th_order, scaled_error_norm)`. Does NOT mutate
+    /// the controller's persistent state — that's the caller's job.
+    fn try_substep<S, F>(
+        &self,
+        state: &S,
+        derive_fn: &F,
+        h: f64,
+    ) -> Result<(S, f64), IntegratorError>
+    where
+        S: SimState,
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        let (dense, scaled_err) = self.try_dense_substep(state, derive_fn, h)?;
+        Ok((dense.end_state, scaled_err))
+    }
+
+    /// Advance by `dt` and retain quartic dense-output segments for
+    /// each accepted adaptive sub-step.
+    ///
+    /// This is the opt-in DOPRI5 dense-output surface for event
+    /// localization and output resampling. It follows the same
+    /// accept/reject loop and controller updates as [`Integrator::advance`],
+    /// but records the accepted stage sets before returning.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`IntegratorError`] values as
+    /// [`Integrator::advance`] for invalid steps, non-finite states or
+    /// derivatives, or model-evaluation failures.
+    pub fn advance_with_dense_output<S, F>(
+        &self,
+        state: &S,
+        derive_fn: F,
+        dt: Duration,
+    ) -> Result<Dopri54AdaptiveDenseOutput<S>, IntegratorError>
+    where
+        S: SimState,
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        let dt_total = dt.as_seconds();
+        if !dt_total.is_finite() || dt_total <= 0.0 {
+            return Err(IntegratorError::InvalidStep {
+                dt_seconds: dt_total,
+            });
+        }
+        if !state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+
+        let mut h = self
+            .last_h_s
+            .get()
+            .unwrap_or(dt_total)
+            .max(self.min_h_s)
+            .min(self.max_h_s)
+            .min(dt_total);
+
+        let mut current = *state;
+        let mut elapsed = 0.0_f64;
+        let mut last_accepted_err: Option<f64> = self.last_err_prev.get();
+        let max_substeps: usize = 1_000_000;
+        let mut substeps_taken: usize = 0;
+        let mut segments = Vec::new();
+
+        while elapsed < dt_total {
+            substeps_taken += 1;
+            if substeps_taken > max_substeps {
+                return Err(IntegratorError::InvalidStep {
+                    dt_seconds: dt_total,
+                });
+            }
+
+            let remaining = dt_total - elapsed;
+            let h_try = if remaining <= self.min_h_s {
+                remaining
+            } else {
+                h.min(remaining).max(self.min_h_s)
+            };
+
+            self.last_err_prev.set(last_accepted_err);
+
+            let (segment, err) = self.try_dense_substep(&current, &derive_fn, h_try)?;
+
+            if err <= 1.0 {
+                current = segment.end_state;
+                segments.push(segment);
+                elapsed += h_try;
+                last_accepted_err = Some(err.max(1.0e-10));
+                let factor = self.pi_step_factor(err.max(1.0e-10));
+                h = (h_try * factor).max(self.min_h_s).min(self.max_h_s);
+            } else {
+                let alpha_over_p = self.pi_alpha / EMBEDDED_ORDER;
+                let mut factor = self.safety_factor * err.powf(-alpha_over_p);
+                if !factor.is_finite() || factor <= 0.0 {
+                    factor = self.min_factor;
+                }
+                factor = factor.max(self.min_factor).min(1.0);
+                if h_try <= self.min_h_s + f64::EPSILON {
+                    return Err(IntegratorError::InvalidStep { dt_seconds: h_try });
+                }
+                h = (h_try * factor).max(self.min_h_s).min(self.max_h_s);
+            }
+        }
+
+        self.last_h_s.set(Some(h));
+        self.last_err_prev.set(last_accepted_err);
+        Ok(Dopri54AdaptiveDenseOutput {
+            final_state: current,
+            segments,
+        })
     }
 }
 
@@ -800,10 +1142,12 @@ impl<S: SimState> Integrator<S> for Dopri54Adaptive {
 /// Coefficients pinned against SciPy's
 /// `scipy/integrate/_ivp/dop853_coefficients.py` (Hairer's reference
 /// Fortran `dop853.f` / Hairer-Nørsett-Wanner Vol I §II.5 Table 5.4).
-/// The full 16-stage SciPy tableau includes 4 extra abscissas / rows
-/// reserved for dense output of order 7; this module ships only the
-/// 12 primary stages because dense-output interpolation is future
-/// work.
+/// The full 16-stage SciPy tableau includes the primary rows, the
+/// endpoint derivative row, and three extra dense-output rows. This
+/// module pins the primary coefficients plus the dense-output
+/// abscissas / matrix so [`Dopri853Adaptive::advance_with_dense_output`]
+/// can expose the order-7 continuous extension without touching the
+/// fixed-step bit-stable path.
 ///
 /// The constants below are written as the SciPy decimal literals
 /// verbatim. Const-time IEEE 754 arithmetic in Rust is deterministic
@@ -838,6 +1182,10 @@ mod dopri853_tableau {
     pub const C10: f64 = 0.6;
     pub const C11: f64 = 8.57142857142857142857142857142e-1;
     // C12 = 1.0 (the 8th-order solution endpoint).
+    // C13 = 1.0 (endpoint derivative, stored separately as k_end).
+    pub const C_EXTRA_1: f64 = 0.1;
+    pub const C_EXTRA_2: f64 = 0.2;
+    pub const C_EXTRA_3: f64 = 7.77777777777777777777777777778e-1;
 
     // -----------------------------------------------------------------
     // A-matrix — strict lower triangular, indexed A_i_j = a_{i+1, j+1}
@@ -974,6 +1322,330 @@ mod dopri853_tableau {
     pub const E3_10: f64 = B_10;
     pub const E3_11: f64 = B_11;
     pub const E3_12: f64 = B_12 - 0.220588235294117647058823529412e-1;
+
+    // -----------------------------------------------------------------
+    // Dense-output extra stages A[13..15] and interpolator matrix D.
+    // SciPy computes K[12] as f(t+h, y_new), then K[13], K[14],
+    // K[15] from the rows below at C = 0.1, 0.2, and 7/9. The
+    // order-7 interpolator uses F[0..2] from endpoint deltas and
+    // F[3..6] = h * D[0..3] * K.
+    // -----------------------------------------------------------------
+
+    pub const A_EXTRA_1_1: f64 = 5.61675022830479523392909219681e-2;
+    pub const A_EXTRA_1_7: f64 = 2.53500210216624811088794765333e-1;
+    pub const A_EXTRA_1_8: f64 = -2.46239037470802489917441475441e-1;
+    pub const A_EXTRA_1_9: f64 = -1.24191423263816360469010140626e-1;
+    pub const A_EXTRA_1_10: f64 = 1.5329179827876569731206322685e-1;
+    pub const A_EXTRA_1_11: f64 = 8.20105229563468988491666602057e-3;
+    pub const A_EXTRA_1_12: f64 = 7.56789766054569976138603589584e-3;
+    pub const A_EXTRA_1_END: f64 = -8.298e-3;
+
+    pub const A_EXTRA_2_1: f64 = 3.18346481635021405060768473261e-2;
+    pub const A_EXTRA_2_6: f64 = 2.83009096723667755288322961402e-2;
+    pub const A_EXTRA_2_7: f64 = 5.35419883074385676223797384372e-2;
+    pub const A_EXTRA_2_8: f64 = -5.49237485713909884646569340306e-2;
+    pub const A_EXTRA_2_11: f64 = -1.08347328697249322858509316994e-4;
+    pub const A_EXTRA_2_12: f64 = 3.82571090835658412954920192323e-4;
+    pub const A_EXTRA_2_END: f64 = -3.40465008687404560802977114492e-4;
+    pub const A_EXTRA_2_EXTRA_1: f64 = 1.41312443674632500278074618366e-1;
+
+    pub const A_EXTRA_3_1: f64 = -4.28896301583791923408573538692e-1;
+    pub const A_EXTRA_3_6: f64 = -4.69762141536116384314449447206;
+    pub const A_EXTRA_3_7: f64 = 7.68342119606259904184240953878;
+    pub const A_EXTRA_3_8: f64 = 4.06898981839711007970213554331;
+    pub const A_EXTRA_3_9: f64 = 3.56727187455281109270669543021e-1;
+    pub const A_EXTRA_3_END: f64 = -1.39902416515901462129418009734e-3;
+    pub const A_EXTRA_3_EXTRA_1: f64 = 2.9475147891527723389556272149;
+    pub const A_EXTRA_3_EXTRA_2: f64 = -9.15095847217987001081870187138;
+
+    pub const D_1_1: f64 = -0.84289382761090128651353491142e1;
+    pub const D_1_6: f64 = 0.56671495351937776962531783590;
+    pub const D_1_7: f64 = -0.30689499459498916912797304727e1;
+    pub const D_1_8: f64 = 0.23846676565120698287728149680e1;
+    pub const D_1_9: f64 = 0.21170345824450282767155149946e1;
+    pub const D_1_10: f64 = -0.87139158377797299206789907490;
+    pub const D_1_11: f64 = 0.22404374302607882758541771650e1;
+    pub const D_1_12: f64 = 0.63157877876946881815570249290;
+    pub const D_1_END: f64 = -0.88990336451333310820698117400e-1;
+    pub const D_1_EXTRA_1: f64 = 0.18148505520854727256656404962e2;
+    pub const D_1_EXTRA_2: f64 = -0.91946323924783554000451984436e1;
+    pub const D_1_EXTRA_3: f64 = -0.44360363875948939664310572000e1;
+
+    pub const D_2_1: f64 = 0.10427508642579134603413151009e2;
+    pub const D_2_6: f64 = 0.24228349177525818288430175319e3;
+    pub const D_2_7: f64 = 0.16520045171727028198505394887e3;
+    pub const D_2_8: f64 = -0.37454675472269020279518312152e3;
+    pub const D_2_9: f64 = -0.22113666853125306036270938578e2;
+    pub const D_2_10: f64 = 0.77334326684722638389603898808e1;
+    pub const D_2_11: f64 = -0.30674084731089398182061213626e2;
+    pub const D_2_12: f64 = -0.93321305264302278729567221706e1;
+    pub const D_2_END: f64 = 0.15697238121770843886131091075e2;
+    pub const D_2_EXTRA_1: f64 = -0.31139403219565177677282850411e2;
+    pub const D_2_EXTRA_2: f64 = -0.93529243588444783865713862664e1;
+    pub const D_2_EXTRA_3: f64 = 0.35816841486394083752465898540e2;
+
+    pub const D_3_1: f64 = 0.19985053242002433820987653617e2;
+    pub const D_3_6: f64 = -0.38703730874935176555105901742e3;
+    pub const D_3_7: f64 = -0.18917813819516756882830838328e3;
+    pub const D_3_8: f64 = 0.52780815920542364900561016686e3;
+    pub const D_3_9: f64 = -0.11573902539959630126141871134e2;
+    pub const D_3_10: f64 = 0.68812326946963000169666922661e1;
+    pub const D_3_11: f64 = -0.10006050966910838403183860980e1;
+    pub const D_3_12: f64 = 0.77771377980534432092869265740;
+    pub const D_3_END: f64 = -0.27782057523535084065932004339e1;
+    pub const D_3_EXTRA_1: f64 = -0.60196695231264120758267380846e2;
+    pub const D_3_EXTRA_2: f64 = 0.84320405506677161018159903784e2;
+    pub const D_3_EXTRA_3: f64 = 0.11992291136182789328035130030e2;
+
+    pub const D_4_1: f64 = -0.25693933462703749003312586129e2;
+    pub const D_4_6: f64 = -0.15418974869023643374053993627e3;
+    pub const D_4_7: f64 = -0.23152937917604549567536039109e3;
+    pub const D_4_8: f64 = 0.35763911791061412378285349910e3;
+    pub const D_4_9: f64 = 0.93405324183624310003907691704e2;
+    pub const D_4_10: f64 = -0.37458323136451633156875139351e2;
+    pub const D_4_11: f64 = 0.10409964950896230045147246184e3;
+    pub const D_4_12: f64 = 0.29840293426660503123344363579e2;
+    pub const D_4_END: f64 = -0.43533456590011143754432175058e2;
+    pub const D_4_EXTRA_1: f64 = 0.96324553959188282948394950600e2;
+    pub const D_4_EXTRA_2: f64 = -0.39177261675615439165231486172e2;
+    pub const D_4_EXTRA_3: f64 = -0.14972683625798562581422125276e3;
+}
+
+#[derive(Clone, Debug)]
+struct Dopri853PrimaryStep<S: SimState> {
+    start_state: S,
+    end_state: S,
+    h_s: f64,
+    scaled_err: f64,
+    delta_deriv: S::Derivative,
+    k1: S::Derivative,
+    k6: S::Derivative,
+    k7: S::Derivative,
+    k8: S::Derivative,
+    k9: S::Derivative,
+    k10: S::Derivative,
+    k11: S::Derivative,
+    k12: S::Derivative,
+}
+
+/// Order-7 dense-output segment over one accepted
+/// [`Dopri853Adaptive`] sub-step.
+///
+/// The segment stores DOP853's primary stages, the accepted endpoint
+/// derivative, and the three extra dense-output stages from SciPy /
+/// Hairer. Interpolation evaluates the same alternating Horner form
+/// as SciPy's `Dop853DenseOutput`, represented as a derivative
+/// combination so it stays inside OpenBMP's generic state arithmetic
+/// contract.
+#[derive(Clone, Debug)]
+pub struct Dopri853DenseOutput<S: SimState> {
+    start_state: S,
+    end_state: S,
+    h_s: f64,
+    delta_deriv: S::Derivative,
+    k1: S::Derivative,
+    k6: S::Derivative,
+    k7: S::Derivative,
+    k8: S::Derivative,
+    k9: S::Derivative,
+    k10: S::Derivative,
+    k11: S::Derivative,
+    k12: S::Derivative,
+    k_end: S::Derivative,
+    k_extra_1: S::Derivative,
+    k_extra_2: S::Derivative,
+    k_extra_3: S::Derivative,
+}
+
+impl<S: SimState> Dopri853DenseOutput<S> {
+    /// Accepted sub-step start state.
+    #[must_use]
+    pub fn start_state(&self) -> S {
+        self.start_state
+    }
+
+    /// Accepted sub-step end state.
+    #[must_use]
+    pub fn end_state(&self) -> S {
+        self.end_state
+    }
+
+    /// Accepted sub-step size in seconds.
+    #[must_use]
+    pub fn step_seconds(&self) -> f64 {
+        self.h_s
+    }
+
+    fn dense_row_1(&self) -> S::Derivative {
+        use dopri853_tableau::{
+            D_1_1, D_1_6, D_1_7, D_1_8, D_1_9, D_1_10, D_1_11, D_1_12, D_1_END, D_1_EXTRA_1,
+            D_1_EXTRA_2, D_1_EXTRA_3,
+        };
+        (((((((((((self.k1 * D_1_1) + (self.k6 * D_1_6)) + (self.k7 * D_1_7))
+            + (self.k8 * D_1_8))
+            + (self.k9 * D_1_9))
+            + (self.k10 * D_1_10))
+            + (self.k11 * D_1_11))
+            + (self.k12 * D_1_12))
+            + (self.k_end * D_1_END))
+            + (self.k_extra_1 * D_1_EXTRA_1))
+            + (self.k_extra_2 * D_1_EXTRA_2))
+            + (self.k_extra_3 * D_1_EXTRA_3)
+    }
+
+    fn dense_row_2(&self) -> S::Derivative {
+        use dopri853_tableau::{
+            D_2_1, D_2_6, D_2_7, D_2_8, D_2_9, D_2_10, D_2_11, D_2_12, D_2_END, D_2_EXTRA_1,
+            D_2_EXTRA_2, D_2_EXTRA_3,
+        };
+        (((((((((((self.k1 * D_2_1) + (self.k6 * D_2_6)) + (self.k7 * D_2_7))
+            + (self.k8 * D_2_8))
+            + (self.k9 * D_2_9))
+            + (self.k10 * D_2_10))
+            + (self.k11 * D_2_11))
+            + (self.k12 * D_2_12))
+            + (self.k_end * D_2_END))
+            + (self.k_extra_1 * D_2_EXTRA_1))
+            + (self.k_extra_2 * D_2_EXTRA_2))
+            + (self.k_extra_3 * D_2_EXTRA_3)
+    }
+
+    fn dense_row_3(&self) -> S::Derivative {
+        use dopri853_tableau::{
+            D_3_1, D_3_6, D_3_7, D_3_8, D_3_9, D_3_10, D_3_11, D_3_12, D_3_END, D_3_EXTRA_1,
+            D_3_EXTRA_2, D_3_EXTRA_3,
+        };
+        (((((((((((self.k1 * D_3_1) + (self.k6 * D_3_6)) + (self.k7 * D_3_7))
+            + (self.k8 * D_3_8))
+            + (self.k9 * D_3_9))
+            + (self.k10 * D_3_10))
+            + (self.k11 * D_3_11))
+            + (self.k12 * D_3_12))
+            + (self.k_end * D_3_END))
+            + (self.k_extra_1 * D_3_EXTRA_1))
+            + (self.k_extra_2 * D_3_EXTRA_2))
+            + (self.k_extra_3 * D_3_EXTRA_3)
+    }
+
+    fn dense_row_4(&self) -> S::Derivative {
+        use dopri853_tableau::{
+            D_4_1, D_4_6, D_4_7, D_4_8, D_4_9, D_4_10, D_4_11, D_4_12, D_4_END, D_4_EXTRA_1,
+            D_4_EXTRA_2, D_4_EXTRA_3,
+        };
+        (((((((((((self.k1 * D_4_1) + (self.k6 * D_4_6)) + (self.k7 * D_4_7))
+            + (self.k8 * D_4_8))
+            + (self.k9 * D_4_9))
+            + (self.k10 * D_4_10))
+            + (self.k11 * D_4_11))
+            + (self.k12 * D_4_12))
+            + (self.k_end * D_4_END))
+            + (self.k_extra_1 * D_4_EXTRA_1))
+            + (self.k_extra_2 * D_4_EXTRA_2))
+            + (self.k_extra_3 * D_4_EXTRA_3)
+    }
+}
+
+impl<S: SimState> DenseOutput<S> for Dopri853DenseOutput<S> {
+    fn start_time(&self) -> SimTime {
+        self.start_state.time()
+    }
+
+    fn end_time(&self) -> SimTime {
+        self.end_state.time()
+    }
+
+    fn interpolate(&self, time: SimTime) -> Result<S, IntegratorError> {
+        let start_s = self.start_time().as_seconds();
+        let end_s = self.end_time().as_seconds();
+        let query_s = time.as_seconds();
+        if !query_s.is_finite() || query_s < start_s || query_s > end_s {
+            return Err(IntegratorError::DenseOutputTimeOutOfRange {
+                query_s,
+                start_s,
+                end_s,
+            });
+        }
+        if query_s.to_bits() == start_s.to_bits() {
+            return Ok(self.start_state);
+        }
+        if query_s.to_bits() == end_s.to_bits() {
+            return Ok(self.end_state);
+        }
+
+        let theta = (query_s - start_s) / self.h_s;
+        let one_minus_theta = 1.0 - theta;
+        let f0 = self.delta_deriv;
+        let f1 = self.k1 + (self.delta_deriv * -1.0);
+        let f2 = (self.delta_deriv * 2.0) + ((self.k_end + self.k1) * -1.0);
+        let f3 = self.dense_row_1();
+        let f4 = self.dense_row_2();
+        let f5 = self.dense_row_3();
+        let f6 = self.dense_row_4();
+
+        let weighted =
+            ((((((f6 * theta) + f5) * one_minus_theta + f4) * theta + f3) * one_minus_theta + f2)
+                * theta
+                + f1)
+                * one_minus_theta
+                + f0;
+        let mut interpolated = self.start_state.advance_by(self.h_s, &(weighted * theta));
+        interpolated.project();
+        interpolated = interpolated.with_time(time);
+        if !interpolated.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        Ok(interpolated)
+    }
+}
+
+/// Dense output for one public [`Dopri853Adaptive::advance_with_dense_output`]
+/// call.
+#[derive(Clone, Debug)]
+pub struct Dopri853AdaptiveDenseOutput<S: SimState> {
+    final_state: S,
+    segments: Vec<Dopri853DenseOutput<S>>,
+}
+
+impl<S: SimState> Dopri853AdaptiveDenseOutput<S> {
+    /// Integrated endpoint returned by the adaptive step.
+    #[must_use]
+    pub fn final_state(&self) -> S {
+        self.final_state
+    }
+
+    /// Accepted sub-step dense-output segments in chronological order.
+    #[must_use]
+    pub fn segments(&self) -> &[Dopri853DenseOutput<S>] {
+        &self.segments
+    }
+}
+
+impl<S: SimState> DenseOutput<S> for Dopri853AdaptiveDenseOutput<S> {
+    fn start_time(&self) -> SimTime {
+        self.segments
+            .first()
+            .map_or_else(|| self.final_state.time(), DenseOutput::start_time)
+    }
+
+    fn end_time(&self) -> SimTime {
+        self.final_state.time()
+    }
+
+    fn interpolate(&self, time: SimTime) -> Result<S, IntegratorError> {
+        let query_s = time.as_seconds();
+        for segment in &self.segments {
+            let start_s = segment.start_time().as_seconds();
+            let end_s = segment.end_time().as_seconds();
+            if query_s >= start_s && query_s <= end_s {
+                return segment.interpolate(time);
+            }
+        }
+        Err(IntegratorError::DenseOutputTimeOutOfRange {
+            query_s,
+            start_s: self.start_time().as_seconds(),
+            end_s: self.end_time().as_seconds(),
+        })
+    }
 }
 
 /// Dormand-Prince 8(5,3) (DOP853) fixed-step integrator —
@@ -987,10 +1659,10 @@ mod dopri853_tableau {
 ///
 /// **Honest scope.** This is the fixed-step shape — no embedded error
 /// estimator, no PI controller, no dense output. The adaptive shape is
-/// [`Dopri853Adaptive`]. Dense output of order 7 (the SciPy
-/// `DOP853.dense_output` interpolator) is future work:
-/// `dopri853_tableau` only encodes the 12 primary stages, not the 4
-/// extra dense-output abscissas.
+/// [`Dopri853Adaptive`], whose opt-in
+/// [`Dopri853Adaptive::advance_with_dense_output`] path evaluates the
+/// SciPy/Hairer order-7 dense interpolant without changing this
+/// fixed-step path.
 ///
 /// # Determinism
 ///
@@ -1255,11 +1927,10 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
 ///
 /// # Honest scope
 ///
-/// - No dense output. SciPy's DOP853 ships an order-7 dense
-///   interpolator using 4 extra abscissas; this slice does not. The
-///   `[solver].dense_output = false` setting is the only supported
-///   value on the runner side; `dense_output = true` is rejected
-///   by the parser today.
+/// - Dense output is opt-in through
+///   [`Dopri853Adaptive::advance_with_dense_output`] and uses the
+///   method-specific order-7 SciPy/Hairer interpolant. The regular
+///   [`Integrator::advance`] path remains unchanged.
 /// - I-controller only. A PI variant for DOP853 (with β-term
 ///   smoothing on top of the err5/err3 stabilisation) is plausible
 ///   but not implemented. SciPy doesn't ship one either.
@@ -1367,8 +2038,9 @@ impl Dopri853Adaptive {
         factor.max(self.min_factor).min(self.max_factor)
     }
 
-    /// Single DOP853 sub-step from `state` of size `h`. Returns
-    /// `(new_state_8th_order, scaled_error_norm)`. Does NOT mutate
+    /// Single DOP853 primary sub-step from `state` of size `h`.
+    /// Returns the accepted-state candidate, scaled error norm, and
+    /// the stages needed to construct dense output. Does NOT mutate
     /// the controller's persistent state — the caller does that on
     /// accept.
     ///
@@ -1376,12 +2048,12 @@ impl Dopri853Adaptive {
     /// the locked-order 12-stage block + the err5/err3 derivative
     /// folds need to be visible at the call site for audit clarity.
     #[allow(clippy::too_many_lines)]
-    fn try_substep<S, F>(
+    fn try_primary_substep<S, F>(
         &self,
         state: &S,
         derive_fn: &F,
         h: f64,
-    ) -> Result<(S, f64), IntegratorError>
+    ) -> Result<Dopri853PrimaryStep<S>, IntegratorError>
     where
         S: SimState,
         F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
@@ -1574,7 +2246,224 @@ impl Dopri853Adaptive {
             1.0e-15
         };
 
-        Ok((new_state, scaled_err))
+        Ok(Dopri853PrimaryStep {
+            start_state: *state,
+            end_state: new_state,
+            h_s: h,
+            scaled_err,
+            delta_deriv: weighted,
+            k1,
+            k6,
+            k7,
+            k8,
+            k9,
+            k10,
+            k11,
+            k12,
+        })
+    }
+
+    /// Single DOP853 sub-step from `state` of size `h`. Returns
+    /// `(new_state_8th_order, scaled_error_norm)`. Does NOT mutate
+    /// the controller's persistent state — the caller does that on
+    /// accept.
+    fn try_substep<S, F>(
+        &self,
+        state: &S,
+        derive_fn: &F,
+        h: f64,
+    ) -> Result<(S, f64), IntegratorError>
+    where
+        S: SimState,
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        let primary = self.try_primary_substep(state, derive_fn, h)?;
+        Ok((primary.end_state, primary.scaled_err))
+    }
+
+    fn finish_dense_segment<S, F>(
+        &self,
+        primary: Dopri853PrimaryStep<S>,
+        derive_fn: &F,
+    ) -> Result<Dopri853DenseOutput<S>, IntegratorError>
+    where
+        S: SimState,
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        use dopri853_tableau::{
+            A_EXTRA_1_1, A_EXTRA_1_7, A_EXTRA_1_8, A_EXTRA_1_9, A_EXTRA_1_10, A_EXTRA_1_11,
+            A_EXTRA_1_12, A_EXTRA_1_END, A_EXTRA_2_1, A_EXTRA_2_6, A_EXTRA_2_7, A_EXTRA_2_8,
+            A_EXTRA_2_11, A_EXTRA_2_12, A_EXTRA_2_END, A_EXTRA_2_EXTRA_1, A_EXTRA_3_1, A_EXTRA_3_6,
+            A_EXTRA_3_7, A_EXTRA_3_8, A_EXTRA_3_9, A_EXTRA_3_END, A_EXTRA_3_EXTRA_1,
+            A_EXTRA_3_EXTRA_2, C_EXTRA_1, C_EXTRA_2, C_EXTRA_3,
+        };
+
+        let h = primary.h_s;
+        let t0_s = primary.start_state.time().as_seconds();
+        let t_end = SimTime::from_seconds(t0_s + h);
+        let k_end = derive_fn(&primary.end_state, t_end)?;
+        if !k_end.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        let inc_extra_1 = (((((((primary.k1 * A_EXTRA_1_1) + (primary.k7 * A_EXTRA_1_7))
+            + (primary.k8 * A_EXTRA_1_8))
+            + (primary.k9 * A_EXTRA_1_9))
+            + (primary.k10 * A_EXTRA_1_10))
+            + (primary.k11 * A_EXTRA_1_11))
+            + (primary.k12 * A_EXTRA_1_12))
+            + (k_end * A_EXTRA_1_END);
+        let s_extra_1 = primary.start_state.advance_by(h, &inc_extra_1);
+        if !s_extra_1.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k_extra_1 = derive_fn(&s_extra_1, SimTime::from_seconds(t0_s + C_EXTRA_1 * h))?;
+        if !k_extra_1.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        let inc_extra_2 = (((((((primary.k1 * A_EXTRA_2_1) + (primary.k6 * A_EXTRA_2_6))
+            + (primary.k7 * A_EXTRA_2_7))
+            + (primary.k8 * A_EXTRA_2_8))
+            + (primary.k11 * A_EXTRA_2_11))
+            + (primary.k12 * A_EXTRA_2_12))
+            + (k_end * A_EXTRA_2_END))
+            + (k_extra_1 * A_EXTRA_2_EXTRA_1);
+        let s_extra_2 = primary.start_state.advance_by(h, &inc_extra_2);
+        if !s_extra_2.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k_extra_2 = derive_fn(&s_extra_2, SimTime::from_seconds(t0_s + C_EXTRA_2 * h))?;
+        if !k_extra_2.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        let inc_extra_3 = (((((((primary.k1 * A_EXTRA_3_1) + (primary.k6 * A_EXTRA_3_6))
+            + (primary.k7 * A_EXTRA_3_7))
+            + (primary.k8 * A_EXTRA_3_8))
+            + (primary.k9 * A_EXTRA_3_9))
+            + (k_end * A_EXTRA_3_END))
+            + (k_extra_1 * A_EXTRA_3_EXTRA_1))
+            + (k_extra_2 * A_EXTRA_3_EXTRA_2);
+        let s_extra_3 = primary.start_state.advance_by(h, &inc_extra_3);
+        if !s_extra_3.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+        let k_extra_3 = derive_fn(&s_extra_3, SimTime::from_seconds(t0_s + C_EXTRA_3 * h))?;
+        if !k_extra_3.is_finite() {
+            return Err(IntegratorError::NonFiniteDerivative);
+        }
+
+        Ok(Dopri853DenseOutput {
+            start_state: primary.start_state,
+            end_state: primary.end_state,
+            h_s: h,
+            delta_deriv: primary.delta_deriv,
+            k1: primary.k1,
+            k6: primary.k6,
+            k7: primary.k7,
+            k8: primary.k8,
+            k9: primary.k9,
+            k10: primary.k10,
+            k11: primary.k11,
+            k12: primary.k12,
+            k_end,
+            k_extra_1,
+            k_extra_2,
+            k_extra_3,
+        })
+    }
+
+    /// Advance by `dt` and retain order-7 dense-output segments for
+    /// each accepted adaptive sub-step.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`IntegratorError`] values as
+    /// [`Integrator::advance`] for invalid steps, non-finite states or
+    /// derivatives, or model-evaluation failures. Dense-output extra
+    /// stage failures are also surfaced as typed integrator errors.
+    pub fn advance_with_dense_output<S, F>(
+        &self,
+        state: &S,
+        derive_fn: F,
+        dt: Duration,
+    ) -> Result<Dopri853AdaptiveDenseOutput<S>, IntegratorError>
+    where
+        S: SimState,
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+    {
+        let dt_total = dt.as_seconds();
+        if !dt_total.is_finite() || dt_total <= 0.0 {
+            return Err(IntegratorError::InvalidStep {
+                dt_seconds: dt_total,
+            });
+        }
+        if !state.is_valid_for_integration() {
+            return Err(IntegratorError::NonFiniteState);
+        }
+
+        let mut h = self
+            .last_h_s
+            .get()
+            .unwrap_or(dt_total)
+            .max(self.min_h_s)
+            .min(self.max_h_s)
+            .min(dt_total);
+
+        let mut current = *state;
+        let mut elapsed = 0.0_f64;
+        let max_substeps: usize = 1_000_000;
+        let mut substeps_taken: usize = 0;
+        let mut step_just_rejected = false;
+        let mut segments = Vec::new();
+
+        while elapsed < dt_total {
+            substeps_taken += 1;
+            if substeps_taken > max_substeps {
+                return Err(IntegratorError::InvalidStep {
+                    dt_seconds: dt_total,
+                });
+            }
+
+            let remaining = dt_total - elapsed;
+            let h_try = if remaining <= self.min_h_s {
+                remaining
+            } else {
+                h.min(remaining).max(self.min_h_s)
+            };
+
+            let primary = self.try_primary_substep(&current, &derive_fn, h_try)?;
+            let err = primary.scaled_err;
+
+            if err <= 1.0 {
+                let segment = self.finish_dense_segment(primary, &derive_fn)?;
+                current = segment.end_state;
+                segments.push(segment);
+                elapsed += h_try;
+                let mut factor = self.i_controller_factor(err.max(1.0e-10));
+                if step_just_rejected {
+                    factor = factor.min(1.0);
+                }
+                h = (h_try * factor).max(self.min_h_s).min(self.max_h_s);
+                step_just_rejected = false;
+            } else {
+                let factor = (self.safety_factor * err.powf(self.error_exponent))
+                    .max(self.min_factor)
+                    .min(1.0);
+                if h_try <= self.min_h_s + f64::EPSILON {
+                    return Err(IntegratorError::InvalidStep { dt_seconds: h_try });
+                }
+                h = (h_try * factor).max(self.min_h_s);
+                step_just_rejected = true;
+            }
+        }
+
+        self.last_h_s.set(Some(h));
+        Ok(Dopri853AdaptiveDenseOutput {
+            final_state: current,
+            segments,
+        })
     }
 }
 
@@ -2379,6 +3268,107 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dopri54_dense_output_returns_exact_step_endpoints() {
+        let integrator = Dopri54Adaptive::new(1.0e-12, 1.0e-9, 1.0e-9, 0.1).unwrap();
+        let state = exp_decay_initial_state();
+        let (dense, err) = integrator
+            .try_dense_substep(&state, &exp_decay_derive, 0.1)
+            .expect("dense substep");
+        assert!(err.is_finite());
+
+        let start = dense
+            .interpolate(SimTime::ZERO)
+            .expect("start endpoint must interpolate");
+        let end = dense
+            .interpolate(SimTime::from_seconds(0.1))
+            .expect("end endpoint must interpolate");
+
+        assert_eq!(
+            start.mass.get::<kilogram>().to_bits(),
+            state.mass.get::<kilogram>().to_bits(),
+            "dense output must return the stored start state exactly"
+        );
+        assert_eq!(
+            end.mass.get::<kilogram>().to_bits(),
+            dense.end_state().mass.get::<kilogram>().to_bits(),
+            "dense output must return the accepted endpoint exactly"
+        );
+
+        let out_of_range = dense
+            .interpolate(SimTime::from_seconds(0.100_000_001))
+            .expect_err("query outside the segment must fail closed");
+        assert!(matches!(
+            out_of_range,
+            IntegratorError::DenseOutputTimeOutOfRange { .. }
+        ));
+    }
+
+    #[test]
+    fn dopri54_dense_output_midpoint_error_has_fourth_order_ratio() {
+        fn midpoint_error(h: f64) -> f64 {
+            let integrator = Dopri54Adaptive::new(1.0e-14, 1.0e-12, 1.0e-12, h).unwrap();
+            let state = exp_decay_initial_state();
+            let (dense, _) = integrator
+                .try_dense_substep(&state, &exp_decay_derive, h)
+                .expect("dense substep");
+            let observed = dense
+                .interpolate(SimTime::from_seconds(0.5 * h))
+                .expect("midpoint interpolation")
+                .mass
+                .get::<kilogram>();
+            let exact = (-0.5 * h).exp();
+            (observed - exact).abs()
+        }
+
+        let e_coarse = midpoint_error(0.4);
+        let e_mid = midpoint_error(0.2);
+        let e_fine = midpoint_error(0.1);
+        let ratio_1 = e_coarse / e_mid;
+        let ratio_2 = e_mid / e_fine;
+
+        assert!(
+            ratio_1 > 10.0 && ratio_2 > 10.0,
+            "quartic DOPRI5 dense output should show >=4th-order grid-halving \
+             behavior before roundoff dominates; errors {e_coarse:.3e}, \
+             {e_mid:.3e}, {e_fine:.3e}, ratios {ratio_1:.2}, {ratio_2:.2}",
+        );
+    }
+
+    #[test]
+    fn dopri54_advance_with_dense_output_matches_plain_adaptive_endpoint() {
+        let state = exp_decay_initial_state();
+        let dt = Duration::from_seconds(0.5);
+        let dense_integrator = Dopri54Adaptive::new(1.0e-10, 1.0e-8, 1.0e-9, 0.05).unwrap();
+        let dense = dense_integrator
+            .advance_with_dense_output(&state, exp_decay_derive, dt)
+            .expect("dense advance");
+
+        let plain_integrator = Dopri54Adaptive::new(1.0e-10, 1.0e-8, 1.0e-9, 0.05).unwrap();
+        let plain = plain_integrator
+            .advance(&state, exp_decay_derive, dt)
+            .expect("plain advance");
+
+        assert!(
+            !dense.segments().is_empty(),
+            "dense advance should record accepted sub-step segments"
+        );
+        assert_eq!(
+            dense.final_state().mass.get::<kilogram>().to_bits(),
+            plain.mass.get::<kilogram>().to_bits(),
+            "dense-output path must preserve the normal adaptive endpoint"
+        );
+
+        let midpoint = dense
+            .interpolate(SimTime::from_seconds(0.25))
+            .expect("dense midpoint");
+        let exact = (-0.25_f64).exp();
+        assert!(
+            (midpoint.mass.get::<kilogram>() - exact).abs() < 1.0e-8,
+            "dense midpoint should be state-stable accurate for exp decay"
+        );
+    }
+
     /// Tight tolerance forces step rejection; loose tolerance lets h
     /// expand toward `max_h`. Verify by comparing the final `last_h`.
     #[test]
@@ -2834,6 +3824,112 @@ mod tests {
             proposed.position.vector.x,
             0.1_f64.powi(8),
             epsilon = 1.0e-20
+        );
+    }
+
+    #[test]
+    fn dopri853_dense_output_returns_exact_step_endpoints() {
+        let integrator = Dopri853Adaptive::new(1.0e-12, 1.0e-9, 1.0e-9, 0.2).unwrap();
+        let state = exp_decay_initial_state();
+        let primary = integrator
+            .try_primary_substep(&state, &exp_decay_derive, 0.2)
+            .expect("primary step");
+        let dense = integrator
+            .finish_dense_segment(primary, &exp_decay_derive)
+            .expect("dense segment");
+
+        let start = dense
+            .interpolate(SimTime::ZERO)
+            .expect("start endpoint must interpolate");
+        let end = dense
+            .interpolate(SimTime::from_seconds(0.2))
+            .expect("end endpoint must interpolate");
+
+        assert_eq!(
+            start.mass.get::<kilogram>().to_bits(),
+            state.mass.get::<kilogram>().to_bits(),
+            "DOP853 dense output must return the stored start state exactly"
+        );
+        assert_eq!(
+            end.mass.get::<kilogram>().to_bits(),
+            dense.end_state().mass.get::<kilogram>().to_bits(),
+            "DOP853 dense output must return the accepted endpoint exactly"
+        );
+
+        let out_of_range = dense
+            .interpolate(SimTime::from_seconds(0.200_000_001))
+            .expect_err("query outside the segment must fail closed");
+        assert!(matches!(
+            out_of_range,
+            IntegratorError::DenseOutputTimeOutOfRange { .. }
+        ));
+    }
+
+    #[test]
+    fn dopri853_dense_output_midpoint_error_has_order_seven_ratio() {
+        fn midpoint_error(h: f64) -> f64 {
+            let integrator = Dopri853Adaptive::new(1.0e-14, 1.0e-12, 1.0e-12, h).unwrap();
+            let state = exp_decay_initial_state();
+            let primary = integrator
+                .try_primary_substep(&state, &exp_decay_derive, h)
+                .expect("primary step");
+            let dense = integrator
+                .finish_dense_segment(primary, &exp_decay_derive)
+                .expect("dense segment");
+            let observed = dense
+                .interpolate(SimTime::from_seconds(0.5 * h))
+                .expect("midpoint interpolation")
+                .mass
+                .get::<kilogram>();
+            let exact = (-0.5 * h).exp();
+            (observed - exact).abs()
+        }
+
+        let e_coarse = midpoint_error(1.0);
+        let e_mid = midpoint_error(0.5);
+        let e_fine = midpoint_error(0.25);
+        let ratio_1 = e_coarse / e_mid;
+        let ratio_2 = e_mid / e_fine;
+
+        assert!(
+            ratio_1 > 80.0 && ratio_2 > 80.0,
+            "DOP853 order-7 dense output should show high-order grid-halving \
+             behavior before roundoff dominates; errors {e_coarse:.3e}, \
+             {e_mid:.3e}, {e_fine:.3e}, ratios {ratio_1:.2}, {ratio_2:.2}",
+        );
+    }
+
+    #[test]
+    fn dopri853_advance_with_dense_output_matches_plain_adaptive_endpoint() {
+        let state = exp_decay_initial_state();
+        let dt = Duration::from_seconds(0.5);
+        let dense_integrator = Dopri853Adaptive::new(1.0e-10, 1.0e-8, 1.0e-9, 0.05).unwrap();
+        let dense = dense_integrator
+            .advance_with_dense_output(&state, exp_decay_derive, dt)
+            .expect("dense advance");
+
+        let plain_integrator = Dopri853Adaptive::new(1.0e-10, 1.0e-8, 1.0e-9, 0.05).unwrap();
+        let plain = plain_integrator
+            .advance(&state, exp_decay_derive, dt)
+            .expect("plain advance");
+
+        assert!(
+            !dense.segments().is_empty(),
+            "dense advance should record accepted DOP853 sub-step segments"
+        );
+        assert_eq!(
+            dense.final_state().mass.get::<kilogram>().to_bits(),
+            plain.mass.get::<kilogram>().to_bits(),
+            "DOP853 dense-output path must preserve the normal adaptive endpoint"
+        );
+
+        let midpoint = dense
+            .interpolate(SimTime::from_seconds(0.25))
+            .expect("dense midpoint");
+        let exact = (-0.25_f64).exp();
+        assert!(
+            (midpoint.mass.get::<kilogram>() - exact).abs() < 1.0e-10,
+            "DOP853 dense midpoint should be state-stable accurate for exp decay"
         );
     }
 

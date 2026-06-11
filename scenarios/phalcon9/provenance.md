@@ -276,6 +276,18 @@ This provenance record covers the following synthetic scenario files:
   Bulletin A/B record for any actual date. The `[epoch]` date only sets the
   precession/nutation reference angles.
 
+Package and sidecar files in this directory are also synthetic and covered by
+this record:
+
+- `scenarios/phalcon9/mission-package.toml`
+- `scenarios/phalcon9/plant-config.toml`
+- `scenarios/phalcon9/mission-graph.toml`
+- `scenarios/phalcon9/scenario-script.toml`
+- `scenarios/phalcon9/mission-package-boostback.toml`
+- `scenarios/phalcon9/plant-config-boostback.toml`
+- `scenarios/phalcon9/mission-graph-boostback.toml`
+- `scenarios/phalcon9/scenario-script-boostback.toml`
+
 All numeric content in these files is synthetic / rounded /
 order-of-magnitude and contains no real fielded-vehicle parameter set.
 Launch radii are rounded synthetic values, not the WGS84 datum.

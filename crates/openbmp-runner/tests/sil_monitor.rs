@@ -41,8 +41,7 @@ fn installed_monitor_observes_fc_and_does_not_perturb_run() {
     // Same-commit equality: an installed read-only monitor must produce a
     // byte-identical telemetry table.
     let mut monitor = CountingMonitor::default();
-    let observed =
-        openbmp_runner::run_with_monitor(&scenario, &mut monitor).expect("observed run");
+    let observed = openbmp_runner::run_with_monitor(&scenario, &mut monitor).expect("observed run");
 
     assert_eq!(
         baseline.table, observed.table,

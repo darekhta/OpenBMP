@@ -31,7 +31,7 @@ use core::fmt;
 
 use openbmp_core::{Body, Duration, EngineId, Position3};
 
-use crate::engine::{EngineCommand, EngineModel, EngineSnapshot};
+use crate::engine::{EngineCommand, EngineFault, EngineModel, EngineSnapshot};
 use crate::error::EngineError;
 
 /// Cluster-layout tag, carried for telemetry / docs. This has
@@ -178,6 +178,24 @@ impl EngineCluster {
         self.engines[index].set_feed_pressure_scale(scale)
     }
 
+    /// Inject a fault into a specific engine by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InvalidParameter`] when no engine in the
+    /// cluster has the given id. Forwards fault validation from the engine
+    /// implementation.
+    pub fn inject_fault(&mut self, id: EngineId, fault: EngineFault) -> Result<(), EngineError> {
+        let index =
+            self.engine_ids
+                .iter()
+                .position(|x| *x == id)
+                .ok_or(EngineError::InvalidParameter {
+                    reason: "engine id not found in cluster",
+                })?;
+        self.engines[index].inject_fault(fault)
+    }
+
     /// Step every engine in the cluster by one kernel base tick. The
     /// returned `Vec<EngineSnapshot>` is in scenario-declared order.
     ///
@@ -291,6 +309,18 @@ mod tests {
         let unknown = EngineId::from_path("test.nonexistent");
         let err = c.apply_command(unknown, EngineCommand::idle()).unwrap_err();
         assert!(matches!(err, EngineError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn cluster_inject_fault_routes_to_correct_engine() {
+        let mut c = fresh_two_engine_cluster();
+        let id_b = c.engine_ids()[1];
+        c.inject_fault(id_b, EngineFault::HardOff).unwrap();
+
+        let snaps = c.step(Duration::from_seconds(0.001)).unwrap();
+
+        assert_eq!(snaps[0].state, EngineState::Idle);
+        assert_eq!(snaps[1].state, EngineState::Failed);
     }
 
     #[test]

@@ -149,6 +149,8 @@ pub fn run(
     // byte-stable path is preserved.
     let mut tank_rack = crate::tanks::TankRack::build(document)?;
     let propellant_budget = crate::propulsion::build_propellant_budget(document)?;
+    let mut feed_network_rack = crate::feed_network::FeedNetworkRack::build(document)?;
+    let _pogo_rack = crate::pogo::PogoStabilityRack::build(document)?;
     // Build the runner-side recovery rack. Empty when no
     // `[[vehicle.assembly.recovery]]` are declared, in which case
     // every per-step rack operation short-circuits and the kernel's
@@ -312,7 +314,10 @@ pub fn run(
     let mut pending_engine_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> = Vec::new();
     let mut pending_recovery_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
         Vec::new();
+    let mut realtime_pacer = crate::rt::RunnerRealtimePacer::from_document(document)?;
     while kernel.stop_reason().is_none() {
+        realtime_pacer.wait_next_frame();
+        realtime_pacer.begin_frame_execution();
         effector_rack.apply_overrides(&pending_effector_events)?;
         // Drain pending engine commands from the previous
         // kernel step, apply to the rack, then advance the rack.
@@ -347,7 +352,7 @@ pub fn run(
             }
         }
         if let Some(propellant_budget) = &propellant_budget {
-            let report = propellant_budget
+            let mut report = propellant_budget
                 .evaluate(
                     &engine_rack.propulsion_snapshot_map(),
                     &tank_rack.propellant_tank_states(document),
@@ -356,6 +361,11 @@ pub fn run(
                     field: "vehicle.assembly.engines[*].propellant".to_owned(),
                     reason: err.to_string(),
                 })?;
+            feed_network_rack.apply_to_report(
+                &mut report,
+                document.time.dt_s,
+                kernel.current_step(),
+            )?;
             tank_rack.set_propellant_budget_drain_rates(report.tank_drain_rates_kg_per_s.clone());
             engine_rack.apply_propellant_budget(&report)?;
         }
@@ -363,6 +373,9 @@ pub fn run(
             effector_rack.step(kernel.current_time())?;
         }
         if !engine_rack.is_empty() {
+            let cavitation_events = feed_network_rack.cavitation_events();
+            engine_rack.apply_cavitation_faults(&cavitation_events)?;
+            engine_rack.apply_scheduled_faults(kernel.current_step())?;
             engine_rack.step()?;
         }
         // Advance the tank rack using prior-step cached
@@ -457,18 +470,26 @@ pub fn run(
             .filter(|e| matches!(e.action, ScenarioScriptAction::EffectorOverride { .. }))
             .cloned()
             .collect();
+        realtime_pacer.finish_frame_execution();
     }
 
     let stop_reason = kernel
         .stop_reason()
         .cloned()
         .unwrap_or(StopReason::EndTime { reached_s: 0.0 });
+    let actuator_stream = fc_bridge
+        .as_ref()
+        .map(crate::fc_bridge::FcBridge::actuator_stream_report)
+        .transpose()?
+        .flatten();
 
     Ok(RunOutcome {
         final_step: kernel.current_step().value(),
         final_time_s: kernel.current_time().as_seconds(),
         stop_reason,
         table,
+        realtime: realtime_pacer.finish(),
+        actuator_stream,
     })
 }
 
@@ -2104,7 +2125,8 @@ require_monotonic_time = true
         let scenario = Scenario::from_toml_str(POINT_MASS_ENTRY_SCENARIO)
             .expect("point-mass live entry scenario must parse");
         let resolved_files = scenario.resolved_files().expect("resolve files");
-        let outcome = run(&scenario, &resolved_files, None).expect("point-mass live entry run succeeds");
+        let outcome =
+            run(&scenario, &resolved_files, None).expect("point-mass live entry run succeeds");
 
         for channel in [
             "force.aerothermal_diagnostics.x_n",
@@ -2200,7 +2222,8 @@ require_monotonic_time = true
         let scenario =
             Scenario::from_toml_str(DYNAMIC_PRESSURE_EVENT_SCENARIO).expect("scenario must parse");
         let resolved_files = scenario.resolved_files().expect("resolve files");
-        let outcome = run(&scenario, &resolved_files, None).expect("dynamic-pressure event run succeeds");
+        let outcome =
+            run(&scenario, &resolved_files, None).expect("dynamic-pressure event run succeeds");
 
         assert_eq!(outcome.final_step, 1);
         assert!(matches!(
@@ -2233,7 +2256,8 @@ require_monotonic_time = true
             .expect("scenario has aero")
             .method = None;
         let resolved_files = scenario.resolved_files().expect("resolve files");
-        let err = run(&scenario, &resolved_files, None).expect_err("deck-only Mach-20 entry rejects");
+        let err =
+            run(&scenario, &resolved_files, None).expect_err("deck-only Mach-20 entry rejects");
 
         assert!(
             matches!(&err, RunnerError::UnsupportedScenario { what }

@@ -91,29 +91,47 @@ impl SilCheck {
             Self::NavPositionErrorBelow { max_m } => {
                 bound_below(summary.max_pos_err_m, *max_m, "max position error", "m")
             }
-            Self::NavVelocityErrorBelow { max_m_s } => {
-                bound_below(summary.max_vel_err_m_s, *max_m_s, "max velocity error", "m/s")
-            }
-            Self::AttitudeTrackingErrorBelow { max_rad } => {
-                bound_below(summary.max_att_err_rad, *max_rad, "max attitude error", "rad")
-            }
+            Self::NavVelocityErrorBelow { max_m_s } => bound_below(
+                summary.max_vel_err_m_s,
+                *max_m_s,
+                "max velocity error",
+                "m/s",
+            ),
+            Self::AttitudeTrackingErrorBelow { max_rad } => bound_below(
+                summary.max_att_err_rad,
+                *max_rad,
+                "max attitude error",
+                "rad",
+            ),
             Self::EstimatorConsistencyNeesWithin { max } => {
                 bound_below(summary.max_nees, *max, "max NEES", "")
             }
             Self::NoInnovationRejectionStorm { max_rejected_ticks } => {
                 let actual = summary.innovation_rejected_ticks;
                 if actual <= *max_rejected_ticks {
-                    ("pass", format!("innovation-rejected ticks {actual} <= {max_rejected_ticks}"))
+                    (
+                        "pass",
+                        format!("innovation-rejected ticks {actual} <= {max_rejected_ticks}"),
+                    )
                 } else {
-                    ("fail", format!("innovation-rejected ticks {actual} > {max_rejected_ticks}"))
+                    (
+                        "fail",
+                        format!("innovation-rejected ticks {actual} > {max_rejected_ticks}"),
+                    )
                 }
             }
             Self::FdirIsolatesExactly { bits } => {
                 let actual = summary.fdir_tripped_mask_union;
                 if actual == *bits {
-                    ("pass", format!("FDIR tripped mask 0x{actual:016x} == expected 0x{bits:016x}"))
+                    (
+                        "pass",
+                        format!("FDIR tripped mask 0x{actual:016x} == expected 0x{bits:016x}"),
+                    )
                 } else {
-                    ("fail", format!("FDIR tripped mask 0x{actual:016x} != expected 0x{bits:016x}"))
+                    (
+                        "fail",
+                        format!("FDIR tripped mask 0x{actual:016x} != expected 0x{bits:016x}"),
+                    )
                 }
             }
             Self::StopReasonIsNominal => {
@@ -137,10 +155,14 @@ impl SilCheck {
 fn bound_below(actual: Option<f64>, max: f64, label: &str, unit: &str) -> (&'static str, String) {
     match actual {
         None => ("skip", format!("{label}: not observed (estimate absent)")),
-        Some(value) if value <= max => {
-            ("pass", format!("{label} {value:.6} {unit} <= {max:.6} {unit}"))
-        }
-        Some(value) => ("fail", format!("{label} {value:.6} {unit} > {max:.6} {unit}")),
+        Some(value) if value <= max => (
+            "pass",
+            format!("{label} {value:.6} {unit} <= {max:.6} {unit}"),
+        ),
+        Some(value) => (
+            "fail",
+            format!("{label} {value:.6} {unit} > {max:.6} {unit}"),
+        ),
     }
 }
 

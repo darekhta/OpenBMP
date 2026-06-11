@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/openbmp-core",
     "crates/openbmp-physics",
+    "crates/openbmp-uq",
     "crates/openbmp-state",
     "crates/openbmp-models",
     "crates/openbmp-mission",
@@ -12,6 +13,8 @@ members = [
     "crates/openbmp-vehicle",
     "crates/openbmp-aero",
     "crates/openbmp-aerothermal",
+    "crates/openbmp-thermochem",
+    "crates/openbmp-feedsystem",
     "crates/openbmp-propulsion",
     "crates/openbmp-sensors",
     "crates/openbmp-fc",
@@ -23,6 +26,8 @@ members = [
     "crates/openbmp-sil-py",
     "crates/openbmp-fmi",
     "crates/openbmp-testkit",
+    "crates/openbmp-mc",
+    "crates/openbmp-rt",
     "crates/openbmp-runner",
     "crates/openbmp-cli",
     "crates/openbmp-bridge",
@@ -64,6 +69,7 @@ sgp4        = { version = "2.4.0", default-features = false, features = ["std"] 
 # --- Determinism
 rand        = { version = "0.10.1",  default-features = false, features = ["std", "std_rng"] }
 rand_chacha = { version = "0.10.0",  default-features = false }
+rayon       = { version = "1.11.0" }
 
 # --- Statistics
 statrs      = { version = "0.18.0", default-features = false }
@@ -90,6 +96,7 @@ anyhow             = { version = "1.0.102" }
 pyo3               = { version = "0.28.3" }
 pyo3-build-config  = { version = "0.28.3" }
 libloading         = { version = "0.9.0" }
+flate2             = { version = "1.1.5", default-features = false, features = ["rust_backend"] }
 tracing            = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter"] }
 
@@ -128,6 +135,7 @@ duct = { version = "1.1.1" }
 # --- Internal
 openbmp-core       = { version = "0.0.1", path = "crates/openbmp-core" }
 openbmp-physics    = { version = "0.0.1", path = "crates/openbmp-physics" }
+openbmp-uq         = { version = "0.0.1", path = "crates/openbmp-uq" }
 openbmp-state      = { version = "0.0.1", path = "crates/openbmp-state" }
 openbmp-models     = { version = "0.0.1", path = "crates/openbmp-models" }
 openbmp-mission    = { version = "0.0.1", path = "crates/openbmp-mission" }
@@ -137,6 +145,8 @@ openbmp-sim        = { version = "0.0.1", path = "crates/openbmp-sim" }
 openbmp-vehicle    = { version = "0.0.1", path = "crates/openbmp-vehicle" }
 openbmp-aero       = { version = "0.0.1", path = "crates/openbmp-aero" }
 openbmp-aerothermal = { version = "0.0.1", path = "crates/openbmp-aerothermal" }
+openbmp-thermochem = { version = "0.0.1", path = "crates/openbmp-thermochem" }
+openbmp-feedsystem = { version = "0.0.1", path = "crates/openbmp-feedsystem" }
 openbmp-propulsion = { version = "0.0.1", path = "crates/openbmp-propulsion" }
 openbmp-sensors    = { version = "0.0.1", path = "crates/openbmp-sensors", default-features = false }
 openbmp-fc         = { version = "0.0.1", path = "crates/openbmp-fc" }
@@ -146,6 +156,9 @@ openbmp-scenario   = { version = "0.0.1", path = "crates/openbmp-scenario" }
 openbmp-scenario-script = { version = "0.0.1", path = "crates/openbmp-scenario-script" }
 openbmp-sil        = { version = "0.0.1", path = "crates/openbmp-sil" }
 openbmp-testkit    = { version = "0.0.1", path = "crates/openbmp-testkit" }
+openbmp-mc         = { version = "0.0.1", path = "crates/openbmp-mc" }
+openbmp-rt         = { version = "0.0.1", path = "crates/openbmp-rt" }
+openbmp-bridge     = { version = "0.0.1", path = "crates/openbmp-bridge" }
 openbmp-runner     = { version = "0.0.1", path = "crates/openbmp-runner" }
 
 [profile.release]

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Wire protocol version. Both ends compare this and reject a peer
 /// that does not match. Bump on any breaking schema change.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Endpoint role advertised during the in-house lockstep handshake.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -66,9 +66,24 @@ pub struct SensorPacket {
     pub gnss_position_eci_m: Option<[f64; 3]>,
     /// GNSS velocity in the ECI frame (m/s), when GNSS is modelled.
     pub gnss_velocity_eci_m_s: Option<[f64; 3]>,
+    /// GNSS position-bias state in the ECI frame (m), when the
+    /// synthetic receiver exposes a slowly drifting bias term.
+    pub gnss_position_bias_eci_m: Option<[f64; 3]>,
     /// Magnetic field in the body frame (tesla), when a magnetometer is
     /// modelled.
     pub mag_body_tesla: Option<[f64; 3]>,
+    /// Magnetic field in the body frame (nT), preserving the FC bus unit
+    /// without round-trip unit conversion.
+    pub mag_body_nt: Option<[f64; 3]>,
+    /// Magnetometer hard-iron body-frame offset (nT), when exposed by
+    /// the synthetic sensor budget.
+    pub mag_hard_iron_body_nt: Option<[f64; 3]>,
+    /// Barometer pressure measurement (Pa), preserving the FC bus value.
+    pub baro_pressure_pa: Option<f64>,
+    /// Barometer bias state (Pa), preserving the FC bus value.
+    pub baro_bias_pa: Option<f64>,
+    /// Star-tracker attitude quaternion `[x, y, z, w]` from ECI to body.
+    pub star_tracker_attitude_eci_to_body_xyzw: Option<[f64; 4]>,
 }
 
 /// Abstract normalized actuator commands accepted by the simulator
@@ -88,6 +103,26 @@ pub struct ActuatorCommandPacket {
     pub effector_commands: Vec<(u32, f64)>,
     /// `(engine_id, throttle_unit)` pairs, throttle in `[0, 1]`.
     pub engine_throttles: Vec<(u32, f64)>,
+    /// Full per-engine commands, preserving throttle, gimbal, ignition,
+    /// and shutdown fields for runner-side engine racks.
+    pub engine_commands: Vec<EngineCommandPacket>,
+}
+
+/// One engine-specific command in a bridge actuator packet.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EngineCommandPacket {
+    /// Engine id assigned by the scenario.
+    pub engine_id: u32,
+    /// Commanded throttle in `[0, 1]`.
+    pub throttle_unit: f64,
+    /// Commanded pitch gimbal angle (rad).
+    pub gimbal_pitch_rad: f64,
+    /// Commanded yaw gimbal angle (rad).
+    pub gimbal_yaw_rad: f64,
+    /// `true` if ignition is requested.
+    pub ignite: bool,
+    /// `true` if shutdown is requested.
+    pub shutdown: bool,
 }
 
 /// Result of consuming one simulator sensor frame.
@@ -144,6 +179,7 @@ pub struct BridgeFaultPacket {
 }
 
 /// One typed message on the in-house HIL stream.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum BridgeMessage {
     /// Initial protocol-version and role announcement.
