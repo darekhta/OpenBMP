@@ -3,20 +3,28 @@
 //! `openbmp-contact` is the L2 contact-mechanics substrate. It owns
 //! fail-closed, allocation-free primitives for half-space gap evaluation,
 //! compliant normal forces, regularized Coulomb friction, explicit
-//! sub-step stability checks, and contact-energy accounting. It does not
-//! depend on `openbmp-sim`, `openbmp-runner`, or `openbmp-fc`; higher layers
-//! opt in by adapting these primitives into force accumulators.
+//! sub-step stability checks, scalar stops/backlash/latches, and
+//! contact-energy accounting. It does not depend on `openbmp-sim`,
+//! `openbmp-runner`, or `openbmp-fc`; higher layers opt in by adapting these
+//! primitives into force accumulators.
 //!
 //! The initial tier intentionally covers point/sphere contact against a
-//! plane. Runner scenario wiring, gear-leg assemblies, terrain decks, and
-//! implicit contact solvers are later work packages.
+//! plane plus scalar mechanism constraints. Runner scenario wiring, gear-leg
+//! assemblies, terrain decks, and implicit contact solvers are later work
+//! packages.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+pub mod backlash;
 pub mod error;
+pub mod latch;
+pub mod stop;
 
+pub use backlash::{BacklashFlank, BacklashGap, BacklashResponse};
 pub use error::ContactError;
+pub use latch::{LatchState, LatchTransition, LatchWindow, MonotoneLatch};
+pub use stop::{ScalarStop, ScalarStopResponse, StopSide};
 
 use error::{require_finite, require_non_negative, require_positive};
 
