@@ -882,6 +882,42 @@ impl MultibodyTree {
         )
     }
 
+    /// Dense forward dynamics at a generalized state.
+    ///
+    /// This solves `H(q) qdd = tau - C(q, qd, a_root, f_ext)` using the
+    /// state-dependent CRBA inertia matrix and the biased/forced RNEA path. It
+    /// is a deterministic forward-dynamics substrate and an ABA cross-check,
+    /// not the final O(n) articulated-body implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] when state validation, generalized-force
+    /// validation, bias-force evaluation, CRBA evaluation, or the dense linear
+    /// solve fails.
+    pub fn forward_dynamics_dense_at_state(
+        &self,
+        state: &MultibodyState,
+        generalized_forces: &[f64],
+        root_parent_acceleration: SpatialMotion,
+        external_forces_body: &[SpatialForce],
+    ) -> Result<Vec<f64>, MultibodyError> {
+        self.validate_generalized_vector("generalized forces", generalized_forces)?;
+        let h = self.joint_space_inertia_crba_at_state(state)?;
+        let zero_qdd = vec![0.0; self.n_qd];
+        let bias = self.inverse_dynamics_rnea_at_state(
+            state,
+            &zero_qdd,
+            root_parent_acceleration,
+            external_forces_body,
+        )?;
+        let rhs: Vec<f64> = generalized_forces
+            .iter()
+            .zip(bias.iter())
+            .map(|(force, bias_force)| force - bias_force)
+            .collect();
+        solve_dense_linear_system(h.dimension(), h.values_row_major(), &rhs)
+    }
+
     /// Zero-velocity Recursive Newton-Euler inverse dynamics at a generalized
     /// state.
     ///
@@ -1058,6 +1094,24 @@ impl MultibodyTree {
         Ok(tau)
     }
 
+    fn validate_generalized_vector(
+        &self,
+        vector: &'static str,
+        values: &[f64],
+    ) -> Result<(), MultibodyError> {
+        if values.len() != self.n_qd {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector,
+                expected: self.n_qd,
+                actual: values.len(),
+            });
+        }
+        if !values.iter().all(|v| v.is_finite()) {
+            return Err(MultibodyError::NonFinite { reason: vector });
+        }
+        Ok(())
+    }
+
     fn body_transforms_parent_to_child_at_state(
         &self,
         state: &MultibodyState,
@@ -1155,6 +1209,13 @@ pub enum MultibodyError {
         /// Number of bodies in the tree.
         body_count: usize,
     },
+    /// Dense linear solve failed because the system is singular or ill
+    /// conditioned at the selected pivot.
+    #[error("singular multibody linear system at pivot {pivot}")]
+    SingularSystem {
+        /// Zero-based pivot index where factorization failed.
+        pivot: usize,
+    },
     /// Lower state-layer mass-property validation failed.
     #[error(transparent)]
     State(#[from] openbmp_state::StateError),
@@ -1229,6 +1290,88 @@ fn rotation_from_quaternion_child_from_parent(q: &[f64]) -> Result<Matrix3<f64>,
         2.0 * (y * z + w * x),
         1.0 - 2.0 * (x * x + y * y),
     ))
+}
+
+fn solve_dense_linear_system(
+    dimension: usize,
+    matrix_row_major: &[f64],
+    rhs: &[f64],
+) -> Result<Vec<f64>, MultibodyError> {
+    if matrix_row_major.len() != dimension * dimension {
+        return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+            vector: "dense system matrix",
+            expected: dimension * dimension,
+            actual: matrix_row_major.len(),
+        });
+    }
+    if rhs.len() != dimension {
+        return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+            vector: "dense system rhs",
+            expected: dimension,
+            actual: rhs.len(),
+        });
+    }
+    if !matrix_row_major.iter().all(|v| v.is_finite()) || !rhs.iter().all(|v| v.is_finite()) {
+        return Err(MultibodyError::NonFinite {
+            reason: "dense linear system contains non-finite components",
+        });
+    }
+
+    let mut a = matrix_row_major.to_vec();
+    let mut b = rhs.to_vec();
+    for pivot in 0..dimension {
+        let mut pivot_row = pivot;
+        let mut pivot_abs = abs_finite(a[pivot * dimension + pivot]);
+        for row in (pivot + 1)..dimension {
+            let candidate = abs_finite(a[row * dimension + pivot]);
+            if candidate > pivot_abs {
+                pivot_abs = candidate;
+                pivot_row = row;
+            }
+        }
+        if pivot_abs <= 1.0e-12 {
+            return Err(MultibodyError::SingularSystem { pivot });
+        }
+        if pivot_row != pivot {
+            for col in pivot..dimension {
+                a.swap(pivot * dimension + col, pivot_row * dimension + col);
+            }
+            b.swap(pivot, pivot_row);
+        }
+
+        let pivot_value = a[pivot * dimension + pivot];
+        for row in (pivot + 1)..dimension {
+            let factor = a[row * dimension + pivot] / pivot_value;
+            a[row * dimension + pivot] = 0.0;
+            for col in (pivot + 1)..dimension {
+                a[row * dimension + col] -= factor * a[pivot * dimension + col];
+            }
+            b[row] -= factor * b[pivot];
+        }
+    }
+
+    let mut out = vec![0.0; dimension];
+    for row in (0..dimension).rev() {
+        let mut value = b[row];
+        for col in (row + 1)..dimension {
+            value -= a[row * dimension + col] * out[col];
+        }
+        let pivot_value = a[row * dimension + row];
+        if abs_finite(pivot_value) <= 1.0e-12 {
+            return Err(MultibodyError::SingularSystem { pivot: row });
+        }
+        out[row] = value / pivot_value;
+    }
+    if !out.iter().all(|v| v.is_finite()) {
+        return Err(MultibodyError::NonFinite {
+            reason: "dense linear solve produced non-finite components",
+        });
+    }
+    Ok(out)
+}
+
+fn abs_finite(value: f64) -> f64 {
+    if value < 0.0 { -value } else { value }
 }
 
 #[cfg(test)]
@@ -1818,6 +1961,104 @@ mod tests {
         ));
         assert!(matches!(external_err, MultibodyError::NonFinite { .. }));
         assert!(matches!(base_err, MultibodyError::NonFinite { .. }));
+    }
+
+    #[test]
+    fn forward_dynamics_dense_round_trips_biased_rnea() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.2, -0.1, 0.3, 0.4, 0.15],
+            vec![0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8],
+        );
+        let expected_qdd = vec![0.25, -0.15, 0.35, -0.45, 0.55, -0.65, 0.75, -0.85];
+        let root_acceleration = SpatialMotion::new(Vector3::zeros(), Vector3::new(0.0, 0.0, -9.81));
+        let external_forces = vec![
+            SpatialForce::zero(),
+            SpatialForce::new(Vector3::new(0.1, -0.2, 0.3), Vector3::new(0.4, -0.5, 0.6)),
+            SpatialForce::new(Vector3::new(-0.3, 0.2, -0.1), Vector3::new(-0.6, 0.5, -0.4)),
+        ];
+        let tau = tree
+            .inverse_dynamics_rnea_at_state(
+                &state,
+                &expected_qdd,
+                root_acceleration,
+                &external_forces,
+            )
+            .unwrap();
+
+        let actual_qdd = tree
+            .forward_dynamics_dense_at_state(&state, &tau, root_acceleration, &external_forces)
+            .unwrap();
+
+        for (actual, expected) in actual_qdd.iter().zip(expected_qdd.iter()) {
+            assert_abs_diff_eq!(*actual, *expected, epsilon = 1.0e-11);
+        }
+    }
+
+    #[test]
+    fn forward_dynamics_dense_rejects_bad_generalized_forces() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.2, -0.1, 0.3, 0.4, 0.15],
+            vec![0.0; tree.n_qd()],
+        );
+        let external_forces = vec![SpatialForce::zero(); tree.bodies().len()];
+        let short = tree
+            .forward_dynamics_dense_at_state(
+                &state,
+                &vec![0.0; tree.n_qd() - 1],
+                SpatialMotion::zero(),
+                &external_forces,
+            )
+            .unwrap_err();
+        let mut nonfinite = vec![0.0; tree.n_qd()];
+        nonfinite[0] = f64::NAN;
+        let nonfinite_err = tree
+            .forward_dynamics_dense_at_state(
+                &state,
+                &nonfinite,
+                SpatialMotion::zero(),
+                &external_forces,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            short,
+            MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "generalized forces",
+                ..
+            }
+        ));
+        assert!(matches!(nonfinite_err, MultibodyError::NonFinite { .. }));
+    }
+
+    #[test]
+    fn forward_dynamics_dense_rejects_singular_inertia() {
+        let tree = MultibodyTree::new(vec![TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: SpatialInertia::from_matrix(SpatialMatrix::zeros()).unwrap(),
+            parent_to_body: PluckerTransform::identity(),
+        }])
+        .unwrap();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            vec![0.0; tree.n_qd()],
+        );
+        let err = tree
+            .forward_dynamics_dense_at_state(
+                &state,
+                &vec![0.0; tree.n_qd()],
+                SpatialMotion::zero(),
+                &[SpatialForce::zero()],
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, MultibodyError::SingularSystem { .. }));
     }
 
     #[test]

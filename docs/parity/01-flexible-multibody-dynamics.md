@@ -203,7 +203,10 @@ fixed-transform CRBA/RNEA self-consistency substrate (`JointSpaceInertia`,
 `inverse_dynamics_rnea_at_state_no_bias()`. The RNEA layer now also includes
 `inverse_dynamics_rnea_at_state()` with generalized velocity-bias terms, a
 root parent acceleration seed for gravity-style forcing, and per-body external
-spatial forces. ABA, floating-base solves, simulator adapter wiring, scenario
+spatial forces. A dense forward-dynamics bridge,
+`forward_dynamics_dense_at_state()`, solves `H(q) qdd = tau - C` using the
+same CRBA/RNEA paths and serves as an ABA cross-check. The final O(n) ABA,
+floating-base production factorization, simulator adapter wiring, scenario
 opt-in, and external Spatial_v2 oracle fixtures remain open.
 
 ---
@@ -689,12 +692,16 @@ justification first, reviewed before the implementation lands.
   velocity-bias terms, a root parent acceleration seed, and per-body external
   spatial forces; tests prove zero-velocity equivalence to the no-bias path,
   the single-free-flyer bias force, root-acceleration forcing, external-force
-  subtraction, and fail-closed force input validation. Remaining WP-01.1 work:
-  ABA forward dynamics, production floating-base factorization and integration,
-  `MultibodyState` integrator adapter, no-joint byte-equivalence against the
-  current `RigidBodyState` kernel, simulator/environment force wiring,
-  double-pendulum tolerance table, Spatial_v2 oracle fixtures, and scenario
-  exercise.
+  subtraction, and fail-closed force input validation. The dense forward
+  dynamics bridge now exposes `forward_dynamics_dense_at_state()`, backed by a
+  finite checked Gaussian-elimination solver over the state-dependent CRBA
+  matrix and biased RNEA residual; tests prove biased RNEA round-trip recovery,
+  fail-closed generalized-force validation, and singular-system rejection.
+  Remaining WP-01.1 work: O(n) ABA forward dynamics, production floating-base
+  factorization and integration, `MultibodyState` integrator adapter,
+  no-joint byte-equivalence against the current `RigidBodyState` kernel,
+  simulator/environment force wiring, double-pendulum tolerance table,
+  Spatial_v2 oracle fixtures, and scenario exercise.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

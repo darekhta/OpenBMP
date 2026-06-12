@@ -25,6 +25,12 @@ statement = "The openbmp-multibody crate exposes inverse_dynamics_rnea_at_state 
 verification = ["V-MULTIBODY-004"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-005"
+title = "The multibody substrate solves dense forward dynamics"
+statement = "The openbmp-multibody crate exposes forward_dynamics_dense_at_state as a deterministic dense forward-dynamics substrate that forms H(q) with the state-dependent CRBA path, forms C(q, qd, a_root, f_ext) through the biased/forced RNEA path at zero qdd, solves H(q) qdd = tau - C with a finite checked Gaussian-elimination solver, validates generalized-force dimensions and finiteness fail-closed, rejects singular/ill-conditioned joint-space inertia systems fail-closed, and proves a biased RNEA round trip on a nontrivial tree while making no claim that the final O(n) ABA factorization, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-005"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -744,6 +750,27 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-004"]
+
+[[verification]]
+id = "V-MULTIBODY-005"
+kind = "test"
+command = "cargo test -p openbmp-multibody --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "forward_dynamics_dense_at_state",
+  "solve_dense_linear_system",
+  "SingularSystem",
+  "forward_dynamics_dense_round_trips_biased_rnea",
+  "forward_dynamics_dense_rejects_bad_generalized_forces",
+  "forward_dynamics_dense_rejects_singular_inertia",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-005"]
 
 [[verification]]
 id = "V-SIL-001"
