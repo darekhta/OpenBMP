@@ -619,6 +619,141 @@ impl JointSpaceInertia {
     }
 }
 
+/// Generalized-coordinate multibody state derivative.
+///
+/// `q_dot` has one entry for every generalized coordinate in
+/// [`MultibodyState::q`]. `qd_dot` has one entry for every generalized
+/// velocity in [`MultibodyState::qd`]. For quaternion-coordinate joints,
+/// `q_dot` is the already-lifted quaternion-coordinate derivative; callers or
+/// a later simulator adapter are responsible for the velocity-to-coordinate
+/// kinematic lift.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultibodyDerivative {
+    q_dot: Vec<f64>,
+    qd_dot: Vec<f64>,
+}
+
+impl MultibodyDerivative {
+    /// Construct from raw generalized-coordinate and velocity derivatives.
+    #[must_use]
+    pub fn new(q_dot: Vec<f64>, qd_dot: Vec<f64>) -> Self {
+        Self { q_dot, qd_dot }
+    }
+
+    /// All-zero derivative with explicit dimensions.
+    #[must_use]
+    pub fn zero(n_q: usize, n_qd: usize) -> Self {
+        Self {
+            q_dot: vec![0.0; n_q],
+            qd_dot: vec![0.0; n_qd],
+        }
+    }
+
+    /// Generalized-coordinate derivatives.
+    #[must_use]
+    pub fn q_dot(&self) -> &[f64] {
+        &self.q_dot
+    }
+
+    /// Generalized-velocity derivatives.
+    #[must_use]
+    pub fn qd_dot(&self) -> &[f64] {
+        &self.qd_dot
+    }
+
+    /// Returns `true` if every derivative component is finite.
+    #[must_use]
+    pub fn is_finite(&self) -> bool {
+        self.q_dot.iter().all(|v| v.is_finite()) && self.qd_dot.iter().all(|v| v.is_finite())
+    }
+
+    /// Total scalar dimension.
+    #[must_use]
+    pub fn dimension(&self) -> usize {
+        self.q_dot.len() + self.qd_dot.len()
+    }
+
+    /// Locked-order L2 norm over `q_dot` followed by `qd_dot`.
+    #[must_use]
+    pub fn l2_norm(&self) -> f64 {
+        let mut sum = 0.0;
+        for value in &self.q_dot {
+            sum += value * value;
+        }
+        for value in &self.qd_dot {
+            sum += value * value;
+        }
+        <f64 as nalgebra::ComplexField>::sqrt(sum)
+    }
+
+    /// Componentwise derivative sum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the two derivatives have different
+    /// dimensions or the result contains non-finite components.
+    pub fn checked_add(&self, rhs: &Self) -> Result<Self, MultibodyError> {
+        if self.q_dot.len() != rhs.q_dot.len() {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "q_dot",
+                expected: self.q_dot.len(),
+                actual: rhs.q_dot.len(),
+            });
+        }
+        if self.qd_dot.len() != rhs.qd_dot.len() {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "qd_dot",
+                expected: self.qd_dot.len(),
+                actual: rhs.qd_dot.len(),
+            });
+        }
+        let out = Self {
+            q_dot: self
+                .q_dot
+                .iter()
+                .zip(rhs.q_dot.iter())
+                .map(|(lhs, rhs)| lhs + rhs)
+                .collect(),
+            qd_dot: self
+                .qd_dot
+                .iter()
+                .zip(rhs.qd_dot.iter())
+                .map(|(lhs, rhs)| lhs + rhs)
+                .collect(),
+        };
+        if !out.is_finite() {
+            return Err(MultibodyError::NonFinite {
+                reason: "multibody derivative sum contains non-finite components",
+            });
+        }
+        Ok(out)
+    }
+
+    /// Componentwise scalar multiplication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if `scale` or any output component is
+    /// non-finite.
+    pub fn scaled(&self, scale: f64) -> Result<Self, MultibodyError> {
+        if !scale.is_finite() {
+            return Err(MultibodyError::NonFinite {
+                reason: "multibody derivative scale is non-finite",
+            });
+        }
+        let out = Self {
+            q_dot: self.q_dot.iter().map(|value| value * scale).collect(),
+            qd_dot: self.qd_dot.iter().map(|value| value * scale).collect(),
+        };
+        if !out.is_finite() {
+            return Err(MultibodyError::NonFinite {
+                reason: "scaled multibody derivative contains non-finite components",
+            });
+        }
+        Ok(out)
+    }
+}
+
 /// Topologically ordered multibody tree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MultibodyTree {
@@ -724,6 +859,189 @@ impl MultibodyTree {
             });
         }
         Ok(())
+    }
+
+    /// Validate that a derivative vector matches this tree's dimensions and
+    /// contains only finite values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if dimensions or numeric components are
+    /// invalid.
+    pub fn validate_derivative(
+        &self,
+        derivative: &MultibodyDerivative,
+    ) -> Result<(), MultibodyError> {
+        if derivative.q_dot.len() != self.n_q {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "q_dot",
+                expected: self.n_q,
+                actual: derivative.q_dot.len(),
+            });
+        }
+        if derivative.qd_dot.len() != self.n_qd {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "qd_dot",
+                expected: self.n_qd,
+                actual: derivative.qd_dot.len(),
+            });
+        }
+        if !derivative.is_finite() {
+            return Err(MultibodyError::NonFinite {
+                reason: "multibody derivative contains non-finite components",
+            });
+        }
+        Ok(())
+    }
+
+    /// Deterministic componentwise state advance followed by quaternion
+    /// projection.
+    ///
+    /// This mirrors the integrator-side `advance_by` shape without requiring
+    /// `MultibodyState` itself to implement the current `Copy`-bound
+    /// `SimState` trait. The tree owns projection because it knows which
+    /// coordinate slices are free-flyer or spherical quaternions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if state/derivative dimensions are invalid,
+    /// `h_seconds` is non-finite, quaternion projection fails, or the advanced
+    /// state contains non-finite values.
+    pub fn advance_state_by(
+        &self,
+        state: &MultibodyState,
+        h_seconds: f64,
+        derivative: &MultibodyDerivative,
+    ) -> Result<MultibodyState, MultibodyError> {
+        self.validate_state(state)?;
+        self.validate_derivative(derivative)?;
+        if !h_seconds.is_finite() {
+            return Err(MultibodyError::NonFinite {
+                reason: "integration step is non-finite",
+            });
+        }
+
+        let mut q = Vec::with_capacity(self.n_q);
+        for index in 0..self.n_q {
+            q.push(state.q[index] + h_seconds * derivative.q_dot[index]);
+        }
+        let mut qd = Vec::with_capacity(self.n_qd);
+        for index in 0..self.n_qd {
+            qd.push(state.qd[index] + h_seconds * derivative.qd_dot[index]);
+        }
+        let mut advanced = MultibodyState::new(
+            SimTime::from_seconds(state.time.as_seconds() + h_seconds),
+            q,
+            qd,
+        );
+        self.project_state(&mut advanced)?;
+        self.validate_state(&advanced)?;
+        Ok(advanced)
+    }
+
+    /// Project quaternion coordinate slices in-place.
+    ///
+    /// Free-flyer and spherical joints carry quaternion coordinates. This
+    /// normalizes each such slice without changing translation, scalar joint,
+    /// or generalized-velocity coordinates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the state dimensions are invalid, any
+    /// component is non-finite, or a quaternion slice has zero norm.
+    pub fn project_state(&self, state: &mut MultibodyState) -> Result<(), MultibodyError> {
+        self.validate_state(state)?;
+        for body in &self.bodies {
+            match body.joint {
+                Joint::FreeFlyer | Joint::Spherical => {
+                    normalize_quaternion_slice(&mut state.q[body.q_offset..body.q_offset + 4])?;
+                }
+                Joint::Revolute { .. } | Joint::Prismatic { .. } | Joint::Welded { .. } => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Locked-order scalar size of a multibody state.
+    ///
+    /// Components are summed as all `q` entries followed by all `qd` entries,
+    /// matching [`MultibodyDerivative::l2_norm`] and
+    /// [`Self::weighted_error_norm`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the state is dimensionally invalid or
+    /// non-finite.
+    pub fn scalar_state_size(&self, state: &MultibodyState) -> Result<f64, MultibodyError> {
+        self.validate_state(state)?;
+        let mut sum = 0.0;
+        for value in &state.q {
+            sum += value * value;
+        }
+        for value in &state.qd {
+            sum += value * value;
+        }
+        Ok(<f64 as nalgebra::ComplexField>::sqrt(sum))
+    }
+
+    /// Per-component scaled RMS error norm for adaptive integrator adapters.
+    ///
+    /// This follows the same shape as `openbmp-models::Integratable`, walking
+    /// `q` entries then `qd` entries in a locked order:
+    ///
+    /// `sqrt((1 / N) * sum((h * error_deriv_i / (atol + rtol * max(|prev_i|,
+    /// end_i|)))^2))`
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if either state, the derivative, step, or
+    /// tolerance inputs are invalid.
+    pub fn weighted_error_norm(
+        &self,
+        end_state: &MultibodyState,
+        prev_state: &MultibodyState,
+        error_derivative: &MultibodyDerivative,
+        h_seconds: f64,
+        atol: f64,
+        rtol: f64,
+    ) -> Result<f64, MultibodyError> {
+        self.validate_state(end_state)?;
+        self.validate_state(prev_state)?;
+        self.validate_derivative(error_derivative)?;
+        if !h_seconds.is_finite() || !atol.is_finite() || !rtol.is_finite() {
+            return Err(MultibodyError::NonFinite {
+                reason: "weighted error norm inputs contain non-finite components",
+            });
+        }
+        if atol <= 0.0 || rtol < 0.0 {
+            return Err(MultibodyError::InvalidParameter {
+                reason: "weighted error norm tolerances must satisfy atol > 0 and rtol >= 0",
+            });
+        }
+
+        let mut sum = 0.0;
+        for index in 0..self.n_q {
+            sum += weighted_error_term(
+                prev_state.q[index],
+                end_state.q[index],
+                error_derivative.q_dot[index],
+                h_seconds,
+                atol,
+                rtol,
+            );
+        }
+        for index in 0..self.n_qd {
+            sum += weighted_error_term(
+                prev_state.qd[index],
+                end_state.qd[index],
+                error_derivative.qd_dot[index],
+                h_seconds,
+                atol,
+                rtol,
+            );
+        }
+        let dimension = (self.n_q + self.n_qd) as f64;
+        Ok(<f64 as nalgebra::ComplexField>::sqrt(sum / dimension))
     }
 
     /// Effective parent-to-child transform for a body at the supplied
@@ -1292,6 +1610,45 @@ fn rotation_from_quaternion_child_from_parent(q: &[f64]) -> Result<Matrix3<f64>,
     ))
 }
 
+fn normalize_quaternion_slice(q: &mut [f64]) -> Result<(), MultibodyError> {
+    if q.len() != 4 {
+        return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+            vector: "quaternion",
+            expected: 4,
+            actual: q.len(),
+        });
+    }
+    if !q.iter().all(|v| v.is_finite()) {
+        return Err(MultibodyError::NonFinite {
+            reason: "quaternion contains non-finite components",
+        });
+    }
+    let norm2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if norm2 == 0.0 {
+        return Err(MultibodyError::InvalidParameter {
+            reason: "quaternion norm must be non-zero",
+        });
+    }
+    let inv_norm = 1.0 / <f64 as nalgebra::ComplexField>::sqrt(norm2);
+    for value in q.iter_mut() {
+        *value *= inv_norm;
+    }
+    Ok(())
+}
+
+fn weighted_error_term(
+    previous: f64,
+    current: f64,
+    error_derivative: f64,
+    h_seconds: f64,
+    atol: f64,
+    rtol: f64,
+) -> f64 {
+    let scale = atol + rtol * abs_finite(previous).max(abs_finite(current));
+    let scaled = h_seconds * error_derivative / scale;
+    scaled * scaled
+}
+
 fn solve_dense_linear_system(
     dimension: usize,
     matrix_row_major: &[f64],
@@ -1741,6 +2098,159 @@ mod tests {
         assert!(matches!(
             bad_quaternion,
             MultibodyError::InvalidParameter { .. }
+        ));
+    }
+
+    #[test]
+    fn multibody_derivative_checked_arithmetic_and_norm_are_locked() {
+        let derivative = MultibodyDerivative::new(vec![1.0, -2.0, 3.0], vec![4.0, -5.0, 6.0, -7.0]);
+        let scaled = derivative.scaled(0.5).unwrap();
+        let summed = derivative.checked_add(&scaled).unwrap();
+        let mismatch = derivative
+            .checked_add(&MultibodyDerivative::new(vec![1.0], vec![2.0]))
+            .unwrap_err();
+
+        assert_eq!(derivative.dimension(), 7);
+        assert_abs_diff_eq!(
+            derivative.l2_norm(),
+            <f64 as nalgebra::ComplexField>::sqrt(1.0 + 4.0 + 9.0 + 16.0 + 25.0 + 36.0 + 49.0),
+            epsilon = 1.0e-15
+        );
+        assert_eq!(scaled.q_dot(), &[0.5, -1.0, 1.5]);
+        assert_eq!(scaled.qd_dot(), &[2.0, -2.5, 3.0, -3.5]);
+        assert_eq!(summed.q_dot(), &[1.5, -3.0, 4.5]);
+        assert_eq!(summed.qd_dot(), &[6.0, -7.5, 9.0, -10.5]);
+        assert!(matches!(
+            mismatch,
+            MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "q_dot",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn advance_state_by_integrates_components_and_projects_quaternions() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2],
+            vec![1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0],
+        );
+        let derivative = MultibodyDerivative::new(
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 0.4, 0.5],
+            vec![0.2, 0.4, -0.6, -0.8, 1.0, -1.2, 1.4, -1.6],
+        );
+
+        let advanced = tree.advance_state_by(&state, 0.5, &derivative).unwrap();
+
+        assert_abs_diff_eq!(advanced.time.as_seconds(), 0.5, epsilon = 0.0);
+        assert_eq!(&advanced.q[0..4], &[1.0, 0.0, 0.0, 0.0]);
+        assert_abs_diff_eq!(advanced.q[4], 0.5, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(advanced.q[5], 1.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(advanced.q[6], 1.5, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(advanced.q[7], 0.3, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(advanced.q[8], 0.45, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(advanced.qd[0], 1.1, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(advanced.qd[1], -0.8, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(advanced.qd[7], -4.8, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn project_state_normalizes_free_flyer_and_spherical_quaternions() {
+        let root = TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let spherical = TreeBodySpec {
+            id: BodyId::new(2),
+            parent: Some(BodyIndex::new(0)),
+            joint: Joint::Spherical,
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let tree = MultibodyTree::new(vec![root, spherical]).unwrap();
+        let mut state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![2.0, 0.0, 0.0, 0.0, 7.0, 8.0, 9.0, 0.0, 0.0, 3.0, 4.0],
+            vec![0.0; tree.n_qd()],
+        );
+
+        tree.project_state(&mut state).unwrap();
+
+        assert_eq!(&state.q[0..4], &[1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(&state.q[4..7], &[7.0, 8.0, 9.0]);
+        assert_abs_diff_eq!(state.q[7], 0.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(state.q[8], 0.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(state.q[9], 0.6, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(state.q[10], 0.8, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn scalar_state_size_and_weighted_error_norm_use_locked_order() {
+        let tree = sample_tree();
+        let prev = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.2, -0.1, 0.3, 0.4, 0.15],
+            vec![0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8],
+        );
+        let end = MultibodyState::new(
+            SimTime::from_seconds(0.25),
+            vec![1.0, 0.0, 0.0, 0.0, 0.25, -0.05, 0.35, 0.45, 0.2],
+            vec![0.2, -0.1, 0.4, -0.3, 0.6, -0.5, 0.8, -0.7],
+        );
+        let error = MultibodyDerivative::new(
+            vec![0.01, -0.02, 0.03, -0.04, 0.05, -0.06, 0.07, -0.08, 0.09],
+            vec![0.11, -0.12, 0.13, -0.14, 0.15, -0.16, 0.17, -0.18],
+        );
+
+        let state_size = tree.scalar_state_size(&prev).unwrap();
+        let norm = tree
+            .weighted_error_norm(&end, &prev, &error, 0.25, 1.0e-6, 1.0e-3)
+            .unwrap();
+
+        let mut expected_size_sum = 0.0;
+        for value in &prev.q {
+            expected_size_sum += value * value;
+        }
+        for value in &prev.qd {
+            expected_size_sum += value * value;
+        }
+        let mut expected_norm_sum = 0.0;
+        for index in 0..tree.n_q() {
+            expected_norm_sum += weighted_error_term(
+                prev.q[index],
+                end.q[index],
+                error.q_dot()[index],
+                0.25,
+                1.0e-6,
+                1.0e-3,
+            );
+        }
+        for index in 0..tree.n_qd() {
+            expected_norm_sum += weighted_error_term(
+                prev.qd[index],
+                end.qd[index],
+                error.qd_dot()[index],
+                0.25,
+                1.0e-6,
+                1.0e-3,
+            );
+        }
+        let expected_norm = <f64 as nalgebra::ComplexField>::sqrt(expected_norm_sum / 17.0);
+
+        assert_abs_diff_eq!(
+            state_size,
+            <f64 as nalgebra::ComplexField>::sqrt(expected_size_sum),
+            epsilon = 1.0e-15
+        );
+        assert_abs_diff_eq!(norm, expected_norm, epsilon = 1.0e-15);
+        assert!(matches!(
+            tree.weighted_error_norm(&end, &prev, &error, 0.25, 0.0, 1.0e-3),
+            Err(MultibodyError::InvalidParameter { .. })
         ));
     }
 

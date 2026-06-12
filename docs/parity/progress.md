@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-12, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (108 requirement ids).
+traceability (109 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -27,7 +27,7 @@ As of this snapshot: **22 implemented · 21 partial · 0 in progress ·
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
 |---|---|---|---|---|
-| 01 | Multibody dynamics | T0 plus WP-01.1 spatial-vector/CRBA/RNEA/dense-FD substrate crate; O(n) ABA, simulator wiring, and oracle validation still open | 0/1/6 | finish WP-01.1 |
+| 01 | Multibody dynamics | T0 plus WP-01.1 spatial-vector/CRBA/RNEA/dense-FD/state-integration substrate crate; O(n) ABA, simulator wiring, and oracle validation still open | 0/1/6 | finish WP-01.1 |
 | 02 | Structural, loads, slosh, POGO | T0 (+ feed-side POGO prerequisite now exists via 05) | 0/0/9 | WP-02.1-a |
 | 03 | Aero database & CFD | T0 baseline | 0/0/9 | WP-03.1 |
 | 04 | Aerothermal, real-gas, TPS | T0 (+ shared `openbmp-thermochem` scaffold) | 0/0/11 | WP-04.1-a |
@@ -95,10 +95,15 @@ force input validation (`REQ-MULTIBODY-004`). The dense forward-dynamics bridge
 adds `forward_dynamics_dense_at_state()`, forming `H(q)` through CRBA and
 `C(q, qd, a_root, f_ext)` through RNEA before solving `H qdd = tau - C`, with
 round-trip, bad-force, and singular-system checks (`REQ-MULTIBODY-005`).
-Missing for full WP-01.1: O(n) ABA forward dynamics, floating-base
-solve/factorization, single-free-flyer byte-equivalence against the current
-kernel, simulator/environment force wiring, scenario wiring, gimballed ascent
-exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
+The state-integration substrate adds `MultibodyDerivative`,
+`advance_state_by()`, `project_state()`, `scalar_state_size()`, and
+`weighted_error_norm()` with derivative arithmetic, quaternion projection,
+scalar norm, and adaptive-error checks (`REQ-MULTIBODY-006`). Missing for full
+WP-01.1: O(n) ABA forward dynamics, floating-base solve/factorization, actual
+`openbmp-models`/`openbmp-sim` adapter wiring, single-free-flyer
+byte-equivalence against the current kernel, simulator/environment force
+wiring, scenario wiring, gimballed ascent exercise, and Spatial_v2 oracle
+checks. WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 
@@ -396,7 +401,7 @@ verifier, or capture logic.
 - **Determinism toolchain hardened:** FP-environment guard (x86_64 +
   aarch64 code paths), FMA contraction ban, provenance check in CI; the
   aarch64 CI determinism lane is the one outstanding piece (WP-12.3-b).
-- **Traceability:** 108 requirement ids in `requirements.toml`, including
+- **Traceability:** 109 requirement ids in `requirements.toml`, including
   the REQ-PROP, REQ-MC, REQ-CONTACT, REQ-PLUME, and REQ-TRAJOPT families.
 - **Byte-stable-by-default pattern observed** in everything that landed:
   pressure-thrust, transient grain, transports, realtime, contact, and

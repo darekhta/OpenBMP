@@ -31,6 +31,12 @@ statement = "The openbmp-multibody crate exposes forward_dynamics_dense_at_state
 verification = ["V-MULTIBODY-005"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-006"
+title = "The multibody substrate advances generalized state vectors deterministically"
+statement = "The openbmp-multibody crate exposes MultibodyDerivative and tree-owned generalized-state integration helpers that validate derivative dimensions and finiteness fail-closed, scale and add derivative vectors without panic-prone dynamic-vector arithmetic, advance q/qd in locked component order, project free-flyer and spherical quaternion coordinate slices using tree topology, compute scalar state size and weighted adaptive-error norms in the same locked order, and prove derivative arithmetic, state advance/projection, spherical projection, scalar norm, weighted error norm, and invalid tolerance handling while making no claim that openbmp-models SimState integration, openbmp-sim adapter wiring, byte-equivalence, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-006"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -771,6 +777,30 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-005"]
+
+[[verification]]
+id = "V-MULTIBODY-006"
+kind = "test"
+command = "cargo test -p openbmp-multibody --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "MultibodyDerivative",
+  "advance_state_by",
+  "project_state",
+  "scalar_state_size",
+  "weighted_error_norm",
+  "multibody_derivative_checked_arithmetic_and_norm_are_locked",
+  "advance_state_by_integrates_components_and_projects_quaternions",
+  "project_state_normalizes_free_flyer_and_spherical_quaternions",
+  "scalar_state_size_and_weighted_error_norm_use_locked_order",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-006"]
 
 [[verification]]
 id = "V-SIL-001"
