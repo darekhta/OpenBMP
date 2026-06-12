@@ -315,6 +315,22 @@ impl PluckerTransform {
         let x = self.motion_matrix_parent_to_child();
         SpatialInertia::from_matrix(x.transpose() * inertia_child.matrix * x)
     }
+
+    /// Compose two parent-to-child transforms.
+    ///
+    /// `self` maps frame `A` to frame `B`; `next` maps frame `B` to frame `C`.
+    /// The returned transform maps `A` to `C`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError::NonFinite`] if the composed transform contains
+    /// non-finite components.
+    pub fn then(&self, next: &Self) -> Result<Self, MultibodyError> {
+        let rot_child_from_parent = next.rot_child_from_parent * self.rot_child_from_parent;
+        let translation_parent_m = self.translation_parent_m
+            + self.rot_child_from_parent.transpose() * next.translation_parent_m;
+        Self::new(rot_child_from_parent, translation_parent_m)
+    }
 }
 
 /// Joint type connecting a tree body to its parent.
@@ -423,6 +439,57 @@ impl Joint {
                 }
                 columns
             }
+        }
+    }
+
+    /// Configuration-dependent parent-to-child transform contributed by this
+    /// joint.
+    ///
+    /// Coordinate order is:
+    ///
+    /// * free-flyer: `[qw, qx, qy, qz, px, py, pz]`
+    /// * revolute: `[theta_rad]`
+    /// * prismatic: `[displacement_m]`
+    /// * welded: `[]`
+    /// * spherical: `[qw, qx, qy, qz]`
+    ///
+    /// Quaternion coordinates are normalized during evaluation so small
+    /// integration drift does not change the transform scale.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] when the coordinate slice length is wrong,
+    /// any coordinate is non-finite, or a quaternion has zero norm.
+    pub fn joint_transform(&self, q: &[f64]) -> Result<PluckerTransform, MultibodyError> {
+        if q.len() != self.n_q() {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "joint q",
+                expected: self.n_q(),
+                actual: q.len(),
+            });
+        }
+        if !q.iter().all(|v| v.is_finite()) {
+            return Err(MultibodyError::NonFinite {
+                reason: "joint coordinates contain non-finite components",
+            });
+        }
+        match self {
+            Self::FreeFlyer => {
+                let rot_child_from_parent = rotation_from_quaternion_child_from_parent(&q[0..4])?;
+                PluckerTransform::new(rot_child_from_parent, Vector3::new(q[4], q[5], q[6]))
+            }
+            Self::Revolute { axis_body_unit } => PluckerTransform::new(
+                rotation_about_unit_axis(*axis_body_unit, q[0]),
+                Vector3::zeros(),
+            ),
+            Self::Prismatic { axis_body_unit } => {
+                PluckerTransform::new(Matrix3::identity(), *axis_body_unit * q[0])
+            }
+            Self::Welded { .. } => Ok(PluckerTransform::identity()),
+            Self::Spherical => PluckerTransform::new(
+                rotation_from_quaternion_child_from_parent(q)?,
+                Vector3::zeros(),
+            ),
         }
     }
 }
@@ -659,6 +726,54 @@ impl MultibodyTree {
         Ok(())
     }
 
+    /// Effective parent-to-child transform for a body at the supplied
+    /// generalized state.
+    ///
+    /// This composes the body-fixed tree transform with the joint's
+    /// configuration-dependent transform.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if `body_index` is outside the tree, the
+    /// state has invalid dimensions/non-finite values, or the joint transform
+    /// rejects its coordinate slice.
+    pub fn body_transform_parent_to_child_at_state(
+        &self,
+        body_index: BodyIndex,
+        state: &MultibodyState,
+    ) -> Result<PluckerTransform, MultibodyError> {
+        self.validate_state(state)?;
+        let body = self
+            .bodies
+            .get(body_index.index())
+            .ok_or(MultibodyError::InvalidBodyIndex {
+                index: body_index.index(),
+                body_count: self.bodies.len(),
+            })?;
+        let q_start = body.q_offset;
+        let q_end = q_start + body.joint.n_q();
+        let joint_transform = body.joint.joint_transform(&state.q[q_start..q_end])?;
+        body.parent_to_body.then(&joint_transform)
+    }
+
+    /// Composite-rigid-body joint-space inertia at a generalized state.
+    ///
+    /// This applies q-dependent joint transforms but still omits velocity bias,
+    /// gravity, external forces, floating-base factorization, and ABA. It is a
+    /// state-dependent CRBA substrate, not a full WP-01.1 completion claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] when state validation or a joint transform
+    /// fails.
+    pub fn joint_space_inertia_crba_at_state(
+        &self,
+        state: &MultibodyState,
+    ) -> Result<JointSpaceInertia, MultibodyError> {
+        let transforms = self.body_transforms_parent_to_child_at_state(state)?;
+        self.joint_space_inertia_crba_with_transforms(&transforms)
+    }
+
     /// Composite-rigid-body joint-space inertia for the current fixed tree
     /// transforms and q-independent joint subspaces.
     ///
@@ -674,6 +789,15 @@ impl MultibodyTree {
     pub fn joint_space_inertia_crba_fixed_transforms(
         &self,
     ) -> Result<JointSpaceInertia, MultibodyError> {
+        let transforms: Vec<PluckerTransform> =
+            self.bodies.iter().map(|body| body.parent_to_body).collect();
+        self.joint_space_inertia_crba_with_transforms(&transforms)
+    }
+
+    fn joint_space_inertia_crba_with_transforms(
+        &self,
+        transforms_parent_to_child: &[PluckerTransform],
+    ) -> Result<JointSpaceInertia, MultibodyError> {
         let mut composite_inertia: Vec<SpatialMatrix> = self
             .bodies
             .iter()
@@ -682,9 +806,7 @@ impl MultibodyTree {
 
         for child_index in (0..self.bodies.len()).rev() {
             if let Some(parent) = self.bodies[child_index].parent {
-                let x = self.bodies[child_index]
-                    .parent_to_body
-                    .motion_matrix_parent_to_child();
+                let x = transforms_parent_to_child[child_index].motion_matrix_parent_to_child();
                 let transformed = x.transpose() * composite_inertia[child_index] * x;
                 composite_inertia[parent.index()] += transformed;
             }
@@ -710,7 +832,8 @@ impl MultibodyTree {
                         h.set_symmetric(row, col, row_motion.vector().dot(&force));
                     }
                     if let Some(parent) = ancestor.parent {
-                        let x = ancestor.parent_to_body.motion_matrix_parent_to_child();
+                        let x = transforms_parent_to_child[ancestor_index]
+                            .motion_matrix_parent_to_child();
                         force = x.transpose() * force;
                         ancestor_index = parent.index();
                     } else {
@@ -721,6 +844,26 @@ impl MultibodyTree {
         }
 
         JointSpaceInertia::new(self.n_qd, h.values_row_major)
+    }
+
+    /// Zero-velocity Recursive Newton-Euler inverse dynamics at a generalized
+    /// state.
+    ///
+    /// This uses q-dependent joint transforms, but still omits velocity bias,
+    /// gravity, external forces, and ABA factorization. Given `qdd`, it computes
+    /// `tau = H(q)*qdd` for the state-dependent CRBA substrate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] when state validation, qdd validation, or a
+    /// joint transform fails.
+    pub fn inverse_dynamics_rnea_at_state_no_bias(
+        &self,
+        state: &MultibodyState,
+        qdd: &[f64],
+    ) -> Result<Vec<f64>, MultibodyError> {
+        let transforms = self.body_transforms_parent_to_child_at_state(state)?;
+        self.inverse_dynamics_rnea_with_transforms(qdd, &transforms)
     }
 
     /// Zero-velocity Recursive Newton-Euler inverse dynamics over fixed tree
@@ -740,6 +883,16 @@ impl MultibodyTree {
     pub fn inverse_dynamics_rnea_fixed_transforms(
         &self,
         qdd: &[f64],
+    ) -> Result<Vec<f64>, MultibodyError> {
+        let transforms: Vec<PluckerTransform> =
+            self.bodies.iter().map(|body| body.parent_to_body).collect();
+        self.inverse_dynamics_rnea_with_transforms(qdd, &transforms)
+    }
+
+    fn inverse_dynamics_rnea_with_transforms(
+        &self,
+        qdd: &[f64],
+        transforms_parent_to_child: &[PluckerTransform],
     ) -> Result<Vec<f64>, MultibodyError> {
         if qdd.len() != self.n_qd {
             return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
@@ -765,7 +918,8 @@ impl MultibodyTree {
         for body_index in 0..self.bodies.len() {
             let body = &self.bodies[body_index];
             let mut acceleration = if let Some(parent) = body.parent {
-                body.parent_to_body.motion_matrix_parent_to_child() * accelerations[parent.index()]
+                transforms_parent_to_child[body_index].motion_matrix_parent_to_child()
+                    * accelerations[parent.index()]
             } else {
                 SpatialVector::zeros()
             };
@@ -783,8 +937,7 @@ impl MultibodyTree {
                 tau[body.qd_offset + local] = motion.vector().dot(&forces[body_index]);
             }
             if let Some(parent) = body.parent {
-                let parent_force = body
-                    .parent_to_body
+                let parent_force = transforms_parent_to_child[body_index]
                     .motion_matrix_parent_to_child()
                     .transpose()
                     * forces[body_index];
@@ -792,6 +945,22 @@ impl MultibodyTree {
             }
         }
         Ok(tau)
+    }
+
+    fn body_transforms_parent_to_child_at_state(
+        &self,
+        state: &MultibodyState,
+    ) -> Result<Vec<PluckerTransform>, MultibodyError> {
+        self.validate_state(state)?;
+        self.bodies
+            .iter()
+            .map(|body| {
+                let q_start = body.q_offset;
+                let q_end = q_start + body.joint.n_q();
+                let joint_transform = body.joint.joint_transform(&state.q[q_start..q_end])?;
+                body.parent_to_body.then(&joint_transform)
+            })
+            .collect()
     }
 }
 
@@ -867,6 +1036,14 @@ pub enum MultibodyError {
         /// Actual length.
         actual: usize,
     },
+    /// Body index outside the tree.
+    #[error("invalid multibody body index {index}; body count is {body_count}")]
+    InvalidBodyIndex {
+        /// Requested body index.
+        index: usize,
+        /// Number of bodies in the tree.
+        body_count: usize,
+    },
     /// Lower state-layer mass-property validation failed.
     #[error(transparent)]
     State(#[from] openbmp_state::StateError),
@@ -885,6 +1062,62 @@ fn unit_axis(axis: Vector3<f64>, reason: &'static str) -> Result<Vector3<f64>, M
         return Err(MultibodyError::InvalidParameter { reason });
     }
     Ok(axis / norm)
+}
+
+fn rotation_about_unit_axis(axis: Vector3<f64>, angle_rad: f64) -> Matrix3<f64> {
+    let (sin_angle, cos_angle) = <f64 as nalgebra::ComplexField>::sin_cos(angle_rad);
+    let one_minus_cos = 1.0 - cos_angle;
+    let x = axis.x;
+    let y = axis.y;
+    let z = axis.z;
+    Matrix3::new(
+        cos_angle + x * x * one_minus_cos,
+        x * y * one_minus_cos - z * sin_angle,
+        x * z * one_minus_cos + y * sin_angle,
+        y * x * one_minus_cos + z * sin_angle,
+        cos_angle + y * y * one_minus_cos,
+        y * z * one_minus_cos - x * sin_angle,
+        z * x * one_minus_cos - y * sin_angle,
+        z * y * one_minus_cos + x * sin_angle,
+        cos_angle + z * z * one_minus_cos,
+    )
+}
+
+fn rotation_from_quaternion_child_from_parent(q: &[f64]) -> Result<Matrix3<f64>, MultibodyError> {
+    if q.len() != 4 {
+        return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+            vector: "quaternion",
+            expected: 4,
+            actual: q.len(),
+        });
+    }
+    if !q.iter().all(|v| v.is_finite()) {
+        return Err(MultibodyError::NonFinite {
+            reason: "quaternion contains non-finite components",
+        });
+    }
+    let norm2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if norm2 == 0.0 {
+        return Err(MultibodyError::InvalidParameter {
+            reason: "quaternion norm must be non-zero",
+        });
+    }
+    let inv_norm = 1.0 / <f64 as nalgebra::ComplexField>::sqrt(norm2);
+    let w = q[0] * inv_norm;
+    let x = q[1] * inv_norm;
+    let y = q[2] * inv_norm;
+    let z = q[3] * inv_norm;
+    Ok(Matrix3::new(
+        1.0 - 2.0 * (y * y + z * z),
+        2.0 * (x * y - w * z),
+        2.0 * (x * z + w * y),
+        2.0 * (x * y + w * z),
+        1.0 - 2.0 * (x * x + z * z),
+        2.0 * (y * z - w * x),
+        2.0 * (x * z - w * y),
+        2.0 * (y * z + w * x),
+        1.0 - 2.0 * (x * x + y * y),
+    ))
 }
 
 #[cfg(test)]
@@ -1020,6 +1253,31 @@ mod tests {
     }
 
     #[test]
+    fn plucker_transform_then_composes_parent_to_child_frames() {
+        let parent_to_mid = PluckerTransform::new(
+            UnitQuaternion::from_euler_angles(0.0, 0.0, core::f64::consts::FRAC_PI_2)
+                .to_rotation_matrix()
+                .into_inner(),
+            Vector3::new(1.0, 2.0, 3.0),
+        )
+        .unwrap();
+        let mid_to_child =
+            PluckerTransform::new(Matrix3::identity(), Vector3::new(4.0, 0.0, -1.0)).unwrap();
+
+        let composed = parent_to_mid.then(&mid_to_child).unwrap();
+
+        assert_abs_diff_eq!(composed.translation_parent_m().x, 1.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(composed.translation_parent_m().y, -2.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(composed.translation_parent_m().z, 2.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(
+            composed.motion_matrix_parent_to_child(),
+            mid_to_child.motion_matrix_parent_to_child()
+                * parent_to_mid.motion_matrix_parent_to_child(),
+            epsilon = 1.0e-14
+        );
+    }
+
+    #[test]
     fn joint_motion_subspaces_use_locked_axis_order() {
         let free = Joint::FreeFlyer.motion_subspace();
         let revolute = Joint::revolute(Vector3::new(0.0, 0.0, 2.0))
@@ -1036,6 +1294,61 @@ mod tests {
         assert_eq!(revolute[0].linear_m_s(), Vector3::zeros());
         assert_eq!(prismatic[0].angular_rad_s(), Vector3::zeros());
         assert_eq!(prismatic[0].linear_m_s(), Vector3::new(1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn joint_transforms_apply_configuration_coordinates() {
+        let revolute = Joint::revolute(Vector3::new(0.0, 0.0, 2.0)).unwrap();
+        let prismatic = Joint::prismatic(Vector3::new(3.0, 0.0, 0.0)).unwrap();
+
+        let revolute_transform = revolute
+            .joint_transform(&[core::f64::consts::FRAC_PI_2])
+            .unwrap();
+        let prismatic_transform = prismatic.joint_transform(&[2.5]).unwrap();
+
+        assert_abs_diff_eq!(
+            revolute_transform.rot_child_from_parent(),
+            &Matrix3::new(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+            epsilon = 1.0e-14
+        );
+        assert_eq!(revolute_transform.translation_parent_m(), &Vector3::zeros());
+        assert_eq!(
+            prismatic_transform.rot_child_from_parent(),
+            &Matrix3::identity()
+        );
+        assert_abs_diff_eq!(
+            prismatic_transform.translation_parent_m(),
+            &Vector3::new(2.5, 0.0, 0.0),
+            epsilon = 1.0e-14
+        );
+    }
+
+    #[test]
+    fn quaternion_joint_transforms_normalize_and_reject_zero_norm() {
+        let free = Joint::FreeFlyer;
+        let spherical = Joint::Spherical;
+
+        let free_transform = free
+            .joint_transform(&[2.0, 0.0, 0.0, 0.0, 1.0, -2.0, 3.0])
+            .unwrap();
+        let spherical_transform = spherical.joint_transform(&[2.0, 0.0, 0.0, 0.0]).unwrap();
+        let zero_quaternion_err = spherical
+            .joint_transform(&[0.0, 0.0, 0.0, 0.0])
+            .unwrap_err();
+
+        assert_eq!(free_transform.rot_child_from_parent(), &Matrix3::identity());
+        assert_eq!(
+            free_transform.translation_parent_m(),
+            &Vector3::new(1.0, -2.0, 3.0)
+        );
+        assert_eq!(
+            spherical_transform.rot_child_from_parent(),
+            &Matrix3::identity()
+        );
+        assert!(matches!(
+            zero_quaternion_err,
+            MultibodyError::InvalidParameter { .. }
+        ));
     }
 
     #[test]
@@ -1084,6 +1397,44 @@ mod tests {
     }
 
     #[test]
+    fn body_transform_at_state_composes_fixed_and_joint_transforms() {
+        let root = TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let slider = TreeBodySpec {
+            id: BodyId::new(2),
+            parent: Some(BodyIndex::new(0)),
+            joint: Joint::prismatic(Vector3::new(1.0, 0.0, 0.0)).unwrap(),
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::new(
+                UnitQuaternion::from_euler_angles(0.0, 0.0, core::f64::consts::FRAC_PI_2)
+                    .to_rotation_matrix()
+                    .into_inner(),
+                Vector3::new(1.0, 2.0, 3.0),
+            )
+            .unwrap(),
+        };
+        let tree = MultibodyTree::new(vec![root, slider]).unwrap();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0],
+            vec![0.0; tree.n_qd()],
+        );
+
+        let transform = tree
+            .body_transform_parent_to_child_at_state(BodyIndex::new(1), &state)
+            .unwrap();
+
+        assert_abs_diff_eq!(transform.translation_parent_m().x, 1.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(transform.translation_parent_m().y, -2.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(transform.translation_parent_m().z, 3.0, epsilon = 1.0e-14);
+    }
+
+    #[test]
     fn multibody_tree_rejects_invalid_topology() {
         let child_before_parent = TreeBodySpec {
             id: BodyId::new(2),
@@ -1103,6 +1454,39 @@ mod tests {
         assert!(matches!(
             MultibodyTree::new(vec![child_before_parent, root]),
             Err(MultibodyError::InvalidTopology { .. })
+        ));
+    }
+
+    #[test]
+    fn state_dependent_transforms_reject_bad_body_index_or_quaternion() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.1],
+            vec![0.0; tree.n_qd()],
+        );
+        let invalid_body = tree
+            .body_transform_parent_to_child_at_state(BodyIndex::new(99), &state)
+            .unwrap_err();
+        let bad_quaternion_state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.1],
+            vec![0.0; tree.n_qd()],
+        );
+        let bad_quaternion = tree
+            .joint_space_inertia_crba_at_state(&bad_quaternion_state)
+            .unwrap_err();
+
+        assert!(matches!(
+            invalid_body,
+            MultibodyError::InvalidBodyIndex {
+                index: 99,
+                body_count: 3
+            }
+        ));
+        assert!(matches!(
+            bad_quaternion,
+            MultibodyError::InvalidParameter { .. }
         ));
     }
 
@@ -1141,6 +1525,39 @@ mod tests {
             let mut qdd = vec![0.0; tree.n_qd()];
             qdd[col] = 1.0;
             let tau = tree.inverse_dynamics_rnea_fixed_transforms(&qdd).unwrap();
+            for (row, tau_row) in tau.iter().enumerate() {
+                assert_abs_diff_eq!(*tau_row, h.at(row, col).unwrap(), epsilon = 1.0e-13);
+            }
+        }
+
+        for row in 0..h.dimension() {
+            assert!(h.at(row, row).unwrap() > 0.0);
+            for col in 0..h.dimension() {
+                assert_abs_diff_eq!(
+                    h.at(row, col).unwrap(),
+                    h.at(col, row).unwrap(),
+                    epsilon = 1.0e-14
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn crba_at_state_matches_rnea_no_bias_columns() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.2, -0.1, 0.3, 0.4, 0.15],
+            vec![0.0; tree.n_qd()],
+        );
+        let h = tree.joint_space_inertia_crba_at_state(&state).unwrap();
+
+        for col in 0..tree.n_qd() {
+            let mut qdd = vec![0.0; tree.n_qd()];
+            qdd[col] = 1.0;
+            let tau = tree
+                .inverse_dynamics_rnea_at_state_no_bias(&state, &qdd)
+                .unwrap();
             for (row, tau_row) in tau.iter().enumerate() {
                 assert_abs_diff_eq!(*tau_row, h.at(row, col).unwrap(), epsilon = 1.0e-13);
             }

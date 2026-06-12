@@ -196,9 +196,13 @@ the first WP-01.1 spatial-vector substrate: `SpatialMotion`, `SpatialForce`,
 `MultibodyTree`/`MultibodyState` topology surface. It also has the first
 fixed-transform CRBA/RNEA self-consistency substrate (`JointSpaceInertia`,
 `joint_space_inertia_crba_fixed_transforms()`, and
-`inverse_dynamics_rnea_fixed_transforms()`). ABA, q-dependent joint transforms,
-velocity-bias/external-force RNEA, simulator adapter wiring, scenario opt-in,
-and external Spatial_v2 oracle fixtures remain open.
+`inverse_dynamics_rnea_fixed_transforms()`) plus the next q-dependent layer:
+`Joint::joint_transform()`, `PluckerTransform::then()`,
+`body_transform_parent_to_child_at_state()`,
+`joint_space_inertia_crba_at_state()`, and
+`inverse_dynamics_rnea_at_state_no_bias()`. ABA, velocity-bias/gravity/
+external-force RNEA, simulator adapter wiring, scenario opt-in, and external
+Spatial_v2 oracle fixtures remain open.
 
 ---
 
@@ -672,9 +676,15 @@ justification first, reviewed before the implementation lands.
   `JointSpaceInertia`, `joint_space_inertia_crba_fixed_transforms()`, and
   `inverse_dynamics_rnea_fixed_transforms()`; tests prove the single-root CRBA
   block equals the root spatial inertia and that fixed-transform CRBA columns
-  match zero-velocity RNEA generalized forces on a small tree. Remaining
-  WP-01.1 work: q-dependent joint transforms, velocity-bias/external-force
-  RNEA, ABA forward dynamics, full CRBA over joint coordinates,
+  match zero-velocity RNEA generalized forces on a small tree. The q-dependent
+  layer now also exposes `Joint::joint_transform()`,
+  `PluckerTransform::then()`, `body_transform_parent_to_child_at_state()`,
+  `joint_space_inertia_crba_at_state()`, and
+  `inverse_dynamics_rnea_at_state_no_bias()`; tests prove transform
+  composition, quaternion validation/normalization, fail-closed body-index
+  handling, and state-dependent CRBA columns against no-bias RNEA. Remaining
+  WP-01.1 work: velocity-bias/gravity/external-force RNEA, ABA forward
+  dynamics, production floating-base factorization and integration,
   `MultibodyState` integrator adapter, no-joint byte-equivalence against the
   current `RigidBodyState` kernel, double-pendulum tolerance table, Spatial_v2
   oracle fixtures, and scenario exercise.
