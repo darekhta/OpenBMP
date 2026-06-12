@@ -210,11 +210,14 @@ articulated-body path now exposes `forward_dynamics_aba_at_state()` with
 fixed-order symmetric LDLT solves for each local articulated joint block,
 including the free-flyer root. The state integration substrate now includes
 `MultibodyDerivative`, `advance_state_by()`, `project_state()`,
-`scalar_state_size()`, and `weighted_error_norm()`; this is not yet an
-`openbmp-models::SimState` implementation because that trait is currently
-`Copy`-bound while `MultibodyState` is variable-size. Simulator adapter wiring,
-scenario opt-in, double-pendulum tolerance tables, and external Spatial_v2
-oracle fixtures remain open.
+`scalar_state_size()`, `weighted_error_norm()`,
+`coordinate_derivative_from_velocity()`, and
+`derivative_from_state_and_acceleration()`, so qd/qdd outputs can be lifted
+into deterministic `q_dot`/`qd_dot` derivatives before simulator wiring. This
+is not yet an `openbmp-models::SimState` implementation because that trait is
+currently `Copy`-bound while `MultibodyState` is variable-size. Simulator
+adapter wiring, scenario opt-in, double-pendulum tolerance tables, and external
+Spatial_v2 oracle fixtures remain open.
 
 ---
 
@@ -715,7 +718,14 @@ justification first, reviewed before the implementation lands.
   `advance_state_by()`, `project_state()`, `scalar_state_size()`, and
   `weighted_error_norm()`; tests prove derivative arithmetic, locked-order
   component advance, free-flyer/spherical quaternion projection, scalar state
-  sizing, adaptive error norm ordering, and invalid tolerance rejection.
+  sizing, adaptive error norm ordering, and invalid tolerance rejection. The
+  adapter-facing kinematic lift now exposes
+  `coordinate_derivative_from_velocity()` and
+  `derivative_from_state_and_acceleration()`, lifting scalar joint velocities,
+  free-flyer/spherical body-frame angular rates, and free-flyer body-frame
+  linear velocity into deterministic `q_dot`/`qd_dot` derivatives; tests prove
+  free-flyer/scalar velocity mapping, spherical quaternion-rate mapping,
+  qdd pairing, and bad-acceleration rejection.
   Remaining WP-01.1 work: the actual `openbmp-models`/`openbmp-sim` adapter,
   no-joint byte-equivalence against the current `RigidBodyState` kernel,
   simulator/environment force wiring, double-pendulum tolerance table,

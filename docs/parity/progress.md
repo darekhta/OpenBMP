@@ -104,8 +104,13 @@ forces or singular articulated blocks fail-closed (`REQ-MULTIBODY-007`).
 The state-integration substrate adds `MultibodyDerivative`,
 `advance_state_by()`, `project_state()`, `scalar_state_size()`, and
 `weighted_error_norm()` with derivative arithmetic, quaternion projection,
-scalar norm, and adaptive-error checks (`REQ-MULTIBODY-006`). Missing for full
-WP-01.1: actual `openbmp-models`/`openbmp-sim` adapter wiring,
+scalar norm, and adaptive-error checks (`REQ-MULTIBODY-006`). The
+adapter-facing kinematic lift adds `coordinate_derivative_from_velocity()` and
+`derivative_from_state_and_acceleration()`, mapping scalar-joint velocities,
+free-flyer and spherical quaternion rates, and free-flyer translation rates
+into deterministic `q_dot`/`qd_dot` derivatives with bad-acceleration
+rejection (`REQ-MULTIBODY-008`). Missing for full WP-01.1: actual
+`openbmp-models`/`openbmp-sim` adapter wiring,
 single-free-flyer byte-equivalence against the current kernel,
 simulator/environment force wiring, scenario wiring, gimballed ascent
 exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.

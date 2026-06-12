@@ -624,9 +624,9 @@ impl JointSpaceInertia {
 /// `q_dot` has one entry for every generalized coordinate in
 /// [`MultibodyState::q`]. `qd_dot` has one entry for every generalized
 /// velocity in [`MultibodyState::qd`]. For quaternion-coordinate joints,
-/// `q_dot` is the already-lifted quaternion-coordinate derivative; callers or
-/// a later simulator adapter are responsible for the velocity-to-coordinate
-/// kinematic lift.
+/// `q_dot` is the already-lifted coordinate derivative; use
+/// [`MultibodyTree::coordinate_derivative_from_velocity`] when converting a
+/// [`MultibodyState`] velocity vector into this representation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MultibodyDerivative {
     q_dot: Vec<f64>,
@@ -892,6 +892,91 @@ impl MultibodyTree {
             });
         }
         Ok(())
+    }
+
+    /// Lift generalized velocities into generalized-coordinate derivatives.
+    ///
+    /// Scalar revolute/prismatic joints map `qd` directly into `q_dot`.
+    /// Free-flyer and spherical quaternion coordinates use the same
+    /// body-frame quaternion convention as the rigid-body state model,
+    /// `q_dot = 0.5 * q ⊗ [0, omega_body]`. Free-flyer translation rates are
+    /// converted from body-frame linear velocity to parent-frame position
+    /// derivatives with the current normalized quaternion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the state dimensions/numeric components
+    /// are invalid or a quaternion coordinate slice has zero norm.
+    pub fn coordinate_derivative_from_velocity(
+        &self,
+        state: &MultibodyState,
+    ) -> Result<Vec<f64>, MultibodyError> {
+        self.validate_state(state)?;
+        let mut q_dot = Vec::with_capacity(self.n_q);
+        for body in &self.bodies {
+            let q_start = body.q_offset;
+            let qd_start = body.qd_offset;
+            match body.joint {
+                Joint::FreeFlyer => {
+                    let q = &state.q[q_start..q_start + 7];
+                    let qd = &state.qd[qd_start..qd_start + 6];
+                    q_dot.extend_from_slice(&quaternion_derivative_from_body_rate(
+                        &q[0..4],
+                        Vector3::new(qd[0], qd[1], qd[2]),
+                    )?);
+                    let rot_child_from_parent =
+                        rotation_from_quaternion_child_from_parent(&q[0..4])?;
+                    let linear_body = Vector3::new(qd[3], qd[4], qd[5]);
+                    let translation_dot_parent = rot_child_from_parent.transpose() * linear_body;
+                    q_dot.extend_from_slice(translation_dot_parent.as_slice());
+                }
+                Joint::Revolute { .. } | Joint::Prismatic { .. } => {
+                    q_dot.push(state.qd[qd_start]);
+                }
+                Joint::Welded { .. } => {}
+                Joint::Spherical => {
+                    q_dot.extend_from_slice(&quaternion_derivative_from_body_rate(
+                        &state.q[q_start..q_start + 4],
+                        Vector3::new(
+                            state.qd[qd_start],
+                            state.qd[qd_start + 1],
+                            state.qd[qd_start + 2],
+                        ),
+                    )?);
+                }
+            }
+        }
+        if !q_dot.iter().all(|value| value.is_finite()) {
+            return Err(MultibodyError::NonFinite {
+                reason: "coordinate derivative contains non-finite components",
+            });
+        }
+        Ok(q_dot)
+    }
+
+    /// Build a complete multibody state derivative from state and
+    /// generalized accelerations.
+    ///
+    /// This is the adapter-facing bridge between forward dynamics, which
+    /// returns `qdd`, and generalized-state integration, which advances
+    /// `q_dot`/`qd_dot`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the state, acceleration vector, or lifted
+    /// derivative is dimensionally invalid or non-finite.
+    pub fn derivative_from_state_and_acceleration(
+        &self,
+        state: &MultibodyState,
+        qdd: &[f64],
+    ) -> Result<MultibodyDerivative, MultibodyError> {
+        self.validate_generalized_vector("generalized acceleration", qdd)?;
+        let derivative = MultibodyDerivative::new(
+            self.coordinate_derivative_from_velocity(state)?,
+            qdd.to_vec(),
+        );
+        self.validate_derivative(&derivative)?;
+        Ok(derivative)
     }
 
     /// Deterministic componentwise state advance followed by quaternion
@@ -1753,6 +1838,46 @@ fn rotation_from_quaternion_child_from_parent(q: &[f64]) -> Result<Matrix3<f64>,
     ))
 }
 
+fn quaternion_derivative_from_body_rate(
+    q: &[f64],
+    omega_body_rad_s: Vector3<f64>,
+) -> Result<[f64; 4], MultibodyError> {
+    if q.len() != 4 {
+        return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+            vector: "quaternion",
+            expected: 4,
+            actual: q.len(),
+        });
+    }
+    if !q.iter().all(|value| value.is_finite())
+        || !omega_body_rad_s.iter().all(|value| value.is_finite())
+    {
+        return Err(MultibodyError::NonFinite {
+            reason: "quaternion kinematic inputs contain non-finite components",
+        });
+    }
+    let norm2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if norm2 == 0.0 {
+        return Err(MultibodyError::InvalidParameter {
+            reason: "quaternion norm must be non-zero",
+        });
+    }
+    let inv_norm = 1.0 / <f64 as nalgebra::ComplexField>::sqrt(norm2);
+    let w = q[0] * inv_norm;
+    let x = q[1] * inv_norm;
+    let y = q[2] * inv_norm;
+    let z = q[3] * inv_norm;
+    let omega_x = omega_body_rad_s.x;
+    let omega_y = omega_body_rad_s.y;
+    let omega_z = omega_body_rad_s.z;
+    Ok([
+        -0.5 * (x * omega_x + y * omega_y + z * omega_z),
+        0.5 * (w * omega_x + y * omega_z - z * omega_y),
+        0.5 * (w * omega_y + z * omega_x - x * omega_z),
+        0.5 * (w * omega_z + x * omega_y - y * omega_x),
+    ])
+}
+
 fn normalize_quaternion_slice(q: &mut [f64]) -> Result<(), MultibodyError> {
     if q.len() != 4 {
         return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
@@ -2470,6 +2595,97 @@ mod tests {
         assert_abs_diff_eq!(state.q[8], 0.0, epsilon = 1.0e-15);
         assert_abs_diff_eq!(state.q[9], 0.6, epsilon = 1.0e-15);
         assert_abs_diff_eq!(state.q[10], 0.8, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn coordinate_derivative_lifts_free_flyer_and_scalar_velocities() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 10.0, 20.0, 30.0, 0.25, 0.5],
+            vec![0.0, 0.0, 2.0, 1.0, 2.0, 3.0, 4.0, -5.0],
+        );
+
+        let q_dot = tree.coordinate_derivative_from_velocity(&state).unwrap();
+
+        assert_eq!(q_dot.len(), tree.n_q());
+        assert_abs_diff_eq!(q_dot[0], 0.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[1], 0.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[2], 0.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[3], 1.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[4], 1.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[5], 2.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[6], 3.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[7], 4.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[8], -5.0, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn coordinate_derivative_lifts_spherical_quaternion_rate() {
+        let root = TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let spherical = TreeBodySpec {
+            id: BodyId::new(2),
+            parent: Some(BodyIndex::new(0)),
+            joint: Joint::Spherical,
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let tree = MultibodyTree::new(vec![root, spherical]).unwrap();
+        let inv_sqrt_2 = 1.0 / <f64 as nalgebra::ComplexField>::sqrt(2.0);
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, inv_sqrt_2, inv_sqrt_2, 0.0, 0.0,
+            ],
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0],
+        );
+
+        let q_dot = tree.coordinate_derivative_from_velocity(&state).unwrap();
+        let expected = quaternion_derivative_from_body_rate(
+            &[inv_sqrt_2, inv_sqrt_2, 0.0, 0.0],
+            Vector3::new(1.0, 2.0, 3.0),
+        )
+        .unwrap();
+
+        assert_eq!(q_dot.len(), tree.n_q());
+        for axis in 0..4 {
+            assert_abs_diff_eq!(q_dot[7 + axis], expected[axis], epsilon = 1.0e-15);
+        }
+    }
+
+    #[test]
+    fn derivative_from_state_and_acceleration_pairs_lifted_q_dot_with_qdd() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.2, -0.1, 0.3, 0.4, 0.15],
+            vec![0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8],
+        );
+        let qdd = vec![0.2, -0.1, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8];
+
+        let derivative = tree
+            .derivative_from_state_and_acceleration(&state, &qdd)
+            .unwrap();
+        let q_dot = tree.coordinate_derivative_from_velocity(&state).unwrap();
+        let short_qdd = tree
+            .derivative_from_state_and_acceleration(&state, &qdd[0..qdd.len() - 1])
+            .unwrap_err();
+
+        assert_eq!(derivative.q_dot(), q_dot.as_slice());
+        assert_eq!(derivative.qd_dot(), qdd.as_slice());
+        assert!(matches!(
+            short_qdd,
+            MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "generalized acceleration",
+                ..
+            }
+        ));
     }
 
     #[test]

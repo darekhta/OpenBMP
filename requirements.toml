@@ -43,6 +43,12 @@ statement = "The openbmp-multibody crate exposes forward_dynamics_aba_at_state a
 verification = ["V-MULTIBODY-007"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-008"
+title = "The multibody substrate lifts velocities into state derivatives"
+statement = "The openbmp-multibody crate exposes coordinate_derivative_from_velocity and derivative_from_state_and_acceleration as adapter-facing kinematic lift helpers that validate generalized state and acceleration dimensions fail-closed, map scalar joint velocities directly, lift free-flyer and spherical body-frame angular rates into quaternion coordinate derivatives with the existing rigid-body quaternion convention, convert free-flyer body-frame linear velocity into parent-frame translation derivatives, and prove scalar-joint, free-flyer, spherical, qdd-pairing, and bad-acceleration handling while making no claim that openbmp-models SimState integration, openbmp-sim adapter wiring, byte-equivalence, scenario wiring, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-008"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -829,6 +835,28 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-007"]
+
+[[verification]]
+id = "V-MULTIBODY-008"
+kind = "test"
+command = "cargo test -p openbmp-multibody --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "coordinate_derivative_from_velocity",
+  "derivative_from_state_and_acceleration",
+  "quaternion_derivative_from_body_rate",
+  "coordinate_derivative_lifts_free_flyer_and_scalar_velocities",
+  "coordinate_derivative_lifts_spherical_quaternion_rate",
+  "derivative_from_state_and_acceleration_pairs_lifted_q_dot_with_qdd",
+  "REQ-MULTIBODY-008",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-008"]
 
 [[verification]]
 id = "V-SIL-001"
