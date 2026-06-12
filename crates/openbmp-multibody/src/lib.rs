@@ -846,11 +846,47 @@ impl MultibodyTree {
         JointSpaceInertia::new(self.n_qd, h.values_row_major)
     }
 
+    /// Recursive Newton-Euler inverse dynamics at a generalized state.
+    ///
+    /// This uses q-dependent joint transforms, generalized velocities for the
+    /// velocity-bias terms, a virtual-root parent acceleration seed, and
+    /// per-body external spatial forces. The root acceleration seed is
+    /// expressed in the root body's virtual parent frame; a gravity term can be
+    /// supplied as `-g` in that frame and will be transformed through the root
+    /// transform. External forces are expressed in each body's frame and are
+    /// subtracted from the inertial force balance.
+    ///
+    /// This is a deterministic RNEA substrate for WP-01.1. It still does not
+    /// provide ABA forward dynamics, floating-base solves, simulator adapter
+    /// wiring, scenario opt-in, or external oracle validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] when state validation, qdd validation, base
+    /// acceleration validation, external-force validation, or a joint transform
+    /// fails.
+    pub fn inverse_dynamics_rnea_at_state(
+        &self,
+        state: &MultibodyState,
+        qdd: &[f64],
+        root_parent_acceleration: SpatialMotion,
+        external_forces_body: &[SpatialForce],
+    ) -> Result<Vec<f64>, MultibodyError> {
+        let transforms = self.body_transforms_parent_to_child_at_state(state)?;
+        self.inverse_dynamics_rnea_with_terms(
+            &state.qd,
+            qdd,
+            &transforms,
+            root_parent_acceleration,
+            external_forces_body,
+        )
+    }
+
     /// Zero-velocity Recursive Newton-Euler inverse dynamics at a generalized
     /// state.
     ///
-    /// This uses q-dependent joint transforms, but still omits velocity bias,
-    /// gravity, external forces, and ABA factorization. Given `qdd`, it computes
+    /// This uses q-dependent joint transforms, but intentionally omits velocity
+    /// bias, base acceleration, and external forces. Given `qdd`, it computes
     /// `tau = H(q)*qdd` for the state-dependent CRBA substrate.
     ///
     /// # Errors
@@ -863,7 +899,15 @@ impl MultibodyTree {
         qdd: &[f64],
     ) -> Result<Vec<f64>, MultibodyError> {
         let transforms = self.body_transforms_parent_to_child_at_state(state)?;
-        self.inverse_dynamics_rnea_with_transforms(qdd, &transforms)
+        let zero_qd = vec![0.0; self.n_qd];
+        let zero_external_forces = vec![SpatialForce::zero(); self.bodies.len()];
+        self.inverse_dynamics_rnea_with_terms(
+            &zero_qd,
+            qdd,
+            &transforms,
+            SpatialMotion::zero(),
+            &zero_external_forces,
+        )
     }
 
     /// Zero-velocity Recursive Newton-Euler inverse dynamics over fixed tree
@@ -886,14 +930,32 @@ impl MultibodyTree {
     ) -> Result<Vec<f64>, MultibodyError> {
         let transforms: Vec<PluckerTransform> =
             self.bodies.iter().map(|body| body.parent_to_body).collect();
-        self.inverse_dynamics_rnea_with_transforms(qdd, &transforms)
+        let zero_qd = vec![0.0; self.n_qd];
+        let zero_external_forces = vec![SpatialForce::zero(); self.bodies.len()];
+        self.inverse_dynamics_rnea_with_terms(
+            &zero_qd,
+            qdd,
+            &transforms,
+            SpatialMotion::zero(),
+            &zero_external_forces,
+        )
     }
 
-    fn inverse_dynamics_rnea_with_transforms(
+    fn inverse_dynamics_rnea_with_terms(
         &self,
+        qd: &[f64],
         qdd: &[f64],
         transforms_parent_to_child: &[PluckerTransform],
+        root_parent_acceleration: SpatialMotion,
+        external_forces_body: &[SpatialForce],
     ) -> Result<Vec<f64>, MultibodyError> {
+        if qd.len() != self.n_qd {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "qd",
+                expected: self.n_qd,
+                actual: qd.len(),
+            });
+        }
         if qdd.len() != self.n_qd {
             return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
                 vector: "qdd",
@@ -901,9 +963,38 @@ impl MultibodyTree {
                 actual: qdd.len(),
             });
         }
+        if transforms_parent_to_child.len() != self.bodies.len() {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "body transforms",
+                expected: self.bodies.len(),
+                actual: transforms_parent_to_child.len(),
+            });
+        }
+        if external_forces_body.len() != self.bodies.len() {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "external forces",
+                expected: self.bodies.len(),
+                actual: external_forces_body.len(),
+            });
+        }
+        if !qd.iter().all(|v| v.is_finite()) {
+            return Err(MultibodyError::NonFinite {
+                reason: "generalized velocity contains non-finite components",
+            });
+        }
         if !qdd.iter().all(|v| v.is_finite()) {
             return Err(MultibodyError::NonFinite {
                 reason: "generalized acceleration contains non-finite components",
+            });
+        }
+        if !root_parent_acceleration.is_finite() {
+            return Err(MultibodyError::NonFinite {
+                reason: "root parent acceleration contains non-finite components",
+            });
+        }
+        if !external_forces_body.iter().all(SpatialForce::is_finite) {
+            return Err(MultibodyError::NonFinite {
+                reason: "external forces contain non-finite components",
             });
         }
 
@@ -912,22 +1003,42 @@ impl MultibodyTree {
             .iter()
             .map(|body| body.joint.motion_subspace())
             .collect();
+        let mut velocities = vec![SpatialVector::zeros(); self.bodies.len()];
         let mut accelerations = vec![SpatialVector::zeros(); self.bodies.len()];
         let mut forces = vec![SpatialVector::zeros(); self.bodies.len()];
 
         for body_index in 0..self.bodies.len() {
             let body = &self.bodies[body_index];
-            let mut acceleration = if let Some(parent) = body.parent {
-                transforms_parent_to_child[body_index].motion_matrix_parent_to_child()
-                    * accelerations[parent.index()]
+            let x = transforms_parent_to_child[body_index].motion_matrix_parent_to_child();
+            let parent_velocity = if let Some(parent) = body.parent {
+                x * velocities[parent.index()]
             } else {
                 SpatialVector::zeros()
             };
+            let mut joint_velocity = SpatialVector::zeros();
+            let mut joint_acceleration = SpatialVector::zeros();
             for (local, motion) in subspaces[body_index].iter().enumerate() {
-                acceleration += motion.vector() * qdd[body.qd_offset + local];
+                let generalized_index = body.qd_offset + local;
+                joint_velocity += motion.vector() * qd[generalized_index];
+                joint_acceleration += motion.vector() * qdd[generalized_index];
             }
+
+            let velocity = parent_velocity + joint_velocity;
+            let parent_acceleration = if let Some(parent) = body.parent {
+                x * accelerations[parent.index()]
+            } else {
+                x * root_parent_acceleration.vector()
+            };
+            let acceleration = parent_acceleration
+                + joint_acceleration
+                + SpatialMotion::from_vector(velocity).crossm() * joint_velocity;
+            let inertia_times_velocity = body.inertia.matrix() * velocity;
+            let bias_force = SpatialMotion::from_vector(velocity).crossf() * inertia_times_velocity;
+
+            velocities[body_index] = velocity;
             accelerations[body_index] = acceleration;
-            forces[body_index] = body.inertia.matrix() * acceleration;
+            forces[body_index] = body.inertia.matrix() * acceleration + bias_force
+                - external_forces_body[body_index].vector();
         }
 
         let mut tau = vec![0.0; self.n_qd];
@@ -1573,6 +1684,140 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn rnea_at_state_matches_no_bias_when_velocity_and_forces_are_zero() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.2, -0.1, 0.3, 0.4, 0.15],
+            vec![0.0; tree.n_qd()],
+        );
+        let qdd = vec![0.2, -0.1, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8];
+        let external_forces = vec![SpatialForce::zero(); tree.bodies().len()];
+
+        let full = tree
+            .inverse_dynamics_rnea_at_state(&state, &qdd, SpatialMotion::zero(), &external_forces)
+            .unwrap();
+        let no_bias = tree
+            .inverse_dynamics_rnea_at_state_no_bias(&state, &qdd)
+            .unwrap();
+
+        assert_eq!(full.len(), no_bias.len());
+        for (actual, expected) in full.iter().zip(no_bias.iter()) {
+            assert_abs_diff_eq!(*actual, *expected, epsilon = 1.0e-13);
+        }
+    }
+
+    #[test]
+    fn rnea_at_state_includes_free_flyer_velocity_bias() {
+        let root_inertia = inertia();
+        let tree = MultibodyTree::new(vec![TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: root_inertia,
+            parent_to_body: PluckerTransform::identity(),
+        }])
+        .unwrap();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            vec![0.3, -0.4, 0.5, 1.2, -0.7, 0.9],
+        );
+        let qdd = vec![0.0; tree.n_qd()];
+        let external_forces = vec![SpatialForce::zero(); tree.bodies().len()];
+
+        let tau = tree
+            .inverse_dynamics_rnea_at_state(&state, &qdd, SpatialMotion::zero(), &external_forces)
+            .unwrap();
+        let velocity = SpatialMotion::from_vector(SpatialVector::from_column_slice(&state.qd));
+        let expected = velocity.crossf() * (root_inertia.matrix() * velocity.vector());
+
+        for axis in 0..tree.n_qd() {
+            assert_abs_diff_eq!(tau[axis], expected[axis], epsilon = 1.0e-13);
+        }
+    }
+
+    #[test]
+    fn rnea_at_state_applies_root_acceleration_and_external_forces() {
+        let root_inertia = inertia();
+        let tree = MultibodyTree::new(vec![TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: root_inertia,
+            parent_to_body: PluckerTransform::identity(),
+        }])
+        .unwrap();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            vec![0.0; tree.n_qd()],
+        );
+        let qdd = vec![0.0; tree.n_qd()];
+        let root_acceleration = SpatialMotion::new(Vector3::zeros(), Vector3::new(0.0, 0.0, -9.81));
+        let expected_force = root_inertia.matrix() * root_acceleration.vector();
+        let no_external = vec![SpatialForce::zero(); tree.bodies().len()];
+        let canceling_external = vec![SpatialForce::from_vector(expected_force)];
+
+        let tau_gravity = tree
+            .inverse_dynamics_rnea_at_state(&state, &qdd, root_acceleration, &no_external)
+            .unwrap();
+        let tau_cancelled = tree
+            .inverse_dynamics_rnea_at_state(&state, &qdd, root_acceleration, &canceling_external)
+            .unwrap();
+
+        for axis in 0..tree.n_qd() {
+            assert_abs_diff_eq!(tau_gravity[axis], expected_force[axis], epsilon = 1.0e-13);
+            assert_abs_diff_eq!(tau_cancelled[axis], 0.0, epsilon = 1.0e-13);
+        }
+    }
+
+    #[test]
+    fn rnea_at_state_rejects_bad_base_acceleration_or_external_forces() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.2, -0.1, 0.3, 0.4, 0.15],
+            vec![0.0; tree.n_qd()],
+        );
+        let qdd = vec![0.0; tree.n_qd()];
+        let short_external = vec![SpatialForce::zero(); tree.bodies().len() - 1];
+        let mut nonfinite_external = vec![SpatialForce::zero(); tree.bodies().len()];
+        nonfinite_external[0] =
+            SpatialForce::new(Vector3::new(f64::NAN, 0.0, 0.0), Vector3::zeros());
+
+        let short_err = tree
+            .inverse_dynamics_rnea_at_state(&state, &qdd, SpatialMotion::zero(), &short_external)
+            .unwrap_err();
+        let external_err = tree
+            .inverse_dynamics_rnea_at_state(
+                &state,
+                &qdd,
+                SpatialMotion::zero(),
+                &nonfinite_external,
+            )
+            .unwrap_err();
+        let base_err = tree
+            .inverse_dynamics_rnea_at_state(
+                &state,
+                &qdd,
+                SpatialMotion::new(Vector3::new(f64::NAN, 0.0, 0.0), Vector3::zeros()),
+                &vec![SpatialForce::zero(); tree.bodies().len()],
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            short_err,
+            MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "external forces",
+                ..
+            }
+        ));
+        assert!(matches!(external_err, MultibodyError::NonFinite { .. }));
+        assert!(matches!(base_err, MultibodyError::NonFinite { .. }));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-12, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (106 requirement ids).
+traceability (107 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -27,7 +27,7 @@ As of this snapshot: **22 implemented · 21 partial · 0 in progress ·
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
 |---|---|---|---|---|
-| 01 | Multibody dynamics | T0 plus WP-01.1 spatial-vector/state-dependent CRBA substrate crate; ABA, bias forces, and simulator adapter still open | 0/1/6 | finish WP-01.1 |
+| 01 | Multibody dynamics | T0 plus WP-01.1 spatial-vector/CRBA/RNEA substrate crate; ABA, simulator wiring, and oracle validation still open | 0/1/6 | finish WP-01.1 |
 | 02 | Structural, loads, slosh, POGO | T0 (+ feed-side POGO prerequisite now exists via 05) | 0/0/9 | WP-02.1-a |
 | 03 | Aero database & CFD | T0 baseline | 0/0/9 | WP-03.1 |
 | 04 | Aerothermal, real-gas, TPS | T0 (+ shared `openbmp-thermochem` scaffold) | 0/0/11 | WP-04.1-a |
@@ -86,10 +86,16 @@ layer now adds `Joint::joint_transform()`, `PluckerTransform::then()`,
 `joint_space_inertia_crba_at_state()`, and
 `inverse_dynamics_rnea_at_state_no_bias()`, with transform-composition,
 quaternion, body-index, and state-dependent CRBA/RNEA column checks
-(`REQ-MULTIBODY-003`). Missing for full WP-01.1: velocity bias,
-gravity/external-force RNEA, ABA forward dynamics, single-free-flyer
-byte-equivalence against the current kernel, scenario wiring, gimballed ascent
-exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
+(`REQ-MULTIBODY-003`). The biased RNEA layer adds
+`inverse_dynamics_rnea_at_state()` with generalized velocity-bias terms, a root
+parent acceleration seed for gravity-style forcing, and per-body external
+spatial forces; tests cover zero-velocity equivalence, single-free-flyer bias
+force, root acceleration forcing, external-force subtraction, and fail-closed
+force input validation (`REQ-MULTIBODY-004`). Missing for full WP-01.1: ABA
+forward dynamics, floating-base solve/factorization, single-free-flyer
+byte-equivalence against the current kernel, simulator/environment force
+wiring, scenario wiring, gimballed ascent exercise, and Spatial_v2 oracle
+checks. WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 
@@ -387,7 +393,7 @@ verifier, or capture logic.
 - **Determinism toolchain hardened:** FP-environment guard (x86_64 +
   aarch64 code paths), FMA contraction ban, provenance check in CI; the
   aarch64 CI determinism lane is the one outstanding piece (WP-12.3-b).
-- **Traceability:** 106 requirement ids in `requirements.toml`, including
+- **Traceability:** 107 requirement ids in `requirements.toml`, including
   the REQ-PROP, REQ-MC, REQ-CONTACT, REQ-PLUME, and REQ-TRAJOPT families.
 - **Byte-stable-by-default pattern observed** in everything that landed:
   pressure-thrust, transient grain, transports, realtime, contact, and
@@ -399,7 +405,7 @@ verifier, or capture logic.
 
 1. **Close the open partials before opening new fronts:** WP-05.3 runtime
    deck consumption; WP-14.1 gear-leg closure; WP-12.4-b GPU boundary.
-2. **Advance the Phase-A gates:** start WP-01.1 (spatial-vector tree) and
+2. **Advance the Phase-A gates:** finish WP-01.1 (spatial-vector tree) and
    finish WP-08.1 (high-degree Pines/Gottlieb tesseral gravity) — they block
    most of Phase B/C (02, 06, 07 closed-loop quality).
 3. Start WP-07.2 (Hermite-Simpson/SQP) or use the implemented WP-07.0/WP-07.1

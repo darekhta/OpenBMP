@@ -9,14 +9,20 @@ verification = ["V-MULTIBODY-001"]
 [[requirements]]
 id = "REQ-MULTIBODY-002"
 title = "The multibody substrate cross-checks fixed-transform CRBA against RNEA columns"
-statement = "The openbmp-multibody crate exposes a fixed-transform composite-rigid-body joint-space inertia substrate and a zero-velocity fixed-transform Recursive Newton-Euler inverse-dynamics substrate that share the same q-independent joint subspaces and deterministic tree order, validate generalized acceleration dimensions and finiteness fail-closed, prove a single free-flyer root returns the root spatial inertia block, and prove CRBA columns match RNEA generalized forces on a small tree while making no claim that q-dependent joint transforms, velocity bias, gravity, external forces, ABA factorization, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
+statement = "The openbmp-multibody crate exposes a fixed-transform composite-rigid-body joint-space inertia substrate and a zero-velocity fixed-transform Recursive Newton-Euler inverse-dynamics substrate that share the same q-independent joint subspaces and deterministic tree order, validate generalized acceleration dimensions and finiteness fail-closed, prove a single free-flyer root returns the root spatial inertia block, and prove CRBA columns match RNEA generalized forces on a small tree while making no claim that ABA factorization, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-002"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-003"
 title = "The multibody substrate applies q-dependent joint transforms"
-statement = "The openbmp-multibody crate exposes q-dependent Joint::joint_transform evaluation, PluckerTransform composition, state-dependent body transforms, and state-dependent no-bias CRBA/RNEA substrates that validate generalized state dimensions, finiteness, body indices, quaternion length, and quaternion norm fail-closed, and prove transform composition plus CRBA column consistency against zero-velocity RNEA at a nontrivial generalized state while making no claim that velocity bias, gravity, external forces, ABA factorization, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
+statement = "The openbmp-multibody crate exposes q-dependent Joint::joint_transform evaluation, PluckerTransform composition, state-dependent body transforms, and state-dependent no-bias CRBA/RNEA substrates that validate generalized state dimensions, finiteness, body indices, quaternion length, and quaternion norm fail-closed, and prove transform composition plus CRBA column consistency against zero-velocity RNEA at a nontrivial generalized state while making no claim that ABA factorization, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-003"]
+
+[[requirements]]
+id = "REQ-MULTIBODY-004"
+title = "The multibody substrate evaluates biased and forced RNEA"
+statement = "The openbmp-multibody crate exposes inverse_dynamics_rnea_at_state for q-dependent Recursive Newton-Euler inverse dynamics with generalized velocity-bias terms, a virtual-root parent acceleration seed suitable for gravity, and per-body external spatial forces expressed in body frames, validates qd/qdd dimensions, body-transform counts, root acceleration finiteness, and external-force dimensions/finiteness fail-closed, proves the zero-velocity zero-force path matches the no-bias CRBA substrate, proves a single free-flyer velocity-bias force analytically, and proves root acceleration plus external-force subtraction on a single-root tree while making no claim that ABA factorization, floating-base solves, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-004"]
 
 [[requirements]]
 id = "REQ-SIL-001"
@@ -715,6 +721,29 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-003"]
+
+[[verification]]
+id = "V-MULTIBODY-004"
+kind = "test"
+command = "cargo test -p openbmp-multibody --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "inverse_dynamics_rnea_at_state",
+  "inverse_dynamics_rnea_with_terms",
+  "root parent acceleration",
+  "external spatial forces",
+  "rnea_at_state_matches_no_bias_when_velocity_and_forces_are_zero",
+  "rnea_at_state_includes_free_flyer_velocity_bias",
+  "rnea_at_state_applies_root_acceleration_and_external_forces",
+  "rnea_at_state_rejects_bad_base_acceleration_or_external_forces",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-004"]
 
 [[verification]]
 id = "V-SIL-001"
