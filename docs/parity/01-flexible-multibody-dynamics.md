@@ -205,13 +205,16 @@ fixed-transform CRBA/RNEA self-consistency substrate (`JointSpaceInertia`,
 root parent acceleration seed for gravity-style forcing, and per-body external
 spatial forces. A dense forward-dynamics bridge,
 `forward_dynamics_dense_at_state()`, solves `H(q) qdd = tau - C` using the
-same CRBA/RNEA paths and serves as an ABA cross-check. The final O(n) ABA,
-floating-base production factorization, simulator adapter wiring, scenario
-opt-in, and external Spatial_v2 oracle fixtures remain open. The state
-integration substrate now includes `MultibodyDerivative`, `advance_state_by()`,
-`project_state()`, `scalar_state_size()`, and `weighted_error_norm()`; this is
-not yet an `openbmp-models::SimState` implementation because that trait is
-currently `Copy`-bound while `MultibodyState` is variable-size.
+same CRBA/RNEA paths and serves as an ABA cross-check. The O(n)
+articulated-body path now exposes `forward_dynamics_aba_at_state()` with
+fixed-order symmetric LDLT solves for each local articulated joint block,
+including the free-flyer root. The state integration substrate now includes
+`MultibodyDerivative`, `advance_state_by()`, `project_state()`,
+`scalar_state_size()`, and `weighted_error_norm()`; this is not yet an
+`openbmp-models::SimState` implementation because that trait is currently
+`Copy`-bound while `MultibodyState` is variable-size. Simulator adapter wiring,
+scenario opt-in, double-pendulum tolerance tables, and external Spatial_v2
+oracle fixtures remain open.
 
 ---
 
@@ -701,13 +704,19 @@ justification first, reviewed before the implementation lands.
   finite checked Gaussian-elimination solver over the state-dependent CRBA
   matrix and biased RNEA residual; tests prove biased RNEA round-trip recovery,
   fail-closed generalized-force validation, and singular-system rejection.
+  The ABA substrate now exposes `forward_dynamics_aba_at_state()`, performing
+  the three-pass articulated-body recursion over q-dependent transforms,
+  velocity-bias terms, root parent acceleration, and per-body external spatial
+  forces with fixed-order symmetric LDLT local joint solves; tests prove ABA
+  matches the dense bridge and biased RNEA round trip on a moving nontrivial
+  tree, plus fail-closed generalized-force, external-force, and singular-block
+  handling.
   The state-integration substrate now exposes `MultibodyDerivative`,
   `advance_state_by()`, `project_state()`, `scalar_state_size()`, and
   `weighted_error_norm()`; tests prove derivative arithmetic, locked-order
   component advance, free-flyer/spherical quaternion projection, scalar state
   sizing, adaptive error norm ordering, and invalid tolerance rejection.
-  Remaining WP-01.1 work: O(n) ABA forward dynamics, production floating-base
-  factorization, the actual `openbmp-models`/`openbmp-sim` adapter,
+  Remaining WP-01.1 work: the actual `openbmp-models`/`openbmp-sim` adapter,
   no-joint byte-equivalence against the current `RigidBodyState` kernel,
   simulator/environment force wiring, double-pendulum tolerance table,
   Spatial_v2 oracle fixtures, and scenario exercise.

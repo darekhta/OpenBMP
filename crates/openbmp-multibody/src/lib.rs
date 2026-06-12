@@ -1174,9 +1174,9 @@ impl MultibodyTree {
     /// transform. External forces are expressed in each body's frame and are
     /// subtracted from the inertial force balance.
     ///
-    /// This is a deterministic RNEA substrate for WP-01.1. It still does not
-    /// provide ABA forward dynamics, floating-base solves, simulator adapter
-    /// wiring, scenario opt-in, or external oracle validation.
+    /// This is a deterministic RNEA substrate for WP-01.1. Simulator adapter
+    /// wiring, scenario opt-in, and external oracle validation remain separate
+    /// work.
     ///
     /// # Errors
     ///
@@ -1203,9 +1203,9 @@ impl MultibodyTree {
     /// Dense forward dynamics at a generalized state.
     ///
     /// This solves `H(q) qdd = tau - C(q, qd, a_root, f_ext)` using the
-    /// state-dependent CRBA inertia matrix and the biased/forced RNEA path. It
-    /// is a deterministic forward-dynamics substrate and an ABA cross-check,
-    /// not the final O(n) articulated-body implementation.
+    /// state-dependent CRBA inertia matrix and the biased/forced RNEA path.
+    /// It is deterministic and remains useful as an independent cross-check
+    /// for the O(n) articulated-body path.
     ///
     /// # Errors
     ///
@@ -1234,6 +1234,149 @@ impl MultibodyTree {
             .map(|(force, bias_force)| force - bias_force)
             .collect();
         solve_dense_linear_system(h.dimension(), h.values_row_major(), &rhs)
+    }
+
+    /// Articulated-body forward dynamics at a generalized state.
+    ///
+    /// This is the `O(n)` Featherstone ABA path over the same q-dependent
+    /// transforms, velocity-bias terms, root parent acceleration seed, and
+    /// per-body external spatial forces as [`Self::inverse_dynamics_rnea_at_state`].
+    /// Multi-DoF joints, including the free-flyer root, are solved with a
+    /// fixed-order symmetric LDLT factorization of each local joint-space
+    /// articulated inertia block.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] when state validation, generalized-force
+    /// validation, external-force validation, joint-transform evaluation, or a
+    /// local articulated inertia factorization fails.
+    pub fn forward_dynamics_aba_at_state(
+        &self,
+        state: &MultibodyState,
+        generalized_forces: &[f64],
+        root_parent_acceleration: SpatialMotion,
+        external_forces_body: &[SpatialForce],
+    ) -> Result<Vec<f64>, MultibodyError> {
+        self.validate_generalized_vector("generalized forces", generalized_forces)?;
+        let transforms = self.body_transforms_parent_to_child_at_state(state)?;
+        if !root_parent_acceleration.is_finite() {
+            return Err(MultibodyError::NonFinite {
+                reason: "root parent acceleration contains non-finite components",
+            });
+        }
+        if external_forces_body.len() != self.bodies.len() {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "external forces",
+                expected: self.bodies.len(),
+                actual: external_forces_body.len(),
+            });
+        }
+        if !external_forces_body.iter().all(SpatialForce::is_finite) {
+            return Err(MultibodyError::NonFinite {
+                reason: "external forces contain non-finite components",
+            });
+        }
+
+        let subspaces: Vec<Vec<SpatialMotion>> = self
+            .bodies
+            .iter()
+            .map(|body| body.joint.motion_subspace())
+            .collect();
+        let mut velocities = vec![SpatialVector::zeros(); self.bodies.len()];
+        let mut coriolis = vec![SpatialVector::zeros(); self.bodies.len()];
+        let mut articulated_inertias: Vec<SpatialMatrix> = self
+            .bodies
+            .iter()
+            .map(|body| *body.inertia.matrix())
+            .collect();
+        let mut articulated_biases = vec![SpatialVector::zeros(); self.bodies.len()];
+        let mut joint_u_columns: Vec<Vec<SpatialVector>> = vec![Vec::new(); self.bodies.len()];
+        let mut joint_d_matrices: Vec<Vec<f64>> = vec![Vec::new(); self.bodies.len()];
+        let mut joint_u_vectors: Vec<Vec<f64>> = vec![Vec::new(); self.bodies.len()];
+
+        for body_index in 0..self.bodies.len() {
+            let body = &self.bodies[body_index];
+            let x = transforms[body_index].motion_matrix_parent_to_child();
+            let parent_velocity = if let Some(parent) = body.parent {
+                x * velocities[parent.index()]
+            } else {
+                SpatialVector::zeros()
+            };
+            let joint_velocity = joint_motion(&subspaces[body_index], &state.qd[body.qd_offset..]);
+            let velocity = parent_velocity + joint_velocity;
+            velocities[body_index] = velocity;
+            coriolis[body_index] = SpatialMotion::from_vector(velocity).crossm() * joint_velocity;
+            articulated_biases[body_index] = SpatialMotion::from_vector(velocity).crossf()
+                * (body.inertia.matrix() * velocity)
+                - external_forces_body[body_index].vector();
+        }
+
+        for body_index in (0..self.bodies.len()).rev() {
+            let body = &self.bodies[body_index];
+            let subspace = &subspaces[body_index];
+            let joint_dof = subspace.len();
+            let mut u_columns = Vec::with_capacity(joint_dof);
+            for motion in subspace {
+                u_columns.push(articulated_inertias[body_index] * motion.vector());
+            }
+            let d_matrix = joint_space_block(subspace, &u_columns);
+            let mut u_vector = Vec::with_capacity(joint_dof);
+            for (local, motion) in subspace.iter().enumerate() {
+                u_vector.push(
+                    generalized_forces[body.qd_offset + local]
+                        - motion.vector().dot(&articulated_biases[body_index]),
+                );
+            }
+
+            let d_inv_u = solve_symmetric_ldlt(joint_dof, &d_matrix, &u_vector)?;
+            let d_inverse = invert_symmetric_ldlt(joint_dof, &d_matrix)?;
+            let projected_inertia = spatial_projected_inertia(&u_columns, &d_inverse);
+            let reduced_inertia = articulated_inertias[body_index] - projected_inertia;
+            let reduced_bias = articulated_biases[body_index]
+                + reduced_inertia * coriolis[body_index]
+                + spatial_weighted_sum(&u_columns, &d_inv_u);
+
+            joint_u_columns[body_index] = u_columns;
+            joint_d_matrices[body_index] = d_matrix;
+            joint_u_vectors[body_index] = u_vector;
+            articulated_inertias[body_index] = reduced_inertia;
+            articulated_biases[body_index] = reduced_bias;
+
+            if let Some(parent) = body.parent {
+                let x = transforms[body_index].motion_matrix_parent_to_child();
+                articulated_inertias[parent.index()] += x.transpose() * reduced_inertia * x;
+                articulated_biases[parent.index()] += x.transpose() * reduced_bias;
+            }
+        }
+
+        let mut accelerations = vec![SpatialVector::zeros(); self.bodies.len()];
+        let mut qdd = vec![0.0; self.n_qd];
+        for body_index in 0..self.bodies.len() {
+            let body = &self.bodies[body_index];
+            let x = transforms[body_index].motion_matrix_parent_to_child();
+            let parent_acceleration = if let Some(parent) = body.parent {
+                x * accelerations[parent.index()]
+            } else {
+                x * root_parent_acceleration.vector()
+            };
+            let mut acceleration = parent_acceleration + coriolis[body_index];
+            let joint_dof = subspaces[body_index].len();
+            if joint_dof > 0 {
+                let mut rhs = joint_u_vectors[body_index].clone();
+                for (local, u_column) in joint_u_columns[body_index].iter().enumerate() {
+                    rhs[local] -= u_column.dot(&acceleration);
+                }
+                let joint_qdd =
+                    solve_symmetric_ldlt(joint_dof, &joint_d_matrices[body_index], &rhs)?;
+                for (local, value) in joint_qdd.iter().enumerate() {
+                    qdd[body.qd_offset + local] = *value;
+                    acceleration += subspaces[body_index][local].vector() * *value;
+                }
+            }
+            accelerations[body_index] = acceleration;
+        }
+        self.validate_generalized_vector("ABA generalized accelerations", &qdd)?;
+        Ok(qdd)
     }
 
     /// Zero-velocity Recursive Newton-Euler inverse dynamics at a generalized
@@ -1647,6 +1790,146 @@ fn weighted_error_term(
     let scale = atol + rtol * abs_finite(previous).max(abs_finite(current));
     let scaled = h_seconds * error_derivative / scale;
     scaled * scaled
+}
+
+fn joint_motion(subspace: &[SpatialMotion], qd_slice: &[f64]) -> SpatialVector {
+    let mut out = SpatialVector::zeros();
+    for (local, motion) in subspace.iter().enumerate() {
+        out += motion.vector() * qd_slice[local];
+    }
+    out
+}
+
+fn joint_space_block(subspace: &[SpatialMotion], u_columns: &[SpatialVector]) -> Vec<f64> {
+    let joint_dof = subspace.len();
+    let mut out = vec![0.0; joint_dof * joint_dof];
+    for row in 0..joint_dof {
+        for col in 0..joint_dof {
+            out[row * joint_dof + col] = subspace[row].vector().dot(&u_columns[col]);
+        }
+    }
+    out
+}
+
+fn spatial_weighted_sum(columns: &[SpatialVector], weights: &[f64]) -> SpatialVector {
+    let mut out = SpatialVector::zeros();
+    for (column, weight) in columns.iter().zip(weights.iter()) {
+        out += column * *weight;
+    }
+    out
+}
+
+fn spatial_projected_inertia(u_columns: &[SpatialVector], d_inverse: &[f64]) -> SpatialMatrix {
+    let joint_dof = u_columns.len();
+    let mut out = SpatialMatrix::zeros();
+    for row in 0..6 {
+        for col in 0..6 {
+            let mut value = 0.0;
+            for left in 0..joint_dof {
+                for right in 0..joint_dof {
+                    value += u_columns[left][row]
+                        * d_inverse[left * joint_dof + right]
+                        * u_columns[right][col];
+                }
+            }
+            out[(row, col)] = value;
+        }
+    }
+    out
+}
+
+fn invert_symmetric_ldlt(
+    dimension: usize,
+    matrix_row_major: &[f64],
+) -> Result<Vec<f64>, MultibodyError> {
+    let mut inverse = vec![0.0; dimension * dimension];
+    for col in 0..dimension {
+        let mut unit = vec![0.0; dimension];
+        unit[col] = 1.0;
+        let solved = solve_symmetric_ldlt(dimension, matrix_row_major, &unit)?;
+        for row in 0..dimension {
+            inverse[row * dimension + col] = solved[row];
+        }
+    }
+    Ok(inverse)
+}
+
+fn solve_symmetric_ldlt(
+    dimension: usize,
+    matrix_row_major: &[f64],
+    rhs: &[f64],
+) -> Result<Vec<f64>, MultibodyError> {
+    if matrix_row_major.len() != dimension * dimension {
+        return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+            vector: "symmetric LDLT matrix",
+            expected: dimension * dimension,
+            actual: matrix_row_major.len(),
+        });
+    }
+    if rhs.len() != dimension {
+        return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+            vector: "symmetric LDLT rhs",
+            expected: dimension,
+            actual: rhs.len(),
+        });
+    }
+    if !matrix_row_major.iter().all(|v| v.is_finite()) || !rhs.iter().all(|v| v.is_finite()) {
+        return Err(MultibodyError::NonFinite {
+            reason: "symmetric LDLT system contains non-finite components",
+        });
+    }
+
+    let mut lower = vec![0.0; dimension * dimension];
+    let mut diagonal = vec![0.0; dimension];
+    for row in 0..dimension {
+        for col in 0..row {
+            let mut value = matrix_row_major[row * dimension + col];
+            for k in 0..col {
+                value -= lower[row * dimension + k] * diagonal[k] * lower[col * dimension + k];
+            }
+            if diagonal[col] <= 1.0e-12 {
+                return Err(MultibodyError::SingularSystem { pivot: col });
+            }
+            lower[row * dimension + col] = value / diagonal[col];
+        }
+        let mut diag = matrix_row_major[row * dimension + row];
+        for k in 0..row {
+            let l = lower[row * dimension + k];
+            diag -= l * l * diagonal[k];
+        }
+        if diag <= 1.0e-12 {
+            return Err(MultibodyError::SingularSystem { pivot: row });
+        }
+        lower[row * dimension + row] = 1.0;
+        diagonal[row] = diag;
+    }
+
+    let mut y = vec![0.0; dimension];
+    for row in 0..dimension {
+        let mut value = rhs[row];
+        for col in 0..row {
+            value -= lower[row * dimension + col] * y[col];
+        }
+        y[row] = value;
+    }
+    let mut z = vec![0.0; dimension];
+    for row in 0..dimension {
+        z[row] = y[row] / diagonal[row];
+    }
+    let mut x = vec![0.0; dimension];
+    for row in (0..dimension).rev() {
+        let mut value = z[row];
+        for col in (row + 1)..dimension {
+            value -= lower[col * dimension + row] * x[col];
+        }
+        x[row] = value;
+    }
+    if !x.iter().all(|v| v.is_finite()) {
+        return Err(MultibodyError::NonFinite {
+            reason: "symmetric LDLT solve produced non-finite components",
+        });
+    }
+    Ok(x)
 }
 
 fn solve_dense_linear_system(
@@ -2504,6 +2787,118 @@ mod tests {
         for (actual, expected) in actual_qdd.iter().zip(expected_qdd.iter()) {
             assert_abs_diff_eq!(*actual, *expected, epsilon = 1.0e-11);
         }
+    }
+
+    #[test]
+    fn forward_dynamics_aba_matches_dense_bridge() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.2, -0.1, 0.3, 0.4, 0.15],
+            vec![0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8],
+        );
+        let generalized_forces = vec![1.0, -0.5, 0.25, -0.75, 0.6, -0.4, 0.9, -0.2];
+        let root_acceleration = SpatialMotion::new(Vector3::zeros(), Vector3::new(0.0, 0.0, -9.81));
+        let external_forces = vec![
+            SpatialForce::zero(),
+            SpatialForce::new(Vector3::new(0.2, -0.1, 0.05), Vector3::new(0.3, -0.2, 0.1)),
+            SpatialForce::new(
+                Vector3::new(-0.05, 0.08, -0.03),
+                Vector3::new(-0.4, 0.2, -0.1),
+            ),
+        ];
+
+        let dense = tree
+            .forward_dynamics_dense_at_state(
+                &state,
+                &generalized_forces,
+                root_acceleration,
+                &external_forces,
+            )
+            .unwrap();
+        let aba = tree
+            .forward_dynamics_aba_at_state(
+                &state,
+                &generalized_forces,
+                root_acceleration,
+                &external_forces,
+            )
+            .unwrap();
+        let tau_round_trip = tree
+            .inverse_dynamics_rnea_at_state(&state, &aba, root_acceleration, &external_forces)
+            .unwrap();
+
+        for (actual, expected) in aba.iter().zip(dense.iter()) {
+            assert_abs_diff_eq!(*actual, *expected, epsilon = 1.0e-10);
+        }
+        for (actual, expected) in tau_round_trip.iter().zip(generalized_forces.iter()) {
+            assert_abs_diff_eq!(*actual, *expected, epsilon = 1.0e-10);
+        }
+    }
+
+    #[test]
+    fn forward_dynamics_aba_rejects_bad_inputs_and_singular_blocks() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.2, -0.1, 0.3, 0.4, 0.15],
+            vec![0.0; tree.n_qd()],
+        );
+        let external_forces = vec![SpatialForce::zero(); tree.bodies().len()];
+        let short_force = tree
+            .forward_dynamics_aba_at_state(
+                &state,
+                &vec![0.0; tree.n_qd() - 1],
+                SpatialMotion::zero(),
+                &external_forces,
+            )
+            .unwrap_err();
+        let short_external = tree
+            .forward_dynamics_aba_at_state(
+                &state,
+                &vec![0.0; tree.n_qd()],
+                SpatialMotion::zero(),
+                &external_forces[0..external_forces.len() - 1],
+            )
+            .unwrap_err();
+
+        let singular_tree = MultibodyTree::new(vec![TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: SpatialInertia::from_matrix(SpatialMatrix::zeros()).unwrap(),
+            parent_to_body: PluckerTransform::identity(),
+        }])
+        .unwrap();
+        let singular_state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            vec![0.0; singular_tree.n_qd()],
+        );
+        let singular = singular_tree
+            .forward_dynamics_aba_at_state(
+                &singular_state,
+                &vec![0.0; singular_tree.n_qd()],
+                SpatialMotion::zero(),
+                &[SpatialForce::zero()],
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            short_force,
+            MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "generalized forces",
+                ..
+            }
+        ));
+        assert!(matches!(
+            short_external,
+            MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "external forces",
+                ..
+            }
+        ));
+        assert!(matches!(singular, MultibodyError::SingularSystem { .. }));
     }
 
     #[test]

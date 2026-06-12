@@ -3,31 +3,31 @@ schema_version = 1
 [[requirements]]
 id = "REQ-MULTIBODY-001"
 title = "The multibody substrate exposes deterministic spatial-vector primitives"
-statement = "The workspace contains an openbmp-multibody L2 crate registered in the workspace that depends only on lower L0/L1 crates plus nalgebra, exposes angular-over-linear SpatialMotion and moment-over-force SpatialForce vectors, force-dual motion cross products, Pluecker parent-to-child transforms with power-dual force mapping, SpatialInertia construction from validated MassProperties, the WP-01.1 joint vocabulary and topologically ordered MultibodyTree/MultibodyState shape with deterministic q/qd offsets and fail-closed topology/state validation, while making no claim that ABA, RNEA, CRBA, simulator integration, scenario wiring, or external Spatial_v2 oracle validation is complete."
+statement = "The workspace contains an openbmp-multibody L2 crate registered in the workspace that depends only on lower L0/L1 crates plus nalgebra, exposes angular-over-linear SpatialMotion and moment-over-force SpatialForce vectors, force-dual motion cross products, Pluecker parent-to-child transforms with power-dual force mapping, SpatialInertia construction from validated MassProperties, the WP-01.1 joint vocabulary and topologically ordered MultibodyTree/MultibodyState shape with deterministic q/qd offsets and fail-closed topology/state validation, while making no claim that simulator integration, scenario wiring, or external Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-001"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-002"
 title = "The multibody substrate cross-checks fixed-transform CRBA against RNEA columns"
-statement = "The openbmp-multibody crate exposes a fixed-transform composite-rigid-body joint-space inertia substrate and a zero-velocity fixed-transform Recursive Newton-Euler inverse-dynamics substrate that share the same q-independent joint subspaces and deterministic tree order, validate generalized acceleration dimensions and finiteness fail-closed, prove a single free-flyer root returns the root spatial inertia block, and prove CRBA columns match RNEA generalized forces on a small tree while making no claim that ABA factorization, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
+statement = "The openbmp-multibody crate exposes a fixed-transform composite-rigid-body joint-space inertia substrate and a zero-velocity fixed-transform Recursive Newton-Euler inverse-dynamics substrate that share the same q-independent joint subspaces and deterministic tree order, validate generalized acceleration dimensions and finiteness fail-closed, prove a single free-flyer root returns the root spatial inertia block, and prove CRBA columns match RNEA generalized forces on a small tree while making no claim that simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-002"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-003"
 title = "The multibody substrate applies q-dependent joint transforms"
-statement = "The openbmp-multibody crate exposes q-dependent Joint::joint_transform evaluation, PluckerTransform composition, state-dependent body transforms, and state-dependent no-bias CRBA/RNEA substrates that validate generalized state dimensions, finiteness, body indices, quaternion length, and quaternion norm fail-closed, and prove transform composition plus CRBA column consistency against zero-velocity RNEA at a nontrivial generalized state while making no claim that ABA factorization, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
+statement = "The openbmp-multibody crate exposes q-dependent Joint::joint_transform evaluation, PluckerTransform composition, state-dependent body transforms, and state-dependent no-bias CRBA/RNEA substrates that validate generalized state dimensions, finiteness, body indices, quaternion length, and quaternion norm fail-closed, and prove transform composition plus CRBA column consistency against zero-velocity RNEA at a nontrivial generalized state while making no claim that simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-003"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-004"
 title = "The multibody substrate evaluates biased and forced RNEA"
-statement = "The openbmp-multibody crate exposes inverse_dynamics_rnea_at_state for q-dependent Recursive Newton-Euler inverse dynamics with generalized velocity-bias terms, a virtual-root parent acceleration seed suitable for gravity, and per-body external spatial forces expressed in body frames, validates qd/qdd dimensions, body-transform counts, root acceleration finiteness, and external-force dimensions/finiteness fail-closed, proves the zero-velocity zero-force path matches the no-bias CRBA substrate, proves a single free-flyer velocity-bias force analytically, and proves root acceleration plus external-force subtraction on a single-root tree while making no claim that ABA factorization, floating-base solves, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
+statement = "The openbmp-multibody crate exposes inverse_dynamics_rnea_at_state for q-dependent Recursive Newton-Euler inverse dynamics with generalized velocity-bias terms, a virtual-root parent acceleration seed suitable for gravity, and per-body external spatial forces expressed in body frames, validates qd/qdd dimensions, body-transform counts, root acceleration finiteness, and external-force dimensions/finiteness fail-closed, proves the zero-velocity zero-force path matches the no-bias CRBA substrate, proves a single free-flyer velocity-bias force analytically, and proves root acceleration plus external-force subtraction on a single-root tree while making no claim that simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-004"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-005"
 title = "The multibody substrate solves dense forward dynamics"
-statement = "The openbmp-multibody crate exposes forward_dynamics_dense_at_state as a deterministic dense forward-dynamics substrate that forms H(q) with the state-dependent CRBA path, forms C(q, qd, a_root, f_ext) through the biased/forced RNEA path at zero qdd, solves H(q) qdd = tau - C with a finite checked Gaussian-elimination solver, validates generalized-force dimensions and finiteness fail-closed, rejects singular/ill-conditioned joint-space inertia systems fail-closed, and proves a biased RNEA round trip on a nontrivial tree while making no claim that the final O(n) ABA factorization, simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
+statement = "The openbmp-multibody crate exposes forward_dynamics_dense_at_state as a deterministic dense forward-dynamics substrate that forms H(q) with the state-dependent CRBA path, forms C(q, qd, a_root, f_ext) through the biased/forced RNEA path at zero qdd, solves H(q) qdd = tau - C with a finite checked Gaussian-elimination solver, validates generalized-force dimensions and finiteness fail-closed, rejects singular/ill-conditioned joint-space inertia systems fail-closed, and proves a biased RNEA round trip on a nontrivial tree while making no claim that simulator integration, scenario wiring, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-005"]
 
 [[requirements]]
@@ -35,6 +35,12 @@ id = "REQ-MULTIBODY-006"
 title = "The multibody substrate advances generalized state vectors deterministically"
 statement = "The openbmp-multibody crate exposes MultibodyDerivative and tree-owned generalized-state integration helpers that validate derivative dimensions and finiteness fail-closed, scale and add derivative vectors without panic-prone dynamic-vector arithmetic, advance q/qd in locked component order, project free-flyer and spherical quaternion coordinate slices using tree topology, compute scalar state size and weighted adaptive-error norms in the same locked order, and prove derivative arithmetic, state advance/projection, spherical projection, scalar norm, weighted error norm, and invalid tolerance handling while making no claim that openbmp-models SimState integration, openbmp-sim adapter wiring, byte-equivalence, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-006"]
+
+[[requirements]]
+id = "REQ-MULTIBODY-007"
+title = "The multibody substrate evaluates articulated-body forward dynamics"
+statement = "The openbmp-multibody crate exposes forward_dynamics_aba_at_state as an O(n) articulated-body forward-dynamics substrate over q-dependent transforms, generalized velocity-bias terms, a virtual-root parent acceleration seed, and per-body external spatial forces, solves each local articulated joint block including the free-flyer root with a fixed-order symmetric LDLT factorization, validates generalized-force, root-acceleration, and external-force inputs fail-closed, rejects singular local articulated inertia blocks fail-closed, and proves agreement with the dense forward-dynamics bridge plus biased RNEA round-trip on a moving nontrivial tree while making no claim that openbmp-models SimState integration, openbmp-sim adapter wiring, byte-equivalence, scenario wiring, double-pendulum tolerance tables, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-007"]
 
 [[requirements]]
 id = "REQ-SIL-001"
@@ -801,6 +807,28 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-006"]
+
+[[verification]]
+id = "V-MULTIBODY-007"
+kind = "test"
+command = "cargo test -p openbmp-multibody --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "forward_dynamics_aba_at_state",
+  "solve_symmetric_ldlt",
+  "invert_symmetric_ldlt",
+  "fixed-order symmetric LDLT",
+  "forward_dynamics_aba_matches_dense_bridge",
+  "forward_dynamics_aba_rejects_bad_inputs_and_singular_blocks",
+  "REQ-MULTIBODY-007",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-007"]
 
 [[verification]]
 id = "V-SIL-001"
