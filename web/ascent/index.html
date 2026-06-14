@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ascent — a real flight computer in your browser tab · OpenBMP</title>
+    <meta
+      name="description"
+      content="A synthetic Falcon-9-class launch flown live by OpenBMP's actual flight software — EKF navigation, TVC control, PEG guidance — compiled to WebAssembly. Kill an engine and watch it cope."
+    />
+    <link rel="stylesheet" href="css/ascent.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./vendor/three.module.min.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main id="stage">
+      <canvas id="scene"></canvas>
+
+      <header id="masthead">
+        <div>
+          <h1>ASCENT</h1>
+          <p>
+            a real flight computer is flying this — in your tab ·
+            <a href="about.html">what am I looking at?</a>
+          </p>
+        </div>
+        <nav id="controls">
+          <select id="scenario-select" title="scenario"></select>
+          <select id="fc-select" title="onboard navigation filter — reflies the mission with a different estimator">
+            <option value="ekf">NAV · EKF</option>
+            <option value="sr_ukf">NAV · SR-UKF</option>
+          </select>
+          <span class="group" title="time warp">
+            <button data-warp="1">1×</button>
+            <button data-warp="4" class="active">4×</button>
+            <button data-warp="16">16×</button>
+            <button data-warp="64">64×</button>
+          </span>
+          <span class="group" title="camera">
+            <button data-camera="pad">PAD</button>
+            <button data-camera="chase" class="active">CHASE</button>
+            <button data-camera="booster">BOOSTER</button>
+            <button data-camera="orbit">ORBIT</button>
+          </span>
+          <button id="toggle-ghost" title="EKF estimate-vs-truth ghost + covariance">GHOST</button>
+          <button id="toggle-sound" title="procedural launch audio (off by default)">♪ SOUND</button>
+          <button id="toggle-engineering">ENGINEERING</button>
+          <button id="toggle-sandbox">SANDBOX</button>
+          <button id="share" title="copy a link that replays this exact run">SHARE RUN</button>
+          <button id="reset" title="restart the scenario">RESET</button>
+        </nav>
+      </header>
+
+      <button id="launch" hidden>LAUNCH</button>
+      <div id="loading">loading flight software…</div>
+      <aside id="engineering" hidden></aside>
+      <aside id="sandbox" hidden></aside>
+      <div id="hud"></div>
+      <div id="toast" hidden></div>
+    </main>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

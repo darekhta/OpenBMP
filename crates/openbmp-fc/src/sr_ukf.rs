@@ -92,7 +92,6 @@ use nalgebra::{DMatrix, DVector};
 use num_traits::Float;
 use std::boxed::Box;
 use std::format;
-use std::vec::Vec;
 
 // ---------------------------------------------------------------------
 // Sigma-point machinery
@@ -461,11 +460,12 @@ fn covariance_diag3(p: &DMatrix<f64>, start: usize) -> [f64; 3] {
 // `SquareRootUkf` (15-state error-state filter)
 // =====================================================================
 
-use nalgebra::{Matrix3, SVector, UnitQuaternion, Vector3};
+use nalgebra::{SVector, UnitQuaternion, Vector3};
 use openbmp_core::{Eci, Position3, SimTime};
 use openbmp_physics::gravity::{self, ConstantGravity, GravityModel};
 use openbmp_physics::kinematics::{
-    quaternion_from_axis_angle, quaternion_from_omega, renormalize_quaternion,
+    quaternion_error_small_angle, quaternion_from_axis_angle, quaternion_from_omega,
+    renormalize_quaternion,
 };
 use openbmp_physics::magnetic::{EarthDipoleField, MagneticFieldEci};
 
@@ -473,7 +473,7 @@ use crate::error::EstimatorError;
 use crate::params::ParamSection;
 use crate::topics::{
     AttitudeEstimate, BarometerSample, EstimatorMode, EstimatorStatus, GnssSample, ImuSample,
-    MagnetometerSample, PositionEstimate,
+    MagnetometerSample, PositionEstimate, StarTrackerSample,
 };
 
 /// 15-state error-state vector dimension.
@@ -497,6 +497,15 @@ pub struct SquareRootUkfParams {
     /// Process-noise standard deviation on gyro bias random walk
     /// (rad/s/√s).
     pub sigma_w_gyro_bias: f64,
+    /// Process-noise standard deviation on the position state (m/√s).
+    pub sigma_w_position_m: f64,
+    /// Process-noise standard deviation on the velocity state (m/s/√s).
+    /// Without it the position/velocity covariance collapses below the
+    /// GNSS measurement-noise floor; once ascent dynamics arrive the
+    /// (otherwise nominal) GNSS innovation then blows the overconfident
+    /// gate, the filter rejects every fix, dead-reckons, and diverges.
+    /// Mirrors [`crate::estimator::EkfParams::sigma_w_velocity_m_s`].
+    pub sigma_w_velocity_m_s: f64,
     /// First-order Gauss-Markov gyro-bias time constant. `∞` preserves
     /// the random-walk limit.
     pub tau_gyro_bias_s: f64,
@@ -513,6 +522,12 @@ pub struct SquareRootUkfParams {
     /// Measurement-noise standard deviation on each magnetometer
     /// component (nT).
     pub sigma_mag_nt: f64,
+    /// Measurement-noise standard deviation on the star-tracker attitude
+    /// fix (rad, per axis). The star tracker is a full 3-DOF attitude
+    /// observation — without fusing it the attitude estimate drifts on
+    /// gyro + (2-DOF) magnetometer alone and diverges during ascent.
+    /// Mirrors [`crate::estimator::EkfParams::sigma_star_tracker_rad`].
+    pub sigma_star_tracker_rad: f64,
     /// Optional explicit innovation-gate threshold (`NaN` derives from
     /// `innovation_false_alarm_rate`).
     pub innovation_gate: f64,
@@ -520,6 +535,12 @@ pub struct SquareRootUkfParams {
     pub innovation_false_alarm_rate: f64,
     /// Dead-reckoning timeout in seconds.
     pub dead_reckon_timeout_s: f64,
+    /// Multiplier on position/velocity process-noise covariance while the
+    /// high-dynamics regime is active (see
+    /// [`crate::estimator::Estimator::set_high_dynamics_process_noise`]).
+    /// `1.0` is a no-op. Mirrors
+    /// [`crate::estimator::EkfParams::high_dynamics_q_scale`].
+    pub high_dynamics_q_scale: f64,
 }
 
 impl Default for SquareRootUkfParams {
@@ -528,15 +549,19 @@ impl Default for SquareRootUkfParams {
             sigma_w_gyro: 0.01,
             sigma_w_accel_bias: 1.0e-4,
             sigma_w_gyro_bias: 1.0e-5,
+            sigma_w_position_m: 0.0,
+            sigma_w_velocity_m_s: 0.0,
             tau_gyro_bias_s: f64::INFINITY,
             tau_accel_bias_s: f64::INFINITY,
             sigma_gnss_pos_m: 5.0,
             sigma_gnss_vel_m_s: 0.5,
             sigma_baro_alt_m: 2.0,
             sigma_mag_nt: 100.0,
+            sigma_star_tracker_rad: 1.0e-4,
             innovation_gate: f64::NAN,
             innovation_false_alarm_rate: 0.01,
             dead_reckon_timeout_s: 1.5,
+            high_dynamics_q_scale: 1.0,
         }
     }
 }
@@ -643,6 +668,9 @@ pub struct SquareRootUkf {
     params: SquareRootUkfParams,
     scaling: UkfScalingParams,
     weights: SigmaWeights,
+    /// Whether the high-dynamics process-noise regime is active (scales
+    /// position/velocity process noise by `params.high_dynamics_q_scale`).
+    high_dynamics_q_active: bool,
     /// Nominal ECI position (m).
     pos_eci: Vector3<f64>,
     /// Nominal ECI velocity (m/s).
@@ -664,6 +692,7 @@ pub struct SquareRootUkf {
     last_chi2_gnss: f64,
     last_chi2_baro: f64,
     last_chi2_mag: f64,
+    last_chi2_star_tracker: f64,
     last_innovation_rejected: bool,
     last_gnss_innovation_whitened: [f64; 6],
     last_gnss_updated_this_tick: bool,
@@ -735,6 +764,7 @@ impl SquareRootUkf {
             params,
             scaling,
             weights,
+            high_dynamics_q_active: false,
             pos_eci: Vector3::zeros(),
             vel_eci: Vector3::zeros(),
             q_body_to_eci: UnitQuaternion::identity(),
@@ -748,6 +778,7 @@ impl SquareRootUkf {
             last_chi2_gnss: 0.0,
             last_chi2_baro: 0.0,
             last_chi2_mag: 0.0,
+            last_chi2_star_tracker: 0.0,
             last_innovation_rejected: false,
             last_gnss_innovation_whitened: [0.0; 6],
             last_gnss_updated_this_tick: false,
@@ -836,41 +867,34 @@ impl SquareRootUkf {
         self.accel_bias += Vector3::new(dx[12], dx[13], dx[14]);
     }
 
-    /// Predict-side error-state Jacobian `F` (15×15) under the
-    /// continuous-time error dynamics integrated for `dt` seconds.
-    /// Mirrors the EKF's implicit Jacobian — a full derivation is in
-    /// `docs/software-architecture.md § Estimator Math`.
+    /// Predict-side covariance transition `F` (15×15) for a step of
+    /// length `dt`.
+    ///
+    /// This MIRRORS the validated, flight-proven EKF covariance
+    /// propagation (`crate::estimator::Ekf::predict`), which is
+    /// deliberately DECOUPLED: the transition is the identity except for
+    /// first-order Gauss-Markov decay on the two bias blocks. The
+    /// inter-state error couplings (δṗ←δv, δv̇←δθ and δv̇←δaccel_bias,
+    /// δθ̇←δgyro_bias) are NOT propagated into the covariance. Attitude is
+    /// therefore carried by the full, nonlinear NOMINAL gyro integration
+    /// (done in `predict`) and corrected by the magnetometer /
+    /// star-tracker — it is never destabilised by GNSS cross-covariance
+    /// feedback.
+    ///
+    /// The fully-coupled `F·S` propagation an "ideal" UKF would use is
+    /// numerically fragile under the high specific force of powered ascent
+    /// (2-3 g): it inflates the attitude↔gyro-bias cross-covariance, and
+    /// the resulting GNSS-velocity-driven attitude corrections diverge
+    /// (the vehicle loses attitude and never reaches orbit). Matching the
+    /// EKF's decoupled structure is the same design choice the EKF already
+    /// makes; the SR-UKF stays distinct in its square-root numerics and
+    /// sigma-point measurement updates. Hardening the fully-coupled
+    /// propagation is deferred (see crate docs).
     fn error_state_jacobian(&self, dt: f64) -> DMatrix<f64> {
         let mut f = DMatrix::<f64>::identity(SRUKF_STATE_DIM, SRUKF_STATE_DIM);
-        // δṗ = δv  →  F[0..3, 3..6] = I · dt
-        for i in 0..3 {
-            f[(i, i + 3)] = dt;
-        }
-        // δv̇ = -[R · accel_meas]_× · δθ  − R · δaccel_bias
-        // (gravity term contributes only second-order in pos for non-flat
-        // models; neglected here, matching the EKF implementation)
-        if let Some(imu) = self.last_imu {
-            let r_body_to_eci = self.q_body_to_eci.to_rotation_matrix();
-            let f_eci = r_body_to_eci * (imu.accel_m_s2 - self.accel_bias);
-            let cross = skew_symmetric_dynamic(&f_eci);
-            // δv̇ row block (3..6), δθ block (6..9): -[R·a]_× · dt
-            for r in 0..3 {
-                for c in 0..3 {
-                    f[(r + 3, c + 6)] = -cross[(r, c)] * dt;
-                }
-            }
-            // δv̇ row block (3..6), δaccel_bias block (12..15): -R · dt
-            for r in 0..3 {
-                for c in 0..3 {
-                    f[(r + 3, c + 12)] = -r_body_to_eci[(r, c)] * dt;
-                }
-            }
-            // δθ̇ = -δgyro_bias  →  F[6..9, 9..12] = -I · dt
-            for i in 0..3 {
-                f[(i + 6, i + 9)] = -dt;
-            }
-        }
-        // Gauss-Markov decay on biases.
+        // Gauss-Markov decay on the bias blocks — the only non-identity
+        // term, matching `Ekf::predict`'s `scale_covariance_state` on
+        // states 9..12 (gyro bias) and 12..15 (accel bias).
         let gyro_decay = gauss_markov_decay_local(dt, self.params.tau_gyro_bias_s);
         let accel_decay = gauss_markov_decay_local(dt, self.params.tau_accel_bias_s);
         for i in 0..3 {
@@ -886,6 +910,27 @@ impl SquareRootUkf {
     /// direct Q contribution (matching the EKF Q-diagonal layout).
     fn process_noise_cholesky(&self, dt: f64) -> DMatrix<f64> {
         let mut q_sqrt = DMatrix::<f64>::zeros(SRUKF_STATE_DIM, SRUKF_STATE_DIM);
+        // Position / velocity process noise. q_sqrt is the Cholesky factor
+        // of the (diagonal) process-noise covariance Q, so each entry is
+        // √(σ² · scale · dt) = σ · √(scale · dt) — matching the EKF, which
+        // adds σ² · scale · dt to its covariance diagonal. Without these
+        // terms the position/velocity covariance collapses and the filter
+        // diverges under ascent dynamics (see `sigma_w_velocity_m_s`).
+        let position_velocity_q_scale = if self.high_dynamics_q_active
+            && self.params.high_dynamics_q_scale.is_finite()
+            && self.params.high_dynamics_q_scale > 0.0
+        {
+            self.params.high_dynamics_q_scale
+        } else {
+            1.0
+        };
+        let pv_root = (position_velocity_q_scale * dt).sqrt();
+        let s_pos = self.params.sigma_w_position_m * pv_root;
+        let s_vel = self.params.sigma_w_velocity_m_s * pv_root;
+        for i in 0..3 {
+            q_sqrt[(i, i)] = s_pos;
+            q_sqrt[(i + 3, i + 3)] = s_vel;
+        }
         // δθ block: σ_w_gyro · √dt
         let s_att = self.params.sigma_w_gyro * dt.sqrt();
         for i in 0..3 {
@@ -1090,10 +1135,6 @@ impl SquareRootUkf {
 
 // --- standalone helpers (private to this module) ---
 
-fn skew_symmetric_dynamic(v: &Vector3<f64>) -> Matrix3<f64> {
-    Matrix3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0)
-}
-
 fn gauss_markov_decay_local(dt_s: f64, tau_s: f64) -> f64 {
     if tau_s.is_finite() && tau_s > 0.0 {
         (-dt_s / tau_s).exp()
@@ -1172,6 +1213,10 @@ impl crate::estimator::Estimator for SquareRootUkf {
         "estimator.sr_ukf"
     }
 
+    fn set_high_dynamics_process_noise(&mut self, active: bool) {
+        self.high_dynamics_q_active = active;
+    }
+
     fn predict(&mut self, dt: f64) -> Result<(), EstimatorError> {
         if !dt.is_finite() || dt <= 0.0 {
             return Ok(());
@@ -1240,50 +1285,103 @@ impl crate::estimator::Estimator for SquareRootUkf {
     }
 
     fn update_gnss(&mut self, sample: &GnssSample) -> Result<(), EstimatorError> {
-        // 6-D GNSS measurement on (position, velocity).
-        let z = DVector::<f64>::from_iterator(
-            6,
-            (0..6).map(|i| {
-                if i < 3 {
-                    sample.position_eci_m[i]
-                } else {
-                    sample.velocity_eci_m_s[i - 3]
-                }
-            }),
-        );
-        let r_diag: Vec<f64> = (0..6)
-            .map(|i| {
-                if i < 3 {
-                    self.params.sigma_gnss_pos_m
-                } else {
-                    self.params.sigma_gnss_vel_m_s
-                }
-            })
-            .collect();
-        let mut r_sqrt = DMatrix::<f64>::zeros(6, 6);
-        for (i, sigma) in r_diag.iter().enumerate() {
-            r_sqrt[(i, i)] = *sigma;
+        // GNSS is fused as two INDEPENDENT, independently-gated 3-D blocks —
+        // position (states 0..3) then velocity (states 3..6) — processed
+        // sequentially, mirroring `crate::estimator::Ekf::update_gnss`. The
+        // GNSS measurement-noise R is block-diagonal and the measurements are
+        // linear in the state, so sequential processing is mathematically
+        // identical to the joint 6-D update when BOTH blocks pass their gate;
+        // the difference is that each block is gated on its own 3-DOF
+        // chi-square. A velocity-innovation spike under high thrust therefore
+        // rejects ONLY the velocity block — the good position fix is still
+        // applied — instead of the previous single combined 6-D gate dropping
+        // the whole fix and dead-reckoning the filter into divergence. (This
+        // was the SR-UKF's full-ascent divergence: a 6-D gate that collapsed
+        // under 2-3 g thrust.)
+        self.last_gnss_updated_this_tick = true;
+
+        // --- position block (states 0..3) ---
+        let z_pos = DVector::<f64>::from_iterator(3, (0..3).map(|i| sample.position_eci_m[i]));
+        let mut r_sqrt_pos = DMatrix::<f64>::zeros(3, 3);
+        for i in 0..3 {
+            r_sqrt_pos[(i, i)] = self.params.sigma_gnss_pos_m;
         }
-        let predict_z = |filter: &SquareRootUkf, perturbation: &DVector<f64>| -> DVector<f64> {
+        let predict_pos = |filter: &SquareRootUkf, perturbation: &DVector<f64>| -> DVector<f64> {
             let pos =
                 filter.pos_eci + Vector3::new(perturbation[0], perturbation[1], perturbation[2]);
+            DVector::<f64>::from_iterator(3, (0..3).map(|i| pos[i]))
+        };
+        let pos_result = self.sigma_point_update(&z_pos, &r_sqrt_pos, predict_pos, "gnss", 3.0);
+
+        // --- velocity block (states 3..6), evaluated AFTER the position
+        //     update so the two form a proper sequential (joint-equivalent)
+        //     pass ---
+        let z_vel = DVector::<f64>::from_iterator(3, (0..3).map(|i| sample.velocity_eci_m_s[i]));
+        let mut r_sqrt_vel = DMatrix::<f64>::zeros(3, 3);
+        for i in 0..3 {
+            r_sqrt_vel[(i, i)] = self.params.sigma_gnss_vel_m_s;
+        }
+        let predict_vel = |filter: &SquareRootUkf, perturbation: &DVector<f64>| -> DVector<f64> {
             let vel =
                 filter.vel_eci + Vector3::new(perturbation[3], perturbation[4], perturbation[5]);
-            DVector::<f64>::from_iterator(
-                6,
-                (0..6).map(|i| if i < 3 { pos[i] } else { vel[i - 3] }),
-            )
+            DVector::<f64>::from_iterator(3, (0..3).map(|i| vel[i]))
         };
-        let (chi2, whitened, log_det_s) =
-            self.sigma_point_update(&z, &r_sqrt, predict_z, "gnss", 6.0)?;
-        self.last_chi2_gnss = chi2;
-        for i in 0..6 {
-            self.last_gnss_innovation_whitened[i] = whitened[i];
+        let vel_result = self.sigma_point_update(&z_vel, &r_sqrt_vel, predict_vel, "gnss", 3.0);
+
+        // Combine the two blocks' diagnostics. A gate rejection is recoverable
+        // (the block simply isn't applied); any other error is a hard numeric
+        // failure and propagates. The whitened innovation telemetry is the
+        // concatenation of the two blocks and the chi-square / log-det are
+        // their sums, so the `‖ν̃‖² = chi2` invariant still holds.
+        let mut chi2_total = 0.0_f64;
+        let mut log_det_total = 0.0_f64;
+        let applied_pos = match pos_result {
+            Ok((chi2, whitened, log_det)) => {
+                self.last_gnss_innovation_whitened[..3].copy_from_slice(whitened.as_slice());
+                chi2_total += chi2;
+                log_det_total += log_det;
+                true
+            }
+            Err(EstimatorError::InnovationGateRejected { chi2, .. }) => {
+                self.last_gnss_innovation_whitened[..3].fill(0.0);
+                chi2_total += chi2;
+                false
+            }
+            Err(other) => return Err(other),
+        };
+        let applied_vel = match vel_result {
+            Ok((chi2, whitened, log_det)) => {
+                self.last_gnss_innovation_whitened[3..].copy_from_slice(whitened.as_slice());
+                chi2_total += chi2;
+                log_det_total += log_det;
+                true
+            }
+            Err(EstimatorError::InnovationGateRejected { chi2, .. }) => {
+                self.last_gnss_innovation_whitened[3..].fill(0.0);
+                chi2_total += chi2;
+                false
+            }
+            Err(other) => return Err(other),
+        };
+
+        self.last_chi2_gnss = chi2_total;
+        self.last_log_det_s_gnss = log_det_total;
+
+        if applied_pos || applied_vel {
+            self.time_since_corrective_s = 0.0;
+            self.initialized = true;
         }
-        self.last_gnss_updated_this_tick = true;
-        self.last_log_det_s_gnss = log_det_s;
-        self.time_since_corrective_s = 0.0;
-        self.initialized = true;
+        if !applied_pos || !applied_vel {
+            self.last_innovation_rejected = true;
+            // Report the combined statistic against the per-block 3-DOF gate
+            // (a rejection means at least one block breached its own gate).
+            return Err(EstimatorError::InnovationGateRejected {
+                measurement: "gnss",
+                chi2: self.last_chi2_gnss,
+                gate: self.params.gate_for_dof(3.0),
+            });
+        }
+        self.last_innovation_rejected = false;
         Ok(())
     }
 
@@ -1345,6 +1443,44 @@ impl crate::estimator::Estimator for SquareRootUkf {
         Ok(())
     }
 
+    fn update_star_tracker(&mut self, sample: &StarTrackerSample) -> Result<(), EstimatorError> {
+        if !sample.healthy {
+            return Ok(());
+        }
+        // The star tracker delivers the full attitude as q_eci_to_body. Form
+        // the body-frame small-angle error between the measured and nominal
+        // attitude; this is a direct, LINEAR observation of the attitude-error
+        // state (indices 6..9), exactly as in `Ekf::update_star_tracker`. For
+        // a measurement that is linear in the error state, the sigma-point
+        // update reduces to the EKF's H = I-on-attitude update: the predicted
+        // measurement for a sigma point is simply its attitude-error
+        // perturbation, and the innovation is the observed error (the error
+        // mean is zero, so ẑ = 0). Being a full 3-DOF fix, this constrains
+        // EVERY attitude axis — what a single magnetometer vector cannot —
+        // and is what keeps the attitude estimate from drifting during ascent.
+        let [mx, my, mz, mw] = sample.q_eci_to_body_xyzw;
+        // q_body_to_eci(measured) = inverse(q_eci_to_body) = conjugate for a
+        // unit quaternion: (x, y, z, w) -> (-x, -y, -z, w).
+        let q_be_meas_xyzw = [-mx, -my, -mz, mw];
+        let q_nom = self.q_body_to_eci;
+        let innovation =
+            quaternion_error_small_angle([q_nom.i, q_nom.j, q_nom.k, q_nom.w], q_be_meas_xyzw);
+        let z = DVector::<f64>::from_iterator(3, (0..3).map(|i| innovation[i]));
+        let mut r_sqrt = DMatrix::<f64>::zeros(3, 3);
+        for i in 0..3 {
+            r_sqrt[(i, i)] = self.params.sigma_star_tracker_rad;
+        }
+        let predict_z = |_filter: &SquareRootUkf, perturbation: &DVector<f64>| -> DVector<f64> {
+            DVector::<f64>::from_iterator(3, (0..3).map(|i| perturbation[i + 6]))
+        };
+        let (chi2, _whitened, _log_det_s) =
+            self.sigma_point_update(&z, &r_sqrt, predict_z, "star_tracker", 3.0)?;
+        self.last_chi2_star_tracker = chi2;
+        self.time_since_corrective_s = 0.0;
+        self.initialized = true;
+        Ok(())
+    }
+
     fn attitude(&self) -> AttitudeEstimate {
         let q = self.q_body_to_eci.into_inner();
         AttitudeEstimate {
@@ -1381,7 +1517,7 @@ impl crate::estimator::Estimator for SquareRootUkf {
             gnss_chi2: self.last_chi2_gnss,
             baro_chi2: self.last_chi2_baro,
             mag_chi2: self.last_chi2_mag,
-            star_tracker_chi2: 0.0,
+            star_tracker_chi2: self.last_chi2_star_tracker,
             innovation_rejected: self.last_innovation_rejected,
             gnss_innovation_whitened: self.last_gnss_innovation_whitened,
             gnss_updated_this_tick: self.last_gnss_updated_this_tick,
@@ -1407,6 +1543,7 @@ impl crate::estimator::Estimator for SquareRootUkf {
         self.last_chi2_gnss = 0.0;
         self.last_chi2_baro = 0.0;
         self.last_chi2_mag = 0.0;
+        self.last_chi2_star_tracker = 0.0;
         self.last_innovation_rejected = false;
         self.last_gnss_innovation_whitened = [0.0; 6];
         self.last_gnss_updated_this_tick = false;

@@ -1,0 +1,442 @@
+:root {
+  --bg: #04070c;
+  --panel: rgba(10, 16, 24, 0.86);
+  --line: rgba(127, 212, 255, 0.25);
+  --text: #dbe7f1;
+  --dim: #8aa0b4;
+  --accent: #7fd4ff;
+  --good: #69e6a0;
+  --warn: #ffb86b;
+  --bad: #ff7a7a;
+  font-family: "Inter", "Helvetica Neue", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+#stage {
+  position: relative;
+  height: 100%;
+}
+
+#scene {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#masthead {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 14px 18px;
+  gap: 12px;
+  pointer-events: none;
+  z-index: 6;
+}
+
+#masthead > * {
+  pointer-events: auto;
+}
+
+#masthead h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0.35em;
+  color: var(--accent);
+}
+
+#masthead p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+#masthead a {
+  color: var(--accent);
+}
+
+#controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+#controls .group {
+  display: inline-flex;
+  gap: 2px;
+}
+
+button,
+select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: 600 11px/1 "Inter", system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button.active {
+  background: var(--accent);
+  color: #04212f;
+}
+
+/* Pre-launch: a prominent centred call-to-action (the rocket is on the pad,
+   low in frame, so the centre is clear). Once flying it docks to a compact
+   control in the top-left so it never covers the vehicle. */
+#launch {
+  position: absolute;
+  left: 50%;
+  bottom: 30%;
+  transform: translateX(-50%);
+  font-size: 20px;
+  letter-spacing: 0.4em;
+  padding: 16px 42px;
+  border-width: 2px;
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(8, 18, 26, 0.92);
+  box-shadow: 0 0 22px rgba(127, 212, 255, 0.25);
+  z-index: 6;
+  transition: opacity 0.2s;
+}
+
+#launch.docked {
+  left: 18px;
+  bottom: auto;
+  top: 60px;
+  transform: none;
+  font-size: 12px;
+  letter-spacing: 0.28em;
+  padding: 8px 16px;
+  border-width: 1px;
+  box-shadow: none;
+}
+
+#loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--dim);
+  letter-spacing: 0.25em;
+  font-size: 13px;
+  z-index: 5;
+}
+
+/* ---------------------------------------------------------------- HUD */
+
+#hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#hud-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.hud-bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 18px;
+  align-items: end;
+  padding: 14px 20px 16px;
+  background: linear-gradient(transparent, rgba(3, 7, 12, 0.92) 35%);
+}
+
+.hud-clock {
+  font: 700 26px/1 ui-monospace, "SF Mono", monospace;
+  color: var(--accent);
+}
+
+.hud-phase {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--dim);
+  margin-top: 4px;
+}
+
+.hud-events {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font: 11px/1.5 ui-monospace, monospace;
+  color: var(--dim);
+}
+
+.hud-events li:first-child {
+  color: var(--good);
+}
+
+.hud-events li.inject {
+  color: var(--warn);
+}
+
+.hud-center {
+  display: flex;
+  gap: 34px;
+}
+
+.hud-metric {
+  text-align: center;
+}
+
+.hud-metric span {
+  font: 700 34px/1 ui-monospace, monospace;
+}
+
+.hud-metric label {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--dim);
+  margin-top: 4px;
+}
+
+.hud-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.hud-tank {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+}
+
+.hud-tank label {
+  width: 88px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.hud-tank-rail {
+  width: 170px;
+  height: 7px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.hud-tank-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.hud-tank-fill.low {
+  background: var(--warn);
+}
+
+.hud-engines {
+  display: flex;
+  gap: 4px;
+}
+
+.hud-engines i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: #142231;
+}
+
+.hud-engines i.burning {
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--accent);
+}
+
+.hud-engines i.armed {
+  background: #2d4258;
+}
+
+.hud-engines i.failed {
+  background: var(--bad);
+  box-shadow: 0 0 7px var(--bad);
+}
+
+.hud-nav {
+  display: flex;
+  gap: 12px;
+  font: 10px/1 ui-monospace, monospace;
+  color: var(--dim);
+}
+
+.hud-nav .warn {
+  color: var(--warn);
+}
+
+.hud-banner {
+  position: absolute;
+  left: 50%;
+  top: 22%;
+  transform: translateX(-50%);
+  padding: 14px 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  font: 700 18px/1 ui-monospace, monospace;
+  letter-spacing: 0.18em;
+}
+
+.hud-banner.good {
+  color: var(--good);
+  border-color: var(--good);
+}
+
+.hud-banner.bad {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+/* ----------------------------------------------------------- overlays */
+
+#engineering,
+#sandbox {
+  position: absolute;
+  top: 132px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px 14px;
+  backdrop-filter: blur(4px);
+  z-index: 6;
+}
+
+#engineering {
+  right: 16px;
+  width: 330px;
+  max-height: calc(100% - 270px);
+  overflow-y: auto;
+}
+
+#sandbox {
+  left: 16px;
+  width: 330px;
+}
+
+#engineering h3,
+#sandbox h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  color: var(--accent);
+}
+
+#sandbox p {
+  font-size: 11px;
+  color: var(--dim);
+  margin: 0 0 10px;
+}
+
+.sandbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.wind-row label {
+  font-size: 10px;
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wind-row input[type="range"] {
+  width: 80px;
+}
+
+.charts canvas {
+  width: 100%;
+  margin-bottom: 8px;
+  border-radius: 4px;
+}
+
+.charts-note {
+  font-size: 10px;
+  color: var(--dim);
+  margin: 2px 0 0;
+}
+
+#toast {
+  position: absolute;
+  left: 50%;
+  top: 70px;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--good);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: 12px;
+  max-width: 70%;
+  word-break: break-all;
+  z-index: 9;
+}
+
+#toast.error {
+  border-color: var(--bad);
+}
+
+@media (max-width: 760px) {
+  .hud-bar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .hud-right {
+    align-items: flex-start;
+  }
+
+  #engineering,
+  #sandbox {
+    width: calc(100% - 32px);
+    max-height: 40%;
+    overflow-y: auto;
+  }
+
+  .hud-metric span {
+    font-size: 26px;
+  }
+}

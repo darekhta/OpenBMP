@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>About Ascent · OpenBMP</title>
+    <link rel="stylesheet" href="css/ascent.css" />
+    <style>
+      body {
+        overflow: auto;
+        padding: 40px 20px 80px;
+      }
+      article {
+        max-width: 760px;
+        margin: 0 auto;
+        line-height: 1.65;
+        font-size: 15px;
+      }
+      article h1 {
+        color: var(--accent);
+        letter-spacing: 0.3em;
+        font-size: 24px;
+      }
+      article h2 {
+        margin-top: 2em;
+        font-size: 17px;
+        color: var(--accent);
+      }
+      article a {
+        color: var(--accent);
+      }
+      article code {
+        background: var(--panel);
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-size: 13px;
+      }
+      .back {
+        display: inline-block;
+        margin-bottom: 24px;
+      }
+      blockquote {
+        border-left: 3px solid var(--line);
+        margin: 1em 0;
+        padding: 2px 16px;
+        color: var(--dim);
+      }
+    </style>
+  </head>
+  <body>
+    <article>
+      <a class="back" href="index.html">← back to the pad</a>
+      <h1>ASCENT</h1>
+      <p><strong>There is a real flight computer running in this browser tab.</strong></p>
+      <p>
+        Ascent is the public demo of
+        <a href="https://github.com/openbmp/openbmp">OpenBMP</a> (Open Body Motion Platform), an
+        open-source, academic, simulation-only research platform for launch-vehicle-class flight
+        dynamics written in Rust. The entire simulation stack — six-degree-of-freedom rigid-body
+        kernel, EGM2008 gravity, US Standard 1976 atmosphere, synthetic sensors, and the in-loop
+        flight software — is compiled to WebAssembly and steps inside a Web Worker on your machine.
+        Nothing is pre-rendered, there is no server, and no trajectory is keyframed: every frame you
+        see is the state of a live numerical simulation.
+      </p>
+
+      <h2>What is real here</h2>
+      <ul>
+        <li>
+          <strong>Navigation.</strong> An extended Kalman filter fuses a synthetic tactical-grade
+          IMU, a GNSS receiver, and a star tracker — with innovation gating, bias estimation, and
+          dead-reckoning fallback. The flight computer never reads simulation truth; it flies on
+          what its sensors tell it. The ENGINEERING overlay plots the difference live.
+        </li>
+        <li>
+          <strong>Control.</strong> A three-loop autopilot commands engine gimbals (thrust-vector
+          control) with per-phase gain schedules, plus a closed-loop max-Q load-relief law that
+          throttles to hold dynamic pressure at the structural limit — watch the q strip-chart
+          flatten at 26&nbsp;kPa.
+        </li>
+        <li>
+          <strong>Guidance.</strong> A closed-loop insertion law flies the booster phase; Powered
+          Explicit Guidance (PEG) steers the upper stage and commands engine cutoff from its own
+          time-to-go estimate.
+        </li>
+        <li>
+          <strong>Sequencing.</strong> Mission phase transitions are owned by the flight computer's
+          commander, and the SECO event fires on the guidance solution — not on a script reading
+          the true state.
+        </li>
+        <li>
+          <strong>Staging.</strong> The jettisoned booster is propagated as an independent
+          six-degree-of-freedom body; in the boostback scenario its own controller flips it
+          retrograde and fires the recovery burn.
+        </li>
+      </ul>
+
+      <h2>What is synthetic</h2>
+      <p>
+        The vehicle — we call it <em>Phalcon-9</em> — is a wholly synthetic two-stage kerolox
+        launcher with rounded, order-of-magnitude class figures. It is not a model of any fielded
+        vehicle, it contains no SpaceX data, and this project is not affiliated with or endorsed by
+        SpaceX (the resemblance is the homage every two-stage kerolox rocket pays to physics). The
+        aero model in this scenario is an axial drag deck; the scenario carries the
+        <code>validated-toy</code> label, which in OpenBMP's
+        <a href="https://github.com/openbmp/openbmp/blob/main/docs/verification.md">verification
+        vocabulary</a> means: validated against first-principles orbital-mechanics invariants
+        (vis-viva, angular-momentum and energy conservation on the coast) — and nothing stronger.
+      </p>
+      <blockquote>
+        OpenBMP is <strong>not</strong> validated for operational flight, <strong>not</strong>
+        suitable for hardware deployment, and <strong>not</strong> a substitute for any qualified
+        flight-software stack. Outputs are for engineering education, simulation research, and
+        controller prototyping. See the project's
+        <a href="https://github.com/openbmp/openbmp/blob/main/DISCLAIMER.md">non-suitability
+        disclaimer</a> and
+        <a href="https://github.com/openbmp/openbmp/blob/main/docs/safety-boundaries.md">scope
+        boundaries</a>.
+      </blockquote>
+
+      <h2>The sandbox: disturb and observe — never steer</h2>
+      <p>
+        The SANDBOX panel exposes the simulator's fault-injection seams: terminal engine shutdown,
+        thrust loss, gimbal lock, sensor outage windows, and a wind override. These are the same
+        simulated-malfunction paths OpenBMP scenarios declare for FDIR studies. There is
+        deliberately no command that steers the vehicle: guidance, navigation, and control stay
+        onboard, and the host can only perturb the world and watch the flight software cope — the
+        same forward-only observation boundary the project's software-in-the-loop bench enforces.
+      </p>
+      <p>
+        Every stimulus is logged against the simulation step clock. The simulation is
+        bit-deterministic, so SHARE&nbsp;RUN produces a link that replays your exact flight —
+        faults, gusts, and all — on anyone else's machine.
+      </p>
+
+      <h2>How it works</h2>
+      <p>
+        The Rust workspace compiles unchanged to <code>wasm32-unknown-unknown</code> (the kernel
+        and flight-computer crates are <code>no_std</code>-portable and deterministic by
+        construction). A stepping <code>Session</code> API drives the same code path as the native
+        one-shot runner — the two are byte-identical by construction and pinned by test. The
+        scenario files and every data file they reference are embedded at compile time and verified
+        against their SHA-256 pins exactly as on disk. The renderer is
+        <a href="https://threejs.org/">three.js</a>; the simulation posts a flat telemetry snapshot
+        ~30 times a second from a Web Worker. The wasm payload is ~1.6&nbsp;MB gzipped and runs
+        hundreds of times faster than realtime, which is what the time-warp buttons spend.
+      </p>
+
+      <h2>Credits &amp; licences</h2>
+      <ul>
+        <li>
+          Simulation, flight software, and this demo:
+          <a href="https://github.com/openbmp/openbmp">OpenBMP</a>, dual-licensed
+          Apache-2.0&nbsp;/&nbsp;MIT.
+        </li>
+        <li>
+          Earth texture: NASA Earth Observatory “Blue Marble” (NASA imagery is not copyrighted;
+          NASA does not endorse this project).
+        </li>
+        <li><a href="https://threejs.org/">three.js</a>, MIT licence (vendored).</li>
+        <li>Stars, vehicle, and plumes: procedural, generated from the scenario definition.</li>
+      </ul>
+    </article>
+  </body>
+</html>

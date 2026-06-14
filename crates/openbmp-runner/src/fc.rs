@@ -1248,6 +1248,14 @@ fn build_single_estimator(
             // Apply the [fc.ekf] mag-field model selection — same
             // resolution path as the EKF / IMM lanes.
             sr_ukf = apply_sr_ukf_mag_model(sr_ukf, Some(ekf_cfg))?;
+            // ...and the gravity model. Without this the filter keeps its
+            // default flat-Earth constant-down-z gravity, which is correct
+            // only on the pad: as the vehicle pitches over and climbs, true
+            // gravity rotates away from ECI -z, the prediction diverges from
+            // truth, and the controller (acting on the bad estimate) loses
+            // the vehicle. The EKF/IMM lanes already wire this; the SR-UKF
+            // nav lane was missing it.
+            sr_ukf = apply_sr_ukf_gravity_model(sr_ukf, Some(ekf_cfg))?;
             sr_ukf.seed(
                 seed.position_eci_m,
                 seed.velocity_eci_m_s,
@@ -1285,15 +1293,19 @@ fn copy_ekf_to_sr_ukf_params(ekf: &EkfParams, sr: &mut SquareRootUkfParams) {
     sr.sigma_w_gyro = ekf.sigma_w_gyro;
     sr.sigma_w_accel_bias = ekf.sigma_w_accel_bias;
     sr.sigma_w_gyro_bias = ekf.sigma_w_gyro_bias;
+    sr.sigma_w_position_m = ekf.sigma_w_position_m;
+    sr.sigma_w_velocity_m_s = ekf.sigma_w_velocity_m_s;
     sr.tau_gyro_bias_s = ekf.tau_gyro_bias_s;
     sr.tau_accel_bias_s = ekf.tau_accel_bias_s;
     sr.sigma_gnss_pos_m = ekf.sigma_gnss_pos_m;
     sr.sigma_gnss_vel_m_s = ekf.sigma_gnss_vel_m_s;
     sr.sigma_baro_alt_m = ekf.sigma_baro_alt_m;
     sr.sigma_mag_nt = ekf.sigma_mag_nt;
+    sr.sigma_star_tracker_rad = ekf.sigma_star_tracker_rad;
     sr.innovation_gate = ekf.innovation_gate;
     sr.innovation_false_alarm_rate = ekf.innovation_false_alarm_rate;
     sr.dead_reckon_timeout_s = ekf.dead_reckon_timeout_s;
+    sr.high_dynamics_q_scale = ekf.high_dynamics_q_scale;
 }
 
 fn apply_sr_ukf_mag_model(
@@ -1310,6 +1322,25 @@ fn apply_sr_ukf_mag_model(
             Ok(sr_ukf.with_mag_field_model(build_wmm_2025(epoch)?))
         }
     }
+}
+
+/// Apply the `[fc.ekf].gravity_model` selection to the SR-UKF nav lane —
+/// the SR-UKF reuses the EKF config block, so it honours the same gravity
+/// model the EKF does. Mirrors [`apply_ekf_gravity_model`].
+fn apply_sr_ukf_gravity_model(
+    sr_ukf: SquareRootUkf,
+    cfg: Option<&FcEkfConfig>,
+) -> Result<SquareRootUkf, ControllerError> {
+    use openbmp_physics::gravity::{Egm2008ZonalGravity, J2Gravity, PointMassGravity};
+    let kind = cfg.and_then(|c| c.gravity_model).unwrap_or_default();
+    Ok(match kind {
+        FcGravityModelKind::ConstantZ => sr_ukf,
+        FcGravityModelKind::PointMass => sr_ukf.with_gravity_model(PointMassGravity::wgs84()),
+        FcGravityModelKind::J2 => sr_ukf.with_gravity_model(J2Gravity::wgs84()),
+        FcGravityModelKind::Egm2008 => {
+            sr_ukf.with_gravity_model(Egm2008ZonalGravity::wgs84_egm2008_zonal())
+        }
+    })
 }
 
 fn apply_sr_ukf_attitude_mag_model(

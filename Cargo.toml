@@ -34,6 +34,7 @@ members = [
     "crates/openbmp-runner",
     "crates/openbmp-cli",
     "crates/openbmp-bridge",
+    "crates/openbmp-web",
 ]
 
 [workspace.package]
@@ -119,6 +120,10 @@ hifitime = { version = "4.2.6", default-features = false, features = ["std"] }
 
 # --- Async (bridge crate ONLY)
 tokio = { version = "1.52.1", default-features = false, features = ["rt", "macros", "io-util"] }
+
+# --- WebAssembly host boundary (openbmp-web ONLY)
+wasm-bindgen             = { version = "0.2.106" }
+console_error_panic_hook = { version = "0.1.7" }
 
 # --- Test / bench / fuzz
 proptest        = { version = "1.11.0", default-features = false, features = ["std"] }
