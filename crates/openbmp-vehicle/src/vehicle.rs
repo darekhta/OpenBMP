@@ -449,7 +449,7 @@ impl<S: SimState> ForceModel<S> for KernelVehicle<S> {
             if !self.model_active(ctx.phase_id, name) {
                 continue;
             }
-            let component = f.force_n_eci(ctx)?;
+            let component = f.force_n_eci(ctx.clone())?;
             total += component;
         }
         Ok(total)
@@ -469,7 +469,7 @@ impl<S: SimState> MomentModel<S> for KernelVehicle<S> {
             if !self.model_active(ctx.phase_id, name) {
                 continue;
             }
-            let component = m.moment_n_m_body(ctx)?;
+            let component = m.moment_n_m_body(ctx.clone())?;
             total += component;
         }
         Ok(total)
@@ -511,7 +511,7 @@ impl<S: SimState> Vehicle<S> for KernelVehicle<S> {
         let mut components = Vec::with_capacity(self.force_models.len());
         for (name, model) in self.force_model_names.iter().zip(&self.force_models) {
             let component = if self.model_active(ctx.phase_id, name) {
-                model.force_n_eci(ctx)?
+                model.force_n_eci(ctx.clone())?
             } else {
                 Vector3::zeros()
             };
@@ -529,7 +529,7 @@ impl<S: SimState> Vehicle<S> for KernelVehicle<S> {
         let mut components = Vec::with_capacity(self.moment_models.len());
         for (name, model) in self.moment_model_names.iter().zip(&self.moment_models) {
             let component = if self.model_active(ctx.phase_id, name) {
-                model.moment_n_m_body(ctx)?
+                model.moment_n_m_body(ctx.clone())?
             } else {
                 Vector3::zeros()
             };

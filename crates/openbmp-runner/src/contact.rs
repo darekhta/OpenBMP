@@ -108,6 +108,18 @@ pub(crate) struct ContactDiagnosticsEvaluator {
     friction: ContactDiagnosticsFriction,
 }
 
+// Manual impl: the stiction friction arm carries a `Mutex` of
+// integrator-internal state with no meaningful Debug rendering.
+impl std::fmt::Debug for ContactDiagnosticsEvaluator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContactDiagnosticsEvaluator")
+            .field("half_space", &self.half_space)
+            .field("geometry", &self.geometry)
+            .field("normal_law", &self.normal_law)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ContactDiagnosticsEvaluator {
     pub(crate) fn from_config(config: &ContactConfig) -> Result<Self, RunnerError> {
         let parts = build_half_space_contact_parts(config)?;

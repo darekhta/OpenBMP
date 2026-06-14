@@ -39,7 +39,7 @@ use crate::derivative::SimStateDerivative;
 /// state-history validity checks depends on `VehicleState` only; code
 /// that needs kinematics should use [`TranslationalState`] or
 /// [`RigidBodyKinematicState`].
-pub trait VehicleState: Copy + core::fmt::Debug {
+pub trait VehicleState: Clone + core::fmt::Debug {
     /// The state's current monotonic timestamp.
     #[must_use]
     fn time(&self) -> SimTime;
@@ -48,7 +48,7 @@ pub trait VehicleState: Copy + core::fmt::Debug {
     #[must_use]
     fn is_finite(&self) -> bool;
 
-    /// Returns a copy of this state with its time field replaced by
+    /// Returns a cloned state with its time field replaced by
     /// `t`. Simulator code uses this to overwrite the integrator's
     /// accumulated time with the canonical `start + tick * dt` value,
     /// eliminating O(N · ε) drift.

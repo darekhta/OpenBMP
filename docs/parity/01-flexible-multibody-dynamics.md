@@ -213,11 +213,14 @@ including the free-flyer root. The state integration substrate now includes
 `scalar_state_size()`, `weighted_error_norm()`,
 `coordinate_derivative_from_velocity()`, and
 `derivative_from_state_and_acceleration()`, so qd/qdd outputs can be lifted
-into deterministic `q_dot`/`qd_dot` derivatives before simulator wiring. This
-is not yet an `openbmp-models::SimState` implementation because that trait is
-currently `Copy`-bound while `MultibodyState` is variable-size. Simulator
-adapter wiring, scenario opt-in, double-pendulum tolerance tables, and external
-Spatial_v2 oracle fixtures remain open.
+into deterministic `q_dot`/`qd_dot` derivatives before kernel wiring. The
+`openbmp-models` state/derivative traits now accept `Clone` instead of `Copy`,
+the generic integrators and aggregate vehicle model forwarding now clone reused
+values explicitly, and `MultibodySimState` carries tree-derived quaternion
+projection offsets so the existing `SimState`/`Integratable` surface can
+advance vector-backed multibody states. Runner/kernel force wiring, scenario opt-in,
+double-pendulum tolerance tables, and external Spatial_v2 oracle fixtures
+remain open.
 
 ---
 
@@ -394,11 +397,13 @@ pub struct ExternalForces {
 }
 ```
 
-The `MultibodyState`/`MultibodyDerivative` pair implements
-`openbmp_models::{SimState, SimStateDerivative}` so the existing `Rk4FixedStep`
-and DOPRI integrators advance it unchanged. `project()` renormalizes the
-free-flyer base quaternion (the only manifold constraint), exactly as
-`RigidBodyState::project()` does today.
+`MultibodyDerivative` implements `openbmp_models::SimStateDerivative`, and the
+topology-aware `MultibodySimState` adapter implements `SimState`/`Integratable`
+over `MultibodyState`, so the existing `Rk4FixedStep` and DOPRI integrators can
+advance vector-backed states.
+`project()` renormalizes every tree-declared free-flyer and spherical
+quaternion coordinate slice, exactly as `RigidBodyState::project()` handles its
+single attitude quaternion today.
 
 ### 3.4 The math (named formulations & equations)
 
@@ -725,8 +730,15 @@ justification first, reviewed before the implementation lands.
   free-flyer/spherical body-frame angular rates, and free-flyer body-frame
   linear velocity into deterministic `q_dot`/`qd_dot` derivatives; tests prove
   free-flyer/scalar velocity mapping, spherical quaternion-rate mapping,
-  qdd pairing, and bad-acceleration rejection.
-  Remaining WP-01.1 work: the actual `openbmp-models`/`openbmp-sim` adapter,
+  qdd pairing, and bad-acceleration rejection. The simulator-state adapter
+  substrate now relaxes `openbmp-models` state/derivative traits from `Copy` to
+  `Clone`, updates the RK4/DOPRI integrator and aggregate vehicle model
+  forwarding ownership paths for cloneable states/contexts, and exposes
+  `MultibodySimState` with tree-derived quaternion offsets;
+  tests prove trait implementation, q/qd advance, weighted-error evaluation,
+  free-flyer/spherical projection, retiming, and bad projection metadata
+  rejection.
+  Remaining WP-01.1 work: actual kernel/runner force adapter wiring,
   no-joint byte-equivalence against the current `RigidBodyState` kernel,
   simulator/environment force wiring, double-pendulum tolerance table,
   Spatial_v2 oracle fixtures, and scenario exercise.

@@ -36,6 +36,27 @@ pub struct ResolvedFile {
 }
 
 impl ResolvedFile {
+    /// Wrap already-loaded bytes as a resolved file, computing the
+    /// SHA-256 digest from the supplied content.
+    ///
+    /// This is the non-filesystem twin of [`Self::load`] for hosts that
+    /// carry scenario-referenced files in memory (embedded assets, test
+    /// fixtures, WebAssembly targets without a filesystem). The digest is
+    /// computed from `bytes` exactly as [`Self::load`] computes it from
+    /// the file content, so [`Self::verify_pin`] behaves identically.
+    #[must_use]
+    pub fn from_bytes(path: impl Into<PathBuf>, bytes: Vec<u8>) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let digest = hasher.finalize();
+        let sha256_hex = encode_hex_lower(&digest);
+        Self {
+            path: path.into(),
+            sha256_hex,
+            bytes,
+        }
+    }
+
     /// Read `path` and return the resolved file with its SHA-256 digest.
     ///
     /// # Errors
@@ -48,15 +69,7 @@ impl ResolvedFile {
             path: path.to_path_buf(),
             source,
         })?;
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let digest = hasher.finalize();
-        let sha256_hex = encode_hex_lower(&digest);
-        Ok(Self {
-            path: path.to_path_buf(),
-            sha256_hex,
-            bytes,
-        })
+        Ok(Self::from_bytes(path.to_path_buf(), bytes))
     }
 
     /// Verify that this file's digest matches a declared pin.

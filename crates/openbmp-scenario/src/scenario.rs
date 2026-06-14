@@ -219,12 +219,34 @@ impl Scenario {
     /// declared pin disagrees with the computed digest, or
     /// [`ScenarioError::InvalidSha256Pin`] when a pin is malformed.
     pub fn resolved_files(&self) -> Result<BTreeMap<String, ResolvedFile>, ScenarioError> {
+        self.resolved_files_with_reader(&|path| fs::read(path))
+    }
+
+    /// [`Self::resolved_files`] with the byte source injected.
+    ///
+    /// `read` is invoked once per scenario-referenced file with the
+    /// scenario-resolved path and must return the exact file bytes. The
+    /// default filesystem reader is `|path| std::fs::read(path)`; a host
+    /// without a filesystem (embedded assets, WebAssembly) supplies a
+    /// lookup into its own asset table instead. Key construction, digest
+    /// computation, and pin verification are identical to
+    /// [`Self::resolved_files`] — a wrong or missing asset fails closed
+    /// exactly like a wrong or missing file on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::resolved_files`]; reader
+    /// failures surface as [`ScenarioError::ReferencedFileMissing`].
+    pub fn resolved_files_with_reader(
+        &self,
+        read: ScenarioFileRead<'_>,
+    ) -> Result<BTreeMap<String, ResolvedFile>, ScenarioError> {
         let mut files = BTreeMap::new();
 
         if let Some(aero) = &self.document.aero
             && let Some(deck) = &aero.deck
         {
-            let resolved = ResolvedFile::load(self.resolve_path(deck))?;
+            let resolved = resolve_with(read, self.resolve_path(deck))?;
             resolved.verify_pin(aero.deck_sha256.as_deref())?;
             files.insert("aero.deck".to_owned(), resolved);
         }
@@ -236,7 +258,7 @@ impl Scenario {
             .and_then(|prop| prop.motor.as_ref())
             && let Some(file) = &motor.file
         {
-            let resolved = ResolvedFile::load(self.resolve_path(file))?;
+            let resolved = resolve_with(read, self.resolve_path(file))?;
             resolved.verify_pin(motor.file_sha256.as_deref())?;
             files.insert("propulsion.motor.file".to_owned(), resolved);
         }
@@ -247,7 +269,7 @@ impl Scenario {
             .as_ref()
             .and_then(|prop| prop.thermochem.as_ref())
         {
-            let resolved = ResolvedFile::load(self.resolve_path(&thermochem.file))?;
+            let resolved = resolve_with(read, self.resolve_path(&thermochem.file))?;
             resolved.verify_pin(thermochem.file_sha256.as_deref())?;
             files.insert("propulsion.thermochem.file".to_owned(), resolved);
         }
@@ -255,7 +277,7 @@ impl Scenario {
         if let Some(landing_gear) = self.document.vehicle.landing_gear.as_ref()
             && let Some(path) = &landing_gear.data_file
         {
-            let resolved = ResolvedFile::load(self.resolve_path(path))?;
+            let resolved = resolve_with(read, self.resolve_path(path))?;
             resolved.verify_pin(landing_gear.data_file_sha256.as_deref())?;
             files.insert("vehicle.landing_gear.data_file".to_owned(), resolved);
         }
@@ -263,7 +285,7 @@ impl Scenario {
         if let Some(sensors) = &self.document.sensors {
             for (name, sensor) in sensors {
                 if let Some(file) = &sensor.file {
-                    let resolved = ResolvedFile::load(self.resolve_path(file))?;
+                    let resolved = resolve_with(read, self.resolve_path(file))?;
                     resolved.verify_pin(sensor.file_sha256.as_deref())?;
                     files.insert(format!("sensors.{name}.file"), resolved);
                 }
@@ -273,26 +295,26 @@ impl Scenario {
         if let Some(epoch) = &self.document.epoch
             && let Some(eop) = &epoch.eop
         {
-            let resolved = ResolvedFile::load(self.resolve_path(eop))?;
+            let resolved = resolve_with(read, self.resolve_path(eop))?;
             resolved.verify_pin(epoch.eop_sha256.as_deref())?;
             files.insert("epoch.eop".to_owned(), resolved);
         }
         if let Some(epoch) = &self.document.epoch
             && let Some(leap_second_table) = &epoch.leap_second_table
         {
-            let resolved = ResolvedFile::load(self.resolve_path(leap_second_table))?;
+            let resolved = resolve_with(read, self.resolve_path(leap_second_table))?;
             resolved.verify_pin(epoch.leap_second_table_sha256.as_deref())?;
             files.insert("epoch.leap_second_table".to_owned(), resolved);
         }
 
         if let Some(ephemeris_file) = &self.document.environment.ephemeris_file {
-            let resolved = ResolvedFile::load(self.resolve_path(ephemeris_file))?;
+            let resolved = resolve_with(read, self.resolve_path(ephemeris_file))?;
             resolved.verify_pin(self.document.environment.ephemeris_file_sha256.as_deref())?;
             files.insert("environment.ephemeris_file".to_owned(), resolved);
         }
         for (index, ephemeris_file) in self.document.environment.ephemeris_files.iter().enumerate()
         {
-            let resolved = ResolvedFile::load(self.resolve_path(ephemeris_file))?;
+            let resolved = resolve_with(read, self.resolve_path(ephemeris_file))?;
             let pin = self
                 .document
                 .environment
@@ -303,7 +325,7 @@ impl Scenario {
             files.insert(format!("environment.ephemeris_files[{index}]"), resolved);
         }
         if let Some(meta_kernel) = &self.document.environment.ephemeris_meta_kernel {
-            let resolved = ResolvedFile::load(self.resolve_path(meta_kernel))?;
+            let resolved = resolve_with(read, self.resolve_path(meta_kernel))?;
             resolved.verify_pin(
                 self.document
                     .environment
@@ -337,7 +359,7 @@ impl Scenario {
             }
             files.insert("environment.ephemeris_meta_kernel".to_owned(), resolved);
             for (index, kernel_path) in kernel_paths.iter().enumerate() {
-                let resolved = ResolvedFile::load(kernel_path)?;
+                let resolved = resolve_with(read, kernel_path.clone())?;
                 let pin = self
                     .document
                     .environment
@@ -354,13 +376,32 @@ impl Scenario {
 
         if let Some(packages) = &self.document.data_packages {
             for (name, path) in packages {
-                let resolved = ResolvedFile::load(self.resolve_path(path))?;
+                let resolved = resolve_with(read, self.resolve_path(path))?;
                 files.insert(format!("data_packages.{name}"), resolved);
             }
         }
 
         Ok(files)
     }
+}
+
+/// Byte source for [`Scenario::resolved_files_with_reader`]: maps a
+/// scenario-resolved path to the exact file bytes.
+///
+/// The filesystem reader is `&|path| std::fs::read(path)`; non-filesystem
+/// hosts (embedded assets, WebAssembly) supply a lookup into their own
+/// asset table. A failed lookup must return an [`std::io::Error`], which
+/// surfaces as [`ScenarioError::ReferencedFileMissing`].
+pub type ScenarioFileRead<'a> = &'a dyn Fn(&Path) -> std::io::Result<Vec<u8>>;
+
+/// Read `path` through the injected byte source and wrap it as a
+/// [`ResolvedFile`] (digest computed from the returned bytes).
+fn resolve_with(read: ScenarioFileRead<'_>, path: PathBuf) -> Result<ResolvedFile, ScenarioError> {
+    let bytes = read(&path).map_err(|source| ScenarioError::ReferencedFileMissing {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(ResolvedFile::from_bytes(path, bytes))
 }
 
 fn parse_spice_meta_kernel_paths(

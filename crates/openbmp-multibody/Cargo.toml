@@ -13,6 +13,7 @@ default = ["std"]
 std     = [
     "nalgebra/std",
     "openbmp-core/std",
+    "openbmp-models/std",
     "openbmp-state/std",
     "thiserror/std",
 ]
@@ -20,6 +21,7 @@ std     = [
 [dependencies]
 nalgebra      = { version = "0.34.2", default-features = false, features = ["libm"] }
 openbmp-core  = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+openbmp-models = { version = "0.0.1", path = "../openbmp-models", default-features = false }
 openbmp-state = { version = "0.0.1", path = "../openbmp-state", default-features = false }
 thiserror     = { version = "2.0.18", default-features = false }
 

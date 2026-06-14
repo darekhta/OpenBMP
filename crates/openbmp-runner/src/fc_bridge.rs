@@ -74,6 +74,7 @@ pub struct FcBridge {
     magnetic: Box<dyn MagneticFieldEci>,
     scenario_seed: u64,
     stimulus_schedule: StimulusSchedule,
+    outage_windows: Vec<ArmedOutage>,
     previous_velocity_eci_m_s: Option<Vector3<f64>>,
     previous_time_s: Option<f64>,
     previous_angular_velocity_body_rad_s: Option<Vector3<f64>>,
@@ -106,6 +107,18 @@ struct ArmedFault {
 #[derive(Debug, Default)]
 struct StimulusSchedule {
     faults: Vec<ArmedFault>,
+}
+
+/// One armed, open-loop sensor outage: while the simulation clock is
+/// inside `[start_s, stop_s)` the named sensor is still primed and read
+/// every tick (its noise-stream draws stay byte-identical), but the
+/// measurement is withheld from the flight controller — the
+/// communications-loss twin of the measurement-domain [`ArmedFault`].
+#[derive(Debug)]
+struct ArmedOutage {
+    sensor_id: SensorId,
+    start_s: f64,
+    stop_s: f64,
 }
 
 struct FcTransportSession {
@@ -531,6 +544,7 @@ impl FcBridge {
             magnetic,
             scenario_seed: scenario.document.time.seed,
             stimulus_schedule: StimulusSchedule::build(&scenario.document)?,
+            outage_windows: Vec::new(),
             previous_velocity_eci_m_s: None,
             previous_time_s: None,
             previous_angular_velocity_body_rad_s: None,
@@ -635,10 +649,65 @@ impl FcBridge {
         self.step_from_truth(truth, step, propellant_state, effectors, engines, monitor)
     }
 
+    /// Arm a sensor outage window at run time, addressing a bridge
+    /// sensor by its `[sensors.<name>]` key.
+    ///
+    /// While the simulation clock is inside `[start_s, stop_s)` the
+    /// sensor is still primed and read each tick — its deterministic
+    /// noise draws are unchanged — but the measurement is withheld from
+    /// the flight controller, modelling a communications or tracking
+    /// loss. The estimator sees a stale topic and falls back to its own
+    /// dead-reckoning / staleness handling. A run that arms the same
+    /// window reproduces byte-identically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::UnsupportedScenario`] when `sensor` names
+    /// no bridge sensor (fail-closed) or the window is empty
+    /// (`stop_s <= start_s`).
+    pub(crate) fn arm_sensor_outage(
+        &mut self,
+        sensor: &str,
+        start_s: f64,
+        stop_s: f64,
+    ) -> Result<(), RunnerError> {
+        let sensor_id = SensorId::from_path(&format!("sensors.{sensor}"));
+        if !self.sensors.iter().any(|s| s.sensor_id() == sensor_id) {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "sensor outage targets `{sensor}`, which is not a bridge sensor declared in [sensors]"
+                ),
+            });
+        }
+        if stop_s <= start_s {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "sensor outage on `{sensor}` requires stop_s > start_s (got start_s = {start_s}, stop_s = {stop_s})"
+                ),
+            });
+        }
+        self.outage_windows.push(ArmedOutage {
+            sensor_id,
+            start_s,
+            stop_s,
+        });
+        Ok(())
+    }
+
+    /// Whether an armed outage window covers `sensor_id` at `time_s`.
+    fn outage_active(&self, sensor_id: SensorId, time_s: f64) -> bool {
+        self.outage_windows
+            .iter()
+            .any(|o| o.sensor_id == sensor_id && time_s >= o.start_s && time_s < o.stop_s)
+    }
+
     /// Assemble a read-only observation of the controller's latest
-    /// published estimates and health. Only called when a SIL monitor is
-    /// installed, so it is dead work on the default (`monitor = None`) path.
-    fn collect_observation(&self) -> crate::sil::FcObservation {
+    /// published estimates and health.
+    ///
+    /// Shared by the per-tick SIL monitor tap and the steppable
+    /// [`crate::Session`] accessor; both are observation-only surfaces
+    /// (see [`crate::sil`]) and the assembly does no work unless called.
+    pub(crate) fn collect_observation(&self) -> crate::sil::FcObservation {
         crate::sil::FcObservation {
             attitude: self.runner.latest_attitude_estimate(),
             position: self.runner.latest_position_estimate(),
@@ -696,6 +765,13 @@ impl FcBridge {
                     truth.time.as_seconds(),
                     self.scenario_seed,
                 );
+            }
+            // Outage windows withhold the measurement AFTER the read so
+            // the sensor's deterministic noise stream is unaffected:
+            // every other channel of the run stays byte-identical to the
+            // outage-free run.
+            if self.outage_active(sensor_id, truth.time.as_seconds()) {
+                continue;
             }
             if use_transport {
                 has_bridge_measurement =

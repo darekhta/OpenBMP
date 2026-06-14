@@ -85,5 +85,5 @@ pub use document::{
 pub use error::ScenarioError;
 pub use files::ResolvedFile;
 pub use registry::{ModelDescriptor, ModelRegistry, ModelRole};
-pub use scenario::Scenario;
+pub use scenario::{Scenario, ScenarioFileRead};
 pub use solver::{AdaptiveSolverConfig, SolverConfig, SourceTermSolverConfig};

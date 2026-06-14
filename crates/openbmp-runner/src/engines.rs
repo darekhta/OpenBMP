@@ -354,6 +354,45 @@ impl EngineRack {
         Ok(())
     }
 
+    /// Schedule a propulsion fault at run time, addressing a declared
+    /// engine by id.
+    ///
+    /// The fault joins the same scheduled-fault queue as the scenario's
+    /// `[propulsion.faults]` rules and is applied by
+    /// [`Self::apply_scheduled_faults`] on the first rack tick whose step
+    /// index reaches `start_step` — a run that schedules the same fault
+    /// at the same step reproduces byte-identically. This is a
+    /// simulator-side malfunction stimulus (the
+    /// `docs/safety-boundaries.md` simulated fault-injection path), not a
+    /// flight-controller command.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::Engine`] when `engine_id` is not a declared
+    /// engine in this rack (fail-closed: the fault would otherwise arm and
+    /// reject only when it fires).
+    pub fn schedule_runtime_fault(
+        &mut self,
+        id: String,
+        engine_id: EngineId,
+        start_step: u64,
+        fault: EngineFault,
+    ) -> Result<(), RunnerError> {
+        if !self.engine_owners.contains_key(&engine_id) {
+            return Err(RunnerError::Engine {
+                field: format!("session.malfunctions.{id}"),
+                reason: "fault targets an engine that is not declared in the assembly".to_owned(),
+            });
+        }
+        self.scheduled_faults.push(ScheduledEngineFault {
+            id,
+            engine_id,
+            start_step,
+            fault,
+        });
+        Ok(())
+    }
+
     /// Inject one-shot propulsion faults whose pump-cavitation trigger is active.
     ///
     /// # Errors

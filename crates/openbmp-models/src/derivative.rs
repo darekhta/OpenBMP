@@ -49,7 +49,7 @@ use nalgebra::{Matrix3, Quaternion as NalgebraQuaternion, Vector3};
 /// uses the **scalar approximation** `err = h · ||e'||
 /// / (atol + rtol · ||y||)`; the per-component tolerance refinement
 /// lives in [`crate::Integratable::weighted_error_norm`].
-pub trait SimStateDerivative: Copy + Debug + Add<Output = Self> + Mul<f64, Output = Self> {
+pub trait SimStateDerivative: Clone + Debug + Add<Output = Self> + Mul<f64, Output = Self> {
     /// Returns `true` if every numeric component is finite.
     #[must_use]
     fn is_finite(&self) -> bool;

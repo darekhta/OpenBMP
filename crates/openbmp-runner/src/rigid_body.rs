@@ -69,7 +69,7 @@ use crate::atmosphere::{
     is_runtime_atmosphere_kind, scenario_atmosphere_kind,
 };
 use crate::error::RunnerError;
-use crate::integrator::build_runtime_integrator;
+use crate::integrator::{RuntimeIntegrator, build_runtime_integrator};
 
 // Stable model-ids assigned to each force / mass model the rigid
 // runner wires. Reserves a separate range from the point-mass
@@ -112,370 +112,303 @@ const MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE: &str =
 /// [`RunnerError::Aero`] / [`RunnerError::Motor`] / [`RunnerError::Env`] for
 /// loader failures, and [`RunnerError::Simulation`] / [`RunnerError::Telemetry`]
 /// for kernel- or telemetry-side failures.
-#[allow(clippy::too_many_lines)] // per-step orchestration is large
 pub fn run(
     scenario: &Scenario,
     resolved_files: &BTreeMap<String, ResolvedFile>,
     mut monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
 ) -> Result<RunOutcome, RunnerError> {
-    let document = &scenario.document;
-    require_supported_shape(document)?;
-    let assembly = crate::assembly::synthesize_assembly(document)?;
-    // Same effector-rack pattern as the point-mass
-    // runner. Empty rack means no per-step effector operations.
-    let mut effector_rack = crate::effectors::EffectorRack::build(document)?;
-    // See point_mass.rs for the rationale.
-    let mut engine_rack = crate::engines::EngineRack::build(document, resolved_files)?;
-    // Tank rack mirroring the point-mass runner.
-    let mut tank_rack = crate::tanks::TankRack::build(document)?;
-    let propellant_budget = crate::propulsion::build_propellant_budget(document)?;
-    let mut feed_network_rack =
-        crate::feed_network::FeedNetworkRack::build(document, resolved_files)?;
-    let _pogo_rack = crate::pogo::PogoStabilityRack::build(document)?;
-    let landing_gear_runtime = crate::landing_gear::LandingGearRuntime::maybe_build(document)?;
-    // Recovery rack mirroring the point-mass runner.
-    let mut recovery_rack = crate::recovery::RecoveryRack::build(document)?;
-    let separated_attitude_targets =
-        crate::separated_attitude::SeparatedAttitudeTargets::build(document)?;
-    let separated_landing_controllers =
-        crate::separated_landing::SeparatedLandingControllers::build(document)?;
-    // Build the runner-side wind rack. Inactive when no
-    // `[wind]` block is declared (or `kind = "none"`).
-    let wind_rack = crate::wind::WindRack::build(document)?;
-    wind_rack.reset();
-    // Structural bending-mode rack. Inactive when no `[vehicle.bending]`.
-    let mut structural_rack = crate::structural::StructuralRack::build(document)?;
-    structural_rack.reset();
-    let frame = crate::frames::build_frame_context(document, resolved_files)?;
+    let mut session = RigidBodySession::prepare(scenario, resolved_files)?;
+    while !session.is_finished() {
+        session.step_once(&scenario.document, monitor.as_deref_mut())?;
+    }
+    session.finish()
+}
 
-    let loaded = load_models(document, resolved_files)?;
-    crate::aero::reject_hypersonic_deck_only_out_of_envelope(document, loaded.aero_deck.as_ref())?;
-    let mut aerothermal_driver = crate::aerothermal::LiveAerothermalDriver::maybe_new(document)?;
-    let aerothermal_sink = aerothermal_driver
-        .as_ref()
-        .map(crate::aerothermal::LiveAerothermalDriver::sink);
-    let aerothermal_feedback = aerothermal_driver
-        .as_ref()
-        .and_then(crate::aerothermal::LiveAerothermalDriver::mass_feedback);
-    let mass_resources = RigidMassResources::new(document, &assembly)?;
-    let initial_engine_snapshot = if engine_rack.is_empty() {
-        BTreeMap::new()
-    } else {
-        engine_rack.snapshot_map()
-    };
-    let initial_tank_snapshot = if tank_rack.is_empty() {
-        BTreeMap::new()
-    } else {
-        tank_rack.snapshot_map()
-    };
-    let initial_state = build_initial_state(
-        document,
-        &loaded,
-        &mass_resources,
-        &initial_engine_snapshot,
-        &initial_tank_snapshot,
-    )?;
-    let kernel_vehicle = build_vehicle(
-        document,
-        &loaded,
-        &assembly,
-        resolved_files,
-        landing_gear_runtime.clone(),
-        aerothermal_sink.clone(),
-    )?;
-    let breakdown_vehicle = build_vehicle(
-        document,
-        &loaded,
-        &assembly,
-        resolved_files,
-        landing_gear_runtime.clone(),
-        aerothermal_sink,
-    )?;
-    let mass_model = build_mass_model(
-        &loaded,
-        &mass_resources,
-        &initial_engine_snapshot,
-        &initial_tank_snapshot,
-        aerothermal_feedback,
-    );
-    let moment_model = build_moment_model(document, &loaded, landing_gear_runtime.clone())?;
-    let rigid_models = RigidModels::new(moment_model, mass_model.clone());
-    let separation_specs = build_rigid_body_separations(document, &mass_resources)?;
-    // Bodies currently attached to the primary continuing stack. Starts as
-    // every configured body (minus any seeded as independent initial lanes)
-    // and shrinks as jettison events fire. Used so a multi-body continuing
-    // stack (e.g. an upper stage still carrying a fairing + payload)
-    // conserves mass at each separation.
-    let mut stack_bodies: BTreeSet<BodyId> = mass_resources.dry_bodies.keys().copied().collect();
-    if let Some(multi_body) = document.multi_body.as_ref() {
-        for lane in &multi_body.initial_lanes {
-            stack_bodies.remove(&body_id_from_scenario_text(&lane.body_id));
-        }
-    }
+/// Concrete kernel type the rigid-body runner instantiates: every model
+/// slot is a runtime-dispatch adapter, so the prepared run is a single
+/// nameable type a host can own and drive incrementally.
+type RigidKernel = SimulationKernel<
+    RigidBodyState,
+    RuntimeIntegrator,
+    KernelVehicle<RigidBodyState>,
+    RigidModels<KernelVehicle<RigidBodyState>, RigidMassEither>,
+    RuntimeEnvironment,
+    AnyStop<GroundImpact, EndTime>,
+>;
 
-    // Runner-side `[solver]` block dispatch on the
-    // rigid-body path. Default (no `[solver]`) selects `Rk4FixedStep`,
-    // preserving byte-stability for every existing rigid-body
-    // scenario. Adaptive / fixed-DOPRI selections now drive
-    // `Dopri54Adaptive` / `Dopri54FixedStep` end-to-end through the
-    // rigid-body kernel; the old reject gate that refused non-RK4
-    // selections has been removed.
-    let runtime_integrator = build_runtime_integrator(document)?;
-    let kernel_step_s = crate::contact::kernel_step_s(document);
-    let separated_ground_radius_m = infer_near_surface_geocentric_radius_m(&initial_state);
+/// A prepared rigid-body run that the caller drives one kernel tick at a
+/// time.
+///
+/// This struct owns exactly the state the one-shot [`run`] loop kept in
+/// locals — racks, kernel, flight-controller bridge, telemetry table,
+/// pending script-event queues — so [`run`] is itself implemented as
+/// `prepare → step_once* → finish` and a session-stepped run is
+/// byte-identical to a one-shot run by construction.
+///
+/// The session additionally accepts deterministic runtime malfunction
+/// stimuli (engine faults, sensor outage windows, a wind override)
+/// between ticks; see [`crate::Session`] for the public surface and the
+/// determinism contract.
+#[derive(Debug)]
+pub(crate) struct RigidBodySession {
+    effector_rack: crate::effectors::EffectorRack,
+    engine_rack: crate::engines::EngineRack,
+    tank_rack: crate::tanks::TankRack,
+    propellant_budget: Option<openbmp_vehicle::PropellantBudget>,
+    feed_network_rack: crate::feed_network::FeedNetworkRack,
+    recovery_rack: crate::recovery::RecoveryRack,
+    separated_attitude_targets: crate::separated_attitude::SeparatedAttitudeTargets,
+    separated_landing_controllers: crate::separated_landing::SeparatedLandingControllers,
+    wind_rack: crate::wind::WindRack,
+    structural_rack: crate::structural::StructuralRack,
+    frame: openbmp_physics::FrameContext,
+    aerothermal_driver: Option<crate::aerothermal::LiveAerothermalDriver>,
+    mass_model: RigidMassEither,
+    separation_specs: BTreeMap<BodyId, RigidBodySeparationSpec>,
+    stack_bodies: BTreeSet<BodyId>,
+    kernel_step_s: f64,
+    separated_ground_radius_m: Option<f64>,
+    kernel: RigidKernel,
+    channel_set: RigidChannelSet,
+    contact_evaluator: Option<crate::contact::ContactDiagnosticsEvaluator>,
+    contact_accumulator: Option<crate::contact::ContactRunAccumulator>,
+    landing_gear_runtime: Option<crate::landing_gear::LandingGearRuntime>,
+    landing_gear_accumulator: Option<crate::landing_gear::LandingGearRunAccumulator>,
+    geocentric_surface_radius_m: Option<f64>,
+    breakdown_atmosphere: Option<RuntimeAtmosphere>,
+    breakdown_vehicle: KernelVehicle<RigidBodyState>,
+    table: TelemetryTable,
+    deck_bindings: Vec<crate::aero_effector_match::DeckAxisBinding>,
+    direct_torque_present: bool,
+    fc_bridge: Option<crate::fc_bridge::FcBridge>,
+    mission_region_trace: crate::MissionRegionTraceState,
+    plume_evaluator: Option<crate::plume::RigidPlumeEvaluator>,
+    pending_effector_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>>,
+    pending_engine_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>>,
+    pending_recovery_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>>,
+    realtime_pacer: crate::rt::RunnerRealtimePacer,
+    /// Runtime wind override in NED metres per second. While `Some`, it
+    /// replaces the wind sample pushed into the kernel each tick (and is
+    /// pushed even for scenarios without a `[wind]` block). `None` leaves
+    /// the scenario's own wind path byte-identical to a plain [`run`].
+    wind_override_ned_m_s: Option<Vector3<f64>>,
+    /// Monotonic sequence for runtime malfunction ids, so repeated
+    /// injections get unique scheduled-fault ids.
+    runtime_malfunction_seq: u64,
+}
 
-    let config = SimulationConfig {
-        initial_state,
-        integrator: runtime_integrator,
-        force_model: kernel_vehicle,
-        mass_model: rigid_models,
-        environment: RuntimeEnvironment::from_document(document, resolved_files, &frame)?,
-        stop_condition: AnyStop::new(
-            automatic_ground_impact(document),
-            EndTime::new(SimTime::from_seconds(document.time.stop_s)),
-        ),
-        dt: Duration::from_seconds(kernel_step_s),
-        scenario_seed: document.time.seed,
-    };
+impl RigidBodySession {
+    /// Build every rack, model, kernel, and telemetry channel for the
+    /// scenario and record the step-zero telemetry row — the exact setup
+    /// the one-shot [`run`] performs before its first tick.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`run`]'s setup phase.
+    #[allow(clippy::too_many_lines)] // mirrors the one-shot setup verbatim
+    pub(crate) fn prepare(
+        scenario: &Scenario,
+        resolved_files: &BTreeMap<String, ResolvedFile>,
+    ) -> Result<Self, RunnerError> {
+        let document = &scenario.document;
+        require_supported_shape(document)?;
+        let assembly = crate::assembly::synthesize_assembly(document)?;
+        // Same effector-rack pattern as the point-mass
+        // runner. Empty rack means no per-step effector operations.
+        let effector_rack = crate::effectors::EffectorRack::build(document)?;
+        // See point_mass.rs for the rationale.
+        let engine_rack = crate::engines::EngineRack::build(document, resolved_files)?;
+        // Tank rack mirroring the point-mass runner.
+        let tank_rack = crate::tanks::TankRack::build(document)?;
+        let propellant_budget = crate::propulsion::build_propellant_budget(document)?;
+        let feed_network_rack =
+            crate::feed_network::FeedNetworkRack::build(document, resolved_files)?;
+        let _pogo_rack = crate::pogo::PogoStabilityRack::build(document)?;
+        let landing_gear_runtime = crate::landing_gear::LandingGearRuntime::maybe_build(document)?;
+        // Recovery rack mirroring the point-mass runner.
+        let recovery_rack = crate::recovery::RecoveryRack::build(document)?;
+        let separated_attitude_targets =
+            crate::separated_attitude::SeparatedAttitudeTargets::build(document)?;
+        let separated_landing_controllers =
+            crate::separated_landing::SeparatedLandingControllers::build(document)?;
+        // Build the runner-side wind rack. Inactive when no
+        // `[wind]` block is declared (or `kind = "none"`).
+        let wind_rack = crate::wind::WindRack::build(document)?;
+        wind_rack.reset();
+        // Structural bending-mode rack. Inactive when no `[vehicle.bending]`.
+        let mut structural_rack = crate::structural::StructuralRack::build(document)?;
+        structural_rack.reset();
+        let frame = crate::frames::build_frame_context(document, resolved_files)?;
 
-    let mut kernel_base = SimulationKernel::new_rigid(config)?;
-    if let Some(radius_m) = separated_ground_radius_m {
-        kernel_base.set_separated_geocentric_ground_radius_m(radius_m)?;
-    }
-    let mut kernel = if let Some(mission_runtime) =
-        crate::mission::build_mission_runtime_from_document(document)?
-    {
-        kernel_base.with_mission_split(
-            mission_runtime.mission_bindings,
-            mission_runtime.script_bindings,
-            Some(mission_runtime.graph),
-            Some(mission_runtime.hsm),
-        )?
-    } else {
-        kernel_base
-    };
-    if document.flight_controller_owns_mission_state()
-        && let Some(initial_phase) = kernel.current_phase()
-    {
-        kernel.set_external_mission_state(Some(initial_phase));
-    }
-    seed_initial_rigid_body_lanes(
-        &mut kernel,
-        document,
-        &loaded,
-        &mass_resources,
-        &initial_engine_snapshot,
-        &initial_tank_snapshot,
-    )?;
-    let channel_set = RigidChannelSet::new(document)?;
-    let contact_evaluator = document
-        .contact
-        .as_ref()
-        .map(crate::contact::ContactDiagnosticsEvaluator::from_config)
-        .transpose()?;
-    let mut contact_accumulator = document
-        .contact
-        .as_ref()
-        .map(crate::contact::ContactRunAccumulator::from_config)
-        .transpose()?;
-    let mut landing_gear_accumulator = if landing_gear_runtime.is_some() {
-        Some(crate::landing_gear::LandingGearRunAccumulator::new()?)
-    } else {
-        None
-    };
-    let geocentric_surface_radius_m = document_geocentric_surface_radius_m(document);
-    let breakdown_atmosphere = if channel_set.has_atmosphere {
-        Some(build_document_runtime_atmosphere(document)?)
-    } else {
-        None
-    };
-    let metadata = build_schema_metadata(document, resolved_files)?;
-    let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
-
-    // See point_mass.rs sibling for the rationale.
-    let deck_bindings = crate::aero_effector_match::assert_axes_match_effectors(
-        loaded.aero_deck.as_ref(),
-        document,
-    )?;
-
-    let initial_snapshot = effector_rack.snapshot();
-    let direct_torque_present = document.vehicle.assembly.effectors.iter().any(|e| {
-        matches!(
-            e.kind,
-            openbmp_scenario::EffectorKindConfig::DirectTorque { .. }
-        )
-    });
-    if !deck_bindings.is_empty() || direct_torque_present {
-        let mut snapshot_map =
-            crate::aero_effector_match::build_snapshot_map(&deck_bindings, &initial_snapshot);
-        if direct_torque_present {
-            let dt_map = crate::aero_effector_match::build_direct_torque_snapshot_map(
-                document,
-                &initial_snapshot,
-            );
-            merge_direct_torque_snapshot_map(&mut snapshot_map, dt_map)?;
-        }
-        kernel.set_effector_actuals(snapshot_map);
-    }
-    if !engine_rack.is_empty() {
-        kernel.set_engine_snapshot(engine_rack.snapshot_map());
-    }
-    if !tank_rack.is_empty() {
-        kernel.set_tank_snapshot(tank_rack.snapshot_map());
-    }
-    if !recovery_rack.is_empty() {
-        kernel.set_recovery_snapshot(recovery_rack.snapshot_map());
-    }
-    if !wind_rack.is_inactive() {
-        let s = kernel.current_state();
-        let wind = wind_rack.sample(s.position, &frame, s.time)?;
-        kernel.set_wind_sample(wind);
-    }
-    if let Some(driver) = &mut aerothermal_driver {
-        let environment = kernel.current_environment_sample()?;
-        driver.evaluate_rigid_body(kernel.current_state(), &environment, 0.0)?;
-    }
-    let mut fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
-    let mut mission_region_trace =
-        crate::MissionRegionTraceState::new(&crate::mission_region_declarations(document));
-    let plume_evaluator = crate::plume::RigidPlumeEvaluator::maybe_new(
-        document,
-        engine_rack.liquid_plume_metadata(),
-        engine_rack.engine_ids(),
-        engine_rack.mount_points_body(),
-    )?;
-    record_step(
-        document,
-        &mut table,
-        &kernel,
-        &channel_set,
-        &breakdown_vehicle,
-        contact_evaluator.as_ref(),
-        contact_accumulator.as_mut(),
-        breakdown_atmosphere.as_ref(),
-        plume_evaluator.as_ref(),
-        geocentric_surface_radius_m,
-        aerothermal_driver.as_ref().map(|driver| driver.output()),
-        landing_gear_runtime.as_ref(),
-        landing_gear_accumulator.as_mut(),
-        fc_bridge.as_ref(),
-        &[],
-        &mut mission_region_trace,
-        &initial_snapshot,
-    )?;
-    let mut pending_effector_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
-        Vec::new();
-    let mut pending_engine_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> = Vec::new();
-    let mut pending_recovery_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
-        Vec::new();
-    let mut realtime_pacer = crate::rt::RunnerRealtimePacer::from_document(document)?;
-    while kernel.stop_reason().is_none() {
-        realtime_pacer.wait_next_frame();
-        realtime_pacer.begin_frame_execution();
-        effector_rack.apply_overrides(&pending_effector_events)?;
-        if !engine_rack.is_empty() {
-            engine_rack
-                .set_retired_bodies(retired_separated_body_ids(kernel.separated_rigid_bodies()));
-            engine_rack.apply_commands(&pending_engine_events)?;
-        }
-        if let Some(bridge) = &mut fc_bridge {
-            let gravity = kernel.current_environment_sample()?.gravity_eci_m_s2;
-            let propellant_state = crate::fc_bridge::propellant_state_from_tanks(
-                kernel.current_time(),
-                &tank_rack.propellant_tank_states(document),
-            );
-            bridge.tick_rigid_body(
-                kernel.current_state(),
-                kernel.current_step(),
-                gravity,
-                propellant_state,
-                &mut effector_rack,
-                &mut engine_rack,
-                // Bending slope-rate pickup from the previous tick's modal
-                // state — contemporaneous with the body rate read above
-                // (one-step lag, mirroring the slosh rack). Zero when rigid.
-                structural_rack.gyro_pickup_rad_s(),
-                monitor.as_deref_mut(),
-            )?;
-            if document.flight_controller_owns_mission_state() {
-                // Forward the FC commander's published mission state into
-                // the kernel's external view. Kernel-directed scenarios
-                // intentionally keep the kernel event stream authoritative.
-                if let Some(state_id) = bridge.latest_mission_state_id() {
-                    kernel.set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
-                }
-                for fired in bridge.drain_mission_actions() {
-                    kernel.record_external_mission_fired(fired);
-                }
+        let loaded = load_models(document, resolved_files)?;
+        crate::aero::reject_hypersonic_deck_only_out_of_envelope(
+            document,
+            loaded.aero_deck.as_ref(),
+        )?;
+        let mut aerothermal_driver =
+            crate::aerothermal::LiveAerothermalDriver::maybe_new(document)?;
+        let aerothermal_sink = aerothermal_driver
+            .as_ref()
+            .map(crate::aerothermal::LiveAerothermalDriver::sink);
+        let aerothermal_feedback = aerothermal_driver
+            .as_ref()
+            .and_then(crate::aerothermal::LiveAerothermalDriver::mass_feedback);
+        let mass_resources = RigidMassResources::new(document, &assembly)?;
+        let initial_engine_snapshot = if engine_rack.is_empty() {
+            BTreeMap::new()
+        } else {
+            engine_rack.snapshot_map()
+        };
+        let initial_tank_snapshot = if tank_rack.is_empty() {
+            BTreeMap::new()
+        } else {
+            tank_rack.snapshot_map()
+        };
+        let initial_state = build_initial_state(
+            document,
+            &loaded,
+            &mass_resources,
+            &initial_engine_snapshot,
+            &initial_tank_snapshot,
+        )?;
+        let kernel_vehicle = build_vehicle(
+            document,
+            &loaded,
+            &assembly,
+            resolved_files,
+            landing_gear_runtime.clone(),
+            aerothermal_sink.clone(),
+        )?;
+        let breakdown_vehicle = build_vehicle(
+            document,
+            &loaded,
+            &assembly,
+            resolved_files,
+            landing_gear_runtime.clone(),
+            aerothermal_sink,
+        )?;
+        let mass_model = build_mass_model(
+            &loaded,
+            &mass_resources,
+            &initial_engine_snapshot,
+            &initial_tank_snapshot,
+            aerothermal_feedback,
+        );
+        let moment_model = build_moment_model(document, &loaded, landing_gear_runtime.clone())?;
+        let rigid_models = RigidModels::new(moment_model, mass_model.clone());
+        let separation_specs = build_rigid_body_separations(document, &mass_resources)?;
+        // Bodies currently attached to the primary continuing stack. Starts as
+        // every configured body (minus any seeded as independent initial lanes)
+        // and shrinks as jettison events fire. Used so a multi-body continuing
+        // stack (e.g. an upper stage still carrying a fairing + payload)
+        // conserves mass at each separation.
+        let mut stack_bodies: BTreeSet<BodyId> =
+            mass_resources.dry_bodies.keys().copied().collect();
+        if let Some(multi_body) = document.multi_body.as_ref() {
+            for lane in &multi_body.initial_lanes {
+                stack_bodies.remove(&body_id_from_scenario_text(&lane.body_id));
             }
         }
-        if !separated_attitude_targets.is_empty() {
-            separated_attitude_targets.apply(
-                kernel.separated_rigid_bodies(),
-                kernel.current_time(),
-                &mut effector_rack,
-            )?;
+
+        // Runner-side `[solver]` block dispatch on the
+        // rigid-body path. Default (no `[solver]`) selects `Rk4FixedStep`,
+        // preserving byte-stability for every existing rigid-body
+        // scenario. Adaptive / fixed-DOPRI selections now drive
+        // `Dopri54Adaptive` / `Dopri54FixedStep` end-to-end through the
+        // rigid-body kernel; the old reject gate that refused non-RK4
+        // selections has been removed.
+        let runtime_integrator = build_runtime_integrator(document)?;
+        let kernel_step_s = crate::contact::kernel_step_s(document);
+        let separated_ground_radius_m = infer_near_surface_geocentric_radius_m(&initial_state);
+
+        let config = SimulationConfig {
+            initial_state,
+            integrator: runtime_integrator,
+            force_model: kernel_vehicle,
+            mass_model: rigid_models,
+            environment: RuntimeEnvironment::from_document(document, resolved_files, &frame)?,
+            stop_condition: AnyStop::new(
+                automatic_ground_impact(document),
+                EndTime::new(SimTime::from_seconds(document.time.stop_s)),
+            ),
+            dt: Duration::from_seconds(kernel_step_s),
+            scenario_seed: document.time.seed,
+        };
+
+        let mut kernel_base = SimulationKernel::new_rigid(config)?;
+        if let Some(radius_m) = separated_ground_radius_m {
+            kernel_base.set_separated_geocentric_ground_radius_m(radius_m)?;
         }
-        if !separated_landing_controllers.is_empty() {
-            separated_landing_controllers.apply(
-                kernel.separated_rigid_bodies(),
-                kernel.current_time(),
-                separated_ground_radius_m,
-                &mut engine_rack,
-            )?;
+        let mut kernel = if let Some(mission_runtime) =
+            crate::mission::build_mission_runtime_from_document(document)?
+        {
+            kernel_base.with_mission_split(
+                mission_runtime.mission_bindings,
+                mission_runtime.script_bindings,
+                Some(mission_runtime.graph),
+                Some(mission_runtime.hsm),
+            )?
+        } else {
+            kernel_base
+        };
+        if document.flight_controller_owns_mission_state()
+            && let Some(initial_phase) = kernel.current_phase()
+        {
+            kernel.set_external_mission_state(Some(initial_phase));
         }
-        if let Some(propellant_budget) = &propellant_budget {
-            let mut report = propellant_budget
-                .evaluate(
-                    &engine_rack.propulsion_snapshot_map(),
-                    &tank_rack.propellant_tank_states(document),
-                )
-                .map_err(|err| RunnerError::Engine {
-                    field: "vehicle.assembly.engines[*].propellant".to_owned(),
-                    reason: err.to_string(),
-                })?;
-            feed_network_rack.apply_to_report(&mut report, kernel_step_s, kernel.current_step())?;
-            tank_rack.set_propellant_budget_drain_rates(report.tank_drain_rates_kg_per_s.clone());
-            engine_rack.apply_propellant_budget(&report)?;
-        }
-        if !effector_rack.is_empty() {
-            effector_rack.step(kernel.current_time())?;
-        }
-        if !engine_rack.is_empty() {
-            let cavitation_events = feed_network_rack.cavitation_events();
-            engine_rack.apply_cavitation_faults(&cavitation_events)?;
-            engine_rack.apply_scheduled_faults(kernel.current_step())?;
-            engine_rack.step()?;
-        }
-        // Advance tanks using prior-step cached drivers.
-        // The drivers are updated post-step from the new rigid-body
-        // state's angular_velocity (omega_body) and a finite-
-        // difference body-frame acceleration; the first step uses
-        // zeros (initialised by `TankRack::build`).
-        if !tank_rack.is_empty() {
-            tank_rack.step()?;
-        }
-        // Advance the bending mode against the prior-step body lateral accel
-        // (one-step lag, like the slosh rack); refreshes the gyro pickup the
-        // next bridge tick reads.
-        if !structural_rack.is_inactive() {
-            structural_rack.step()?;
-        }
-        // Drain pending deploy/stow events and step the
-        // recovery rack (no-op step for the instantaneous-
-        // deploy models).
-        if !recovery_rack.is_empty() {
-            recovery_rack.apply_deploys(&pending_recovery_events)?;
-            recovery_rack.step(kernel_step_s)?;
-        }
+        seed_initial_rigid_body_lanes(
+            &mut kernel,
+            document,
+            &loaded,
+            &mass_resources,
+            &initial_engine_snapshot,
+            &initial_tank_snapshot,
+        )?;
+        let channel_set = RigidChannelSet::new(document)?;
+        let contact_evaluator = document
+            .contact
+            .as_ref()
+            .map(crate::contact::ContactDiagnosticsEvaluator::from_config)
+            .transpose()?;
+        let mut contact_accumulator = document
+            .contact
+            .as_ref()
+            .map(crate::contact::ContactRunAccumulator::from_config)
+            .transpose()?;
+        let mut landing_gear_accumulator = if landing_gear_runtime.is_some() {
+            Some(crate::landing_gear::LandingGearRunAccumulator::new()?)
+        } else {
+            None
+        };
+        let geocentric_surface_radius_m = document_geocentric_surface_radius_m(document);
+        let breakdown_atmosphere = if channel_set.has_atmosphere {
+            Some(build_document_runtime_atmosphere(document)?)
+        } else {
+            None
+        };
+        let metadata = build_schema_metadata(document, resolved_files)?;
+        let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
+
+        // See point_mass.rs sibling for the rationale.
+        let deck_bindings = crate::aero_effector_match::assert_axes_match_effectors(
+            loaded.aero_deck.as_ref(),
+            document,
+        )?;
+
+        let initial_snapshot = effector_rack.snapshot();
+        let direct_torque_present = document.vehicle.assembly.effectors.iter().any(|e| {
+            matches!(
+                e.kind,
+                openbmp_scenario::EffectorKindConfig::DirectTorque { .. }
+            )
+        });
         if !deck_bindings.is_empty() || direct_torque_present {
-            let rack_snapshot = effector_rack.snapshot();
             let mut snapshot_map =
-                crate::aero_effector_match::build_snapshot_map(&deck_bindings, &rack_snapshot);
+                crate::aero_effector_match::build_snapshot_map(&deck_bindings, &initial_snapshot);
             if direct_torque_present {
                 let dt_map = crate::aero_effector_match::build_direct_torque_snapshot_map(
                     document,
-                    &rack_snapshot,
+                    &initial_snapshot,
                 );
                 merge_direct_torque_snapshot_map(&mut snapshot_map, dt_map)?;
             }
@@ -491,28 +424,274 @@ pub fn run(
             kernel.set_recovery_snapshot(recovery_rack.snapshot_map());
         }
         if !wind_rack.is_inactive() {
-            wind_rack.advance(kernel.current_step());
             let s = kernel.current_state();
             let wind = wind_rack.sample(s.position, &frame, s.time)?;
             kernel.set_wind_sample(wind);
         }
+        if let Some(driver) = &mut aerothermal_driver {
+            let environment = kernel.current_environment_sample()?;
+            driver.evaluate_rigid_body(kernel.current_state(), &environment, 0.0)?;
+        }
+        let fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
+        let mut mission_region_trace =
+            crate::MissionRegionTraceState::new(&crate::mission_region_declarations(document));
+        let plume_evaluator = crate::plume::RigidPlumeEvaluator::maybe_new(
+            document,
+            engine_rack.liquid_plume_metadata(),
+            engine_rack.engine_ids(),
+            engine_rack.mount_points_body(),
+        )?;
+        record_step(
+            document,
+            &mut table,
+            &kernel,
+            &channel_set,
+            &breakdown_vehicle,
+            contact_evaluator.as_ref(),
+            contact_accumulator.as_mut(),
+            breakdown_atmosphere.as_ref(),
+            plume_evaluator.as_ref(),
+            geocentric_surface_radius_m,
+            aerothermal_driver.as_ref().map(|driver| driver.output()),
+            landing_gear_runtime.as_ref(),
+            landing_gear_accumulator.as_mut(),
+            fc_bridge.as_ref(),
+            &[],
+            &mut mission_region_trace,
+            &initial_snapshot,
+        )?;
+        let realtime_pacer = crate::rt::RunnerRealtimePacer::from_document(document)?;
+        Ok(Self {
+            effector_rack,
+            engine_rack,
+            tank_rack,
+            propellant_budget,
+            feed_network_rack,
+            recovery_rack,
+            separated_attitude_targets,
+            separated_landing_controllers,
+            wind_rack,
+            structural_rack,
+            frame,
+            aerothermal_driver,
+            mass_model,
+            separation_specs,
+            stack_bodies,
+            kernel_step_s,
+            separated_ground_radius_m,
+            kernel,
+            channel_set,
+            contact_evaluator,
+            contact_accumulator,
+            landing_gear_runtime,
+            landing_gear_accumulator,
+            geocentric_surface_radius_m,
+            breakdown_atmosphere,
+            breakdown_vehicle,
+            table,
+            deck_bindings,
+            direct_torque_present,
+            fc_bridge,
+            mission_region_trace,
+            plume_evaluator,
+            pending_effector_events: Vec::new(),
+            pending_engine_events: Vec::new(),
+            pending_recovery_events: Vec::new(),
+            realtime_pacer,
+            wind_override_ned_m_s: None,
+            runtime_malfunction_seq: 0,
+        })
+    }
+
+    /// Whether the kernel has reported a stop reason. Once `true`,
+    /// further [`Self::step_once`] calls are rejected by the kernel.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.kernel.stop_reason().is_some()
+    }
+
+    /// Advance the run by exactly one kernel tick — the body of the
+    /// one-shot [`run`] loop, verbatim, over session-owned state.
+    ///
+    /// `document` must be the same scenario document the session was
+    /// prepared from; [`crate::Session`] owns both and guarantees this.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as the one-shot [`run`] loop.
+    #[allow(clippy::too_many_lines)] // mirrors the one-shot loop verbatim
+    pub(crate) fn step_once(
+        &mut self,
+        document: &ScenarioDocument,
+        monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
+    ) -> Result<(), RunnerError> {
+        self.realtime_pacer.wait_next_frame();
+        self.realtime_pacer.begin_frame_execution();
+        self.effector_rack
+            .apply_overrides(&self.pending_effector_events)?;
+        if !self.engine_rack.is_empty() {
+            self.engine_rack
+                .set_retired_bodies(retired_separated_body_ids(
+                    self.kernel.separated_rigid_bodies(),
+                ));
+            self.engine_rack
+                .apply_commands(&self.pending_engine_events)?;
+        }
+        if let Some(bridge) = &mut self.fc_bridge {
+            let gravity = self.kernel.current_environment_sample()?.gravity_eci_m_s2;
+            let propellant_state = crate::fc_bridge::propellant_state_from_tanks(
+                self.kernel.current_time(),
+                &self.tank_rack.propellant_tank_states(document),
+            );
+            bridge.tick_rigid_body(
+                self.kernel.current_state(),
+                self.kernel.current_step(),
+                gravity,
+                propellant_state,
+                &mut self.effector_rack,
+                &mut self.engine_rack,
+                // Bending slope-rate pickup from the previous tick's modal
+                // state — contemporaneous with the body rate read above
+                // (one-step lag, mirroring the slosh rack). Zero when rigid.
+                self.structural_rack.gyro_pickup_rad_s(),
+                monitor,
+            )?;
+            if document.flight_controller_owns_mission_state() {
+                // Forward the FC commander's published mission state into
+                // the kernel's external view. Kernel-directed scenarios
+                // intentionally keep the kernel event stream authoritative.
+                if let Some(state_id) = bridge.latest_mission_state_id() {
+                    self.kernel
+                        .set_external_mission_state(Some(openbmp_sim::PhaseId::new(state_id)));
+                }
+                for fired in bridge.drain_mission_actions() {
+                    self.kernel.record_external_mission_fired(fired);
+                }
+            }
+        }
+        if !self.separated_attitude_targets.is_empty() {
+            self.separated_attitude_targets.apply(
+                self.kernel.separated_rigid_bodies(),
+                self.kernel.current_time(),
+                &mut self.effector_rack,
+            )?;
+        }
+        if !self.separated_landing_controllers.is_empty() {
+            self.separated_landing_controllers.apply(
+                self.kernel.separated_rigid_bodies(),
+                self.kernel.current_time(),
+                self.separated_ground_radius_m,
+                &mut self.engine_rack,
+            )?;
+        }
+        if let Some(propellant_budget) = &self.propellant_budget {
+            let mut report = propellant_budget
+                .evaluate(
+                    &self.engine_rack.propulsion_snapshot_map(),
+                    &self.tank_rack.propellant_tank_states(document),
+                )
+                .map_err(|err| RunnerError::Engine {
+                    field: "vehicle.assembly.engines[*].propellant".to_owned(),
+                    reason: err.to_string(),
+                })?;
+            self.feed_network_rack.apply_to_report(
+                &mut report,
+                self.kernel_step_s,
+                self.kernel.current_step(),
+            )?;
+            self.tank_rack
+                .set_propellant_budget_drain_rates(report.tank_drain_rates_kg_per_s.clone());
+            self.engine_rack.apply_propellant_budget(&report)?;
+        }
+        if !self.effector_rack.is_empty() {
+            self.effector_rack.step(self.kernel.current_time())?;
+        }
+        if !self.engine_rack.is_empty() {
+            let cavitation_events = self.feed_network_rack.cavitation_events();
+            self.engine_rack
+                .apply_cavitation_faults(&cavitation_events)?;
+            self.engine_rack
+                .apply_scheduled_faults(self.kernel.current_step())?;
+            self.engine_rack.step()?;
+        }
+        // Advance tanks using prior-step cached drivers.
+        // The drivers are updated post-step from the new rigid-body
+        // state's angular_velocity (omega_body) and a finite-
+        // difference body-frame acceleration; the first step uses
+        // zeros (initialised by `TankRack::build`).
+        if !self.tank_rack.is_empty() {
+            self.tank_rack.step()?;
+        }
+        // Advance the bending mode against the prior-step body lateral accel
+        // (one-step lag, like the slosh rack); refreshes the gyro pickup the
+        // next bridge tick reads.
+        if !self.structural_rack.is_inactive() {
+            self.structural_rack.step()?;
+        }
+        // Drain pending deploy/stow events and step the
+        // recovery rack (no-op step for the instantaneous-
+        // deploy models).
+        if !self.recovery_rack.is_empty() {
+            self.recovery_rack
+                .apply_deploys(&self.pending_recovery_events)?;
+            self.recovery_rack.step(self.kernel_step_s)?;
+        }
+        if !self.deck_bindings.is_empty() || self.direct_torque_present {
+            let rack_snapshot = self.effector_rack.snapshot();
+            let mut snapshot_map =
+                crate::aero_effector_match::build_snapshot_map(&self.deck_bindings, &rack_snapshot);
+            if self.direct_torque_present {
+                let dt_map = crate::aero_effector_match::build_direct_torque_snapshot_map(
+                    document,
+                    &rack_snapshot,
+                );
+                merge_direct_torque_snapshot_map(&mut snapshot_map, dt_map)?;
+            }
+            self.kernel.set_effector_actuals(snapshot_map);
+        }
+        if !self.engine_rack.is_empty() {
+            self.kernel
+                .set_engine_snapshot(self.engine_rack.snapshot_map());
+        }
+        if !self.tank_rack.is_empty() {
+            self.kernel.set_tank_snapshot(self.tank_rack.snapshot_map());
+        }
+        if !self.recovery_rack.is_empty() {
+            self.kernel
+                .set_recovery_snapshot(self.recovery_rack.snapshot_map());
+        }
+        if !self.wind_rack.is_inactive() {
+            self.wind_rack.advance(self.kernel.current_step());
+            let s = self.kernel.current_state();
+            let wind = self.wind_rack.sample(s.position, &self.frame, s.time)?;
+            // A session wind override replaces the scenario wind for this
+            // tick; `None` (the default, and the only state a one-shot
+            // [`run`] can be in) keeps the rack sample byte-identical.
+            let wind = self.wind_override_ned_m_s.unwrap_or(wind);
+            self.kernel.set_wind_sample(wind);
+        } else if let Some(wind) = self.wind_override_ned_m_s {
+            // Scenarios without a `[wind]` block never push a sample, so
+            // an armed override pushes one explicitly; clearing the
+            // override pushes zero wind again (see `set_wind_override`).
+            self.kernel.set_wind_sample(wind);
+        }
         // Feed the bending mode's reaction moment to the rigid-body torque for
         // this step (held across the RK4 stages). Zero when no flex mode.
-        if !structural_rack.is_inactive() {
-            kernel.set_bending_reaction_moment(structural_rack.reaction_moment_body_n_m());
+        if !self.structural_rack.is_inactive() {
+            self.kernel
+                .set_bending_reaction_moment(self.structural_rack.reaction_moment_body_n_m());
         }
-        let prev_velocity_eci = kernel.current_state().velocity.vector;
-        let prev_orientation = kernel.current_state().orientation.q;
-        kernel.step()?;
+        let prev_velocity_eci = self.kernel.current_state().velocity.vector;
+        let prev_orientation = self.kernel.current_state().orientation.q;
+        self.kernel.step()?;
         // Refresh tank-rack drivers from the post-step
         // rigid-body state. `accel_body_m_s2` is finite-differenced
         // from the velocity change rotated into the prior-step body
         // frame; `omega_body_rad_s` is read directly from the new
         // state. Slosh state on the next tick uses these drivers
         // (one-step lag, see TankRack module docs).
-        if !tank_rack.is_empty() || !structural_rack.is_inactive() {
-            let dt_s = kernel_step_s;
-            let new_state = kernel.current_state();
+        if !self.tank_rack.is_empty() || !self.structural_rack.is_inactive() {
+            let dt_s = self.kernel_step_s;
+            let new_state = self.kernel.current_state();
             let dv_eci = new_state.velocity.vector - prev_velocity_eci;
             let accel_eci = if dt_s > 0.0 {
                 dv_eci / dt_s
@@ -533,101 +712,249 @@ pub fn run(
             // spuriously drive internal modes. Subtract the scenario's own
             // gravitational acceleration to recover the specific force: ~0 in
             // coast (no spurious drive), ~thrust/m under power.
-            let gravity_eci = kernel.current_environment_sample()?.gravity_eci_m_s2;
+            let gravity_eci = self.kernel.current_environment_sample()?.gravity_eci_m_s2;
             let specific_accel_body = inverse_orientation * (accel_eci - gravity_eci);
-            if !tank_rack.is_empty() {
-                tank_rack.update_drivers(specific_accel_body, omega_body);
+            if !self.tank_rack.is_empty() {
+                self.tank_rack
+                    .update_drivers(specific_accel_body, omega_body);
             }
-            if !structural_rack.is_inactive() {
-                structural_rack.update_drivers(specific_accel_body);
+            if !self.structural_rack.is_inactive() {
+                self.structural_rack.update_drivers(specific_accel_body);
             }
         }
-        let mission_fired = kernel.drain_mission_fired_events();
-        let script_fired = kernel.drain_script_fired_events();
+        let mission_fired = self.kernel.drain_mission_fired_events();
+        let script_fired = self.kernel.drain_script_fired_events();
         apply_jettison_events(
-            &mut kernel,
+            &mut self.kernel,
             &script_fired,
-            &separation_specs,
-            &mass_model,
-            &mut stack_bodies,
+            &self.separation_specs,
+            &self.mass_model,
+            &mut self.stack_bodies,
         )?;
-        if !engine_rack.is_empty() {
-            engine_rack
-                .set_retired_bodies(retired_separated_body_ids(kernel.separated_rigid_bodies()));
-            engine_rack.shutdown_retired_body_engines()?;
-            kernel.set_engine_snapshot(engine_rack.snapshot_map());
+        if !self.engine_rack.is_empty() {
+            self.engine_rack
+                .set_retired_bodies(retired_separated_body_ids(
+                    self.kernel.separated_rigid_bodies(),
+                ));
+            self.engine_rack.shutdown_retired_body_engines()?;
+            self.kernel
+                .set_engine_snapshot(self.engine_rack.snapshot_map());
         }
-        if let Some(driver) = &mut aerothermal_driver {
-            let environment = kernel.current_environment_sample()?;
-            driver.evaluate_rigid_body(kernel.current_state(), &environment, kernel_step_s)?;
+        if let Some(driver) = &mut self.aerothermal_driver {
+            let environment = self.kernel.current_environment_sample()?;
+            driver.evaluate_rigid_body(
+                self.kernel.current_state(),
+                &environment,
+                self.kernel_step_s,
+            )?;
         }
-        let snapshot = effector_rack.snapshot();
+        let snapshot = self.effector_rack.snapshot();
         record_step(
             document,
-            &mut table,
-            &kernel,
-            &channel_set,
-            &breakdown_vehicle,
-            contact_evaluator.as_ref(),
-            contact_accumulator.as_mut(),
-            breakdown_atmosphere.as_ref(),
-            plume_evaluator.as_ref(),
-            geocentric_surface_radius_m,
-            aerothermal_driver.as_ref().map(|driver| driver.output()),
-            landing_gear_runtime.as_ref(),
-            landing_gear_accumulator.as_mut(),
-            fc_bridge.as_ref(),
+            &mut self.table,
+            &self.kernel,
+            &self.channel_set,
+            &self.breakdown_vehicle,
+            self.contact_evaluator.as_ref(),
+            self.contact_accumulator.as_mut(),
+            self.breakdown_atmosphere.as_ref(),
+            self.plume_evaluator.as_ref(),
+            self.geocentric_surface_radius_m,
+            self.aerothermal_driver
+                .as_ref()
+                .map(|driver| driver.output()),
+            self.landing_gear_runtime.as_ref(),
+            self.landing_gear_accumulator.as_mut(),
+            self.fc_bridge.as_ref(),
             &mission_fired,
-            &mut mission_region_trace,
+            &mut self.mission_region_trace,
             &snapshot,
         )?;
         // Partition typed script-action fired queue.
-        pending_engine_events = script_fired
+        self.pending_engine_events = script_fired
             .iter()
             .filter(|e| matches!(e.action, ScenarioScriptAction::EngineCommand { .. }))
             .cloned()
             .collect();
-        pending_recovery_events = script_fired
+        self.pending_recovery_events = script_fired
             .iter()
             .filter(|e| matches!(e.action, ScenarioScriptAction::DeployRecovery { .. }))
             .cloned()
             .collect();
-        pending_effector_events = script_fired
+        self.pending_effector_events = script_fired
             .iter()
             .filter(|e| matches!(e.action, ScenarioScriptAction::EffectorOverride { .. }))
             .cloned()
             .collect();
-        realtime_pacer.finish_frame_execution();
+        self.realtime_pacer.finish_frame_execution();
+        Ok(())
     }
 
-    let stop_reason = kernel
-        .stop_reason()
-        .cloned()
-        .unwrap_or(StopReason::EndTime { reached_s: 0.0 });
-    let actuator_stream = fc_bridge
-        .as_ref()
-        .map(crate::fc_bridge::FcBridge::actuator_stream_report)
-        .transpose()?
-        .flatten();
-    let contact = contact_accumulator
-        .map(crate::contact::ContactRunAccumulator::finish)
-        .transpose()?
-        .flatten();
-    let landing_gear = landing_gear_accumulator
-        .map(crate::landing_gear::LandingGearRunAccumulator::finish)
-        .transpose()?
-        .flatten();
+    /// Consume the session and assemble the [`RunOutcome`] — the exact
+    /// post-loop assembly the one-shot [`run`] performs.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as the one-shot [`run`] tail (actuator
+    /// stream digest, contact, and landing-gear report assembly).
+    pub(crate) fn finish(mut self) -> Result<RunOutcome, RunnerError> {
+        let stop_reason = self
+            .kernel
+            .stop_reason()
+            .cloned()
+            .unwrap_or(StopReason::EndTime { reached_s: 0.0 });
+        let actuator_stream = self
+            .fc_bridge
+            .as_ref()
+            .map(crate::fc_bridge::FcBridge::actuator_stream_report)
+            .transpose()?
+            .flatten();
+        let contact = self
+            .contact_accumulator
+            .take()
+            .map(crate::contact::ContactRunAccumulator::finish)
+            .transpose()?
+            .flatten();
+        let landing_gear = self
+            .landing_gear_accumulator
+            .take()
+            .map(crate::landing_gear::LandingGearRunAccumulator::finish)
+            .transpose()?
+            .flatten();
 
-    Ok(RunOutcome {
-        final_step: kernel.current_step().value(),
-        final_time_s: kernel.current_time().as_seconds(),
-        stop_reason,
-        table,
-        realtime: realtime_pacer.finish(),
-        actuator_stream,
-        contact,
-        landing_gear,
-    })
+        Ok(RunOutcome {
+            final_step: self.kernel.current_step().value(),
+            final_time_s: self.kernel.current_time().as_seconds(),
+            stop_reason,
+            table: self.table,
+            realtime: self.realtime_pacer.finish(),
+            actuator_stream,
+            contact,
+            landing_gear,
+        })
+    }
+
+    /// Current simulation time in seconds.
+    pub(crate) fn time_s(&self) -> f64 {
+        self.kernel.current_time().as_seconds()
+    }
+
+    /// Current kernel step index.
+    pub(crate) fn step_index(&self) -> u64 {
+        self.kernel.current_step().value()
+    }
+
+    /// Truth rigid-body state of the continuing stack.
+    pub(crate) fn state(&self) -> &RigidBodyState {
+        self.kernel.current_state()
+    }
+
+    /// Separated bodies currently propagated alongside the stack.
+    pub(crate) fn separated_bodies(&self) -> &[openbmp_sim::SeparatedRigidBody] {
+        self.kernel.separated_rigid_bodies()
+    }
+
+    /// Per-engine actuation snapshots keyed by engine id.
+    pub(crate) fn engine_snapshots(&self) -> BTreeMap<EngineId, openbmp_sim::EngineSnapshot> {
+        self.engine_rack.snapshot_map()
+    }
+
+    /// Environment sample (atmosphere, gravity, wind) at the current state.
+    pub(crate) fn environment_sample(&self) -> Result<openbmp_sim::EnvironmentSample, RunnerError> {
+        Ok(self.kernel.current_environment_sample()?)
+    }
+
+    /// Kernel mission phase id, when a mission graph is wired.
+    pub(crate) fn current_phase(&self) -> Option<openbmp_sim::PhaseId> {
+        self.kernel.current_phase()
+    }
+
+    /// Latest flight-controller observation (estimates, health,
+    /// guidance reference), when the scenario wires a controller. This is
+    /// the same read-only assembly the SIL monitor receives.
+    pub(crate) fn fc_observation(&self) -> Option<crate::sil::FcObservation> {
+        self.fc_bridge
+            .as_ref()
+            .map(crate::fc_bridge::FcBridge::collect_observation)
+    }
+
+    /// Latest guidance cutoff estimate published by the FC.
+    pub(crate) fn latest_guidance_cutoff(&self) -> Option<openbmp_fc::topics::GuidanceCutoff> {
+        self.fc_bridge
+            .as_ref()
+            .and_then(crate::fc_bridge::FcBridge::latest_guidance_cutoff)
+    }
+
+    /// Drain recorded telemetry rows, bounding table memory for
+    /// streaming hosts. The schema is unchanged; see
+    /// [`TelemetryTable::take_rows`].
+    pub(crate) fn take_recorded_rows(&mut self) -> Vec<TelemetryRow> {
+        self.table.take_rows()
+    }
+
+    /// Telemetry schema for interpreting drained rows.
+    pub(crate) fn telemetry_schema(&self) -> &TelemetrySchema {
+        self.table.schema()
+    }
+
+    /// Schedule a deterministic engine malfunction, addressed by the
+    /// scenario engine name (`[[vehicle.assembly.engines]] id`), taking
+    /// effect on the next kernel tick. Returns the scheduled fault id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::Engine`] when the name matches no declared
+    /// engine.
+    pub(crate) fn schedule_engine_fault(
+        &mut self,
+        engine: &str,
+        fault: openbmp_propulsion::EngineFault,
+    ) -> Result<String, RunnerError> {
+        let engine_id = EngineId::from_path(&format!("vehicle.assembly.engines.{engine}"));
+        let id = format!(
+            "session.malfunctions.{}.{engine}",
+            self.runtime_malfunction_seq
+        );
+        self.runtime_malfunction_seq += 1;
+        let start_step = self.kernel.current_step().value();
+        self.engine_rack
+            .schedule_runtime_fault(id.clone(), engine_id, start_step, fault)?;
+        Ok(id)
+    }
+
+    /// Arm a sensor outage window, addressed by the `[sensors.<name>]`
+    /// key. See `FcBridge::arm_sensor_outage` for semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::UnsupportedScenario`] when the scenario has
+    /// no `[fc]` block, the sensor is unknown, or the window is empty.
+    pub(crate) fn arm_sensor_outage(
+        &mut self,
+        sensor: &str,
+        start_s: f64,
+        stop_s: f64,
+    ) -> Result<(), RunnerError> {
+        let Some(bridge) = &mut self.fc_bridge else {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "sensor outage stimuli require a scenario with an [fc] block".to_owned(),
+            });
+        };
+        bridge.arm_sensor_outage(sensor, start_s, stop_s)
+    }
+
+    /// Set or clear the wind override (NED metres per second). While
+    /// set, the override replaces the scenario wind sample pushed into
+    /// the kernel each tick; clearing it restores the scenario wind (or
+    /// zero wind for scenarios without a `[wind]` block).
+    pub(crate) fn set_wind_override(&mut self, wind_ned_m_s: Option<Vector3<f64>>) {
+        if wind_ned_m_s.is_none() && self.wind_override_ned_m_s.is_some() {
+            // Scenarios without a wind rack never push samples, so the
+            // kernel would otherwise hold the last override forever.
+            self.kernel.set_wind_sample(Vector3::zeros());
+        }
+        self.wind_override_ned_m_s = wind_ned_m_s;
+    }
 }
 
 fn retired_separated_body_ids(

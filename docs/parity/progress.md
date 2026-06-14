@@ -109,8 +109,13 @@ adapter-facing kinematic lift adds `coordinate_derivative_from_velocity()` and
 `derivative_from_state_and_acceleration()`, mapping scalar-joint velocities,
 free-flyer and spherical quaternion rates, and free-flyer translation rates
 into deterministic `q_dot`/`qd_dot` derivatives with bad-acceleration
-rejection (`REQ-MULTIBODY-008`). Missing for full WP-01.1: actual
-`openbmp-models`/`openbmp-sim` adapter wiring,
+rejection (`REQ-MULTIBODY-008`). The simulator-state adapter substrate now
+relaxes the generic state/derivative trait bounds from `Copy` to `Clone`,
+updates RK4/DOPRI and aggregate vehicle model forwarding ownership paths for
+cloneable states/contexts, and adds `MultibodySimState` with tree-derived
+quaternion offsets so vector-backed multibody states can satisfy
+`openbmp-models::SimState` (`REQ-MULTIBODY-009`).
+Missing for full WP-01.1: actual kernel/runner force adapter wiring,
 single-free-flyer byte-equivalence against the current kernel,
 simulator/environment force wiring, scenario wiring, gimballed ascent
 exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.

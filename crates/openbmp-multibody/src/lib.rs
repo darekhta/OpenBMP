@@ -1,8 +1,9 @@
 //! `openbmp-multibody` — spatial-vector multibody dynamics substrate.
 //!
 //! This crate is the L2 home for the flexible/articulated multibody program.
-//! It deliberately depends only on lower L0/L1 crates plus `nalgebra`: no
-//! simulator, runner, scenario, or flight-controller dependency is allowed here.
+//! It deliberately depends only on lower L0/L1 crates plus the hardware-portable
+//! `openbmp-models` trait surface and `nalgebra`: no simulator, runner,
+//! scenario, or flight-controller dependency is allowed here.
 //! The first slice provides the deterministic spatial algebra, rigid spatial
 //! inertia construction, joint subspace vocabulary, and topological tree shape
 //! that the later ABA/RNEA/CRBA implementation consumes.
@@ -15,11 +16,14 @@
 
 extern crate alloc;
 
+use core::ops::{Add, Mul};
+
 use alloc::vec;
 use alloc::vec::Vec;
 
 use nalgebra::{Matrix3, SMatrix, SVector, Vector3};
 use openbmp_core::{BodyId, SimTime};
+use openbmp_models::{Integratable, SimStateDerivative, VehicleState};
 use openbmp_state::MassProperties;
 use thiserror::Error;
 
@@ -754,6 +758,62 @@ impl MultibodyDerivative {
     }
 }
 
+impl Add for MultibodyDerivative {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        assert_eq!(
+            self.q_dot.len(),
+            rhs.q_dot.len(),
+            "multibody q_dot dimensions must match for derivative addition"
+        );
+        assert_eq!(
+            self.qd_dot.len(),
+            rhs.qd_dot.len(),
+            "multibody qd_dot dimensions must match for derivative addition"
+        );
+        Self {
+            q_dot: self
+                .q_dot
+                .into_iter()
+                .zip(rhs.q_dot)
+                .map(|(lhs, rhs)| lhs + rhs)
+                .collect(),
+            qd_dot: self
+                .qd_dot
+                .into_iter()
+                .zip(rhs.qd_dot)
+                .map(|(lhs, rhs)| lhs + rhs)
+                .collect(),
+        }
+    }
+}
+
+impl Mul<f64> for MultibodyDerivative {
+    type Output = Self;
+
+    fn mul(self, rhs: f64) -> Self {
+        Self {
+            q_dot: self.q_dot.into_iter().map(|value| value * rhs).collect(),
+            qd_dot: self.qd_dot.into_iter().map(|value| value * rhs).collect(),
+        }
+    }
+}
+
+impl SimStateDerivative for MultibodyDerivative {
+    fn is_finite(&self) -> bool {
+        Self::is_finite(self)
+    }
+
+    fn l2_norm(&self) -> f64 {
+        Self::l2_norm(self)
+    }
+
+    fn dimension(&self) -> usize {
+        Self::dimension(self)
+    }
+}
+
 /// Topologically ordered multibody tree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MultibodyTree {
@@ -892,6 +952,40 @@ impl MultibodyTree {
             });
         }
         Ok(())
+    }
+
+    /// Build a simulator-adapter state from raw generalized vectors.
+    ///
+    /// The returned [`MultibodySimState`] carries the tree-derived
+    /// quaternion-coordinate offsets needed by
+    /// [`openbmp_models::Integratable::project`], while preserving the raw
+    /// generalized state shape for dynamics calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the raw state dimensions, numeric
+    /// components, or quaternion coordinate slices are invalid for this tree.
+    pub fn sim_state(
+        &self,
+        time: SimTime,
+        q: Vec<f64>,
+        qd: Vec<f64>,
+    ) -> Result<MultibodySimState, MultibodyError> {
+        self.sim_state_from_state(MultibodyState::new(time, q, qd))
+    }
+
+    /// Attach this tree's projection metadata to an existing multibody state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the state does not match this tree's
+    /// dimensions or contains invalid quaternion coordinate slices.
+    pub fn sim_state_from_state(
+        &self,
+        state: MultibodyState,
+    ) -> Result<MultibodySimState, MultibodyError> {
+        self.validate_state(&state)?;
+        MultibodySimState::new(state, self.quaternion_coordinate_offsets())
     }
 
     /// Lift generalized velocities into generalized-coordinate derivatives.
@@ -1673,6 +1767,16 @@ impl MultibodyTree {
             })
             .collect()
     }
+
+    fn quaternion_coordinate_offsets(&self) -> Vec<usize> {
+        self.bodies
+            .iter()
+            .filter_map(|body| match body.joint {
+                Joint::FreeFlyer | Joint::Spherical => Some(body.q_offset),
+                Joint::Revolute { .. } | Joint::Prismatic { .. } | Joint::Welded { .. } => None,
+            })
+            .collect()
+    }
 }
 
 /// Generalized-coordinate multibody state.
@@ -1699,6 +1803,196 @@ impl MultibodyState {
         self.time.as_seconds().is_finite()
             && self.q.iter().all(|v| v.is_finite())
             && self.qd.iter().all(|v| v.is_finite())
+    }
+}
+
+/// Topology-aware simulator adapter for a multibody generalized state.
+///
+/// [`MultibodyState`] stores only raw generalized coordinates and velocities.
+/// The simulator integration trait also needs a state-local `project()` hook,
+/// so this adapter carries the tree-derived quaternion offsets needed to
+/// renormalize free-flyer and spherical coordinate slices after each
+/// integration step.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultibodySimState {
+    state: MultibodyState,
+    quaternion_offsets: Vec<usize>,
+}
+
+impl MultibodySimState {
+    /// Construct from a raw state plus validated quaternion offsets.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the state is non-finite, has no scalar
+    /// components, or any quaternion offset is outside the coordinate vector,
+    /// duplicated, non-finite, or zero-norm.
+    pub fn new(
+        state: MultibodyState,
+        quaternion_offsets: Vec<usize>,
+    ) -> Result<Self, MultibodyError> {
+        validate_sim_state_shape(&state, &quaternion_offsets)?;
+        Ok(Self {
+            state,
+            quaternion_offsets,
+        })
+    }
+
+    /// Underlying raw generalized-coordinate state.
+    #[must_use]
+    pub const fn state(&self) -> &MultibodyState {
+        &self.state
+    }
+
+    /// Consume the adapter and return the raw generalized-coordinate state.
+    #[must_use]
+    pub fn into_state(self) -> MultibodyState {
+        self.state
+    }
+
+    /// Generalized coordinates.
+    #[must_use]
+    pub fn q(&self) -> &[f64] {
+        &self.state.q
+    }
+
+    /// Generalized velocities.
+    #[must_use]
+    pub fn qd(&self) -> &[f64] {
+        &self.state.qd
+    }
+
+    /// Quaternion coordinate offsets carried for integration projection.
+    #[must_use]
+    pub fn quaternion_offsets(&self) -> &[usize] {
+        &self.quaternion_offsets
+    }
+}
+
+impl VehicleState for MultibodySimState {
+    fn time(&self) -> SimTime {
+        self.state.time
+    }
+
+    fn is_finite(&self) -> bool {
+        self.state.is_finite()
+    }
+
+    fn with_time(mut self, t: SimTime) -> Self {
+        self.state.time = t;
+        self
+    }
+}
+
+impl Integratable for MultibodySimState {
+    type Derivative = MultibodyDerivative;
+
+    fn is_valid_for_integration(&self) -> bool {
+        validate_sim_state_shape(&self.state, &self.quaternion_offsets).is_ok()
+    }
+
+    fn advance_by(&self, h_seconds: f64, derivative: &Self::Derivative) -> Self {
+        assert!(
+            h_seconds.is_finite(),
+            "multibody integration step must be finite"
+        );
+        assert_eq!(
+            self.state.q.len(),
+            derivative.q_dot.len(),
+            "multibody q and q_dot dimensions must match for state advance"
+        );
+        assert_eq!(
+            self.state.qd.len(),
+            derivative.qd_dot.len(),
+            "multibody qd and qd_dot dimensions must match for state advance"
+        );
+        let mut q = Vec::with_capacity(self.state.q.len());
+        for index in 0..self.state.q.len() {
+            q.push(self.state.q[index] + h_seconds * derivative.q_dot[index]);
+        }
+        let mut qd = Vec::with_capacity(self.state.qd.len());
+        for index in 0..self.state.qd.len() {
+            qd.push(self.state.qd[index] + h_seconds * derivative.qd_dot[index]);
+        }
+        Self {
+            state: MultibodyState::new(
+                SimTime::from_seconds(self.state.time.as_seconds() + h_seconds),
+                q,
+                qd,
+            ),
+            quaternion_offsets: self.quaternion_offsets.clone(),
+        }
+    }
+
+    fn project(&mut self) {
+        project_quaternion_offsets(&mut self.state.q, &self.quaternion_offsets);
+    }
+
+    fn scalar_state_size(&self) -> f64 {
+        let mut sum = 0.0;
+        for value in &self.state.q {
+            sum += value * value;
+        }
+        for value in &self.state.qd {
+            sum += value * value;
+        }
+        <f64 as nalgebra::ComplexField>::sqrt(sum)
+    }
+
+    fn weighted_error_norm(
+        &self,
+        prev_state: &Self,
+        error_deriv: &Self::Derivative,
+        h: f64,
+        atol: f64,
+        rtol: f64,
+    ) -> f64 {
+        assert_eq!(
+            self.state.q.len(),
+            prev_state.state.q.len(),
+            "multibody weighted-error q dimensions must match"
+        );
+        assert_eq!(
+            self.state.qd.len(),
+            prev_state.state.qd.len(),
+            "multibody weighted-error qd dimensions must match"
+        );
+        assert_eq!(
+            self.state.q.len(),
+            error_deriv.q_dot.len(),
+            "multibody weighted-error q/q_dot dimensions must match"
+        );
+        assert_eq!(
+            self.state.qd.len(),
+            error_deriv.qd_dot.len(),
+            "multibody weighted-error qd/qd_dot dimensions must match"
+        );
+        let dimension = self.state.q.len() + self.state.qd.len();
+        if dimension == 0 {
+            return f64::INFINITY;
+        }
+        let mut sum = 0.0;
+        for index in 0..self.state.q.len() {
+            sum += weighted_error_term(
+                prev_state.state.q[index],
+                self.state.q[index],
+                error_deriv.q_dot[index],
+                h,
+                atol,
+                rtol,
+            );
+        }
+        for index in 0..self.state.qd.len() {
+            sum += weighted_error_term(
+                prev_state.state.qd[index],
+                self.state.qd[index],
+                error_deriv.qd_dot[index],
+                h,
+                atol,
+                rtol,
+            );
+        }
+        <f64 as nalgebra::ComplexField>::sqrt(sum / dimension as f64)
     }
 }
 
@@ -1902,6 +2196,68 @@ fn normalize_quaternion_slice(q: &mut [f64]) -> Result<(), MultibodyError> {
         *value *= inv_norm;
     }
     Ok(())
+}
+
+fn validate_sim_state_shape(
+    state: &MultibodyState,
+    quaternion_offsets: &[usize],
+) -> Result<(), MultibodyError> {
+    if state.q.is_empty() && state.qd.is_empty() {
+        return Err(MultibodyError::InvalidParameter {
+            reason: "multibody simulator state must contain at least one scalar component",
+        });
+    }
+    if !state.is_finite() {
+        return Err(MultibodyError::NonFinite {
+            reason: "multibody simulator state contains non-finite components",
+        });
+    }
+    for (index, offset) in quaternion_offsets.iter().enumerate() {
+        for previous in &quaternion_offsets[0..index] {
+            if previous == offset {
+                return Err(MultibodyError::InvalidParameter {
+                    reason: "multibody simulator quaternion offsets must be unique",
+                });
+            }
+        }
+        if offset.saturating_add(4) > state.q.len() {
+            return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "quaternion offset",
+                expected: state.q.len(),
+                actual: offset.saturating_add(4),
+            });
+        }
+        let q = &state.q[*offset..*offset + 4];
+        if !q.iter().all(|value| value.is_finite()) {
+            return Err(MultibodyError::NonFinite {
+                reason: "quaternion contains non-finite components",
+            });
+        }
+        let norm2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+        if norm2 == 0.0 {
+            return Err(MultibodyError::InvalidParameter {
+                reason: "quaternion norm must be non-zero",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn project_quaternion_offsets(q: &mut [f64], quaternion_offsets: &[usize]) {
+    for offset in quaternion_offsets {
+        if offset.saturating_add(4) > q.len() {
+            continue;
+        }
+        let slice = &mut q[*offset..*offset + 4];
+        let norm2 =
+            slice[0] * slice[0] + slice[1] * slice[1] + slice[2] * slice[2] + slice[3] * slice[3];
+        if norm2 > 0.0 && norm2.is_finite() {
+            let inv_norm = 1.0 / <f64 as nalgebra::ComplexField>::sqrt(norm2);
+            for value in slice {
+                *value *= inv_norm;
+            }
+        }
+    }
 }
 
 fn weighted_error_term(
@@ -2146,6 +2502,7 @@ mod tests {
     use approx::assert_abs_diff_eq;
     use nalgebra::UnitQuaternion;
     use openbmp_core::{Body, Position3};
+    use openbmp_models::SimState;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
 
@@ -2686,6 +3043,87 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn assert_sim_state_trait<S: SimState>(_state: &S) {}
+
+    #[test]
+    fn multibody_sim_state_implements_model_traits_and_projects_quaternions() {
+        let root = TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let spherical = TreeBodySpec {
+            id: BodyId::new(2),
+            parent: Some(BodyIndex::new(0)),
+            joint: Joint::Spherical,
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let tree = MultibodyTree::new(vec![root, spherical]).unwrap();
+        let sim_state = tree
+            .sim_state(
+                SimTime::ZERO,
+                vec![2.0, 0.0, 0.0, 0.0, 10.0, 20.0, 30.0, 0.0, 3.0, 4.0, 0.0],
+                vec![0.0; tree.n_qd()],
+            )
+            .unwrap();
+        let derivative = MultibodyDerivative::new(
+            vec![0.5, 0.1, -0.2, 0.3, 1.0, 2.0, 3.0, 0.4, -0.5, 0.6, -0.7],
+            vec![0.2, -0.1, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8, 0.9],
+        );
+
+        assert_sim_state_trait(&sim_state);
+        assert_eq!(sim_state.quaternion_offsets(), &[0, 7]);
+        assert_eq!(derivative.dimension(), tree.n_q() + tree.n_qd());
+        assert!(derivative.is_finite());
+
+        let mut advanced = sim_state.advance_by(0.5, &derivative);
+        advanced.project();
+        let retimed = advanced.clone().with_time(SimTime::from_seconds(9.0));
+        let norm = advanced.weighted_error_norm(&sim_state, &derivative, 0.5, 1.0e-6, 1.0e-3);
+
+        assert_abs_diff_eq!(advanced.time().as_seconds(), 0.5, epsilon = 0.0);
+        assert_abs_diff_eq!(retimed.time().as_seconds(), 9.0, epsilon = 0.0);
+        assert!(advanced.is_valid_for_integration());
+        assert!(norm.is_finite());
+        assert!(norm > 0.0);
+
+        let root_q_norm = advanced.q()[0..4]
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>();
+        let spherical_q_norm = advanced.q()[7..11]
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>();
+        assert_abs_diff_eq!(root_q_norm, 1.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(spherical_q_norm, 1.0, epsilon = 1.0e-14);
+    }
+
+    #[test]
+    fn multibody_sim_state_rejects_bad_projection_metadata() {
+        let state = MultibodyState::new(SimTime::ZERO, vec![1.0, 0.0, 0.0, 0.0], Vec::new());
+        let duplicate = MultibodySimState::new(state.clone(), vec![0, 0]).unwrap_err();
+        let out_of_range = MultibodySimState::new(state.clone(), vec![1]).unwrap_err();
+        let zero_norm = MultibodySimState::new(
+            MultibodyState::new(SimTime::ZERO, vec![0.0, 0.0, 0.0, 0.0], Vec::new()),
+            vec![0],
+        )
+        .unwrap_err();
+
+        assert!(matches!(duplicate, MultibodyError::InvalidParameter { .. }));
+        assert!(matches!(
+            out_of_range,
+            MultibodyError::GeneralizedVectorDimensionMismatch {
+                vector: "quaternion offset",
+                ..
+            }
+        ));
+        assert!(matches!(zero_norm, MultibodyError::InvalidParameter { .. }));
     }
 
     #[test]

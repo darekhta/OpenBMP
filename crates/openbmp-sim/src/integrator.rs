@@ -408,7 +408,7 @@ impl<S: SimState> Integrator<S> for Dopri54FixedStep {
         }
 
         // Stage 2: y2 = y0 + h * (a21 * k1)
-        let s2 = state.advance_by(h, &(k1 * A21));
+        let s2 = state.advance_by(h, &(k1.clone() * A21));
         if !s2.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
         }
@@ -419,7 +419,7 @@ impl<S: SimState> Integrator<S> for Dopri54FixedStep {
 
         // Stage 3: y3 = y0 + h * (a31 * k1 + a32 * k2)
         // DETERMINISM CONTRACT: locked order (k1 first, then k2).
-        let inc3 = (k1 * A31) + (k2 * A32);
+        let inc3 = (k1.clone() * A31) + (k2.clone() * A32);
         let s3 = state.advance_by(h, &inc3);
         if !s3.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -430,7 +430,7 @@ impl<S: SimState> Integrator<S> for Dopri54FixedStep {
         }
 
         // Stage 4: y4 = y0 + h * (a41 * k1 + a42 * k2 + a43 * k3)
-        let inc4 = ((k1 * A41) + (k2 * A42)) + (k3 * A43);
+        let inc4 = ((k1.clone() * A41) + (k2.clone() * A42)) + (k3.clone() * A43);
         let s4 = state.advance_by(h, &inc4);
         if !s4.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -441,7 +441,8 @@ impl<S: SimState> Integrator<S> for Dopri54FixedStep {
         }
 
         // Stage 5: y5 = y0 + h * (a51 * k1 + a52 * k2 + a53 * k3 + a54 * k4)
-        let inc5 = (((k1 * A51) + (k2 * A52)) + (k3 * A53)) + (k4 * A54);
+        let inc5 =
+            (((k1.clone() * A51) + (k2.clone() * A52)) + (k3.clone() * A53)) + (k4.clone() * A54);
         let s5 = state.advance_by(h, &inc5);
         if !s5.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -452,7 +453,9 @@ impl<S: SimState> Integrator<S> for Dopri54FixedStep {
         }
 
         // Stage 6: y6 = y0 + h * (a61 k1 + a62 k2 + a63 k3 + a64 k4 + a65 k5)
-        let inc6 = ((((k1 * A61) + (k2 * A62)) + (k3 * A63)) + (k4 * A64)) + (k5 * A65);
+        let inc6 = ((((k1.clone() * A61) + (k2.clone() * A62)) + (k3.clone() * A63))
+            + (k4.clone() * A64))
+            + (k5.clone() * A65);
         let s6 = state.advance_by(h, &inc6);
         if !s6.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -599,13 +602,13 @@ impl<S: SimState> Dopri54DenseOutput<S> {
     /// Accepted sub-step start state.
     #[must_use]
     pub fn start_state(&self) -> S {
-        self.start_state
+        self.start_state.clone()
     }
 
     /// Accepted sub-step end state.
     #[must_use]
     pub fn end_state(&self) -> S {
-        self.end_state
+        self.end_state.clone()
     }
 
     /// Accepted sub-step size in seconds.
@@ -641,10 +644,10 @@ impl<S: SimState> DenseOutput<S> for Dopri54DenseOutput<S> {
             });
         }
         if query_s.to_bits() == start_s.to_bits() {
-            return Ok(self.start_state);
+            return Ok(self.start_state.clone());
         }
         if query_s.to_bits() == end_s.to_bits() {
-            return Ok(self.end_state);
+            return Ok(self.end_state.clone());
         }
 
         let theta = (query_s - start_s) / self.h_s;
@@ -659,9 +662,11 @@ impl<S: SimState> DenseOutput<S> for Dopri54DenseOutput<S> {
         let w6 = ((P61 * theta) + (P62 * theta2)) + ((P63 * theta3) + (P64 * theta4));
         let w7 = ((P71 * theta) + (P72 * theta2)) + ((P73 * theta3) + (P74 * theta4));
 
-        let weighted = (((((self.k1 * w1) + (self.k3 * w3)) + (self.k4 * w4)) + (self.k5 * w5))
-            + (self.k6 * w6))
-            + (self.k7 * w7);
+        let weighted = (((((self.k1.clone() * w1) + (self.k3.clone() * w3))
+            + (self.k4.clone() * w4))
+            + (self.k5.clone() * w5))
+            + (self.k6.clone() * w6))
+            + (self.k7.clone() * w7);
         let mut interpolated = self.start_state.advance_by(self.h_s, &weighted);
         interpolated.project();
         interpolated = interpolated.with_time(time);
@@ -684,7 +689,7 @@ impl<S: SimState> Dopri54AdaptiveDenseOutput<S> {
     /// Integrated endpoint returned by the adaptive step.
     #[must_use]
     pub fn final_state(&self) -> S {
-        self.final_state
+        self.final_state.clone()
     }
 
     /// Accepted sub-step dense-output segments in chronological order.
@@ -825,7 +830,7 @@ impl Dopri54Adaptive {
         if !k1.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let s2 = state.advance_by(h, &(k1 * A21));
+        let s2 = state.advance_by(h, &(k1.clone() * A21));
         if !s2.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
         }
@@ -833,7 +838,7 @@ impl Dopri54Adaptive {
         if !k2.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc3 = (k1 * A31) + (k2 * A32);
+        let inc3 = (k1.clone() * A31) + (k2.clone() * A32);
         let s3 = state.advance_by(h, &inc3);
         if !s3.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -842,7 +847,7 @@ impl Dopri54Adaptive {
         if !k3.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc4 = ((k1 * A41) + (k2 * A42)) + (k3 * A43);
+        let inc4 = ((k1.clone() * A41) + (k2.clone() * A42)) + (k3.clone() * A43);
         let s4 = state.advance_by(h, &inc4);
         if !s4.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -851,7 +856,8 @@ impl Dopri54Adaptive {
         if !k4.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc5 = (((k1 * A51) + (k2 * A52)) + (k3 * A53)) + (k4 * A54);
+        let inc5 =
+            (((k1.clone() * A51) + (k2.clone() * A52)) + (k3.clone() * A53)) + (k4.clone() * A54);
         let s5 = state.advance_by(h, &inc5);
         if !s5.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -860,7 +866,9 @@ impl Dopri54Adaptive {
         if !k5.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc6 = ((((k1 * A61) + (k2 * A62)) + (k3 * A63)) + (k4 * A64)) + (k5 * A65);
+        let inc6 = ((((k1.clone() * A61) + (k2.clone() * A62)) + (k3.clone() * A63))
+            + (k4.clone() * A64))
+            + (k5.clone() * A65);
         let s6 = state.advance_by(h, &inc6);
         if !s6.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -871,7 +879,9 @@ impl Dopri54Adaptive {
         }
 
         // 5th-order solution (same as Dopri54FixedStep).
-        let weighted5 = ((((k1 * B1) + (k3 * B3)) + (k4 * B4)) + (k5 * B5)) + (k6 * B6);
+        let weighted5 = ((((k1.clone() * B1) + (k3.clone() * B3)) + (k4.clone() * B4))
+            + (k5.clone() * B5))
+            + (k6.clone() * B6);
         let mut new_state = state.advance_by(h, &weighted5);
         new_state.project();
         if !new_state.is_valid_for_integration() {
@@ -882,7 +892,10 @@ impl Dopri54Adaptive {
         // form the embedded 4th-order companion via the E_i weights.
         // The A7_i row reproduces the B_i weights so y_7 = y_5 (FSAL
         // property); k7 = f(y_5, t_end).
-        let inc7 = (((((k1 * A71) + (k3 * A73)) + (k4 * A74)) + (k5 * A75)) + (k6 * A76)) * 1.0;
+        let inc7 = (((((k1.clone() * A71) + (k3.clone() * A73)) + (k4.clone() * A74))
+            + (k5.clone() * A75))
+            + (k6.clone() * A76))
+            * 1.0;
         let s7 = state.advance_by(h, &inc7);
         if !s7.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -895,8 +908,10 @@ impl Dopri54Adaptive {
         // Error derivative: e' = Σ E_i k_i (E2 = 0 implied). The
         // multiplication by `h` to obtain `e = y_5 − y_4` happens
         // inside `weighted_error_norm`.
-        let error_deriv =
-            (((((k1 * E1) + (k3 * E3)) + (k4 * E4)) + (k5 * E5)) + (k6 * E6)) + (k7 * E7);
+        let error_deriv = (((((k1.clone() * E1) + (k3.clone() * E3)) + (k4.clone() * E4))
+            + (k5.clone() * E5))
+            + (k6.clone() * E6))
+            + (k7.clone() * E7);
         // Per-component scaled error RMS norm:
         //   sc_i = atol + rtol · max(|y^n_i|, |y^{n+1}_i|)
         //   err = sqrt( (1/N) · Σ_i ( h · e'_i / sc_i )^2 )
@@ -905,7 +920,7 @@ impl Dopri54Adaptive {
 
         Ok((
             Dopri54DenseOutput {
-                start_state: *state,
+                start_state: state.clone(),
                 end_state: new_state,
                 h_s: h,
                 k1,
@@ -977,7 +992,7 @@ impl Dopri54Adaptive {
             .min(self.max_h_s)
             .min(dt_total);
 
-        let mut current = *state;
+        let mut current = state.clone();
         let mut elapsed = 0.0_f64;
         let mut last_accepted_err: Option<f64> = self.last_err_prev.get();
         let max_substeps: usize = 1_000_000;
@@ -1004,7 +1019,7 @@ impl Dopri54Adaptive {
             let (segment, err) = self.try_dense_substep(&current, &derive_fn, h_try)?;
 
             if err <= 1.0 {
-                current = segment.end_state;
+                current = segment.end_state.clone();
                 segments.push(segment);
                 elapsed += h_try;
                 last_accepted_err = Some(err.max(1.0e-10));
@@ -1062,7 +1077,7 @@ impl<S: SimState> Integrator<S> for Dopri54Adaptive {
             .min(self.max_h_s)
             .min(dt_total);
 
-        let mut current = *state;
+        let mut current = state.clone();
         let mut elapsed = 0.0_f64;
         let mut last_accepted_err: Option<f64> = self.last_err_prev.get();
         // Hard cap on number of sub-steps so a misbehaving derivative
@@ -1462,13 +1477,13 @@ impl<S: SimState> Dopri853DenseOutput<S> {
     /// Accepted sub-step start state.
     #[must_use]
     pub fn start_state(&self) -> S {
-        self.start_state
+        self.start_state.clone()
     }
 
     /// Accepted sub-step end state.
     #[must_use]
     pub fn end_state(&self) -> S {
-        self.end_state
+        self.end_state.clone()
     }
 
     /// Accepted sub-step size in seconds.
@@ -1482,16 +1497,17 @@ impl<S: SimState> Dopri853DenseOutput<S> {
             D_1_1, D_1_6, D_1_7, D_1_8, D_1_9, D_1_10, D_1_11, D_1_12, D_1_END, D_1_EXTRA_1,
             D_1_EXTRA_2, D_1_EXTRA_3,
         };
-        (((((((((((self.k1 * D_1_1) + (self.k6 * D_1_6)) + (self.k7 * D_1_7))
-            + (self.k8 * D_1_8))
-            + (self.k9 * D_1_9))
-            + (self.k10 * D_1_10))
-            + (self.k11 * D_1_11))
-            + (self.k12 * D_1_12))
-            + (self.k_end * D_1_END))
-            + (self.k_extra_1 * D_1_EXTRA_1))
-            + (self.k_extra_2 * D_1_EXTRA_2))
-            + (self.k_extra_3 * D_1_EXTRA_3)
+        (((((((((((self.k1.clone() * D_1_1) + (self.k6.clone() * D_1_6))
+            + (self.k7.clone() * D_1_7))
+            + (self.k8.clone() * D_1_8))
+            + (self.k9.clone() * D_1_9))
+            + (self.k10.clone() * D_1_10))
+            + (self.k11.clone() * D_1_11))
+            + (self.k12.clone() * D_1_12))
+            + (self.k_end.clone() * D_1_END))
+            + (self.k_extra_1.clone() * D_1_EXTRA_1))
+            + (self.k_extra_2.clone() * D_1_EXTRA_2))
+            + (self.k_extra_3.clone() * D_1_EXTRA_3)
     }
 
     fn dense_row_2(&self) -> S::Derivative {
@@ -1499,16 +1515,17 @@ impl<S: SimState> Dopri853DenseOutput<S> {
             D_2_1, D_2_6, D_2_7, D_2_8, D_2_9, D_2_10, D_2_11, D_2_12, D_2_END, D_2_EXTRA_1,
             D_2_EXTRA_2, D_2_EXTRA_3,
         };
-        (((((((((((self.k1 * D_2_1) + (self.k6 * D_2_6)) + (self.k7 * D_2_7))
-            + (self.k8 * D_2_8))
-            + (self.k9 * D_2_9))
-            + (self.k10 * D_2_10))
-            + (self.k11 * D_2_11))
-            + (self.k12 * D_2_12))
-            + (self.k_end * D_2_END))
-            + (self.k_extra_1 * D_2_EXTRA_1))
-            + (self.k_extra_2 * D_2_EXTRA_2))
-            + (self.k_extra_3 * D_2_EXTRA_3)
+        (((((((((((self.k1.clone() * D_2_1) + (self.k6.clone() * D_2_6))
+            + (self.k7.clone() * D_2_7))
+            + (self.k8.clone() * D_2_8))
+            + (self.k9.clone() * D_2_9))
+            + (self.k10.clone() * D_2_10))
+            + (self.k11.clone() * D_2_11))
+            + (self.k12.clone() * D_2_12))
+            + (self.k_end.clone() * D_2_END))
+            + (self.k_extra_1.clone() * D_2_EXTRA_1))
+            + (self.k_extra_2.clone() * D_2_EXTRA_2))
+            + (self.k_extra_3.clone() * D_2_EXTRA_3)
     }
 
     fn dense_row_3(&self) -> S::Derivative {
@@ -1516,16 +1533,17 @@ impl<S: SimState> Dopri853DenseOutput<S> {
             D_3_1, D_3_6, D_3_7, D_3_8, D_3_9, D_3_10, D_3_11, D_3_12, D_3_END, D_3_EXTRA_1,
             D_3_EXTRA_2, D_3_EXTRA_3,
         };
-        (((((((((((self.k1 * D_3_1) + (self.k6 * D_3_6)) + (self.k7 * D_3_7))
-            + (self.k8 * D_3_8))
-            + (self.k9 * D_3_9))
-            + (self.k10 * D_3_10))
-            + (self.k11 * D_3_11))
-            + (self.k12 * D_3_12))
-            + (self.k_end * D_3_END))
-            + (self.k_extra_1 * D_3_EXTRA_1))
-            + (self.k_extra_2 * D_3_EXTRA_2))
-            + (self.k_extra_3 * D_3_EXTRA_3)
+        (((((((((((self.k1.clone() * D_3_1) + (self.k6.clone() * D_3_6))
+            + (self.k7.clone() * D_3_7))
+            + (self.k8.clone() * D_3_8))
+            + (self.k9.clone() * D_3_9))
+            + (self.k10.clone() * D_3_10))
+            + (self.k11.clone() * D_3_11))
+            + (self.k12.clone() * D_3_12))
+            + (self.k_end.clone() * D_3_END))
+            + (self.k_extra_1.clone() * D_3_EXTRA_1))
+            + (self.k_extra_2.clone() * D_3_EXTRA_2))
+            + (self.k_extra_3.clone() * D_3_EXTRA_3)
     }
 
     fn dense_row_4(&self) -> S::Derivative {
@@ -1533,16 +1551,17 @@ impl<S: SimState> Dopri853DenseOutput<S> {
             D_4_1, D_4_6, D_4_7, D_4_8, D_4_9, D_4_10, D_4_11, D_4_12, D_4_END, D_4_EXTRA_1,
             D_4_EXTRA_2, D_4_EXTRA_3,
         };
-        (((((((((((self.k1 * D_4_1) + (self.k6 * D_4_6)) + (self.k7 * D_4_7))
-            + (self.k8 * D_4_8))
-            + (self.k9 * D_4_9))
-            + (self.k10 * D_4_10))
-            + (self.k11 * D_4_11))
-            + (self.k12 * D_4_12))
-            + (self.k_end * D_4_END))
-            + (self.k_extra_1 * D_4_EXTRA_1))
-            + (self.k_extra_2 * D_4_EXTRA_2))
-            + (self.k_extra_3 * D_4_EXTRA_3)
+        (((((((((((self.k1.clone() * D_4_1) + (self.k6.clone() * D_4_6))
+            + (self.k7.clone() * D_4_7))
+            + (self.k8.clone() * D_4_8))
+            + (self.k9.clone() * D_4_9))
+            + (self.k10.clone() * D_4_10))
+            + (self.k11.clone() * D_4_11))
+            + (self.k12.clone() * D_4_12))
+            + (self.k_end.clone() * D_4_END))
+            + (self.k_extra_1.clone() * D_4_EXTRA_1))
+            + (self.k_extra_2.clone() * D_4_EXTRA_2))
+            + (self.k_extra_3.clone() * D_4_EXTRA_3)
     }
 }
 
@@ -1567,17 +1586,17 @@ impl<S: SimState> DenseOutput<S> for Dopri853DenseOutput<S> {
             });
         }
         if query_s.to_bits() == start_s.to_bits() {
-            return Ok(self.start_state);
+            return Ok(self.start_state.clone());
         }
         if query_s.to_bits() == end_s.to_bits() {
-            return Ok(self.end_state);
+            return Ok(self.end_state.clone());
         }
 
         let theta = (query_s - start_s) / self.h_s;
         let one_minus_theta = 1.0 - theta;
-        let f0 = self.delta_deriv;
-        let f1 = self.k1 + (self.delta_deriv * -1.0);
-        let f2 = (self.delta_deriv * 2.0) + ((self.k_end + self.k1) * -1.0);
+        let f0 = self.delta_deriv.clone();
+        let f1 = self.k1.clone() + (self.delta_deriv.clone() * -1.0);
+        let f2 = (self.delta_deriv.clone() * 2.0) + ((self.k_end.clone() + self.k1.clone()) * -1.0);
         let f3 = self.dense_row_1();
         let f4 = self.dense_row_2();
         let f5 = self.dense_row_3();
@@ -1611,7 +1630,7 @@ impl<S: SimState> Dopri853AdaptiveDenseOutput<S> {
     /// Integrated endpoint returned by the adaptive step.
     #[must_use]
     pub fn final_state(&self) -> S {
-        self.final_state
+        self.final_state.clone()
     }
 
     /// Accepted sub-step dense-output segments in chronological order.
@@ -1734,7 +1753,7 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 2.
-        let s2 = state.advance_by(h, &(k1 * A_2_1));
+        let s2 = state.advance_by(h, &(k1.clone() * A_2_1));
         if !s2.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
         }
@@ -1744,7 +1763,7 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 3: a31·k1 + a32·k2.
-        let inc3 = (k1 * A_3_1) + (k2 * A_3_2);
+        let inc3 = (k1.clone() * A_3_1) + (k2 * A_3_2);
         let s3 = state.advance_by(h, &inc3);
         if !s3.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -1755,7 +1774,7 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 4: a41·k1 + a43·k3 (a42 = 0).
-        let inc4 = (k1 * A_4_1) + (k3 * A_4_3);
+        let inc4 = (k1.clone() * A_4_1) + (k3.clone() * A_4_3);
         let s4 = state.advance_by(h, &inc4);
         if !s4.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -1766,7 +1785,7 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 5: a51·k1 + a53·k3 + a54·k4.
-        let inc5 = ((k1 * A_5_1) + (k3 * A_5_3)) + (k4 * A_5_4);
+        let inc5 = ((k1.clone() * A_5_1) + (k3.clone() * A_5_3)) + (k4.clone() * A_5_4);
         let s5 = state.advance_by(h, &inc5);
         if !s5.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -1777,7 +1796,7 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 6: a61·k1 + a64·k4 + a65·k5.
-        let inc6 = ((k1 * A_6_1) + (k4 * A_6_4)) + (k5 * A_6_5);
+        let inc6 = ((k1.clone() * A_6_1) + (k4.clone() * A_6_4)) + (k5.clone() * A_6_5);
         let s6 = state.advance_by(h, &inc6);
         if !s6.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -1788,7 +1807,8 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 7: a71·k1 + a74·k4 + a75·k5 + a76·k6.
-        let inc7 = (((k1 * A_7_1) + (k4 * A_7_4)) + (k5 * A_7_5)) + (k6 * A_7_6);
+        let inc7 = (((k1.clone() * A_7_1) + (k4.clone() * A_7_4)) + (k5.clone() * A_7_5))
+            + (k6.clone() * A_7_6);
         let s7 = state.advance_by(h, &inc7);
         if !s7.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -1799,7 +1819,9 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 8: a81·k1 + a84·k4 + a85·k5 + a86·k6 + a87·k7.
-        let inc8 = ((((k1 * A_8_1) + (k4 * A_8_4)) + (k5 * A_8_5)) + (k6 * A_8_6)) + (k7 * A_8_7);
+        let inc8 = ((((k1.clone() * A_8_1) + (k4.clone() * A_8_4)) + (k5.clone() * A_8_5))
+            + (k6.clone() * A_8_6))
+            + (k7.clone() * A_8_7);
         let s8 = state.advance_by(h, &inc8);
         if !s8.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -1810,8 +1832,10 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 9.
-        let inc9 = (((((k1 * A_9_1) + (k4 * A_9_4)) + (k5 * A_9_5)) + (k6 * A_9_6)) + (k7 * A_9_7))
-            + (k8 * A_9_8);
+        let inc9 = (((((k1.clone() * A_9_1) + (k4.clone() * A_9_4)) + (k5.clone() * A_9_5))
+            + (k6.clone() * A_9_6))
+            + (k7.clone() * A_9_7))
+            + (k8.clone() * A_9_8);
         let s9 = state.advance_by(h, &inc9);
         if !s9.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -1822,10 +1846,11 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 10.
-        let inc10 = ((((((k1 * A_10_1) + (k4 * A_10_4)) + (k5 * A_10_5)) + (k6 * A_10_6))
-            + (k7 * A_10_7))
-            + (k8 * A_10_8))
-            + (k9 * A_10_9);
+        let inc10 = ((((((k1.clone() * A_10_1) + (k4.clone() * A_10_4)) + (k5.clone() * A_10_5))
+            + (k6.clone() * A_10_6))
+            + (k7.clone() * A_10_7))
+            + (k8.clone() * A_10_8))
+            + (k9.clone() * A_10_9);
         let s10 = state.advance_by(h, &inc10);
         if !s10.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -1836,11 +1861,13 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 11.
-        let inc11 = (((((((k1 * A_11_1) + (k4 * A_11_4)) + (k5 * A_11_5)) + (k6 * A_11_6))
-            + (k7 * A_11_7))
-            + (k8 * A_11_8))
-            + (k9 * A_11_9))
-            + (k10 * A_11_10);
+        let inc11 = (((((((k1.clone() * A_11_1) + (k4.clone() * A_11_4))
+            + (k5.clone() * A_11_5))
+            + (k6.clone() * A_11_6))
+            + (k7.clone() * A_11_7))
+            + (k8.clone() * A_11_8))
+            + (k9.clone() * A_11_9))
+            + (k10.clone() * A_11_10);
         let s11 = state.advance_by(h, &inc11);
         if !s11.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -1851,12 +1878,14 @@ impl<S: SimState> Integrator<S> for Dopri853FixedStep {
         }
 
         // Stage 12.
-        let inc12 = ((((((((k1 * A_12_1) + (k4 * A_12_4)) + (k5 * A_12_5)) + (k6 * A_12_6))
-            + (k7 * A_12_7))
-            + (k8 * A_12_8))
-            + (k9 * A_12_9))
-            + (k10 * A_12_10))
-            + (k11 * A_12_11);
+        let inc12 = ((((((((k1.clone() * A_12_1) + (k4.clone() * A_12_4))
+            + (k5.clone() * A_12_5))
+            + (k6.clone() * A_12_6))
+            + (k7.clone() * A_12_7))
+            + (k8.clone() * A_12_8))
+            + (k9.clone() * A_12_9))
+            + (k10.clone() * A_12_10))
+            + (k11.clone() * A_12_11);
         let s12 = state.advance_by(h, &inc12);
         if !s12.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2088,7 +2117,7 @@ impl Dopri853Adaptive {
         if !k1.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let s2 = state.advance_by(h, &(k1 * A_2_1));
+        let s2 = state.advance_by(h, &(k1.clone() * A_2_1));
         if !s2.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
         }
@@ -2096,7 +2125,7 @@ impl Dopri853Adaptive {
         if !k2.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc3 = (k1 * A_3_1) + (k2 * A_3_2);
+        let inc3 = (k1.clone() * A_3_1) + (k2 * A_3_2);
         let s3 = state.advance_by(h, &inc3);
         if !s3.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2105,7 +2134,7 @@ impl Dopri853Adaptive {
         if !k3.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc4 = (k1 * A_4_1) + (k3 * A_4_3);
+        let inc4 = (k1.clone() * A_4_1) + (k3.clone() * A_4_3);
         let s4 = state.advance_by(h, &inc4);
         if !s4.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2114,7 +2143,7 @@ impl Dopri853Adaptive {
         if !k4.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc5 = ((k1 * A_5_1) + (k3 * A_5_3)) + (k4 * A_5_4);
+        let inc5 = ((k1.clone() * A_5_1) + (k3.clone() * A_5_3)) + (k4.clone() * A_5_4);
         let s5 = state.advance_by(h, &inc5);
         if !s5.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2123,7 +2152,7 @@ impl Dopri853Adaptive {
         if !k5.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc6 = ((k1 * A_6_1) + (k4 * A_6_4)) + (k5 * A_6_5);
+        let inc6 = ((k1.clone() * A_6_1) + (k4.clone() * A_6_4)) + (k5.clone() * A_6_5);
         let s6 = state.advance_by(h, &inc6);
         if !s6.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2132,7 +2161,8 @@ impl Dopri853Adaptive {
         if !k6.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc7 = (((k1 * A_7_1) + (k4 * A_7_4)) + (k5 * A_7_5)) + (k6 * A_7_6);
+        let inc7 = (((k1.clone() * A_7_1) + (k4.clone() * A_7_4)) + (k5.clone() * A_7_5))
+            + (k6.clone() * A_7_6);
         let s7 = state.advance_by(h, &inc7);
         if !s7.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2141,7 +2171,9 @@ impl Dopri853Adaptive {
         if !k7.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc8 = ((((k1 * A_8_1) + (k4 * A_8_4)) + (k5 * A_8_5)) + (k6 * A_8_6)) + (k7 * A_8_7);
+        let inc8 = ((((k1.clone() * A_8_1) + (k4.clone() * A_8_4)) + (k5.clone() * A_8_5))
+            + (k6.clone() * A_8_6))
+            + (k7.clone() * A_8_7);
         let s8 = state.advance_by(h, &inc8);
         if !s8.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2150,8 +2182,10 @@ impl Dopri853Adaptive {
         if !k8.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc9 = (((((k1 * A_9_1) + (k4 * A_9_4)) + (k5 * A_9_5)) + (k6 * A_9_6)) + (k7 * A_9_7))
-            + (k8 * A_9_8);
+        let inc9 = (((((k1.clone() * A_9_1) + (k4.clone() * A_9_4)) + (k5.clone() * A_9_5))
+            + (k6.clone() * A_9_6))
+            + (k7.clone() * A_9_7))
+            + (k8.clone() * A_9_8);
         let s9 = state.advance_by(h, &inc9);
         if !s9.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2160,10 +2194,11 @@ impl Dopri853Adaptive {
         if !k9.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc10 = ((((((k1 * A_10_1) + (k4 * A_10_4)) + (k5 * A_10_5)) + (k6 * A_10_6))
-            + (k7 * A_10_7))
-            + (k8 * A_10_8))
-            + (k9 * A_10_9);
+        let inc10 = ((((((k1.clone() * A_10_1) + (k4.clone() * A_10_4)) + (k5.clone() * A_10_5))
+            + (k6.clone() * A_10_6))
+            + (k7.clone() * A_10_7))
+            + (k8.clone() * A_10_8))
+            + (k9.clone() * A_10_9);
         let s10 = state.advance_by(h, &inc10);
         if !s10.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2172,11 +2207,13 @@ impl Dopri853Adaptive {
         if !k10.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc11 = (((((((k1 * A_11_1) + (k4 * A_11_4)) + (k5 * A_11_5)) + (k6 * A_11_6))
-            + (k7 * A_11_7))
-            + (k8 * A_11_8))
-            + (k9 * A_11_9))
-            + (k10 * A_11_10);
+        let inc11 = (((((((k1.clone() * A_11_1) + (k4.clone() * A_11_4))
+            + (k5.clone() * A_11_5))
+            + (k6.clone() * A_11_6))
+            + (k7.clone() * A_11_7))
+            + (k8.clone() * A_11_8))
+            + (k9.clone() * A_11_9))
+            + (k10.clone() * A_11_10);
         let s11 = state.advance_by(h, &inc11);
         if !s11.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2185,12 +2222,14 @@ impl Dopri853Adaptive {
         if !k11.is_finite() {
             return Err(IntegratorError::NonFiniteDerivative);
         }
-        let inc12 = ((((((((k1 * A_12_1) + (k4 * A_12_4)) + (k5 * A_12_5)) + (k6 * A_12_6))
-            + (k7 * A_12_7))
-            + (k8 * A_12_8))
-            + (k9 * A_12_9))
-            + (k10 * A_12_10))
-            + (k11 * A_12_11);
+        let inc12 = ((((((((k1.clone() * A_12_1) + (k4.clone() * A_12_4))
+            + (k5.clone() * A_12_5))
+            + (k6.clone() * A_12_6))
+            + (k7.clone() * A_12_7))
+            + (k8.clone() * A_12_8))
+            + (k9.clone() * A_12_9))
+            + (k10.clone() * A_12_10))
+            + (k11.clone() * A_12_11);
         let s12 = state.advance_by(h, &inc12);
         if !s12.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2202,10 +2241,12 @@ impl Dopri853Adaptive {
 
         // 8th-order solution. Same locked-order weighted sum as the
         // fixed-step variant.
-        let weighted = (((((((k1 * B_1) + (k6 * B_6)) + (k7 * B_7)) + (k8 * B_8)) + (k9 * B_9))
-            + (k10 * B_10))
-            + (k11 * B_11))
-            + (k12 * B_12);
+        let weighted = (((((((k1.clone() * B_1) + (k6.clone() * B_6)) + (k7.clone() * B_7))
+            + (k8.clone() * B_8))
+            + (k9.clone() * B_9))
+            + (k10.clone() * B_10))
+            + (k11.clone() * B_11))
+            + (k12.clone() * B_12);
         let mut new_state = state.advance_by(h, &weighted);
         new_state.project();
         if !new_state.is_valid_for_integration() {
@@ -2214,18 +2255,22 @@ impl Dopri853Adaptive {
 
         // Embedded 5th-order error vector: e5' = Σ_j E5_j · k_j.
         // Non-zero coefficients at j ∈ {1, 6, 7, 8, 9, 10, 11, 12}.
-        let err5_deriv = (((((((k1 * E5_1) + (k6 * E5_6)) + (k7 * E5_7)) + (k8 * E5_8))
-            + (k9 * E5_9))
-            + (k10 * E5_10))
-            + (k11 * E5_11))
-            + (k12 * E5_12);
+        let err5_deriv = (((((((k1.clone() * E5_1) + (k6.clone() * E5_6))
+            + (k7.clone() * E5_7))
+            + (k8.clone() * E5_8))
+            + (k9.clone() * E5_9))
+            + (k10.clone() * E5_10))
+            + (k11.clone() * E5_11))
+            + (k12.clone() * E5_12);
         // Embedded 3rd-order error vector: e3' = Σ_j E3_j · k_j.
         // Non-zero coefficients at j ∈ {1, 6, 7, 8, 9, 10, 11, 12}.
-        let err3_deriv = (((((((k1 * E3_1) + (k6 * E3_6)) + (k7 * E3_7)) + (k8 * E3_8))
-            + (k9 * E3_9))
-            + (k10 * E3_10))
-            + (k11 * E3_11))
-            + (k12 * E3_12);
+        let err3_deriv = (((((((k1.clone() * E3_1) + (k6.clone() * E3_6))
+            + (k7.clone() * E3_7))
+            + (k8.clone() * E3_8))
+            + (k9.clone() * E3_9))
+            + (k10.clone() * E3_10))
+            + (k11.clone() * E3_11))
+            + (k12.clone() * E3_12);
 
         // Per-component RMS norms via the Integratable trait method.
         let err5_rms = new_state.weighted_error_norm(state, &err5_deriv, h, self.atol, self.rtol);
@@ -2248,7 +2293,7 @@ impl Dopri853Adaptive {
         };
 
         Ok(Dopri853PrimaryStep {
-            start_state: *state,
+            start_state: state.clone(),
             end_state: new_state,
             h_s: h,
             scaled_err,
@@ -2307,13 +2352,14 @@ impl Dopri853Adaptive {
             return Err(IntegratorError::NonFiniteDerivative);
         }
 
-        let inc_extra_1 = (((((((primary.k1 * A_EXTRA_1_1) + (primary.k7 * A_EXTRA_1_7))
-            + (primary.k8 * A_EXTRA_1_8))
-            + (primary.k9 * A_EXTRA_1_9))
-            + (primary.k10 * A_EXTRA_1_10))
-            + (primary.k11 * A_EXTRA_1_11))
-            + (primary.k12 * A_EXTRA_1_12))
-            + (k_end * A_EXTRA_1_END);
+        let inc_extra_1 = (((((((primary.k1.clone() * A_EXTRA_1_1)
+            + (primary.k7.clone() * A_EXTRA_1_7))
+            + (primary.k8.clone() * A_EXTRA_1_8))
+            + (primary.k9.clone() * A_EXTRA_1_9))
+            + (primary.k10.clone() * A_EXTRA_1_10))
+            + (primary.k11.clone() * A_EXTRA_1_11))
+            + (primary.k12.clone() * A_EXTRA_1_12))
+            + (k_end.clone() * A_EXTRA_1_END);
         let s_extra_1 = primary.start_state.advance_by(h, &inc_extra_1);
         if !s_extra_1.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2323,13 +2369,14 @@ impl Dopri853Adaptive {
             return Err(IntegratorError::NonFiniteDerivative);
         }
 
-        let inc_extra_2 = (((((((primary.k1 * A_EXTRA_2_1) + (primary.k6 * A_EXTRA_2_6))
-            + (primary.k7 * A_EXTRA_2_7))
-            + (primary.k8 * A_EXTRA_2_8))
-            + (primary.k11 * A_EXTRA_2_11))
-            + (primary.k12 * A_EXTRA_2_12))
-            + (k_end * A_EXTRA_2_END))
-            + (k_extra_1 * A_EXTRA_2_EXTRA_1);
+        let inc_extra_2 = (((((((primary.k1.clone() * A_EXTRA_2_1)
+            + (primary.k6.clone() * A_EXTRA_2_6))
+            + (primary.k7.clone() * A_EXTRA_2_7))
+            + (primary.k8.clone() * A_EXTRA_2_8))
+            + (primary.k11.clone() * A_EXTRA_2_11))
+            + (primary.k12.clone() * A_EXTRA_2_12))
+            + (k_end.clone() * A_EXTRA_2_END))
+            + (k_extra_1.clone() * A_EXTRA_2_EXTRA_1);
         let s_extra_2 = primary.start_state.advance_by(h, &inc_extra_2);
         if !s_extra_2.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2339,13 +2386,14 @@ impl Dopri853Adaptive {
             return Err(IntegratorError::NonFiniteDerivative);
         }
 
-        let inc_extra_3 = (((((((primary.k1 * A_EXTRA_3_1) + (primary.k6 * A_EXTRA_3_6))
-            + (primary.k7 * A_EXTRA_3_7))
-            + (primary.k8 * A_EXTRA_3_8))
-            + (primary.k9 * A_EXTRA_3_9))
-            + (k_end * A_EXTRA_3_END))
-            + (k_extra_1 * A_EXTRA_3_EXTRA_1))
-            + (k_extra_2 * A_EXTRA_3_EXTRA_2);
+        let inc_extra_3 = (((((((primary.k1.clone() * A_EXTRA_3_1)
+            + (primary.k6.clone() * A_EXTRA_3_6))
+            + (primary.k7.clone() * A_EXTRA_3_7))
+            + (primary.k8.clone() * A_EXTRA_3_8))
+            + (primary.k9.clone() * A_EXTRA_3_9))
+            + (k_end.clone() * A_EXTRA_3_END))
+            + (k_extra_1.clone() * A_EXTRA_3_EXTRA_1))
+            + (k_extra_2.clone() * A_EXTRA_3_EXTRA_2);
         let s_extra_3 = primary.start_state.advance_by(h, &inc_extra_3);
         if !s_extra_3.is_valid_for_integration() {
             return Err(IntegratorError::NonFiniteState);
@@ -2412,7 +2460,7 @@ impl Dopri853Adaptive {
             .min(self.max_h_s)
             .min(dt_total);
 
-        let mut current = *state;
+        let mut current = state.clone();
         let mut elapsed = 0.0_f64;
         let max_substeps: usize = 1_000_000;
         let mut substeps_taken: usize = 0;
@@ -2439,7 +2487,7 @@ impl Dopri853Adaptive {
 
             if err <= 1.0 {
                 let segment = self.finish_dense_segment(primary, &derive_fn)?;
-                current = segment.end_state;
+                current = segment.end_state.clone();
                 segments.push(segment);
                 elapsed += h_try;
                 let mut factor = self.i_controller_factor(err.max(1.0e-10));
@@ -2497,7 +2545,7 @@ impl<S: SimState> Integrator<S> for Dopri853Adaptive {
             .min(self.max_h_s)
             .min(dt_total);
 
-        let mut current = *state;
+        let mut current = state.clone();
         let mut elapsed = 0.0_f64;
         let max_substeps: usize = 1_000_000;
         let mut substeps_taken: usize = 0;

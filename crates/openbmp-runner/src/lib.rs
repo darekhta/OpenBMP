@@ -61,11 +61,12 @@ pub mod wind;
 
 use std::collections::BTreeMap;
 
-use openbmp_scenario::{Scenario, ScenarioDocument};
+use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{MissionAction, PhaseId, RegionId, StopReason};
 use openbmp_telemetry::TelemetryTable;
 
 pub use crate::error::RunnerError;
+pub use openbmp_propulsion::EngineFault;
 
 pub(crate) fn phase_force_overrides(document: &ScenarioDocument) -> BTreeMap<u64, Vec<String>> {
     let mut overrides = BTreeMap::new();
@@ -324,6 +325,248 @@ fn run_dispatch(
     }
 
     point_mass::run(scenario, &resolved_files, monitor)
+}
+
+/// A prepared rigid-body scenario run the caller drives one kernel tick
+/// at a time.
+///
+/// [`run`] is implemented as `prepare → step* → finish` over the same
+/// internals, so a session-stepped run produces a byte-identical
+/// [`RunOutcome`] to a one-shot [`run`] of the same scenario — the
+/// equivalence is by construction, and
+/// `crates/openbmp-runner/tests/session_equivalence.rs` pins it.
+///
+/// Between ticks the caller may read truth state, separated bodies,
+/// per-engine actuation, and the flight controller's published
+/// estimates (the same read-only assembly a [`sil::SilMonitor`]
+/// receives), and may inject deterministic malfunction stimuli:
+/// scheduled engine faults, sensor outage windows, and a wind override.
+/// Stimuli are scheduled against the kernel step clock, so a host that
+/// replays the same stimulus timeline reproduces the run byte-for-byte
+/// — interactive divergence is always explicit, never ambient.
+///
+/// The session is the simulator-side host surface for interactive and
+/// non-filesystem consumers (the `openbmp-web` WebAssembly demo host
+/// drives one in a browser worker). It adds no authority the one-shot
+/// runner did not have: stimuli go through the same scheduled-fault and
+/// stimulus seams scenario files already declare, and observation goes
+/// through the same forward-only SIL boundary.
+#[derive(Debug)]
+pub struct Session {
+    scenario: Scenario,
+    inner: rigid_body::RigidBodySession,
+}
+
+impl Session {
+    /// Prepare a session, resolving scenario-referenced files from the
+    /// filesystem (the [`run`] resolution path).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::UnsupportedScenario`] for non-rigid-body
+    /// scenarios (the point-mass path has no session host yet) and the
+    /// same scenario / loader / kernel errors as [`run`].
+    pub fn prepare(scenario: Scenario) -> Result<Self, RunnerError> {
+        let resolved_files = scenario.resolved_files()?;
+        Self::prepare_with_files(scenario, &resolved_files)
+    }
+
+    /// Prepare a session from an already-resolved file map, for hosts
+    /// without a filesystem (embedded assets, WebAssembly).
+    ///
+    /// `resolved_files` must come from
+    /// [`Scenario::resolved_files`] or
+    /// [`Scenario::resolved_files_with_reader`] so SHA-256 pin
+    /// verification has already fired; both fail closed on a missing
+    /// file or digest mismatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::UnsupportedScenario`] for non-rigid-body
+    /// scenarios and the same loader / kernel errors as [`run`].
+    pub fn prepare_with_files(
+        scenario: Scenario,
+        resolved_files: &BTreeMap<String, ResolvedFile>,
+    ) -> Result<Self, RunnerError> {
+        if scenario.document.vehicle.kind != "rigid_body" {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "Session::prepare supports vehicle.kind = \"rigid_body\" (got \"{}\"); \
+                     use `run` for point-mass scenarios",
+                    scenario.document.vehicle.kind
+                ),
+            });
+        }
+        let inner = rigid_body::RigidBodySession::prepare(&scenario, resolved_files)?;
+        Ok(Self { scenario, inner })
+    }
+
+    /// Advance the run by one kernel tick and report whether the kernel
+    /// has stopped. Stepping a finished session is a no-op returning
+    /// `true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as the [`run`] loop body.
+    pub fn step(&mut self) -> Result<bool, RunnerError> {
+        if self.inner.is_finished() {
+            return Ok(true);
+        }
+        self.inner.step_once(&self.scenario.document, None)?;
+        Ok(self.inner.is_finished())
+    }
+
+    /// Whether the kernel has reported a stop reason.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+
+    /// Current simulation time in seconds.
+    #[must_use]
+    pub fn time_s(&self) -> f64 {
+        self.inner.time_s()
+    }
+
+    /// Current kernel step index.
+    #[must_use]
+    pub fn step_index(&self) -> u64 {
+        self.inner.step_index()
+    }
+
+    /// Truth rigid-body state of the continuing stack.
+    #[must_use]
+    pub fn state(&self) -> &openbmp_state::RigidBodyState {
+        self.inner.state()
+    }
+
+    /// Separated bodies currently propagated alongside the stack.
+    #[must_use]
+    pub fn separated_bodies(&self) -> &[openbmp_sim::SeparatedRigidBody] {
+        self.inner.separated_bodies()
+    }
+
+    /// Per-engine actuation snapshots keyed by engine id.
+    #[must_use]
+    pub fn engine_snapshots(
+        &self,
+    ) -> BTreeMap<openbmp_core::EngineId, openbmp_sim::EngineSnapshot> {
+        self.inner.engine_snapshots()
+    }
+
+    /// Environment sample (atmosphere, gravity, wind) at the current
+    /// state.
+    ///
+    /// # Errors
+    ///
+    /// Propagates kernel environment-evaluation failures.
+    pub fn environment_sample(&self) -> Result<openbmp_sim::EnvironmentSample, RunnerError> {
+        self.inner.environment_sample()
+    }
+
+    /// Scenario-declared label of the current mission phase, or
+    /// `"none"` when no mission graph is wired.
+    #[must_use]
+    pub fn mission_phase(&self) -> String {
+        mission_phase_label(
+            &self.scenario.document,
+            self.inner.current_phase().map(|phase| phase.value()),
+        )
+    }
+
+    /// Latest flight-controller observation (estimates, estimator
+    /// health, FDIR, guidance reference), when the scenario wires a
+    /// controller — the same read-only assembly a [`sil::SilMonitor`]
+    /// receives.
+    #[must_use]
+    pub fn fc_observation(&self) -> Option<sil::FcObservation> {
+        self.inner.fc_observation()
+    }
+
+    /// Latest guidance cutoff estimate published by the FC.
+    #[must_use]
+    pub fn latest_guidance_cutoff(&self) -> Option<openbmp_fc::topics::GuidanceCutoff> {
+        self.inner.latest_guidance_cutoff()
+    }
+
+    /// The scenario this session was prepared from.
+    #[must_use]
+    pub fn scenario(&self) -> &Scenario {
+        &self.scenario
+    }
+
+    /// Drain recorded telemetry rows, bounding table memory for
+    /// streaming hosts. A drained session's [`RunOutcome`] table exports
+    /// an empty body — hosts that want the complete archive must not
+    /// drain.
+    #[must_use]
+    pub fn take_recorded_rows(&mut self) -> Vec<openbmp_telemetry::TelemetryRow> {
+        self.inner.take_recorded_rows()
+    }
+
+    /// Telemetry schema for interpreting drained rows.
+    #[must_use]
+    pub fn telemetry_schema(&self) -> &openbmp_telemetry::TelemetrySchema {
+        self.inner.telemetry_schema()
+    }
+
+    /// Schedule a deterministic engine malfunction by scenario engine
+    /// name, taking effect on the next kernel tick. Returns the
+    /// scheduled fault id.
+    ///
+    /// This is the runtime twin of the scenario's `[propulsion.faults]`
+    /// rules — a simulated fault-injection stimulus
+    /// (`docs/safety-boundaries.md`), not a flight-controller command;
+    /// the controller sees only the physical consequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::Engine`] when the name matches no declared
+    /// engine.
+    pub fn inject_engine_fault(
+        &mut self,
+        engine: &str,
+        fault: EngineFault,
+    ) -> Result<String, RunnerError> {
+        self.inner.schedule_engine_fault(engine, fault)
+    }
+
+    /// Arm a sensor outage window by `[sensors.<name>]` key: the sensor
+    /// keeps being read (its deterministic noise stream is unchanged)
+    /// but its measurements are withheld from the flight controller
+    /// while `time ∈ [start_s, stop_s)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunnerError::UnsupportedScenario`] when the scenario
+    /// has no `[fc]` block, the sensor is unknown, or the window is
+    /// empty.
+    pub fn inject_sensor_outage(
+        &mut self,
+        sensor: &str,
+        start_s: f64,
+        stop_s: f64,
+    ) -> Result<(), RunnerError> {
+        self.inner.arm_sensor_outage(sensor, start_s, stop_s)
+    }
+
+    /// Set or clear the wind override (NED metres per second). While
+    /// set, it replaces the scenario wind sample each tick; clearing
+    /// restores the scenario wind (zero for scenarios without a
+    /// `[wind]` block).
+    pub fn set_wind_override(&mut self, wind_ned_m_s: Option<[f64; 3]>) {
+        self.inner
+            .set_wind_override(wind_ned_m_s.map(nalgebra::Vector3::from));
+    }
+
+    /// Consume the session and assemble the [`RunOutcome`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as the one-shot [`run`] tail.
+    pub fn finish(self) -> Result<RunOutcome, RunnerError> {
+        self.inner.finish()
+    }
 }
 
 fn append_solver_metadata(document: &ScenarioDocument, metadata: &mut BTreeMap<String, String>) {

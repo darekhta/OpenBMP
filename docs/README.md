@@ -95,3 +95,8 @@ schema, trait, and validation evidence as they land.
   coast, apogee detection, and the range-safety landing footprint.
 - [Descent and Entry Profiles](descent-and-entry-profiles.md) — wiring
   Allen-Eggers / Vinh into live entry phases and recovery.
+- [Onboard Guidance](onboard-guidance.md) — guidance executive and fallback
+  ladders, predictor-corrector entry guidance, the powered-descent executor
+  (ignition timing, explicit terminal law, guidance thrust authority), ascent
+  contingency reconvergence, RCS pulse modulation, and PEG hardening (design
+  intent; ships no code).

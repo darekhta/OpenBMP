@@ -37,6 +37,20 @@ impl TelemetryTable {
         &self.rows
     }
 
+    /// Take every recorded row out of the table, leaving it empty with
+    /// the schema intact.
+    ///
+    /// For streaming consumers (an interactive host draining state as a
+    /// run advances) that must bound table memory: rows accumulate
+    /// per step, the consumer drains them each frame, and subsequent
+    /// [`Self::push_row`] calls keep type-checking against the unchanged
+    /// schema. A drained table exports an empty body — callers that want
+    /// a complete archive must not drain.
+    #[must_use]
+    pub fn take_rows(&mut self) -> Vec<TelemetryRow> {
+        core::mem::take(&mut self.rows)
+    }
+
     /// Add a row after type-checking it against the schema.
     ///
     /// Missing channel values are allowed and exported as empty CSV
