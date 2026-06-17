@@ -51,9 +51,9 @@ use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
     AnyStop, ConstantMass, EffectorActualsView, EndTime, EngineSnapshotView, EnvironmentModel,
-    EnvironmentQuery, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane, MomentContext,
-    RecoverySnapshotView, RigidBodySeparation, RigidMassModel, RigidModels, ScenarioScriptAction,
-    SimulationConfig, SimulationKernel, StopReason, TankSnapshotView,
+    EnvironmentQuery, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane, MassContext,
+    MomentContext, RecoverySnapshotView, RigidBodySeparation, RigidMassModel, RigidModels,
+    ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason, TankSnapshotView,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -182,6 +182,7 @@ pub(crate) struct RigidBodySession {
     geocentric_surface_radius_m: Option<f64>,
     breakdown_atmosphere: Option<RuntimeAtmosphere>,
     breakdown_vehicle: KernelVehicle<RigidBodyState>,
+    primary_multibody_shadow: Option<RootFreeFlyerMultibodyShadow>,
     table: TelemetryTable,
     deck_bindings: Vec<crate::aero_effector_match::DeckAxisBinding>,
     direct_torque_present: bool,
@@ -355,7 +356,8 @@ impl RigidBodySession {
                     seed,
                     &kernel_vehicle,
                     &moment_model,
-                    InitialRootLoadViews {
+                    RootFreeFlyerLoadViews {
+                        phase_id: None,
                         environment: &environment,
                         effector_actuals: &initial_effector_actuals,
                         engine_snapshot: &initial_engine_snapshot,
@@ -364,6 +366,15 @@ impl RigidBodySession {
                     },
                 )?;
         }
+        let primary_multibody_shadow = if let Some(seed) = initial_multibody_root {
+            Some(RootFreeFlyerMultibodyShadow {
+                seed,
+                moment_model: build_moment_model(document, &loaded, landing_gear_runtime.clone())?,
+                last_derivative: None,
+            })
+        } else {
+            None
+        };
         let rigid_models = RigidModels::new(moment_model, mass_model.clone());
         let separation_specs = build_rigid_body_separations(document, &mass_resources)?;
         // Bodies currently attached to the primary continuing stack. Starts as
@@ -535,6 +546,7 @@ impl RigidBodySession {
             geocentric_surface_radius_m,
             breakdown_atmosphere,
             breakdown_vehicle,
+            primary_multibody_shadow,
             table,
             deck_bindings,
             direct_torque_present,
@@ -684,15 +696,12 @@ impl RigidBodySession {
         }
         if !self.deck_bindings.is_empty() || self.direct_torque_present {
             let rack_snapshot = self.effector_rack.snapshot();
-            let mut snapshot_map =
-                crate::aero_effector_match::build_snapshot_map(&self.deck_bindings, &rack_snapshot);
-            if self.direct_torque_present {
-                let dt_map = crate::aero_effector_match::build_direct_torque_snapshot_map(
-                    document,
-                    &rack_snapshot,
-                );
-                merge_direct_torque_snapshot_map(&mut snapshot_map, dt_map)?;
-            }
+            let snapshot_map = build_effector_actual_snapshot_map(
+                document,
+                &self.deck_bindings,
+                &rack_snapshot,
+                self.direct_torque_present,
+            )?;
             self.kernel.set_effector_actuals(snapshot_map);
         }
         if !self.engine_rack.is_empty() {
@@ -721,6 +730,7 @@ impl RigidBodySession {
             // override pushes zero wind again (see `set_wind_override`).
             self.kernel.set_wind_sample(wind);
         }
+        self.mirror_primary_multibody_root_step()?;
         // Feed the bending mode's reaction moment to the rigid-body torque for
         // this step (held across the RK4 stages). Zero when no flex mode.
         if !self.structural_rack.is_inactive() {
@@ -834,6 +844,83 @@ impl RigidBodySession {
             .cloned()
             .collect();
         self.realtime_pacer.finish_frame_execution();
+        Ok(())
+    }
+
+    fn mirror_primary_multibody_root_step(&mut self) -> Result<(), RunnerError> {
+        let Some(existing_shadow) = self.primary_multibody_shadow.as_ref() else {
+            return Ok(());
+        };
+        if let Some(active_body) = self.kernel.primary_rigid_body()
+            && active_body != existing_shadow.seed.body
+        {
+            return Ok(());
+        }
+        let body = self
+            .kernel
+            .primary_rigid_body()
+            .unwrap_or(existing_shadow.seed.body);
+        let current_state = *self.kernel.current_state();
+        let mass_properties = self
+            .mass_model
+            .mass_properties_at(MassContext {
+                time: current_state.time,
+                active_body: Some(body),
+                engine_snapshot: EngineSnapshotView::new(self.kernel.engine_snapshot()),
+                tank_snapshot: TankSnapshotView::new(self.kernel.tank_snapshot()),
+            })
+            .map_err(|err| RunnerError::UnsupportedScenario {
+                what: format!("per-step primary root multibody mass properties failed: {err}"),
+            })?;
+        let rigid_state = RigidBodyState::new(
+            current_state.time,
+            current_state.position,
+            current_state.velocity,
+            current_state.orientation,
+            current_state.angular_velocity,
+            mass_properties,
+        );
+        let seed = root_free_flyer_multibody_seed_from_rigid_state(body, rigid_state)?;
+        let environment = self.kernel.current_environment_sample().map_err(|err| {
+            RunnerError::UnsupportedScenario {
+                what: format!("per-step primary root multibody environment sample failed: {err}"),
+            }
+        })?;
+        let phase_id = self.kernel.current_phase().map(openbmp_sim::PhaseId::value);
+        let derivative = {
+            let shadow = self.primary_multibody_shadow.as_ref().ok_or_else(|| {
+                RunnerError::UnsupportedScenario {
+                    what: "internal invariant: primary multibody shadow missing".to_owned(),
+                }
+            })?;
+            root_free_flyer_multibody_derivative_from_runner_models(
+                &seed,
+                &self.breakdown_vehicle,
+                &shadow.moment_model,
+                RootFreeFlyerLoadViews {
+                    phase_id,
+                    environment: &environment,
+                    effector_actuals: self.kernel.effector_actuals(),
+                    engine_snapshot: self.kernel.engine_snapshot(),
+                    tank_snapshot: self.kernel.tank_snapshot(),
+                    recovery_snapshot: self.kernel.recovery_snapshot(),
+                },
+            )?
+        };
+        let shadow = self.primary_multibody_shadow.as_mut().ok_or_else(|| {
+            RunnerError::UnsupportedScenario {
+                what: "internal invariant: primary multibody shadow missing".to_owned(),
+            }
+        })?;
+        shadow.seed = seed;
+        shadow.last_derivative = Some(derivative);
+        debug_assert_eq!(
+            shadow
+                .last_derivative
+                .as_ref()
+                .map(|derivative| derivative.qd_dot().len()),
+            Some(shadow.seed.sim_state.qd().len())
+        );
         Ok(())
     }
 
@@ -1909,6 +1996,13 @@ struct RootFreeFlyerMultibodySeed {
     sim_state: MultibodySimState,
 }
 
+#[derive(Debug)]
+struct RootFreeFlyerMultibodyShadow {
+    seed: RootFreeFlyerMultibodySeed,
+    moment_model: KernelVehicle<RigidBodyState>,
+    last_derivative: Option<MultibodyDerivative>,
+}
+
 fn build_initial_root_free_flyer_multibody_seed(
     document: &ScenarioDocument,
     loaded: &LoadedModels,
@@ -1948,13 +2042,20 @@ fn build_initial_root_free_flyer_multibody_seed(
         initial_state.angular_velocity,
         primary_mass_properties,
     );
+    root_free_flyer_multibody_seed_from_rigid_state(body, rigid_state).map(Some)
+}
+
+fn root_free_flyer_multibody_seed_from_rigid_state(
+    body: BodyId,
+    rigid_state: RigidBodyState,
+) -> Result<RootFreeFlyerMultibodySeed, RunnerError> {
     let (tree, sim_state) = build_root_free_flyer_multibody_state(body, &rigid_state)?;
-    Ok(Some(RootFreeFlyerMultibodySeed {
+    Ok(RootFreeFlyerMultibodySeed {
         body,
         rigid_state,
         tree,
         sim_state,
-    }))
+    })
 }
 
 fn build_root_free_flyer_multibody_state(
@@ -2011,7 +2112,7 @@ fn root_free_flyer_multibody_derivative_from_runner_models<F, M>(
     seed: &RootFreeFlyerMultibodySeed,
     force_model: &F,
     moment_model: &M,
-    views: InitialRootLoadViews<'_>,
+    views: RootFreeFlyerLoadViews<'_>,
 ) -> Result<MultibodyDerivative, RunnerError>
 where
     F: ForceModel<RigidBodyState>,
@@ -2025,14 +2126,14 @@ where
             mass_kg,
             time: seed.rigid_state.time,
             active_body: Some(seed.body),
-            phase_id: None,
+            phase_id: views.phase_id,
             effector_actuals: EffectorActualsView::new(views.effector_actuals),
             engine_snapshot: EngineSnapshotView::new(views.engine_snapshot),
             tank_snapshot: TankSnapshotView::new(views.tank_snapshot),
             recovery_snapshot: RecoverySnapshotView::new(views.recovery_snapshot),
         })
         .map_err(|err| RunnerError::UnsupportedScenario {
-            what: format!("initial root free-flyer force adapter evaluation failed: {err}"),
+            what: format!("root free-flyer force adapter evaluation failed: {err}"),
         })?;
     let moment_body_n_m = moment_model
         .moment_n_m_body(MomentContext {
@@ -2040,13 +2141,13 @@ where
             environment: views.environment,
             time: seed.rigid_state.time,
             active_body: Some(seed.body),
-            phase_id: None,
+            phase_id: views.phase_id,
             effector_actuals: EffectorActualsView::new(views.effector_actuals),
             engine_snapshot: EngineSnapshotView::new(views.engine_snapshot),
             tank_snapshot: TankSnapshotView::new(views.tank_snapshot),
         })
         .map_err(|err| RunnerError::UnsupportedScenario {
-            what: format!("initial root free-flyer moment adapter evaluation failed: {err}"),
+            what: format!("root free-flyer moment adapter evaluation failed: {err}"),
         })?;
     root_free_flyer_multibody_derivative_from_rigid_loads(
         &seed.tree,
@@ -2057,7 +2158,8 @@ where
 }
 
 #[derive(Copy, Clone, Debug)]
-struct InitialRootLoadViews<'a> {
+struct RootFreeFlyerLoadViews<'a> {
+    phase_id: Option<u64>,
     environment: &'a openbmp_sim::EnvironmentSample,
     effector_actuals: &'a BTreeMap<String, f64>,
     engine_snapshot: &'a BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
@@ -4472,7 +4574,8 @@ mod tests {
             &seed,
             &force_model,
             &moment_model,
-            InitialRootLoadViews {
+            RootFreeFlyerLoadViews {
+                phase_id: None,
                 environment: &environment,
                 effector_actuals: &effector_actuals,
                 engine_snapshot: &engine_snapshot,
@@ -4523,6 +4626,65 @@ mod tests {
             telemetry_csv_bytes(&baseline_outcome),
             "disabled primary multi_body setup must not perturb rigid-kernel telemetry"
         );
+    }
+
+    #[test]
+    fn primary_multibody_shadow_mirrors_pre_step_runner_loads() {
+        let toml = PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO
+            .replace("gravity_m_s2 = 0.0", "gravity_m_s2 = 2.0")
+            .replace(
+                "limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }\n",
+                "limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }\ninitial_position = 0.5\n",
+            )
+            .replace(
+                "[telemetry]\n",
+                "[multi_body]\nprimary_body_id = \"main\"\n\n[[multi_body.attitude_target]]\nbody_id = \"main\"\nstart_time_s = 1.0\npitch_effector = \"main-pitch-torque\"\nkp = 1.0\nkd = 0.0\nmax_command = 1.0\ntarget = { kind = \"eci_vector\", vector_eci = [0.0, 0.0, 1.0] }\n\n[telemetry]\n",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        assert!(
+            session
+                .primary_multibody_shadow
+                .as_ref()
+                .expect("shadow present")
+                .last_derivative
+                .is_none()
+        );
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step mirrors primary root");
+        let shadow = session
+            .primary_multibody_shadow
+            .as_ref()
+            .expect("shadow present after first step");
+        let derivative = shadow
+            .last_derivative
+            .as_ref()
+            .expect("per-step derivative recorded");
+        assert_eq!(
+            shadow.seed.rigid_state.time.as_seconds().to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(derivative.qd_dot()[1].to_bits(), 2.5_f64.to_bits());
+        assert_eq!(derivative.qd_dot()[5].to_bits(), (-2.0_f64).to_bits());
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("second step mirrors primary root");
+        let shadow = session
+            .primary_multibody_shadow
+            .as_ref()
+            .expect("shadow present after second step");
+        assert_eq!(
+            shadow.seed.rigid_state.time.as_seconds().to_bits(),
+            0.1_f64.to_bits()
+        );
+        assert!(shadow.last_derivative.is_some());
     }
 
     const PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO: &str = r#"

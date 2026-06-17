@@ -91,6 +91,12 @@ statement = "The openbmp-runner primary root-free-flyer bridge builds its multib
 verification = ["V-MULTIBODY-015"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-016"
+title = "The rigid runner mirrors primary multibody derivatives before each step"
+statement = "The openbmp-runner prepared rigid-body session maintains a primary root-free-flyer multibody shadow for primary multi_body scenarios, refreshes that shadow from the current rigid state plus active primary-body mass resources before each authoritative rigid-kernel step, evaluates the runner's current force and moment adapter stacks with the held effector, engine, tank, recovery, environment, wind, and mission-phase views, and records the resulting multibody derivative without changing the rigid kernel's propagation or telemetry authority. The runner test drives two real RigidBodySession::step_once calls and proves the per-step shadow refresh observes nonzero gravity plus direct-torque adapter loads at the expected pre-step times while making no claim that the rigid kernel has been replaced by a multibody kernel, that separated-body multibody propagation is complete, or that Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-016"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1048,6 +1054,25 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-015"]
+
+[[verification]]
+id = "V-MULTIBODY-016"
+kind = "test"
+command = "cargo test -p openbmp-runner primary_multibody_shadow_mirrors_pre_step_runner_loads --locked && cargo test -p openbmp-runner primary_multibody_bridge_scenario_is_byte_identical_when_disabled --locked && cargo test -p openbmp-runner root_free_flyer_multibody_derivative_bridge_uses_runner_force_and_moment_models --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "RootFreeFlyerMultibodyShadow",
+  "mirror_primary_multibody_root_step",
+  "primary_multibody_shadow_mirrors_pre_step_runner_loads",
+  "REQ-MULTIBODY-016",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-016"]
 
 [[verification]]
 id = "V-SIL-001"

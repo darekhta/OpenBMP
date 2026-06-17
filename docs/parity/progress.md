@@ -140,11 +140,17 @@ exercised (`REQ-MULTIBODY-014`). The bridge now also seeds primary
 the pre-split composite mass, evaluates the live runner force/moment adapter
 stacks with the initial environment and rack snapshots, and feeds those loads
 through the multibody derivative bridge; tests prove primary mass selection and
-nonzero gravity/direct-torque adapter load flow (`REQ-MULTIBODY-015`). Missing
-for full WP-01.1: replacing/mirroring per-step kernel propagation,
-simulator/environment force wiring beyond the single-root bridge, gimballed
-ascent exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not
-started**.
+nonzero gravity/direct-torque adapter load flow (`REQ-MULTIBODY-015`). The
+prepared rigid-body session now also maintains a primary root free-flyer
+multibody shadow, refreshes it from the current rigid state plus active
+primary-body mass resources before each authoritative rigid-kernel step, and
+evaluates the current runner force/moment stacks with held rack snapshots,
+environment/wind, and mission-phase views; a session-stepped regression proves
+two pre-step shadow refreshes carry the expected gravity/direct-torque loads
+without changing rigid telemetry authority (`REQ-MULTIBODY-016`). Missing for
+full WP-01.1: replacing the rigid-kernel propagation path, separated-body
+multibody propagation, gimballed ascent exercise, and Spatial_v2 oracle checks.
+WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 
