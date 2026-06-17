@@ -1,0 +1,124 @@
+openbmp.transient_feed_network = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.generic_transient_chamber.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic transient chamber/feed-network tolerance table"
+provenance = "OpenBMP synthetic analytic fixture derived from exact lumped chamber-pressure integration and start-of-step incompressible dual-valve feed flow; not a real feed-network benchmark."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[chamber_config]
+chamber_volume_m3 = 0.08
+gas_temperature_k = 3400.0
+gas_constant_j_per_kg_k = 360.0
+throat_area_m2 = 1.2e-4
+c_star_m_s = 1600.0
+
+[network_config.oxidizer]
+tank_pressure_pa = 4.0e6
+propellant_density_kg_m3 = 810.0
+valve_area_m2 = 8.0e-5
+valve_discharge_coefficient = 0.72
+
+[network_config.fuel]
+tank_pressure_pa = 4.0e6
+propellant_density_kg_m3 = 810.0
+valve_area_m2 = 4.0e-5
+valve_discharge_coefficient = 0.72
+
+[tolerances]
+absolute_pressure_pa = 1.0e-8
+absolute_pressure_rate_pa_per_s = 1.0e-6
+absolute_mass_flow_kg_per_s = 1.0e-12
+absolute_mixture_ratio = 1.0e-12
+
+[[chamber_case]]
+name = "single_fluid_step"
+initial_pressure_pa = 1.0e6
+oxidizer_mass_flow_kg_per_s = 0.3
+fuel_mass_flow_kg_per_s = 0.0
+dt_s = 0.25
+expected_chamber_pressure_pa = 1748183.3539996305
+expected_pressure_rate_pa_per_s = 2992733.415998522
+expected_inlet_mass_flow_kg_per_s = 0.3
+expected_outlet_mass_flow_kg_per_s = 0.1311137515499723
+expected_mixture_ratio = "none"
+expected_validation = "validated-toy"
+
+[[chamber_case]]
+name = "mixture_step"
+initial_pressure_pa = 2.0e6
+oxidizer_mass_flow_kg_per_s = 2.4
+fuel_mass_flow_kg_per_s = 0.8
+dt_s = 0.02
+expected_chamber_pressure_pa = 2922671.843158059
+expected_pressure_rate_pa_per_s = 46133592.15790294
+expected_inlet_mass_flow_kg_per_s = 3.2
+expected_outlet_mass_flow_kg_per_s = 0.2192003882368544
+expected_mixture_ratio = 3.0
+expected_validation = "validated-toy"
+
+[[chamber_case]]
+name = "zero_dt_hold"
+initial_pressure_pa = 1.5e6
+oxidizer_mass_flow_kg_per_s = 0.2
+fuel_mass_flow_kg_per_s = 0.1
+dt_s = 0.0
+expected_chamber_pressure_pa = 1500000.0
+expected_pressure_rate_pa_per_s = 0.0
+expected_inlet_mass_flow_kg_per_s = 0.3
+expected_outlet_mass_flow_kg_per_s = 0.1125
+expected_mixture_ratio = 2.0
+expected_validation = "validated-toy"
+
+[[network_case]]
+name = "full_open_pressurizing"
+initial_pressure_pa = 3.0e6
+dt_s = 0.02
+oxidizer_open_fraction = 1.0
+fuel_open_fraction = 1.0
+oxidizer_feed_pressure_pa = 4.0e6
+fuel_feed_pressure_pa = 4.0e6
+expected_oxidizer_mass_flow_kg_per_s = 2.318355279071782
+expected_fuel_mass_flow_kg_per_s = 1.159177639535891
+expected_chamber_pressure_pa = 3983941.161620982
+expected_pressure_rate_pa_per_s = 49197058.0810491
+expected_inlet_mass_flow_kg_per_s = 3.477532918607673
+expected_outlet_mass_flow_kg_per_s = 0.2987955871215736
+expected_mixture_ratio = 2.0
+expected_validation = "validated-toy"
+
+[[network_case]]
+name = "partial_dynamic_feed_pressures"
+initial_pressure_pa = 1.0e6
+dt_s = 0.01
+oxidizer_open_fraction = 0.75
+fuel_open_fraction = 0.5
+oxidizer_feed_pressure_pa = 8.0e6
+fuel_feed_pressure_pa = 4.0e6
+expected_oxidizer_mass_flow_kg_per_s = 4.600343639338262
+expected_fuel_mass_flow_kg_per_s = 1.0038772833369625
+expected_chamber_pressure_pa = 1841135.5561818033
+expected_pressure_rate_pa_per_s = 84113555.61818033
+expected_inlet_mass_flow_kg_per_s = 5.604220922675225
+expected_outlet_mass_flow_kg_per_s = 0.13808516671363524
+expected_mixture_ratio = 4.582575694955841
+expected_validation = "validated-toy"
+
+[[network_case]]
+name = "closed_valves_decay"
+initial_pressure_pa = 3.0e6
+dt_s = 0.25
+oxidizer_open_fraction = 0.0
+fuel_open_fraction = 0.0
+oxidizer_feed_pressure_pa = 4.0e6
+fuel_feed_pressure_pa = 4.0e6
+expected_oxidizer_mass_flow_kg_per_s = 0.0
+expected_fuel_mass_flow_kg_per_s = 0.0
+expected_chamber_pressure_pa = 2251816.6460003695
+expected_pressure_rate_pa_per_s = -2992733.415998522
+expected_inlet_mass_flow_kg_per_s = 0.0
+expected_outlet_mass_flow_kg_per_s = 0.1688862484500277
+expected_mixture_ratio = "none"
+expected_validation = "validated-toy"

@@ -711,7 +711,7 @@ verification = ["V-PROP-008"]
 [[requirements]]
 id = "REQ-PROP-009"
 title = "Feed-system chambers integrate transient pressure deterministically"
-statement = "The feed-system crate exposes a lumped transient chamber-pressure stepper that validates finite non-negative state and feed inputs, advances dp/dt = (R*T/V)*(m_dot_in - p*At/c*) with an exact constant-input update, reports inlet/outlet mass flow, pressure rate, optional oxidizer/fuel mixture ratio, validation status, and fails closed for non-finite intermediate values."
+statement = "The feed-system crate exposes a lumped transient chamber-pressure stepper that validates finite non-negative state and feed inputs, advances dp/dt = (R*T/V)*(m_dot_in - p*At/c*) with an exact constant-input update, reports inlet/outlet mass flow, pressure rate, optional oxidizer/fuel mixture ratio, validation status, fails closed for non-finite intermediate values, and is backed by a provenance-recorded transient chamber tolerance table."
 verification = ["V-PROP-009"]
 
 [[requirements]]
@@ -723,7 +723,7 @@ verification = ["V-PROP-010"]
 [[requirements]]
 id = "REQ-PROP-011"
 title = "Feed-system transient dual-valve networks couple feed legs to chamber pressure"
-statement = "The feed-system crate exposes a stateful transient dual-valve feed network with independent oxidizer and fuel tank/valve legs, finite/positive leg validation, bounded valve command validation, start-of-step incompressible valve inflows, exact lumped chamber-pressure integration, oxidizer/fuel mass-flow and mixture-ratio reporting, zero-time hold behavior, and fail-closed handling for invalid values."
+statement = "The feed-system crate exposes a stateful transient dual-valve feed network with independent oxidizer and fuel tank/valve legs, finite/positive leg validation, bounded valve command validation, start-of-step incompressible valve inflows, exact lumped chamber-pressure integration, oxidizer/fuel mass-flow and mixture-ratio reporting, zero-time hold behavior, fail-closed handling for invalid values, and a provenance-recorded dual-valve transient tolerance table."
 verification = ["V-PROP-011"]
 
 [[requirements]]
@@ -4041,6 +4041,8 @@ id = "V-PROP-009"
 kind = "test"
 command = "cargo test -p openbmp-feedsystem chamber --locked"
 paths = [
+  "data/feed_system/generic-transient-chamber-v1.toml",
+  "data/feed_system/provenance.md",
   "crates/openbmp-feedsystem/src/lib.rs",
   "crates/openbmp-feedsystem/src/error.rs",
   "crates/openbmp-feedsystem/src/chamber.rs",
@@ -4052,6 +4054,8 @@ contains = [
   "TransientChamberSnapshot",
   "TransientChamberState",
   "ChamberFeedInput",
+  "generic-transient-chamber-v1.toml",
+  "transient_chamber_matches_provenance_tolerance_table",
   "transient_chamber_exact_step_matches_closed_form",
   "transient_chamber_can_hold_graph_equilibrium",
   "transient_chamber_reports_mixture_ratio",
@@ -4086,6 +4090,8 @@ id = "V-PROP-011"
 kind = "test"
 command = "cargo test -p openbmp-feedsystem transient_dual --locked"
 paths = [
+  "data/feed_system/generic-transient-chamber-v1.toml",
+  "data/feed_system/provenance.md",
   "crates/openbmp-feedsystem/src/lib.rs",
   "crates/openbmp-feedsystem/src/error.rs",
   "crates/openbmp-feedsystem/src/chamber.rs",
@@ -4099,6 +4105,8 @@ contains = [
   "TransientDualValveFeedNetworkState",
   "TransientDualValveFeedNetworkSnapshot",
   "ValveFeedLegConfig",
+  "generic-transient-chamber-v1.toml",
+  "transient_dual_valve_network_matches_provenance_tolerance_table",
   "transient_dual_valve_network_builds_pressure_and_reports_mr",
   "transient_dual_valve_network_pressure_decays_with_closed_valves",
   "transient_dual_valve_network_holds_state_for_zero_dt",

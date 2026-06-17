@@ -286,6 +286,7 @@ fn require_nonnegative_finite(value: f64, reason: &'static str) -> Result<(), Fe
 #[allow(clippy::unwrap_used)]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use toml::value::Table;
 
     use super::*;
 
@@ -403,6 +404,109 @@ mod tests {
     }
 
     #[test]
+    fn transient_dual_valve_network_matches_provenance_tolerance_table() {
+        let data: toml::Value = toml::from_str(include_str!(
+            "../../../data/feed_system/generic-transient-chamber-v1.toml"
+        ))
+        .unwrap();
+        assert_eq!(
+            table("openbmp", &data)["transient_feed_network"]
+                .as_integer()
+                .unwrap(),
+            1
+        );
+        let network_config = table("network_config", &data);
+        let chamber_config = table("chamber_config", &data);
+        let network = TransientDualValveFeedNetwork::new(TransientDualValveFeedNetworkConfig {
+            oxidizer: leg_from_table(subtable(network_config, "oxidizer")),
+            fuel: leg_from_table(subtable(network_config, "fuel")),
+            chamber: TransientChamberConfig {
+                chamber_volume_m3: float(chamber_config, "chamber_volume_m3"),
+                gas_temperature_k: float(chamber_config, "gas_temperature_k"),
+                gas_constant_j_per_kg_k: float(chamber_config, "gas_constant_j_per_kg_k"),
+                throat_area_m2: float(chamber_config, "throat_area_m2"),
+                c_star_m_s: float(chamber_config, "c_star_m_s"),
+            },
+        })
+        .unwrap();
+        let tolerances = table("tolerances", &data);
+
+        for case in data
+            .get("network_case")
+            .and_then(toml::Value::as_array)
+            .expect("network_case array")
+        {
+            let case = case.as_table().unwrap();
+            let name = string(case, "name");
+            let commands = ValveCommandPair {
+                oxidizer_open_fraction: float(case, "oxidizer_open_fraction"),
+                fuel_open_fraction: float(case, "fuel_open_fraction"),
+            };
+            let snapshot = network
+                .step_with_feed_pressures(
+                    state(float(case, "initial_pressure_pa")),
+                    commands,
+                    FeedLegPressures {
+                        oxidizer_pressure_pa: float(case, "oxidizer_feed_pressure_pa"),
+                        fuel_pressure_pa: float(case, "fuel_feed_pressure_pa"),
+                    },
+                    float(case, "dt_s"),
+                )
+                .unwrap();
+
+            assert_abs_diff_eq!(
+                snapshot.oxidizer_mass_flow_kg_per_s,
+                float(case, "expected_oxidizer_mass_flow_kg_per_s"),
+                epsilon = float(tolerances, "absolute_mass_flow_kg_per_s")
+            );
+            assert_abs_diff_eq!(
+                snapshot.fuel_mass_flow_kg_per_s,
+                float(case, "expected_fuel_mass_flow_kg_per_s"),
+                epsilon = float(tolerances, "absolute_mass_flow_kg_per_s")
+            );
+            assert_abs_diff_eq!(
+                snapshot.state.chamber.pressure_pa,
+                float(case, "expected_chamber_pressure_pa"),
+                epsilon = float(tolerances, "absolute_pressure_pa")
+            );
+            assert_abs_diff_eq!(
+                snapshot.chamber.chamber_pressure_pa,
+                float(case, "expected_chamber_pressure_pa"),
+                epsilon = float(tolerances, "absolute_pressure_pa")
+            );
+            assert_abs_diff_eq!(
+                snapshot.chamber.pressure_rate_pa_per_s,
+                float(case, "expected_pressure_rate_pa_per_s"),
+                epsilon = float(tolerances, "absolute_pressure_rate_pa_per_s")
+            );
+            assert_abs_diff_eq!(
+                snapshot.chamber.inlet_mass_flow_kg_per_s,
+                float(case, "expected_inlet_mass_flow_kg_per_s"),
+                epsilon = float(tolerances, "absolute_mass_flow_kg_per_s")
+            );
+            assert_abs_diff_eq!(
+                snapshot.chamber.outlet_mass_flow_kg_per_s,
+                float(case, "expected_outlet_mass_flow_kg_per_s"),
+                epsilon = float(tolerances, "absolute_mass_flow_kg_per_s")
+            );
+            assert_eq!(snapshot.valve_commands, commands);
+            assert_optional_float_eq(
+                snapshot.chamber.mixture_ratio,
+                optional_float(case, "expected_mixture_ratio"),
+                float(tolerances, "absolute_mixture_ratio"),
+                name,
+            );
+            assert_eq!(
+                string(case, "expected_validation"),
+                "validated-toy",
+                "case {name}"
+            );
+            assert_eq!(snapshot.validation, ValidationStatus::ValidatedToy);
+            assert_eq!(snapshot.chamber.validation, ValidationStatus::ValidatedToy);
+        }
+    }
+
+    #[test]
     fn transient_dual_valve_network_rejects_invalid_values() {
         let mut bad = config();
         bad.oxidizer.valve_discharge_coefficient = 1.2;
@@ -423,5 +527,73 @@ mod tests {
             ),
             Err(FeedSystemError::InvalidParameter { .. })
         ));
+    }
+
+    fn leg_from_table(table: &Table) -> ValveFeedLegConfig {
+        ValveFeedLegConfig {
+            tank_pressure_pa: float(table, "tank_pressure_pa"),
+            propellant_density_kg_m3: float(table, "propellant_density_kg_m3"),
+            valve_area_m2: float(table, "valve_area_m2"),
+            valve_discharge_coefficient: float(table, "valve_discharge_coefficient"),
+        }
+    }
+
+    fn table<'a>(key: &str, value: &'a toml::Value) -> &'a Table {
+        value
+            .get(key)
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("missing table {key}"))
+    }
+
+    fn subtable<'a>(table: &'a Table, key: &str) -> &'a Table {
+        table
+            .get(key)
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("missing table {key}"))
+    }
+
+    fn float(table: &Table, key: &str) -> f64 {
+        table
+            .get(key)
+            .and_then(toml::Value::as_float)
+            .unwrap_or_else(|| panic!("missing float {key}"))
+    }
+
+    fn optional_float(table: &Table, key: &str) -> Option<f64> {
+        let value = table
+            .get(key)
+            .unwrap_or_else(|| panic!("missing optional float {key}"));
+        if value.as_str() == Some("none") {
+            return None;
+        }
+        Some(
+            value
+                .as_float()
+                .unwrap_or_else(|| panic!("missing float or none marker {key}")),
+        )
+    }
+
+    fn assert_optional_float_eq(
+        actual: Option<f64>,
+        expected: Option<f64>,
+        epsilon: f64,
+        name: &str,
+    ) {
+        match (actual, expected) {
+            (Some(actual), Some(expected)) => {
+                assert_abs_diff_eq!(actual, expected, epsilon = epsilon);
+            }
+            (None, None) => {}
+            _ => panic!(
+                "mixture ratio mismatch for case {name}: actual {actual:?}, expected {expected:?}"
+            ),
+        }
+    }
+
+    fn string<'a>(table: &'a Table, key: &str) -> &'a str {
+        table
+            .get(key)
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("missing string {key}"))
     }
 }

@@ -820,7 +820,10 @@ Effort sizes are from the research ladder.
   implemented and traced by `REQ-PROP-015` / `V-PROP-015`. A synthetic
   provenance-backed steady feed-network tolerance table now covers the reduced
   tank-valve-chamber balance and the two-valve node/branch ladder through
-  `data/feed_system/generic-steady-feed-network-v1.toml`; GFSSP worked-case
+  `data/feed_system/generic-steady-feed-network-v1.toml`. A companion synthetic
+  transient table covers exact lumped chamber-pressure steps plus dual-valve
+  start-of-step feed coupling through
+  `data/feed_system/generic-transient-chamber-v1.toml`; GFSSP worked-case
   evidence remains future work before this WP is complete.
 - **goal:** GFSSP-style finite-volume network (tanks → valves → injector →
   chamber) producing transient `pc(t)`, `ṁ_ox/ṁ_fuel`, MR excursions, and
