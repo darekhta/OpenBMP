@@ -107,7 +107,10 @@ Verified by reading the actual files (paths absolute under the repo root).
   It supports `C20`, `C21/S21`, and `C22/S22` Cartesian solid-harmonic
   acceleration, converts fully-normalized degree-2 coefficient blocks into the
   current unnormalized evaluator, stores reusable normalized `Cbar/Sbar` fields
-  in deterministic packed `(n, m)` order, exposes a checked
+  in deterministic packed `(n, m)` order, exposes explicit
+  `without_central_term` stripping for full coefficient files whose `Cbar00`
+  central term must not be double-counted by point-mass-plus-correction
+  evaluators, exposes a checked
   `fully_normalized_to_unnormalized_scale` helper, a std-gated fail-closed
   `from_normalized_toml_str` parser for OpenBMP normalized harmonic TOML
   fixtures, a std-gated fail-closed `from_icgem_gfc_str` parser for static
@@ -126,7 +129,9 @@ Verified by reading the actual files (paths absolute under the repo root).
   explicit horizontal-power term,
   bounded Pines and Gottlieb-style symmetric-finite-difference acceleration
   oracles derived from those scalar potentials, and a public static
-  `GravityModel` wrapper for the Pines oracle
+  `GravityModel` wrapper for the Pines oracle with
+  `new_from_full_normalized_field` central-term stripping for full imported
+  fields
   whose ECI axes are currently treated as body-fixed until frame-rotating force
   wiring lands, and a complete default-zero coefficient-slot iterator for
   future synthesis kernels, rejects duplicate or
@@ -706,8 +711,9 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   longitude `cos(mλ)`/`sin(mλ)` recurrence, singularity-free Pines
   direction-cosine longitude polynomials, checked truncation-envelope
   validation, checked runtime-tier resolution against 70/120/360-style field
-  envelopes and the bounded Pines scratch caps, low-degree closed-form Pines
-  Legendre recurrence, normalized
+  envelopes and the bounded Pines scratch caps, Cbar00 stripping for full GFC
+  fields before finite-difference Pines correction evaluation, low-degree
+  closed-form Pines Legendre recurrence, normalized
   Pines scalar-potential summation matching the existing degree-2 Cartesian
   polynomial, fail-closed normalized-harmonic TOML parsing for the WGS84
   degree-2, synthetic non-zonal degree-4, and EGM2008 zonal fixtures plus

@@ -2386,6 +2386,27 @@ impl NormalizedHarmonicField {
         }
     }
 
+    /// Return a copy with the central `(0, 0)` coefficient set to zero.
+    ///
+    /// Full gravity coefficient files commonly carry `Cbar00 = 1` to encode
+    /// the central `µ/r` potential term. Models that already add point-mass
+    /// gravity must evaluate only the harmonic correction field, so this helper
+    /// makes the central-term stripping explicit and deterministic before
+    /// constructing those models.
+    #[must_use]
+    pub fn without_central_term(&self) -> Self {
+        let mut field = self.clone();
+        if let Some((cbar00, sbar00)) = field.coefficients.first_mut() {
+            let had_nonzero_central_term = *cbar00 != 0.0 || *sbar00 != 0.0;
+            *cbar00 = 0.0;
+            *sbar00 = 0.0;
+            if had_nonzero_central_term {
+                field.coefficient_count = field.coefficient_count.saturating_sub(1);
+            }
+        }
+        field
+    }
+
     /// Return a fully-normalized `Cbar/Sbar` pair for `(degree, order)`.
     ///
     /// Missing entries inside the declared envelope return `(0, 0)`.
@@ -3063,6 +3084,32 @@ impl FiniteDifferencePinesGravity {
             truncation,
             finite_difference_step_m,
         })
+    }
+
+    /// Construct from a full normalized gravity field that may include Cbar00.
+    ///
+    /// This is the ingestion-facing constructor for ICGEM/NGA-style gravity
+    /// fields that include the central `Cbar00 = 1` term. The central slot is
+    /// explicitly stripped before delegating to [`Self::new`], preserving this
+    /// model's point-mass-plus-harmonic-correction decomposition.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::new`] after central-term stripping.
+    pub fn new_from_full_normalized_field(
+        mu_m3_s2: f64,
+        reference_radius_m: f64,
+        field: NormalizedHarmonicField,
+        truncation: HarmonicTruncation,
+        finite_difference_step_m: f64,
+    ) -> Result<Self, PhysicsError> {
+        Self::new(
+            mu_m3_s2,
+            reference_radius_m,
+            field.without_central_term(),
+            truncation,
+            finite_difference_step_m,
+        )
     }
 
     /// Construct from a pre-resolved harmonic synthesis plan.
@@ -4607,6 +4654,14 @@ mod tests {
             }
         }
 
+        let correction_field = gfc_field.without_central_term();
+        assert_eq!(correction_field.coefficient_count(), 8);
+        assert_eq!(correction_field.coefficient(0, 0).unwrap(), (0.0, 0.0));
+        assert_eq!(
+            correction_field.coefficient(4, 3).unwrap(),
+            toml_field.coefficient(4, 3).unwrap()
+        );
+
         let truncated = load_synthetic_icgem_degree4_field_fixture(3, 1);
         assert_eq!(truncated.max_degree(), 3);
         assert_eq!(truncated.max_order(), 1);
@@ -5542,6 +5597,53 @@ mod tests {
             assert_eq!(
                 pines_acceleration[axis].to_bits(),
                 point_mass_acceleration[axis].to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn finite_difference_pines_gravity_accepts_full_icgem_field_after_central_strip() {
+        let full_field = load_synthetic_icgem_degree4_field_fixture(4, 3);
+        let correction_field = load_synthetic_normalized_degree4_field_fixture();
+        let truncation = HarmonicTruncation::new(4, 3).unwrap();
+        assert!(matches!(
+            FiniteDifferencePinesGravity::new(
+                WGS84_MU_M3_S2,
+                WGS84_A_M,
+                full_field.clone(),
+                truncation,
+                10.0
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let from_full = FiniteDifferencePinesGravity::new_from_full_normalized_field(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            full_field,
+            truncation,
+            10.0,
+        )
+        .unwrap();
+        let from_correction = FiniteDifferencePinesGravity::new(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            correction_field,
+            truncation,
+            10.0,
+        )
+        .unwrap();
+        assert_eq!(from_full.field().coefficient(0, 0).unwrap(), (0.0, 0.0));
+        let position = Position3::new(7_100_000.0, -800_000.0, 1_200_000.0);
+        let from_full_acceleration = from_full.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        let from_correction_acceleration = from_correction
+            .gravity_eci_m_s2(position, SimTime::ZERO)
+            .unwrap();
+
+        for axis in 0..3 {
+            assert_eq!(
+                from_full_acceleration[axis].to_bits(),
+                from_correction_acceleration[axis].to_bits()
             );
         }
     }

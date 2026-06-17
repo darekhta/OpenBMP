@@ -368,7 +368,10 @@ degree 6 (`gravity.rs`), and WP-08.1 is now **partial** through
 `TideSystem`: the first degree-2/order-2 static harmonic surface supports C20,
 C21/S21, and C22/S22 terms, converts fully-normalized degree-2 blocks, stores
 normalized `Cbar/Sbar` fields in deterministic packed `(n, m)` order, exposes
-checked fully-normalized scale factors, a std-gated fail-closed
+explicit `without_central_term` stripping for full coefficient files whose
+`Cbar00` central term must not be double-counted by
+point-mass-plus-correction evaluators, checked fully-normalized scale factors,
+a std-gated fail-closed
 `from_normalized_toml_str` parser for the OpenBMP normalized harmonic TOML
 schemas, a std-gated fail-closed `from_icgem_gfc_str` parser for static
 ICGEM/NGA-style fully-normalized `gfc` coefficient lines, checked runtime
@@ -381,8 +384,9 @@ recurrence table, a body-fixed synthesis-point validator, a normalized Pines
 scalar-potential correction sum,
 a normalized Gottlieb-style scalar-potential recomposition oracle cross-checked
 against the Pines sum, Pines and Gottlieb-style symmetric finite-difference
-acceleration oracles plus a public static `GravityModel` wrapper matched
-against the existing analytic degree-2 tesseral terms, and default-zero
+acceleration oracles plus a public static `GravityModel` wrapper with
+`new_from_full_normalized_field` central-term stripping matched against the
+existing analytic degree-2 tesseral terms, and default-zero
 coefficient-slot iteration, rebuilds the current
 `Egm2008ZonalGravity` J2-J6 truncation from the
 `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
