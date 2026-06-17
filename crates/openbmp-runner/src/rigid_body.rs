@@ -51,9 +51,10 @@ use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
     AnyStop, ConstantMass, EffectorActualsView, EndTime, EngineSnapshotView, EnvironmentModel,
-    EnvironmentQuery, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane, MassContext,
-    MomentContext, RecoverySnapshotView, RigidBodySeparation, RigidMassModel, RigidModels,
-    ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason, TankSnapshotView,
+    EnvironmentQuery, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane, Integrator,
+    MassContext, MomentContext, RecoverySnapshotView, RigidBodySeparation, RigidMassModel,
+    RigidModels, Rk4FixedStep, ScenarioScriptAction, SimulationConfig, SimulationKernel,
+    StopReason, TankSnapshotView,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -99,6 +100,7 @@ const RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(380);
 // Distinct model id for the direct-torque moment
 // adapter on the rigid-body kernel.
 const RIGID_BODY_DIRECT_TORQUE_MOMENT_MODEL_ID: ModelId = ModelId::new(500);
+const RIGID_BODY_MULTIBODY_SHADOW_MODEL_ID: ModelId = ModelId::new(520);
 const MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE: &str =
     "forces includes `aerothermal_diagnostics` but [aerothermal] block is missing";
 
@@ -372,6 +374,7 @@ impl RigidBodySession {
             initial_multibody_root.map(|seed| RootFreeFlyerMultibodyShadow {
                 seed,
                 last_derivative: None,
+                last_rk4_forecast: None,
             });
         let multibody_moment_model = if document.multi_body.is_some() {
             Some(build_moment_model(
@@ -900,12 +903,12 @@ impl RigidBodySession {
             }
         })?;
         let phase_id = self.kernel.current_phase().map(openbmp_sim::PhaseId::value);
+        let moment_model = self.multibody_moment_model.as_ref().ok_or_else(|| {
+            RunnerError::UnsupportedScenario {
+                what: "internal invariant: primary multibody moment model missing".to_owned(),
+            }
+        })?;
         let derivative = {
-            let moment_model = self.multibody_moment_model.as_ref().ok_or_else(|| {
-                RunnerError::UnsupportedScenario {
-                    what: "internal invariant: primary multibody moment model missing".to_owned(),
-                }
-            })?;
             root_free_flyer_multibody_derivative_from_runner_models(
                 &seed,
                 &self.breakdown_vehicle,
@@ -920,6 +923,28 @@ impl RigidBodySession {
                 },
             )?
         };
+        let forecast = root_free_flyer_multibody_rk4_forecast_from_runner_models(
+            &seed,
+            &self.breakdown_vehicle,
+            moment_model,
+            self.kernel_step_s,
+            RootFreeFlyerHeldLoadViews {
+                phase_id,
+                effector_actuals: self.kernel.effector_actuals(),
+                engine_snapshot: self.kernel.engine_snapshot(),
+                tank_snapshot: self.kernel.tank_snapshot(),
+                recovery_snapshot: self.kernel.recovery_snapshot(),
+            },
+            |rigid_state| {
+                self.kernel
+                    .environment_sample_for_rigid_state(rigid_state)
+                    .map_err(|err| RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "primary root multibody RK4 forecast environment sample failed: {err}"
+                        ),
+                    })
+            },
+        )?;
         let shadow = self.primary_multibody_shadow.as_mut().ok_or_else(|| {
             RunnerError::UnsupportedScenario {
                 what: "internal invariant: primary multibody shadow missing".to_owned(),
@@ -927,6 +952,7 @@ impl RigidBodySession {
         })?;
         shadow.seed = seed;
         shadow.last_derivative = Some(derivative);
+        shadow.last_rk4_forecast = Some(forecast);
         debug_assert_eq!(
             shadow
                 .last_derivative
@@ -983,6 +1009,7 @@ impl RigidBodySession {
                 RootFreeFlyerMultibodyShadow {
                     seed,
                     last_derivative: Some(derivative),
+                    last_rk4_forecast: None,
                 },
             );
         }
@@ -2068,6 +2095,7 @@ struct RootFreeFlyerMultibodySeed {
 struct RootFreeFlyerMultibodyShadow {
     seed: RootFreeFlyerMultibodySeed,
     last_derivative: Option<MultibodyDerivative>,
+    last_rk4_forecast: Option<RootFreeFlyerMultibodySeed>,
 }
 
 fn build_initial_root_free_flyer_multibody_seed(
@@ -2123,6 +2151,53 @@ fn root_free_flyer_multibody_seed_from_rigid_state(
         tree,
         sim_state,
     })
+}
+
+fn root_free_flyer_rigid_state_from_multibody_state(
+    body: BodyId,
+    state: &MultibodySimState,
+    mass_props: MassProperties,
+) -> Result<RigidBodyState, RunnerError> {
+    let q = state.q();
+    let qd = state.qd();
+    if q.len() != 7 || qd.len() != 6 {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "root free-flyer multibody state for body {} has q/qd dimensions {}/{}",
+                body.value(),
+                q.len(),
+                qd.len()
+            ),
+        });
+    }
+    let raw_orientation = nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]);
+    if !raw_orientation
+        .coords
+        .iter()
+        .all(|component| component.is_finite())
+        || raw_orientation.norm_squared() <= 0.0
+    {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "root free-flyer multibody orientation projection failed for body {}",
+                body.value()
+            ),
+        });
+    }
+    // RK sub-step states intentionally carry a linearly advanced, not-yet
+    // projected quaternion, matching `RigidBodyState::advance_by`.
+    let orientation = Quaternion::<Body, openbmp_core::Eci>::from_unit_quaternion(
+        nalgebra::UnitQuaternion::new_unchecked(raw_orientation),
+    );
+    let velocity_body = Velocity3::<Body>::new(qd[3], qd[4], qd[5]);
+    Ok(RigidBodyState::new(
+        state.state().time,
+        Position3::<openbmp_core::Eci>::new(q[4], q[5], q[6]),
+        orientation.rotate_velocity(velocity_body),
+        orientation,
+        AngularVelocity3::<Body>::new(qd[0], qd[1], qd[2]),
+        mass_props,
+    ))
 }
 
 fn build_root_free_flyer_multibody_state(
@@ -2222,6 +2297,86 @@ where
         moment_body_n_m,
         force_eci_n,
     )
+}
+
+#[derive(Copy, Clone, Debug)]
+struct RootFreeFlyerHeldLoadViews<'a> {
+    phase_id: Option<u64>,
+    effector_actuals: &'a BTreeMap<String, f64>,
+    engine_snapshot: &'a BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    tank_snapshot: &'a BTreeMap<TankId, openbmp_sim::TankSnapshot>,
+    recovery_snapshot: &'a BTreeMap<RecoveryId, openbmp_sim::RecoverySnapshot>,
+}
+
+fn root_free_flyer_multibody_rk4_forecast_from_runner_models<F, M, ENV>(
+    seed: &RootFreeFlyerMultibodySeed,
+    force_model: &F,
+    moment_model: &M,
+    dt_s: f64,
+    held_views: RootFreeFlyerHeldLoadViews<'_>,
+    environment_for_state: ENV,
+) -> Result<RootFreeFlyerMultibodySeed, RunnerError>
+where
+    F: ForceModel<RigidBodyState>,
+    M: openbmp_sim::MomentModel<RigidBodyState>,
+    ENV: Fn(&RigidBodyState) -> Result<openbmp_sim::EnvironmentSample, RunnerError>,
+{
+    let next_sim_state = Rk4FixedStep
+        .advance(
+            &seed.sim_state,
+            |sim_state, _time| {
+                let rigid_state = root_free_flyer_rigid_state_from_multibody_state(
+                    seed.body,
+                    sim_state,
+                    seed.rigid_state.mass_props,
+                )
+                .map_err(multibody_shadow_model_eval_error)?;
+                let environment = environment_for_state(&rigid_state)
+                    .map_err(multibody_shadow_model_eval_error)?;
+                let stage_seed = RootFreeFlyerMultibodySeed {
+                    body: seed.body,
+                    rigid_state,
+                    tree: seed.tree.clone(),
+                    sim_state: sim_state.clone(),
+                };
+                root_free_flyer_multibody_derivative_from_runner_models(
+                    &stage_seed,
+                    force_model,
+                    moment_model,
+                    RootFreeFlyerLoadViews {
+                        phase_id: held_views.phase_id,
+                        environment: &environment,
+                        effector_actuals: held_views.effector_actuals,
+                        engine_snapshot: held_views.engine_snapshot,
+                        tank_snapshot: held_views.tank_snapshot,
+                        recovery_snapshot: held_views.recovery_snapshot,
+                    },
+                )
+                .map_err(multibody_shadow_model_eval_error)
+            },
+            Duration::from_seconds(dt_s),
+        )
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("root free-flyer multibody RK4 forecast failed: {err}"),
+        })?;
+    let rigid_state = root_free_flyer_rigid_state_from_multibody_state(
+        seed.body,
+        &next_sim_state,
+        seed.rigid_state.mass_props,
+    )?;
+    Ok(RootFreeFlyerMultibodySeed {
+        body: seed.body,
+        rigid_state,
+        tree: seed.tree.clone(),
+        sim_state: next_sim_state,
+    })
+}
+
+fn multibody_shadow_model_eval_error(error: RunnerError) -> openbmp_sim::ModelEvalError {
+    openbmp_sim::ModelEvalError::InvalidState {
+        model: RIGID_BODY_MULTIBODY_SHADOW_MODEL_ID,
+        reason: Cow::Owned(error.to_string()),
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -4415,6 +4570,42 @@ mod tests {
     }
 
     #[test]
+    fn root_free_flyer_multibody_projection_round_trips_rigid_state() {
+        let orientation = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(Vector3::new(0.0, 0.0, 1.0)),
+            0.25,
+        );
+        let state = RigidBodyState::new(
+            SimTime::from_seconds(2.0),
+            Position3::<openbmp_core::Eci>::new(1.0, -2.0, 3.0),
+            Velocity3::<openbmp_core::Eci>::new(4.0, -5.0, 6.0),
+            Quaternion::<Body, openbmp_core::Eci>::from_unit_quaternion(orientation),
+            AngularVelocity3::<Body>::new(0.1, -0.2, 0.3),
+            MassProperties::with_uniform_inertia(
+                Mass::new::<kilogram>(12.0),
+                Position3::<Body>::origin(),
+                4.0,
+            ),
+        );
+        let body = body_id_from_scenario_text("main");
+        let (_, sim_state) = build_root_free_flyer_multibody_state(body, &state).expect("seed");
+
+        let projected =
+            root_free_flyer_rigid_state_from_multibody_state(body, &sim_state, state.mass_props)
+                .expect("projection");
+
+        assert_eq!(projected.time, state.time);
+        assert!((projected.position.vector - state.position.vector).norm() < 1.0e-12);
+        assert!((projected.velocity.vector - state.velocity.vector).norm() < 1.0e-12);
+        assert!(
+            (projected.angular_velocity.vector - state.angular_velocity.vector).norm() < 1.0e-12
+        );
+        let projected_q = projected.orientation.q.into_inner();
+        let expected_q = state.orientation.q.into_inner();
+        assert!((projected_q.coords - expected_q.coords).norm() < 1.0e-12);
+    }
+
+    #[test]
     fn root_free_flyer_multibody_seed_rejects_invalid_mass_properties() {
         let state = RigidBodyState::new(
             SimTime::ZERO,
@@ -4752,6 +4943,64 @@ mod tests {
             0.1_f64.to_bits()
         );
         assert!(shadow.last_derivative.is_some());
+    }
+
+    #[test]
+    fn primary_multibody_shadow_rk4_forecast_matches_constant_mass_rigid_step() {
+        let toml = PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO
+            .replace("gravity_m_s2 = 0.0", "gravity_m_s2 = 2.0")
+            .replace(
+                "[telemetry]\n",
+                "[multi_body]\nprimary_body_id = \"main\"\n\n[[multi_body.attitude_target]]\nbody_id = \"main\"\nstart_time_s = 1.0\npitch_effector = \"main-pitch-torque\"\nkp = 1.0\nkd = 0.0\nmax_command = 1.0\ntarget = { kind = \"eci_vector\", vector_eci = [0.0, 0.0, 1.0] }\n\n[telemetry]\n",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step forecasts primary root");
+
+        let forecast = session
+            .primary_multibody_shadow
+            .as_ref()
+            .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+            .expect("primary RK4 forecast recorded");
+        let predicted = &forecast.rigid_state;
+        let actual = session.state();
+        assert_eq!(predicted.time.as_seconds().to_bits(), 0.1_f64.to_bits());
+        assert!(
+            (predicted.position.vector - actual.position.vector).norm() < 1.0e-12,
+            "position predicted={:?} actual={:?} diff={:?}",
+            predicted.position.vector,
+            actual.position.vector,
+            predicted.position.vector - actual.position.vector
+        );
+        assert!(
+            (predicted.velocity.vector - actual.velocity.vector).norm() < 1.0e-12,
+            "velocity predicted={:?} actual={:?} diff={:?}",
+            predicted.velocity.vector,
+            actual.velocity.vector,
+            predicted.velocity.vector - actual.velocity.vector
+        );
+        assert!(
+            (predicted.angular_velocity.vector - actual.angular_velocity.vector).norm() < 1.0e-12,
+            "omega predicted={:?} actual={:?} diff={:?}",
+            predicted.angular_velocity.vector,
+            actual.angular_velocity.vector,
+            predicted.angular_velocity.vector - actual.angular_velocity.vector
+        );
+        let predicted_q = predicted.orientation.q.into_inner();
+        let actual_q = actual.orientation.q.into_inner();
+        assert!(
+            (predicted_q.coords - actual_q.coords).norm() < 1.0e-12,
+            "q predicted={:?} actual={:?} diff={:?}",
+            predicted_q.coords,
+            actual_q.coords,
+            predicted_q.coords - actual_q.coords
+        );
     }
 
     #[test]

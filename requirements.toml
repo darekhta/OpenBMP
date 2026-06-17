@@ -109,6 +109,12 @@ statement = "The openbmp-runner prepared rigid-body session maintains root-free-
 verification = ["V-MULTIBODY-018"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-019"
+title = "The primary multibody shadow can forecast a constant-mass root step"
+statement = "The openbmp-runner root-free-flyer bridge can project a one-body MultibodySimState back into the existing RigidBodyState shape and records an RK4 primary-shadow forecast by evaluating the runner's force and moment adapters at multibody RK stages before the authoritative rigid-kernel step. The runner tests prove projection round-trips position, velocity, quaternion, and body angular rate, and prove a constant-mass, no-rotation, gravity-only primary multi_body scenario forecasts the same next rigid state as the current RK4 rigid kernel without changing telemetry authority. This makes no claim that orientation-coupled root translation, variable-mass propagation, gimballed ascent propagation, welded-to-free joint-release propagation, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-019"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1125,6 +1131,25 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-018"]
+
+[[verification]]
+id = "V-MULTIBODY-019"
+kind = "test"
+command = "cargo test -p openbmp-runner root_free_flyer_multibody_projection_round_trips_rigid_state --locked && cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_matches_constant_mass_rigid_step --locked && cargo test -p openbmp-runner primary_multibody_shadow_mirrors_pre_step_runner_loads --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "root_free_flyer_rigid_state_from_multibody_state",
+  "root_free_flyer_multibody_rk4_forecast_from_runner_models",
+  "primary_multibody_shadow_rk4_forecast_matches_constant_mass_rigid_step",
+  "REQ-MULTIBODY-019",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-019"]
 
 [[verification]]
 id = "V-SIL-001"

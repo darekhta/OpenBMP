@@ -158,10 +158,16 @@ lanes and lanes created by jettison events, sampling each separated lane state
 and evaluating the same per-body runner force/moment adapter stacks;
 booster-owned direct-torque regressions prove the separated shadow derivative
 sees the signed pitch-torque load without changing rigid separated-lane
-authority (`REQ-MULTIBODY-018`). Missing for full WP-01.1: replacing the
-rigid-kernel propagation path, welded-to-free joint-release propagation and
-full separated-body multibody propagation, full gimballed ascent validation,
-and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
+authority (`REQ-MULTIBODY-018`). The primary shadow now also has a first
+constant-mass RK4 forecast path: the runner can project a root free-flyer
+`MultibodySimState` back into `RigidBodyState`, evaluate force/moment adapters
+at multibody RK stages, and prove a no-rotation gravity-only primary shadow
+forecasts the same next rigid state as the current rigid kernel
+(`REQ-MULTIBODY-019`). Missing for full WP-01.1: replacing the rigid-kernel
+propagation path, orientation-coupled root translation, variable-mass
+multibody propagation, welded-to-free joint-release propagation and full
+separated-body multibody propagation, full gimballed ascent validation, and
+Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 

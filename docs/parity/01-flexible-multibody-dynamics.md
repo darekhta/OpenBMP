@@ -220,9 +220,12 @@ values explicitly, and `MultibodySimState` carries tree-derived quaternion
 projection offsets so the existing `SimState`/`Integratable` surface can
 advance vector-backed multibody states. Runner/kernel force wiring is now
 present for primary root-free-flyer and separated-lane shadows, including lanes
-created by jettison events, but authoritative propagation is still the rigid
-kernel. Double-pendulum tolerance tables, full separated-lane multibody
-propagation, and external Spatial_v2 oracle fixtures remain open.
+created by jettison events. A first primary-shadow RK4 forecast path projects a
+root free-flyer `MultibodySimState` back into `RigidBodyState` and is validated
+only for the constant-mass, no-rotation gravity case; authoritative propagation
+is still the rigid kernel. Orientation-coupled root translation, variable-mass
+multibody propagation, double-pendulum tolerance tables, full separated-lane
+multibody propagation, and external Spatial_v2 oracle fixtures remain open.
 
 ---
 
@@ -784,8 +787,13 @@ justification first, reviewed before the implementation lands.
   by jettison events, using each separated lane state and the same per-body
   runner force/moment adapter stacks; booster-owned direct-torque regressions
   prove the separated shadow derivative sees the signed pitch-torque load
-  without changing rigid separated-lane authority.
+  without changing rigid separated-lane authority. The primary shadow now also
+  records a constant-mass RK4 forecast by evaluating runner force/moment
+  adapters at multibody RK stages; projection round-trip and gravity-only
+  no-rotation regressions prove the forecast can match the current rigid
+  kernel over one step in that limited envelope.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
+  orientation-coupled root translation, variable-mass multibody propagation,
   welded-to-free joint-release propagation and full separated-body multibody
   propagation, double-pendulum tolerance table, Spatial_v2 oracle fixtures, and
   full gimballed ascent validation.
