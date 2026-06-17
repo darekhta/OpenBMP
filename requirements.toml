@@ -489,7 +489,7 @@ verification = ["V-TRAJOPT-002"]
 [[requirements]]
 id = "REQ-ENV-001"
 title = "The physics layer exposes a first tesseral gravity substrate"
-statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a reusable NormalizedHarmonicField / NormalizedHarmonicCoefficient / NormalizedHarmonicFieldIter substrate, checked fully_normalized_to_unnormalized_scale helper, bounded HarmonicLongitudeTrigonometry cos(mλ)/sin(mλ) recurrence table, HarmonicTruncation envelope validator, and bounded PinesLegendreTable A_nm(u) recurrence that store, scale, precompute, and validate deterministic harmonic inputs, defaults missing in-envelope coefficients to zero for lookup and iteration, rejects duplicate or out-of-envelope entries, and can rebuild the current Egm2008ZonalGravity J2-J6 truncation from a provenance-pinned normalized zonal Cbar_n0 fixture, a provenance-pinned WGS84 normalized degree-2 fixture, a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, finite Cartesian evaluation near the pole, and deterministic non-zonal acceleration for sectoral/tesseral terms while making no high-degree EGM2008 or Pines/Gottlieb completion claim."
+statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a reusable NormalizedHarmonicField / NormalizedHarmonicCoefficient / NormalizedHarmonicFieldIter substrate, checked fully_normalized_to_unnormalized_scale helper, bounded HarmonicLongitudeTrigonometry cos(mλ)/sin(mλ) recurrence table, singularity-free PinesLongitudePolynomials direction-cosine recurrence, HarmonicTruncation envelope validator, and bounded PinesLegendreTable A_nm(u) recurrence that store, scale, precompute, and validate deterministic harmonic inputs, defaults missing in-envelope coefficients to zero for lookup and iteration, rejects duplicate or out-of-envelope entries, and can rebuild the current Egm2008ZonalGravity J2-J6 truncation from a provenance-pinned normalized zonal Cbar_n0 fixture, a provenance-pinned WGS84 normalized degree-2 fixture, a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, finite Cartesian evaluation near the pole, and deterministic non-zonal acceleration for sectoral/tesseral terms while making no high-degree EGM2008 or Pines/Gottlieb completion claim."
 verification = ["V-ENV-001"]
 
 [[requirements]]
@@ -2778,6 +2778,7 @@ contains = [
   "HarmonicLongitudeTrigonometry",
   "HarmonicTruncation",
   "PinesLegendreTable",
+  "PinesLongitudePolynomials",
   "HARMONIC_LONGITUDE_MAX_ORDER",
   "PINES_LEGENDRE_MAX_DEGREE",
   "from_normalized_degree_two",
@@ -2800,6 +2801,9 @@ contains = [
   "tesseral_harmonic_truncation_validates_degree_order_envelopes",
   "tesseral_pines_legendre_table_matches_low_degree_closed_form",
   "tesseral_pines_legendre_table_rejects_invalid_inputs",
+  "tesseral_pines_longitude_polynomials_match_complex_powers",
+  "tesseral_pines_longitude_polynomials_are_finite_at_pole",
+  "tesseral_pines_longitude_polynomials_reject_invalid_inputs",
   "tesseral_normalized_harmonic_field_defaults_missing_coefficients_to_zero",
   "tesseral_normalized_harmonic_field_iterates_slots_in_row_order",
   "tesseral_normalized_harmonic_field_rejects_invalid_or_duplicate_coefficients",

@@ -1282,6 +1282,147 @@ impl HarmonicLongitudeTrigonometry {
     }
 }
 
+/// Singularity-free Pines longitude polynomials from direction cosines.
+///
+/// The Pines formulation uses `s = x/r` and `t = y/r` instead of geodetic or
+/// spherical longitude. This table stores the real and imaginary components of
+/// `(s + i t)^m`, with `m = 0..=max_order`, using the locked recurrence:
+///
+/// ```text
+/// r_m = s r_{m-1} - t i_{m-1}
+/// i_m = s i_{m-1} + t r_{m-1}
+/// ```
+///
+/// At the pole (`s = t = 0`), all positive-order terms are exactly zero rather
+/// than singular.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PinesLongitudePolynomials {
+    s: f64,
+    t: f64,
+    real_by_order: Vec<f64>,
+    imaginary_by_order: Vec<f64>,
+}
+
+impl PinesLongitudePolynomials {
+    /// Build Pines longitude polynomials through `max_order`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if either direction cosine is
+    /// non-finite, if `s² + t²` is outside the unit sphere beyond round-off
+    /// tolerance, if `max_order` exceeds [`HARMONIC_LONGITUDE_MAX_ORDER`], or if
+    /// the table length overflows. Returns [`PhysicsError::NonFinite`] if the
+    /// recurrence produces a non-finite value.
+    pub fn new(s: f64, t: f64, max_order: usize) -> Result<Self, PhysicsError> {
+        if !s.is_finite() || !t.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines longitude direction cosines must be finite",
+            });
+        }
+        let horizontal_norm2 = s * s + t * t;
+        if horizontal_norm2 > 1.0 + 16.0 * f64::EPSILON {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines longitude direction cosines must satisfy s^2 + t^2 <= 1",
+            });
+        }
+        if max_order > HARMONIC_LONGITUDE_MAX_ORDER {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines longitude order exceeds checked high-order envelope",
+            });
+        }
+        let len = max_order
+            .checked_add(1)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "Pines longitude table length overflowed",
+            })?;
+        let mut real_by_order = Vec::with_capacity(len);
+        let mut imaginary_by_order = Vec::with_capacity(len);
+        real_by_order.push(1.0);
+        imaginary_by_order.push(0.0);
+
+        for order in 1..=max_order {
+            let previous_real = real_by_order[order - 1];
+            let previous_imaginary = imaginary_by_order[order - 1];
+            let real = s * previous_real - t * previous_imaginary;
+            let imaginary = s * previous_imaginary + t * previous_real;
+            if !real.is_finite() || !imaginary.is_finite() {
+                return Err(PhysicsError::NonFinite {
+                    reason: "Pines longitude recurrence produced non-finite output",
+                });
+            }
+            real_by_order.push(real);
+            imaginary_by_order.push(imaginary);
+        }
+
+        Ok(Self {
+            s,
+            t,
+            real_by_order,
+            imaginary_by_order,
+        })
+    }
+
+    /// Direction cosine `s = x/r`.
+    #[must_use]
+    pub const fn s(&self) -> f64 {
+        self.s
+    }
+
+    /// Direction cosine `t = y/r`.
+    #[must_use]
+    pub const fn t(&self) -> f64 {
+        self.t
+    }
+
+    /// Maximum order available in this table.
+    #[must_use]
+    pub fn max_order(&self) -> usize {
+        self.real_by_order.len() - 1
+    }
+
+    /// Return `(r_m, i_m) = (Re((s + i t)^m), Im((s + i t)^m))`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `order` is outside the
+    /// table envelope.
+    pub fn polynomial(&self, order: usize) -> Result<(f64, f64), PhysicsError> {
+        let real = self
+            .real_by_order
+            .get(order)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "Pines longitude lookup outside table envelope",
+            })?;
+        let imaginary =
+            self.imaginary_by_order
+                .get(order)
+                .ok_or(PhysicsError::InvalidParameter {
+                    reason: "Pines longitude lookup outside table envelope",
+                })?;
+        Ok((*real, *imaginary))
+    }
+
+    /// Return `r_m = Re((s + i t)^m)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `order` is outside the
+    /// table envelope.
+    pub fn real(&self, order: usize) -> Result<f64, PhysicsError> {
+        Ok(self.polynomial(order)?.0)
+    }
+
+    /// Return `i_m = Im((s + i t)^m)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `order` is outside the
+    /// table envelope.
+    pub fn imaginary(&self, order: usize) -> Result<f64, PhysicsError> {
+        Ok(self.polynomial(order)?.1)
+    }
+}
+
 /// Checked harmonic degree/order truncation request.
 ///
 /// The type validates only the mathematical truncation shape (`order <= degree`)
@@ -3415,6 +3556,64 @@ mod tests {
         ));
         assert!(matches!(
             table.sine(4),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tesseral_pines_longitude_polynomials_match_complex_powers() {
+        let table = PinesLongitudePolynomials::new(0.6, 0.8, 4).unwrap();
+
+        assert_eq!(table.s().to_bits(), 0.6_f64.to_bits());
+        assert_eq!(table.t().to_bits(), 0.8_f64.to_bits());
+        assert_eq!(table.max_order(), 4);
+        assert_eq!(table.polynomial(0).unwrap(), (1.0, 0.0));
+        assert_eq!(table.polynomial(1).unwrap(), (0.6, 0.8));
+        assert_abs_diff_eq!(table.real(2).unwrap(), -0.28, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(table.imaginary(2).unwrap(), 0.96, epsilon = 1.0e-15);
+
+        for order in 0..=4 {
+            let (real, imaginary) = table.polynomial(order).unwrap();
+            assert_abs_diff_eq!(real * real + imaginary * imaginary, 1.0, epsilon = 1.0e-15);
+        }
+    }
+
+    #[test]
+    fn tesseral_pines_longitude_polynomials_are_finite_at_pole() {
+        let table = PinesLongitudePolynomials::new(0.0, 0.0, 4).unwrap();
+
+        assert_eq!(table.polynomial(0).unwrap(), (1.0, 0.0));
+        for order in 1..=4 {
+            assert_eq!(table.polynomial(order).unwrap(), (0.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn tesseral_pines_longitude_polynomials_reject_invalid_inputs() {
+        assert!(matches!(
+            PinesLongitudePolynomials::new(f64::NAN, 0.0, 0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            PinesLongitudePolynomials::new(1.0, 1.0, 0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            PinesLongitudePolynomials::new(0.0, 0.0, HARMONIC_LONGITUDE_MAX_ORDER + 1),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let table = PinesLongitudePolynomials::new(0.3, -0.4, 2).unwrap();
+        assert!(matches!(
+            table.polynomial(3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            table.real(3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            table.imaginary(3),
             Err(PhysicsError::InvalidParameter { .. })
         ));
     }
