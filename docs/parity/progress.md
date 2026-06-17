@@ -370,11 +370,13 @@ C21/S21, and C22/S22 terms, converts fully-normalized degree-2 blocks, stores
 normalized `Cbar/Sbar` fields in deterministic packed `(n, m)` order, exposes
 checked fully-normalized scale factors, a std-gated fail-closed
 `from_normalized_toml_str` parser for the OpenBMP normalized harmonic TOML
-schemas, checked runtime high-degree EGM2008 tier requests for the planned
-70/120/360 truncations that must resolve against a concrete field envelope and
-the bounded Pines scratch tables, a bounded `cos(mλ)`/`sin(mλ)` recurrence
-table, a singularity-free Pines direction-cosine longitude-polynomial table, a
-reusable truncation-envelope validator, a bounded Holmes-Featherstone/Pines `A_nm(u)`
+schemas, a std-gated fail-closed `from_icgem_gfc_str` parser for static
+ICGEM/NGA-style fully-normalized `gfc` coefficient lines, checked runtime
+high-degree EGM2008 tier requests for the planned 70/120/360 truncations that
+must resolve against a concrete field envelope and the bounded Pines scratch
+tables, a bounded `cos(mλ)`/`sin(mλ)` recurrence table, a singularity-free
+Pines direction-cosine longitude-polynomial table, a reusable
+truncation-envelope validator, a bounded Holmes-Featherstone/Pines `A_nm(u)`
 recurrence table, a body-fixed synthesis-point validator, a normalized Pines
 scalar-potential correction sum,
 a normalized Gottlieb-style scalar-potential recomposition oracle cross-checked
@@ -388,8 +390,10 @@ fixture through the public TOML parser, parses the
 `data/gravity/wgs84-degree2-normalized-v1.toml` provenance pin through the same
 path, parses the synthetic non-zonal
 `data/gravity/synthetic-degree4-normalized-field-v1.toml` fixture through the
-general normalized-field schema, keeps the degree-2/order-0 WGS84 J2 path
-byte-identical to `J2Gravity`,
+general normalized-field schema, parses
+`data/gravity/synthetic-degree4-normalized-icgem-v1.gfc` through the
+ICGEM-style static coefficient schema, keeps the degree-2/order-0 WGS84 J2
+path byte-identical to `J2Gravity`,
 stays finite near the pole, and rejects unsupported
 degree/order/duplicate/out-of-envelope coefficient requests fail-closed
 (`REQ-ENV-001`). Missing for full WP-08.1:

@@ -64,8 +64,9 @@ safety_review:
 dataset_id:       openbmp.synthetic.gravity.degree4-normalized-field.v1
 files:
   - data/gravity/synthetic-degree4-normalized-field-v1.toml
+  - data/gravity/synthetic-degree4-normalized-icgem-v1.gfc
 source_class:     synthetic-openbmp
-source_title:     OpenBMP synthetic degree-4 normalized harmonic parser fixture
+source_title:     OpenBMP synthetic degree-4 normalized harmonic parser fixtures
 source_authors:   OpenBMP contributors
 source_id:        synthetic-openbmp
 publication_date: 2026-06-17
@@ -75,18 +76,22 @@ retrieved_utc:    2026-06-17
 transformation:
   method: >-
     Hand-authored deterministic, small-magnitude fully-normalized
-    Cbar/Sbar coefficients through degree 4/order 3. The coefficients are
-    intentionally non-physical and include zonal, tesseral, sectoral, and
-    missing in-envelope slots to exercise the general
-    openbmp.gravity.normalized-field.v1 TOML parser and synthesis paths.
+    Cbar/Sbar coefficients through degree 4/order 3 in the TOML fixture,
+    and the same static coefficients in an ICGEM-style GFC fixture with C00
+    plus one out-of-requested-order C44 row for truncation coverage. The
+    coefficients are intentionally non-physical and include zonal, tesseral,
+    sectoral, and missing in-envelope slots to exercise the general
+    openbmp.gravity.normalized-field.v1 TOML parser, ICGEM GFC parser, and
+    synthesis paths.
   script: none
 verification:
   method: >-
     Unit tests in openbmp-physics parse the fixture through
-    NormalizedHarmonicField::from_normalized_toml_str, check the declared
-    envelope and coefficient count, verify missing slots default to zero,
-    and cross-check Pines and Gottlieb scalar-potential sums at multiple
-    body-fixed positions.
+    NormalizedHarmonicField::from_normalized_toml_str and
+    NormalizedHarmonicField::from_icgem_gfc_str, check the declared
+    envelope and coefficient count, verify missing slots and truncation
+    default to zero, and cross-check Pines and Gottlieb scalar-potential
+    sums at multiple body-fixed positions.
   test:   crates/openbmp-physics/src/gravity.rs
 validation_status: synthetic-fixture
 safety_review:
@@ -108,10 +113,10 @@ zonal harmonics through degree 6 are included only as a normalized-ingestion
 fixture derived from OpenBMP's existing constants; high-degree tesseral EGM2008
 harmonics remain out of scope for this record.
 
-The synthetic degree-4 normalized-field fixture is separate from the
-public-standard WGS84/EGM2008 pins. It exists only to prove the general
-non-zonal TOML schema and normalized-field iteration/synthesis paths without
-claiming any physical Earth-gravity fidelity.
+The synthetic degree-4 normalized-field and ICGEM-style fixtures are separate
+from the public-standard WGS84/EGM2008 pins. They exist only to prove the
+general non-zonal TOML schema, GFC coefficient ingestion, and normalized-field
+iteration/synthesis paths without claiming any physical Earth-gravity fidelity.
 
 ## Why public-standard, not synthetic-openbmp
 

@@ -110,10 +110,12 @@ Verified by reading the actual files (paths absolute under the repo root).
   in deterministic packed `(n, m)` order, exposes a checked
   `fully_normalized_to_unnormalized_scale` helper, a std-gated fail-closed
   `from_normalized_toml_str` parser for OpenBMP normalized harmonic TOML
-  fixtures, checked runtime high-degree EGM2008 tier requests for the planned
-  70/120/360 truncations that must resolve against a concrete field envelope
-  and the bounded Pines scratch tables, a bounded `cos(mλ)` / `sin(mλ)`
-  recurrence table, a direction-cosine `(s + i t)^m` Pines
+  fixtures, a std-gated fail-closed `from_icgem_gfc_str` parser for static
+  ICGEM/NGA-style fully-normalized `gfc` coefficient lines, checked runtime
+  high-degree EGM2008 tier requests for the planned 70/120/360 truncations that
+  must resolve against a concrete field envelope and the bounded Pines scratch
+  tables, a bounded `cos(mλ)` / `sin(mλ)` recurrence table, a
+  direction-cosine `(s + i t)^m` Pines
   longitude-polynomial table that remains finite at the pole, a reusable
   truncation envelope validator, a bounded Holmes-Featherstone/Pines `A_nm(u)`
   recurrence table, a body-fixed
@@ -129,11 +131,11 @@ Verified by reading the actual files (paths absolute under the repo root).
   wiring lands, and a complete default-zero coefficient-slot iterator for
   future synthesis kernels, rejects duplicate or
   out-of-envelope coefficient entries, parses a provenance-pinned WGS84
-  normalized degree-2 fixture, parses a synthetic non-zonal degree-4
-  normalized-field fixture for the general TOML schema, proves its
-  degree-2/order-0 path is byte-identical to `J2Gravity`, and stays finite
-  near the pole. This is **not yet** the full Pines/Gottlieb high-degree
-  EGM2008 kernel; high-degree EGM2008 coefficient ingestion and external
+  normalized degree-2 fixture, parses synthetic non-zonal degree-4 fixtures
+  for the general TOML schema and ICGEM-style GFC schema, proves its
+  degree-2/order-0 path is byte-identical to `J2Gravity`, and stays finite near
+  the pole. This is **not yet** the full Pines/Gottlieb high-degree EGM2008
+  kernel; real high-degree EGM2008 coefficient ingestion and external
   HARMONIC_SYNTH validation remain the central gap.
 - `ThirdBody` / `ThirdBodyGravity<G,E>` — central + Σ third-body perturbation
   with Battin's cancellation-free `f(q)` formulation in
@@ -678,7 +680,8 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   `GottliebPotentialSum`, and `TideSystem` as the first non-zonal static
   harmonic force surface plus reusable normalized `Cbar/Sbar`
   coefficient-field, std-gated normalized-harmonic TOML ingestion,
-  longitude-trigonometry, direction-cosine-longitude, truncation-validation,
+  std-gated ICGEM-style GFC ingestion, longitude-trigonometry,
+  direction-cosine-longitude, truncation-validation,
   runtime high-degree tier validation for the planned 70/120/360 EGM2008
   requests, Pines-Legendre, scalar-potential summation,
   Gottlieb-style scalar recomposition, and Pines/Gottlieb-style
@@ -692,7 +695,9 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   `data/gravity/wgs84-degree2-normalized-v1.toml`, the general
   `openbmp.gravity.normalized-field.v1` parser is covered by the synthetic
   non-zonal
-  `data/gravity/synthetic-degree4-normalized-field-v1.toml` fixture, and the
+  `data/gravity/synthetic-degree4-normalized-field-v1.toml` fixture, the
+  ICGEM-style parser is covered by
+  `data/gravity/synthetic-degree4-normalized-icgem-v1.gfc`, and the
   existing `Egm2008ZonalGravity` J2-J6 truncation can be rebuilt from the
   provenance-pinned
   `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
@@ -706,7 +711,9 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   Pines scalar-potential summation matching the existing degree-2 Cartesian
   polynomial, fail-closed normalized-harmonic TOML parsing for the WGS84
   degree-2, synthetic non-zonal degree-4, and EGM2008 zonal fixtures plus
-  malformed metadata, Gottlieb-style
+  malformed metadata, fail-closed ICGEM-style GFC parsing for normalization,
+  tide-system, header, dynamic-line, and malformed-float errors,
+  Gottlieb-style
   scalar-potential recomposition matching Pines at
   generic/equatorial/near-pole points, Pines and Gottlieb-style
   finite-difference acceleration plus `FiniteDifferencePinesGravity` model
@@ -716,8 +723,8 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:
   full runtime high-degree Pines synthesis over real EGM2008 coefficient
-  blocks, full normalized Gottlieb acceleration-gradient oracle, high-degree
-  EGM2008 coefficient ingestion/provenance/tripwire, and NGA HARMONIC_SYNTH
+  blocks, full normalized Gottlieb acceleration-gradient oracle, real
+  high-degree EGM2008 coefficient ingestion/provenance/tripwire, and NGA HARMONIC_SYNTH
   benchmark tolerance tables.
 - **goal:** Replace the deg-6 zonal cap with full tesseral gravity. Build the shared `HarmonicSynthesis` kernel (Pines + normalized Gottlieb oracle + Holmes–Featherstone scaled recursion) and `TesseralGravity`; load EGM2008 to a runtime-selectable degree. The central gap-closer for this dimension and a "pure win that improves all propagation" (`00` §5).
 - **fidelity_tier:** T1

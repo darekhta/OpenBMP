@@ -2238,6 +2238,109 @@ impl NormalizedHarmonicField {
         }
     }
 
+    /// Construct a fully-normalized coefficient field from an ICGEM `.gfc`
+    /// coefficient block.
+    ///
+    /// This parser covers the static `gfc n m Cbar Sbar ...` line shape used
+    /// by ICGEM/NGA-style gravity model files. It requires an
+    /// `end_of_head` marker, a `norm fully_normalized` header, and a supported
+    /// `tide_system` tag. Coefficients outside `max_degree` / `max_order` are
+    /// ignored after their degree/order shape is validated, so callers can
+    /// ingest a large source file into a deterministic runtime truncation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when required metadata is
+    /// missing, the normalization is unsupported, a coefficient line is
+    /// malformed, or any retained coefficient fails the same validation as
+    /// [`Self::new`].
+    #[cfg(feature = "std")]
+    pub fn from_icgem_gfc_str(
+        input: &str,
+        max_degree: usize,
+        max_order: usize,
+    ) -> Result<Self, PhysicsError> {
+        let mut norm_is_fully_normalized = false;
+        let mut tide_system = None;
+        let mut in_header = true;
+        let mut saw_end_of_head = false;
+        let mut coefficients = Vec::new();
+
+        for raw_line in input.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.split_whitespace();
+            let Some(kind) = parts.next() else {
+                continue;
+            };
+
+            if in_header {
+                match kind {
+                    "end_of_head" => {
+                        in_header = false;
+                        saw_end_of_head = true;
+                    }
+                    "norm" => {
+                        let norm = parts.next().ok_or(PhysicsError::InvalidParameter {
+                            reason: "ICGEM GFC norm header must include a value",
+                        })?;
+                        if norm != "fully_normalized" {
+                            return Err(PhysicsError::InvalidParameter {
+                                reason: "ICGEM GFC norm must be fully_normalized",
+                            });
+                        }
+                        norm_is_fully_normalized = true;
+                    }
+                    "tide_system" => {
+                        let tag = parts.next().ok_or(PhysicsError::InvalidParameter {
+                            reason: "ICGEM GFC tide_system header must include a value",
+                        })?;
+                        tide_system = Some(TideSystem::from_tag(tag)?);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            if kind != "gfc" {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "ICGEM GFC static parser accepts only gfc coefficient lines",
+                });
+            }
+            let degree = parse_icgem_usize(parts.next(), "ICGEM GFC degree must parse")?;
+            let order = parse_icgem_usize(parts.next(), "ICGEM GFC order must parse")?;
+            if order > degree {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "ICGEM GFC coefficient order must be <= degree",
+                });
+            }
+            let cbar = parse_icgem_f64(parts.next(), "ICGEM GFC Cbar must parse")?;
+            let sbar = parse_icgem_f64(parts.next(), "ICGEM GFC Sbar must parse")?;
+            if degree <= max_degree && order <= max_order {
+                coefficients.push(NormalizedHarmonicCoefficient::new(
+                    degree, order, cbar, sbar,
+                )?);
+            }
+        }
+
+        if !saw_end_of_head {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ICGEM GFC input must contain end_of_head",
+            });
+        }
+        if !norm_is_fully_normalized {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ICGEM GFC input must declare norm fully_normalized",
+            });
+        }
+        let tide_system = tide_system.ok_or(PhysicsError::InvalidParameter {
+            reason: "ICGEM GFC input must declare tide_system",
+        })?;
+        Self::new(max_degree, max_order, tide_system, coefficients)
+    }
+
     /// Declared maximum harmonic degree.
     #[must_use]
     pub const fn max_degree(&self) -> usize {
@@ -2803,6 +2906,35 @@ fn normalized_harmonic_toml_f64(
         });
     }
     Ok(value)
+}
+
+#[cfg(feature = "std")]
+fn parse_icgem_usize(value: Option<&str>, reason: &'static str) -> Result<usize, PhysicsError> {
+    value
+        .ok_or(PhysicsError::InvalidParameter { reason })?
+        .parse::<usize>()
+        .map_err(|_| PhysicsError::InvalidParameter { reason })
+}
+
+#[cfg(feature = "std")]
+fn parse_icgem_f64(value: Option<&str>, reason: &'static str) -> Result<f64, PhysicsError> {
+    let value = value.ok_or(PhysicsError::InvalidParameter { reason })?;
+    let parsed = if value.contains('D') || value.contains('d') {
+        value
+            .replace(['D', 'd'], "E")
+            .parse::<f64>()
+            .map_err(|_| PhysicsError::InvalidParameter { reason })?
+    } else {
+        value
+            .parse::<f64>()
+            .map_err(|_| PhysicsError::InvalidParameter { reason })?
+    };
+    if !parsed.is_finite() {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "ICGEM GFC coefficient value must be finite",
+        });
+    }
+    Ok(parsed)
 }
 
 fn normalized_harmonic_storage_len(max_degree: usize, max_order: usize) -> Option<usize> {
@@ -3950,6 +4082,18 @@ mod tests {
             .expect("finite synthetic normalized field")
     }
 
+    fn load_synthetic_icgem_degree4_field_fixture(
+        max_degree: usize,
+        max_order: usize,
+    ) -> NormalizedHarmonicField {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/gravity/synthetic-degree4-normalized-icgem-v1.gfc"
+        ));
+        NormalizedHarmonicField::from_icgem_gfc_str(fixture, max_degree, max_order)
+            .expect("finite synthetic ICGEM normalized field")
+    }
+
     #[derive(Copy, Clone, Debug)]
     struct FixedEphemeris {
         position: Vector3<f64>,
@@ -4435,6 +4579,86 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.truncation(), HarmonicTruncation::new(4, 3).unwrap());
+    }
+
+    #[test]
+    fn tesseral_normalized_harmonic_field_parses_synthetic_icgem_gfc_pin() {
+        let toml_field = load_synthetic_normalized_degree4_field_fixture();
+        let gfc_field = load_synthetic_icgem_degree4_field_fixture(4, 3);
+
+        assert_eq!(gfc_field.max_degree(), 4);
+        assert_eq!(gfc_field.max_order(), 3);
+        assert_eq!(gfc_field.tide_system(), TideSystem::TideFree);
+        assert_eq!(gfc_field.coefficient_count(), 9);
+        assert_eq!(gfc_field.storage_len(), 14);
+        assert_eq!(gfc_field.coefficient(0, 0).unwrap(), (1.0, 0.0));
+        assert_eq!(gfc_field.coefficient(4, 3).unwrap(), (7.0e-9, -5.0e-9));
+        assert!(matches!(
+            gfc_field.coefficient(4, 4),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        for degree in 2..=4 {
+            for order in 0..=degree.min(3) {
+                assert_eq!(
+                    gfc_field.coefficient(degree, order).unwrap(),
+                    toml_field.coefficient(degree, order).unwrap()
+                );
+            }
+        }
+
+        let truncated = load_synthetic_icgem_degree4_field_fixture(3, 1);
+        assert_eq!(truncated.max_degree(), 3);
+        assert_eq!(truncated.max_order(), 1);
+        assert_eq!(truncated.coefficient_count(), 5);
+        assert_eq!(truncated.storage_len(), 7);
+        assert_eq!(truncated.coefficient(3, 1).unwrap(), (-7.0e-7, 4.0e-7));
+        assert!(matches!(
+            truncated.coefficient(3, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tesseral_normalized_harmonic_field_icgem_parser_rejects_bad_metadata() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/gravity/synthetic-degree4-normalized-icgem-v1.gfc"
+        ));
+
+        let bad_norm = fixture.replace("norm fully_normalized", "norm unnormalized");
+        assert!(matches!(
+            NormalizedHarmonicField::from_icgem_gfc_str(&bad_norm, 4, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let missing_tide = fixture.replace("tide_system tide_free\n", "");
+        assert!(matches!(
+            NormalizedHarmonicField::from_icgem_gfc_str(&missing_tide, 4, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let missing_end = fixture.replace("end_of_head\n", "");
+        assert!(matches!(
+            NormalizedHarmonicField::from_icgem_gfc_str(&missing_end, 4, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let dynamic_line = fixture.replace(
+            "gfc 2 0 -4.8000000000000000D-04",
+            "gfct 2 0 -4.8000000000000000D-04",
+        );
+        assert!(matches!(
+            NormalizedHarmonicField::from_icgem_gfc_str(&dynamic_line, 4, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let malformed_value =
+            fixture.replace("gfc 2 1 1.7000000000000000D-06", "gfc 2 1 not-a-float");
+        assert!(matches!(
+            NormalizedHarmonicField::from_icgem_gfc_str(&malformed_value, 4, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
@@ -4976,7 +5200,6 @@ mod tests {
 
     #[test]
     fn tesseral_gottlieb_potential_sum_matches_pines_scalar_sum() {
-        let field = load_synthetic_normalized_degree4_field_fixture();
         let truncation = HarmonicTruncation::new(4, 3).unwrap();
         let positions = [
             Vector3::new(7_100_000.0, -800_000.0, 1_200_000.0),
@@ -4984,22 +5207,27 @@ mod tests {
             Vector3::new(1.0, -2.0, WGS84_A_M + 500_000.0),
         ];
 
-        for position in positions {
-            let pines = field
-                .pines_dimensionless_potential_sum(position, WGS84_A_M, truncation)
-                .unwrap();
-            let gottlieb = field
-                .gottlieb_dimensionless_potential_sum(position, WGS84_A_M, truncation)
-                .unwrap();
+        for field in [
+            load_synthetic_normalized_degree4_field_fixture(),
+            load_synthetic_icgem_degree4_field_fixture(4, 3),
+        ] {
+            for position in positions {
+                let pines = field
+                    .pines_dimensionless_potential_sum(position, WGS84_A_M, truncation)
+                    .unwrap();
+                let gottlieb = field
+                    .gottlieb_dimensionless_potential_sum(position, WGS84_A_M, truncation)
+                    .unwrap();
 
-            assert_eq!(gottlieb.truncation(), pines.truncation());
-            assert_eq!(gottlieb.term_count(), pines.term_count());
-            assert_eq!(gottlieb.term_count(), 14);
-            assert_abs_diff_eq!(
-                gottlieb.dimensionless_correction(),
-                pines.dimensionless_correction(),
-                epsilon = 1.0e-15
-            );
+                assert_eq!(gottlieb.truncation(), pines.truncation());
+                assert_eq!(gottlieb.term_count(), pines.term_count());
+                assert_eq!(gottlieb.term_count(), 14);
+                assert_abs_diff_eq!(
+                    gottlieb.dimensionless_correction(),
+                    pines.dimensionless_correction(),
+                    epsilon = 1.0e-15
+                );
+            }
         }
     }
 

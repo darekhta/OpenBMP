@@ -489,7 +489,7 @@ verification = ["V-TRAJOPT-002"]
 [[requirements]]
 id = "REQ-ENV-001"
 title = "The physics layer exposes a first tesseral gravity substrate"
-statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a reusable NormalizedHarmonicField / NormalizedHarmonicCoefficient / NormalizedHarmonicFieldIter substrate, std-gated from_normalized_toml_str ingestion for OpenBMP normalized harmonic TOML fixtures, checked fully_normalized_to_unnormalized_scale helper, bounded HarmonicLongitudeTrigonometry cos(mλ)/sin(mλ) recurrence table, singularity-free PinesLongitudePolynomials direction-cosine recurrence, HarmonicTruncation envelope validator, HarmonicSynthesisPlan / HarmonicSynthesisTier runtime-tier validation for planned 70/120/360 EGM2008 requests, bounded PinesLegendreTable A_nm(u) recurrence, PinesSynthesisPoint geometry validator, PinesPotentialSum / pines_dimensionless_potential_sum and GottliebPotentialSum / gottlieb_dimensionless_potential_sum scalar-potential correction paths, pines_potential_correction_acceleration_finite_difference_m_s2 and gottlieb_potential_correction_acceleration_finite_difference_m_s2 acceleration oracles, and FiniteDifferencePinesGravity GravityModel wrapper that store, scale, precompute, parse, differentiate, and validate deterministic harmonic inputs, cross-check the Pines scalar sum through a Gottlieb-style longitude recomposition oracle, default missing in-envelope coefficients to zero for lookup and iteration, reject duplicate or out-of-envelope entries, reject malformed normalized-field TOML metadata, reject high-degree tier requests when field or scratch envelopes do not cover them, reject central C00 double-counting in the wrapper, and can rebuild the current Egm2008ZonalGravity J2-J6 truncation from a provenance-pinned normalized zonal Cbar_n0 fixture, parse a provenance-labeled synthetic degree-4 non-zonal normalized-field fixture, parse a provenance-pinned WGS84 normalized degree-2 fixture, expose a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, produce finite Cartesian evaluation near the pole, and produce deterministic non-zonal acceleration for sectoral/tesseral terms while making no high-degree EGM2008 or Pines/Gottlieb completion claim."
+statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a reusable NormalizedHarmonicField / NormalizedHarmonicCoefficient / NormalizedHarmonicFieldIter substrate, std-gated from_normalized_toml_str ingestion for OpenBMP normalized harmonic TOML fixtures, std-gated from_icgem_gfc_str ingestion for static ICGEM/NGA-style fully-normalized gfc coefficient lines, checked fully_normalized_to_unnormalized_scale helper, bounded HarmonicLongitudeTrigonometry cos(mλ)/sin(mλ) recurrence table, singularity-free PinesLongitudePolynomials direction-cosine recurrence, HarmonicTruncation envelope validator, HarmonicSynthesisPlan / HarmonicSynthesisTier runtime-tier validation for planned 70/120/360 EGM2008 requests, bounded PinesLegendreTable A_nm(u) recurrence, PinesSynthesisPoint geometry validator, PinesPotentialSum / pines_dimensionless_potential_sum and GottliebPotentialSum / gottlieb_dimensionless_potential_sum scalar-potential correction paths, pines_potential_correction_acceleration_finite_difference_m_s2 and gottlieb_potential_correction_acceleration_finite_difference_m_s2 acceleration oracles, and FiniteDifferencePinesGravity GravityModel wrapper that store, scale, precompute, parse, differentiate, and validate deterministic harmonic inputs, cross-check the Pines scalar sum through a Gottlieb-style longitude recomposition oracle, default missing in-envelope coefficients to zero for lookup and iteration, reject duplicate or out-of-envelope entries, reject malformed normalized-field TOML and ICGEM GFC metadata, reject high-degree tier requests when field or scratch envelopes do not cover them, reject central C00 double-counting in the wrapper, and can rebuild the current Egm2008ZonalGravity J2-J6 truncation from a provenance-pinned normalized zonal Cbar_n0 fixture, parse a provenance-labeled synthetic degree-4 non-zonal normalized-field fixture, parse a provenance-labeled synthetic degree-4 ICGEM-style GFC fixture, parse a provenance-pinned WGS84 normalized degree-2 fixture, expose a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, produce finite Cartesian evaluation near the pole, and produce deterministic non-zonal acceleration for sectoral/tesseral terms while making no high-degree EGM2008 or Pines/Gottlieb completion claim."
 verification = ["V-ENV-001"]
 
 [[requirements]]
@@ -2765,6 +2765,7 @@ paths = [
   "data/gravity/wgs84-degree2-normalized-v1.toml",
   "data/gravity/egm2008-zonal-degree6-normalized-v1.toml",
   "data/gravity/synthetic-degree4-normalized-field-v1.toml",
+  "data/gravity/synthetic-degree4-normalized-icgem-v1.gfc",
   "data/gravity/provenance.md",
   "docs/parity/08-environment-gravity-and-frames.md",
   "docs/parity/progress.md",
@@ -2779,6 +2780,7 @@ contains = [
   "NormalizedHarmonicField",
   "NormalizedHarmonicFieldIter",
   "from_normalized_toml_str",
+  "from_icgem_gfc_str",
   "HarmonicLongitudeTrigonometry",
   "HarmonicTruncation",
   "HarmonicSynthesisPlan",
@@ -2806,6 +2808,7 @@ contains = [
   "wgs84-degree2-normalized-v1.toml",
   "egm2008-zonal-degree6-normalized-v1.toml",
   "synthetic-degree4-normalized-field-v1.toml",
+  "synthetic-degree4-normalized-icgem-v1.gfc",
   "TideSystem",
   "TESSERAL_GRAVITY_MAX_DEGREE",
   "TESSERAL_GRAVITY_MAX_ORDER",
@@ -2814,6 +2817,8 @@ contains = [
   "tesseral_gravity_loads_normalized_harmonic_field_pin",
   "tesseral_normalized_harmonic_field_parses_egm2008_zonal_toml_pin",
   "tesseral_normalized_harmonic_field_parses_synthetic_general_toml_pin",
+  "tesseral_normalized_harmonic_field_parses_synthetic_icgem_gfc_pin",
+  "tesseral_normalized_harmonic_field_icgem_parser_rejects_bad_metadata",
   "tesseral_normalized_harmonic_field_toml_parser_rejects_bad_metadata",
   "tesseral_fully_normalized_scale_matches_degree_two_and_zonal_factors",
   "tesseral_longitude_trigonometry_matches_direct_trig",

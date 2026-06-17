@@ -1,0 +1,27 @@
+# Synthetic ICGEM-style normalized gravity coefficient fixture.
+#
+# This file exercises the static `gfc n m Cbar Sbar sigmaC sigmaS` parser used
+# for future EGM2008/ICGEM ingestion. The coefficients match
+# synthetic-degree4-normalized-field-v1.toml, plus C00 and an out-of-requested-
+# order C44 row that parser tests intentionally truncate. It is not WGS84,
+# EGM2008, or any physical Earth gravity field.
+
+modelname openbmp-synthetic-degree4
+product_type gravity_field
+earth_gravity_constant 3.9860044180000000D+14
+radius 6.3781370000000000D+06
+max_degree 4
+norm fully_normalized
+tide_system tide_free
+errors no
+end_of_head
+gfc 0 0 1.0000000000000000D+00 0.0000000000000000D+00 0.0D+00 0.0D+00
+gfc 2 0 -4.8000000000000000D-04 0.0000000000000000D+00 0.0D+00 0.0D+00
+gfc 2 1 1.7000000000000000D-06 -2.1000000000000000D-06 0.0D+00 0.0D+00
+gfc 2 2 2.4000000000000000D-06 3.1000000000000000D-06 0.0D+00 0.0D+00
+gfc 3 0 9.0000000000000000D-07 0.0000000000000000D+00 0.0D+00 0.0D+00
+gfc 3 1 -7.0000000000000000D-07 4.0000000000000000D-07 0.0D+00 0.0D+00
+gfc 3 3 2.5000000000000000D-08 -1.5000000000000000D-08 0.0D+00 0.0D+00
+gfc 4 2 -3.0000000000000000D-08 6.0000000000000000D-08 0.0D+00 0.0D+00
+gfc 4 3 7.0000000000000000D-09 -5.0000000000000000D-09 0.0D+00 0.0D+00
+gfc 4 4 1.0000000000000000D-12 -2.0000000000000000D-12 0.0D+00 0.0D+00
