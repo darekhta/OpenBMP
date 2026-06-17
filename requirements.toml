@@ -121,6 +121,12 @@ statement = "The openbmp-runner root-free-flyer RK4 forecast evaluates the same 
 verification = ["V-MULTIBODY-020"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-021"
+title = "Separated multibody shadows can forecast an active lane step"
+statement = "The openbmp-runner separated-lane multibody shadow path records an RK4 root-free-flyer forecast for each currently propagating separated rigid-body lane by evaluating the same runner force, moment, mass-rate, held rack snapshot, mission-phase, and environment sampling surfaces used by the primary shadow forecast. The runner test proves an initial separated direct-torque lane forecasts the same next mass, position, velocity, quaternion, and body angular rate as that lane's current rigid-kernel propagation over one step while leaving separated-lane telemetry authority with the rigid kernel. This makes no claim that replacing separated-lane propagation, welded-to-free joint-release propagation, liquid-engine snapshot-timing equivalence, broad articulated separated-body propagation, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-021"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1179,6 +1185,24 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-020"]
+
+[[verification]]
+id = "V-MULTIBODY-021"
+kind = "test"
+command = "cargo test -p openbmp-runner separated_multibody_shadow_rk4_forecast_matches_initial_lane_rigid_step --locked && cargo test -p openbmp-runner separated_multibody_shadow_mirrors_initial_lane_loads --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "last_rk4_forecast: Some(forecast)",
+  "separated_multibody_shadow_rk4_forecast_matches_initial_lane_rigid_step",
+  "REQ-MULTIBODY-021",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-021"]
 
 [[verification]]
 id = "V-SIL-001"

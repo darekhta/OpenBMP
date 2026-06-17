@@ -230,8 +230,9 @@ adapter at RK stages and matches the current rigid kernel for a no-rotation
 solid-motor burn, including the next-step mass. Authoritative propagation is
 still the rigid kernel. Replacing the rigid propagation path, broader
 variable-mass multibody propagation beyond the one-body root forecast,
-double-pendulum tolerance tables, full separated-lane multibody propagation,
-and external Spatial_v2 oracle fixtures remain open.
+double-pendulum tolerance tables, full separated-lane multibody propagation
+beyond the one-step separated shadow forecast, and external Spatial_v2 oracle
+fixtures remain open.
 
 ---
 
@@ -803,12 +804,16 @@ justification first, reviewed before the implementation lands.
   ECI-translation conventions. The RK4 forecast now also carries mass-property
   rates from the same rigid mass adapter used by the current kernel, and a
   no-rotation solid-motor regression proves the variable-mass root forecast
-  matches the current rigid kernel over one step.
+  matches the current rigid kernel over one step. Separated-lane shadows now
+  record the same one-step RK4 forecast, and an initial separated direct-torque
+  lane regression proves the forecast matches that lane's next rigid state
+  without changing separated-lane telemetry authority.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   broader variable-mass multibody propagation beyond the one-body root
   forecast, welded-to-free joint-release propagation and full separated-body
-  multibody propagation, double-pendulum tolerance table, Spatial_v2 oracle
-  fixtures, and full gimballed ascent validation.
+  multibody propagation beyond the one-step separated shadow forecast,
+  double-pendulum tolerance table, Spatial_v2 oracle fixtures, and full
+  gimballed ascent validation.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

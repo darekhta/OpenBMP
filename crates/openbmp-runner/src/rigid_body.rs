@@ -999,18 +999,41 @@ impl RigidBodySession {
                     recovery_snapshot: self.kernel.recovery_snapshot(),
                 },
             )?;
-            updates.push((separated.body, seed, derivative));
+            let forecast = root_free_flyer_multibody_rk4_forecast_from_runner_models(
+                &seed,
+                &self.breakdown_vehicle,
+                moment_model,
+                &self.mass_model,
+                self.kernel_step_s,
+                RootFreeFlyerHeldLoadViews {
+                    phase_id,
+                    effector_actuals: self.kernel.effector_actuals(),
+                    engine_snapshot: self.kernel.engine_snapshot(),
+                    tank_snapshot: self.kernel.tank_snapshot(),
+                    recovery_snapshot: self.kernel.recovery_snapshot(),
+                },
+                |rigid_state| {
+                    self.kernel
+                        .environment_sample_for_rigid_state(rigid_state)
+                        .map_err(|err| RunnerError::UnsupportedScenario {
+                            what: format!(
+                                "separated root multibody RK4 forecast environment sample failed: {err}"
+                            ),
+                        })
+                },
+            )?;
+            updates.push((separated.body, seed, derivative, forecast));
         }
 
         self.separated_multibody_shadows
             .retain(|body, _| active_bodies.contains(body));
-        for (body, seed, derivative) in updates {
+        for (body, seed, derivative, forecast) in updates {
             self.separated_multibody_shadows.insert(
                 body,
                 RootFreeFlyerMultibodyShadow {
                     seed,
                     last_derivative: Some(derivative),
-                    last_rk4_forecast: None,
+                    last_rk4_forecast: Some(forecast),
                 },
             );
         }
@@ -5294,6 +5317,70 @@ mod tests {
         assert!(
             qd_dot[3].abs() < 1.0e-12 && qd_dot[4].abs() < 1.0e-12 && qd_dot[5].abs() < 1.0e-12,
             "direct torque scenario should not add separated translational acceleration: {qd_dot:?}"
+        );
+    }
+
+    #[test]
+    fn separated_multibody_shadow_rk4_forecast_matches_initial_lane_rigid_step() {
+        let scenario = openbmp_scenario::Scenario::from_toml_str(SEPARATED_DIRECT_TORQUE_SCENARIO)
+            .expect("separated direct-torque scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("session step succeeds");
+
+        let booster = body_id_from_scenario_text("booster");
+        let forecast = session
+            .separated_multibody_shadows
+            .get(&booster)
+            .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+            .expect("booster separated-lane RK4 forecast is recorded");
+        let predicted = &forecast.rigid_state;
+        let actual = &session
+            .separated_bodies()
+            .iter()
+            .find(|lane| lane.body == booster)
+            .expect("booster separated lane exists after step")
+            .state;
+        assert_eq!(predicted.time.as_seconds().to_bits(), 0.1_f64.to_bits());
+        assert!(
+            (predicted.mass_props.mass_kg() - actual.mass_props.mass_kg()).abs() < 1.0e-12,
+            "mass predicted={} actual={}",
+            predicted.mass_props.mass_kg(),
+            actual.mass_props.mass_kg()
+        );
+        assert!(
+            (predicted.position.vector - actual.position.vector).norm() < 1.0e-12,
+            "position predicted={:?} actual={:?} diff={:?}",
+            predicted.position.vector,
+            actual.position.vector,
+            predicted.position.vector - actual.position.vector
+        );
+        assert!(
+            (predicted.velocity.vector - actual.velocity.vector).norm() < 1.0e-12,
+            "velocity predicted={:?} actual={:?} diff={:?}",
+            predicted.velocity.vector,
+            actual.velocity.vector,
+            predicted.velocity.vector - actual.velocity.vector
+        );
+        assert!(
+            (predicted.angular_velocity.vector - actual.angular_velocity.vector).norm() < 1.0e-12,
+            "omega predicted={:?} actual={:?} diff={:?}",
+            predicted.angular_velocity.vector,
+            actual.angular_velocity.vector,
+            predicted.angular_velocity.vector - actual.angular_velocity.vector
+        );
+        let predicted_q = predicted.orientation.q.into_inner();
+        let actual_q = actual.orientation.q.into_inner();
+        assert!(
+            (predicted_q.coords - actual_q.coords).norm() < 1.0e-12,
+            "q predicted={:?} actual={:?} diff={:?}",
+            predicted_q.coords,
+            actual_q.coords,
+            predicted_q.coords - actual_q.coords
         );
     }
 
