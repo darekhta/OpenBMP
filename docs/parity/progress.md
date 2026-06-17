@@ -258,15 +258,16 @@ The rigid runner now also exposes
 `propagation_authority = "welded_release_jettison"` for guarded identity
 welded-pair jettison, computes each departing lower-body free-flyer state
 through `release_welded_subtree_as_free_flyer()`, installs single and batch
-same-time release states through `jettison_rigid_body_with_states()`, and rejects
-initial lanes, gimbal joints, manual separation impulses, and departing attitude
-offsets (`REQ-MULTIBODY-044`).
+same-time release states through `jettison_rigid_body_with_states()`, applies
+configured separation delta-v, angular-rate tip-off, departing attitude offsets,
+and mass-property COM offsets, and rejects initial lanes and gimbal joints
+(`REQ-MULTIBODY-044`).
 Missing for full WP-01.1:
 replacing the rigid-kernel propagation path beyond the guarded primary-root
 handoff, separated-lane root handoff, and single-gimbal articulated
 root/internal-state handoff, broader variable-mass multibody propagation beyond
-the primary-root and powered separated-lane root-free-flyer paths, arbitrary
-welded-subtree geometry/impulse release, full
+the primary-root and powered separated-lane root-free-flyer paths, non-identity
+body-to-body welded-release geometry and arbitrary subtree release, full
 orbital-ascent gimballed validation, broader multi-gimbal authoritative
 articulated thrust propagation including authoritative two-axis propagation
 with actuator-coupled internal coordinate authority, and the independent

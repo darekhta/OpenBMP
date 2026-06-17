@@ -2277,6 +2277,10 @@ where
                             ),
                         });
                     }
+                    let stack_state = batch[0].stack_state;
+                    for runtime in &mut batch {
+                        runtime.stack_state = stack_state;
+                    }
                     for runtime in batch {
                         kernel.jettison_rigid_body_with_states(runtime)?;
                     }
@@ -2401,7 +2405,6 @@ where
 {
     let runtime =
         build_runtime_rigid_body_separation(kernel, mass_model, separation, continuing_inert)?;
-    require_zero_welded_release_impulses(&runtime)?;
     let current = *kernel.current_state();
     let stack_inertia = SpatialInertia::from_mass_properties(&runtime.stack_mass_properties)
         .map_err(|err| RunnerError::UnsupportedScenario {
@@ -2484,6 +2487,22 @@ where
         current.angular_velocity,
         runtime.stack_mass_properties,
     );
+    let stack_state = apply_welded_release_impulses(
+        &current,
+        &stack_state,
+        runtime.stack_mass_properties,
+        runtime.stack_delta_v_body_m_s,
+        runtime.stack_delta_omega_body_rad_s,
+        [0.0, 0.0, 0.0, 1.0],
+    );
+    let stage_state = apply_welded_release_impulses(
+        &current,
+        &stage_state,
+        runtime.stage_mass_properties,
+        runtime.stage_delta_v_body_m_s,
+        runtime.stage_delta_omega_body_rad_s,
+        runtime.stage_attitude_offset_body_xyzw,
+    );
     Ok(RigidBodySeparationStates {
         stack_body: runtime.stack_body,
         body: runtime.body,
@@ -2492,36 +2511,46 @@ where
     })
 }
 
-fn require_zero_welded_release_impulses(
-    separation: &RigidBodySeparation,
-) -> Result<(), RunnerError> {
-    if !separation
-        .stack_delta_v_body_m_s
-        .iter()
-        .chain(separation.stage_delta_v_body_m_s.iter())
-        .chain(separation.stack_delta_omega_body_rad_s.iter())
-        .chain(separation.stage_delta_omega_body_rad_s.iter())
-        .all(|value| value.abs() <= 1.0e-15)
-    {
-        return Err(RunnerError::UnsupportedScenario {
-            what: "welded_release_jettison propagation authority does not support manual \
-                   separation delta-v or angular-rate impulses"
-                .to_owned(),
-        });
-    }
-    let offset = separation.stage_attitude_offset_body_xyzw;
-    let identity_offset = offset[0].abs() <= 1.0e-15
-        && offset[1].abs() <= 1.0e-15
-        && offset[2].abs() <= 1.0e-15
-        && (offset[3] - 1.0).abs() <= 1.0e-15;
-    if !identity_offset {
-        return Err(RunnerError::UnsupportedScenario {
-            what: "welded_release_jettison propagation authority does not support departing-body \
-                   attitude offsets"
-                .to_owned(),
-        });
-    }
-    Ok(())
+fn apply_welded_release_impulses(
+    pre_split: &RigidBodyState,
+    released: &RigidBodyState,
+    mass_properties: MassProperties,
+    delta_v_body_m_s: [f64; 3],
+    delta_omega_body_rad_s: [f64; 3],
+    attitude_offset_body_xyzw: [f64; 4],
+) -> RigidBodyState {
+    let relative_body_m = mass_properties.center_of_mass_body.vector
+        - pre_split.mass_props.center_of_mass_body.vector;
+    let position_offset_eci_m = pre_split.orientation.q * relative_body_m;
+    let rotational_velocity_body_m_s = pre_split.angular_velocity.vector.cross(&relative_body_m);
+    let rotational_velocity_eci_m_s = pre_split.orientation.q * rotational_velocity_body_m_s;
+    let delta_v_eci_m_s = released.orientation.q
+        * Vector3::new(
+            delta_v_body_m_s[0],
+            delta_v_body_m_s[1],
+            delta_v_body_m_s[2],
+        );
+    let delta_omega_body = Vector3::new(
+        delta_omega_body_rad_s[0],
+        delta_omega_body_rad_s[1],
+        delta_omega_body_rad_s[2],
+    );
+    let offset = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        attitude_offset_body_xyzw[3],
+        attitude_offset_body_xyzw[0],
+        attitude_offset_body_xyzw[1],
+        attitude_offset_body_xyzw[2],
+    ));
+    RigidBodyState::new(
+        released.time,
+        Position3::from_vector(released.position.vector + position_offset_eci_m),
+        Velocity3::from_vector(
+            released.velocity.vector + rotational_velocity_eci_m_s + delta_v_eci_m_s,
+        ),
+        Quaternion::from_unit_quaternion(released.orientation.q * offset),
+        AngularVelocity3::from_vector(released.angular_velocity.vector + delta_omega_body),
+        mass_properties,
+    )
 }
 
 fn load_models(
@@ -7293,7 +7322,7 @@ once = true
     }
 
     #[test]
-    fn welded_release_jettison_authority_rejects_manual_impulses() {
+    fn welded_release_jettison_authority_applies_impulses_and_attitude_offset() {
         let initial_lane = r#"
 [[multi_body.initial_lane]]
 body_id = "booster"
@@ -7307,7 +7336,11 @@ angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
 event_id = "drop_booster"
 upper_body_id = "bus"
 lower_body_id = "booster"
-lower_delta_v_body_m_s = [0.0, 0.0, 0.1]
+upper_delta_v_body_m_s = [1.0, 0.0, 0.0]
+lower_delta_v_body_m_s = [0.0, 2.0, 0.0]
+upper_delta_omega_body_rad_s = [0.5, 0.0, 0.0]
+lower_delta_omega_body_rad_s = [0.0, 0.0, 0.25]
+lower_attitude_offset_body_xyzw = [0.0, 0.0, 0.7071067811865475, 0.7071067811865476]
 conserve_momentum = false
 
 [scenario_script]
@@ -7329,17 +7362,43 @@ once = true
         let mut session =
             RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
 
-        let err = session
+        session
             .step_once(&scenario.document, None)
-            .expect_err("welded-release jettison should reject manual impulses");
+            .expect("welded-release jettison should apply configured impulses");
+
+        let booster = body_id_from_scenario_text("booster");
+        let lane = separated_lane_state(&session, booster);
+        let stack_delta_v_eci = session.state().orientation.q * Vector3::new(1.0, 0.0, 0.0);
+        let stage_delta_v_eci = session.state().orientation.q * Vector3::new(0.0, 2.0, 0.0);
         assert!(
-            err.to_string().contains("manual separation delta-v"),
-            "unexpected error: {err}"
+            (session.state().velocity.vector - stack_delta_v_eci).norm() < 1.0e-12,
+            "stack delta-v should be applied: {:?}",
+            session.state().velocity.vector
         );
         assert!(
-            session.separated_bodies().is_empty(),
-            "failed welded-release jettison must not install a separated lane"
+            (lane.velocity.vector - stage_delta_v_eci).norm() < 1.0e-12,
+            "departing delta-v should be applied: {:?}",
+            lane.velocity.vector
         );
+        assert!(
+            (session.state().angular_velocity.vector.x - lane.angular_velocity.vector.x - 0.5)
+                .abs()
+                < 1.0e-12,
+            "stack tip-off should be applied: {:?}",
+            session.state().angular_velocity.vector
+        );
+        assert!(
+            (lane.angular_velocity.vector.z - session.state().angular_velocity.vector.z - 0.25)
+                .abs()
+                < 1.0e-12,
+            "departing tip-off should be applied: {:?}",
+            lane.angular_velocity.vector
+        );
+        let q = (session.state().orientation.q.inverse() * lane.orientation.q).into_inner();
+        assert!((q.i - 0.0).abs() < 1.0e-12);
+        assert!((q.j - 0.0).abs() < 1.0e-12);
+        assert!((q.k - std::f64::consts::FRAC_1_SQRT_2).abs() < 1.0e-12);
+        assert!((q.w - std::f64::consts::FRAC_1_SQRT_2).abs() < 1.0e-12);
     }
 
     #[test]
@@ -8720,8 +8779,10 @@ require_monotonic_time = true
         );
         assert_eq!(rv1_state.mass_props.mass_kg().to_bits(), 1.0_f64.to_bits());
         assert_eq!(rv2_state.mass_props.mass_kg().to_bits(), 1.0_f64.to_bits());
-        assert!((rv1_state.position.vector - session.state().position.vector).norm() < 1.0e-12);
-        assert!((rv2_state.position.vector - session.state().position.vector).norm() < 1.0e-12);
+        let rv1_offset = rv1_state.position.vector - session.state().position.vector;
+        let rv2_offset = rv2_state.position.vector - session.state().position.vector;
+        assert!((rv1_offset - Vector3::new(0.0, 0.0, -1.0)).norm() < 1.0e-12);
+        assert!((rv2_offset - Vector3::new(0.0, 0.0, 1.0)).norm() < 1.0e-12);
         assert!((rv1_state.velocity.vector - session.state().velocity.vector).norm() < 1.0e-12);
         assert!((rv2_state.velocity.vector - session.state().velocity.vector).norm() < 1.0e-12);
     }

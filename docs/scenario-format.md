@@ -3041,8 +3041,9 @@ departing lower body or bodies by releasing identity welded upper/lower
 multibody pairs with `release_welded_subtree_as_free_flyer()`, and installs the
 continuing and departing same-time rigid states through the explicit
 separation-state kernel API. This mode supports `jettison_stage` and
-`jettison_bodies`, but rejects manual separation delta-v or angular-rate
-impulses and departing-body attitude offsets. Setting it to
+`jettison_bodies`, and applies the declared separation delta-v, angular-rate
+tip-off, lower attitude offset, and mass-property COM-offset semantics after the
+welded release. Setting it to
 `"articulated_gimbal_root"` is a single-gimbal root-state handoff mode: it
 requires `primary_body_id` and exactly one `[[multi_body.gimbal_joint]]` whose
 `body_id` matches `primary_body_id`, rejects initial lanes, separation
