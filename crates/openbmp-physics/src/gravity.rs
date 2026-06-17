@@ -15,6 +15,9 @@
 //! * [`TesseralGravity`] — the first static non-zonal harmonic surface,
 //!   currently degree 2 / order 2, using Cartesian solid-harmonic
 //!   polynomials for deterministic tesseral and sectoral acceleration.
+//! * [`FiniteDifferencePinesGravity`] — a transitional normalized Pines
+//!   model that composes point mass with the bounded finite-difference
+//!   harmonic-correction oracle.
 //!
 //! All models implement the [`GravityModel`] trait and report
 //! failure via [`crate::error::PhysicsError`] (out-of-envelope, non-finite,
@@ -2317,6 +2320,158 @@ fn checked_triangular_count(row_count: usize) -> Option<usize> {
         .checked_div(2)
 }
 
+// ---------------------------------------------------------------------
+// FiniteDifferencePinesGravity
+// ---------------------------------------------------------------------
+
+/// Static normalized Pines gravity via symmetric finite differences.
+///
+/// This model evaluates point-mass gravity plus the harmonic correction from
+/// [`NormalizedHarmonicField::pines_potential_correction_acceleration_finite_difference_m_s2`].
+/// It is a bounded transition surface for WP-08.1 validation: useful for
+/// plumbing normalized fields through the public [`GravityModel`] trait and
+/// cross-checking low-degree terms, but not the final analytic high-degree
+/// Pines/Gottlieb production evaluator.
+///
+/// The input ECI vector is currently treated as body-fixed with axes aligned to
+/// ECI. A later force-stack slice will insert the Earth-orientation frame
+/// transform before this model is used for rotating-body production runs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FiniteDifferencePinesGravity {
+    mu_m3_s2: f64,
+    reference_radius_m: f64,
+    field: NormalizedHarmonicField,
+    truncation: HarmonicTruncation,
+    finite_difference_step_m: f64,
+}
+
+impl FiniteDifferencePinesGravity {
+    /// Construct a finite-difference normalized Pines gravity model.
+    ///
+    /// `field` is interpreted as a harmonic correction field; `Cbar00/Sbar00`
+    /// must therefore be exactly zero so the configured point-mass `µ` is not
+    /// double-counted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if gravity constants or the
+    /// finite-difference step are invalid, if the truncation exceeds either the
+    /// field envelope or the bounded Pines scratch envelopes, or if the field
+    /// carries a nonzero degree-0/order-0 coefficient.
+    pub fn new(
+        mu_m3_s2: f64,
+        reference_radius_m: f64,
+        field: NormalizedHarmonicField,
+        truncation: HarmonicTruncation,
+        finite_difference_step_m: f64,
+    ) -> Result<Self, PhysicsError> {
+        if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines gravity µ must be strictly positive and finite",
+            });
+        }
+        if !reference_radius_m.is_finite() || reference_radius_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines gravity reference radius must be strictly positive and finite",
+            });
+        }
+        if !finite_difference_step_m.is_finite() || finite_difference_step_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines gravity finite-difference step must be strictly positive and finite",
+            });
+        }
+        let truncation = HarmonicTruncation::for_normalized_field(
+            &field,
+            truncation.degree(),
+            truncation.order(),
+        )?;
+        if truncation.degree() > PINES_LEGENDRE_MAX_DEGREE {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines gravity truncation degree exceeds checked Legendre envelope",
+            });
+        }
+        if truncation.order() > HARMONIC_LONGITUDE_MAX_ORDER {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines gravity truncation order exceeds checked longitude envelope",
+            });
+        }
+        let (cbar00, sbar00) = field.coefficient(0, 0)?;
+        if cbar00 != 0.0 || sbar00 != 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines gravity correction field must not include a central C00 term",
+            });
+        }
+        Ok(Self {
+            mu_m3_s2,
+            reference_radius_m,
+            field,
+            truncation,
+            finite_difference_step_m,
+        })
+    }
+
+    /// Configured gravitational parameter in m^3/s^2.
+    #[must_use]
+    pub const fn mu_m3_s2(&self) -> f64 {
+        self.mu_m3_s2
+    }
+
+    /// Configured harmonic reference radius in metres.
+    #[must_use]
+    pub const fn reference_radius_m(&self) -> f64 {
+        self.reference_radius_m
+    }
+
+    /// Owned normalized harmonic correction field.
+    #[must_use]
+    pub const fn field(&self) -> &NormalizedHarmonicField {
+        &self.field
+    }
+
+    /// Configured harmonic truncation.
+    #[must_use]
+    pub const fn truncation(&self) -> HarmonicTruncation {
+        self.truncation
+    }
+
+    /// Symmetric finite-difference step in metres.
+    #[must_use]
+    pub const fn finite_difference_step_m(&self) -> f64 {
+        self.finite_difference_step_m
+    }
+}
+
+impl GravityModel for FiniteDifferencePinesGravity {
+    fn gravity_eci_m_s2(
+        &self,
+        position_eci: Position3<Eci>,
+        _time: SimTime,
+    ) -> Result<Vector3<f64>, PhysicsError> {
+        let r = position_eci.vector;
+        PinesSynthesisPoint::new(r, self.reference_radius_m)?;
+        let r2 = r.dot(&r);
+        let r_norm = r2.sqrt();
+        let r3 = r_norm * r2;
+        let central = (-self.mu_m3_s2 / r3) * r;
+        let correction = self
+            .field
+            .pines_potential_correction_acceleration_finite_difference_m_s2(
+                self.mu_m3_s2,
+                r,
+                self.reference_radius_m,
+                self.truncation,
+                self.finite_difference_step_m,
+            )?;
+        let acceleration = central + correction;
+        if !acceleration.iter().all(|value| value.is_finite()) {
+            return Err(PhysicsError::NonFinite {
+                reason: "finite-difference Pines gravity produced non-finite acceleration",
+            });
+        }
+        Ok(acceleration)
+    }
+}
+
 /// Degree-2 fully-normalized harmonic coefficients for [`TesseralGravity`].
 ///
 /// This is the ingestion-facing low-degree coefficient block used before the
@@ -3175,6 +3330,40 @@ mod tests {
             ],
         )
         .expect("finite normalized harmonic field")
+    }
+
+    fn normalized_field_from_degree_two(
+        coefficients: DegreeTwoTesseralCoefficients,
+    ) -> NormalizedHarmonicField {
+        NormalizedHarmonicField::new(
+            2,
+            2,
+            coefficients.tide_system(),
+            [
+                NormalizedHarmonicCoefficient::new(
+                    2,
+                    0,
+                    coefficients.c20() / fully_normalized_to_unnormalized_scale(2, 0).unwrap(),
+                    0.0,
+                )
+                .unwrap(),
+                NormalizedHarmonicCoefficient::new(
+                    2,
+                    1,
+                    coefficients.c21() / fully_normalized_to_unnormalized_scale(2, 1).unwrap(),
+                    coefficients.s21() / fully_normalized_to_unnormalized_scale(2, 1).unwrap(),
+                )
+                .unwrap(),
+                NormalizedHarmonicCoefficient::new(
+                    2,
+                    2,
+                    coefficients.c22() / fully_normalized_to_unnormalized_scale(2, 2).unwrap(),
+                    coefficients.s22() / fully_normalized_to_unnormalized_scale(2, 2).unwrap(),
+                )
+                .unwrap(),
+            ],
+        )
+        .expect("finite normalized degree-2 harmonic field")
     }
 
     fn load_egm2008_normalized_zonal_degree6_fixture() -> NormalizedHarmonicField {
@@ -4226,6 +4415,135 @@ mod tests {
                 10.0
             ),
             Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn finite_difference_pines_gravity_matches_degree_two_tesseral_model() {
+        let coefficients = DegreeTwoTesseralCoefficients::new(
+            -1.2e-3,
+            2.0e-6,
+            -3.0e-6,
+            4.0e-6,
+            -5.0e-6,
+            TideSystem::TideFree,
+        )
+        .unwrap();
+        let field = normalized_field_from_degree_two(coefficients);
+        let pines = FiniteDifferencePinesGravity::new(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            field,
+            HarmonicTruncation::new(2, 2).unwrap(),
+            10.0,
+        )
+        .unwrap();
+        let tesseral = TesseralGravity::new(WGS84_MU_M3_S2, WGS84_A_M, coefficients, 2, 2).unwrap();
+        let position = Position3::new(7_100_000.0, -800_000.0, 1_200_000.0);
+
+        let pines_acceleration = pines.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        let tesseral_acceleration = tesseral.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+
+        for axis in 0..3 {
+            assert_abs_diff_eq!(
+                pines_acceleration[axis],
+                tesseral_acceleration[axis],
+                epsilon = 5.0e-9
+            );
+        }
+    }
+
+    #[test]
+    fn finite_difference_pines_gravity_zero_field_reduces_to_point_mass() {
+        let field = NormalizedHarmonicField::new(0, 0, TideSystem::TideFree, []).unwrap();
+        let pines = FiniteDifferencePinesGravity::new(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            field,
+            HarmonicTruncation::new(0, 0).unwrap(),
+            10.0,
+        )
+        .unwrap();
+        let point_mass = PointMassGravity::wgs84();
+        let position = Position3::new(7_200_000.0, -900_000.0, 300_000.0);
+
+        let pines_acceleration = pines.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        let point_mass_acceleration = point_mass
+            .gravity_eci_m_s2(position, SimTime::ZERO)
+            .unwrap();
+
+        for axis in 0..3 {
+            assert_eq!(
+                pines_acceleration[axis].to_bits(),
+                point_mass_acceleration[axis].to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn finite_difference_pines_gravity_rejects_invalid_inputs() {
+        let field = NormalizedHarmonicField::new(
+            2,
+            0,
+            TideSystem::TideFree,
+            [NormalizedHarmonicCoefficient::new(2, 0, -WGS84_J2 / 5.0_f64.sqrt(), 0.0).unwrap()],
+        )
+        .unwrap();
+        let truncation = HarmonicTruncation::new(2, 0).unwrap();
+
+        assert!(matches!(
+            FiniteDifferencePinesGravity::new(0.0, WGS84_A_M, field.clone(), truncation, 10.0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            FiniteDifferencePinesGravity::new(WGS84_MU_M3_S2, 0.0, field.clone(), truncation, 10.0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            FiniteDifferencePinesGravity::new(
+                WGS84_MU_M3_S2,
+                WGS84_A_M,
+                field.clone(),
+                truncation,
+                0.0
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            FiniteDifferencePinesGravity::new(
+                WGS84_MU_M3_S2,
+                WGS84_A_M,
+                field.clone(),
+                HarmonicTruncation::new(2, 1).unwrap(),
+                10.0
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let central_field = NormalizedHarmonicField::new(
+            0,
+            0,
+            TideSystem::TideFree,
+            [NormalizedHarmonicCoefficient::new(0, 0, 1.0, 0.0).unwrap()],
+        )
+        .unwrap();
+        assert!(matches!(
+            FiniteDifferencePinesGravity::new(
+                WGS84_MU_M3_S2,
+                WGS84_A_M,
+                central_field,
+                HarmonicTruncation::new(0, 0).unwrap(),
+                10.0
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let model =
+            FiniteDifferencePinesGravity::new(WGS84_MU_M3_S2, WGS84_A_M, field, truncation, 10.0)
+                .unwrap();
+        assert!(matches!(
+            model.gravity_eci_m_s2(Position3::origin(), SimTime::ZERO),
+            Err(PhysicsError::OutOfEnvelope { .. })
         ));
     }
 

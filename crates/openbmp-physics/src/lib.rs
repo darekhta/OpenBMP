@@ -11,8 +11,9 @@
 //!   `WGS84_OMEGA_RAD_S`).
 //! * [`gravity`] — `GravityModel` trait + `ConstantGravity`,
 //!   `PointMassGravity`, `J2Gravity`, `TesseralGravity`,
-//!   `Egm2008ZonalGravity`, `RelativisticCorrection`, plus standard-gravity,
-//!   J2, SRP, and EGM2008 zonal-harmonic constants.
+//!   `FiniteDifferencePinesGravity`, `Egm2008ZonalGravity`,
+//!   `RelativisticCorrection`, plus standard-gravity, J2, SRP, and EGM2008
+//!   zonal-harmonic constants.
 //! * [`atmosphere`] — `AtmosphereModel` trait + `IsothermalAtmosphere`,
 //!   `UsStandard1976` (full 7-layer, 0–86 km), plus USSA76 constants
 //!   and closed-form helpers (`pressure_altitude_troposphere_m`).
@@ -104,13 +105,13 @@ pub use frames::{
 };
 pub use gravity::{
     ConstantGravity, DegreeTwoTesseralCoefficients, EGM2008_J3, EGM2008_J4, EGM2008_J5, EGM2008_J6,
-    EGM2008_MAX_DEGREE, Egm2008ZonalGravity, GravityModel, HARMONIC_LONGITUDE_MAX_ORDER,
-    HarmonicLongitudeTrigonometry, HarmonicTruncation, J2Gravity, NormalizedHarmonicCoefficient,
-    NormalizedHarmonicField, NormalizedHarmonicFieldIter, PINES_LEGENDRE_MAX_DEGREE,
-    PinesLegendreTable, PinesLongitudePolynomials, PinesPotentialSum, PinesSynthesisPoint,
-    PointMassGravity, RelativisticCorrection, SOLAR_RADIATION_PRESSURE_1_AU_N_M2,
-    SPEED_OF_LIGHT_M_S, STANDARD_GRAVITY_M_S2, TESSERAL_GRAVITY_MAX_DEGREE,
-    TESSERAL_GRAVITY_MAX_ORDER, TesseralGravity, TideSystem, WGS84_J2,
+    EGM2008_MAX_DEGREE, Egm2008ZonalGravity, FiniteDifferencePinesGravity, GravityModel,
+    HARMONIC_LONGITUDE_MAX_ORDER, HarmonicLongitudeTrigonometry, HarmonicTruncation, J2Gravity,
+    NormalizedHarmonicCoefficient, NormalizedHarmonicField, NormalizedHarmonicFieldIter,
+    PINES_LEGENDRE_MAX_DEGREE, PinesLegendreTable, PinesLongitudePolynomials, PinesPotentialSum,
+    PinesSynthesisPoint, PointMassGravity, RelativisticCorrection,
+    SOLAR_RADIATION_PRESSURE_1_AU_N_M2, SPEED_OF_LIGHT_M_S, STANDARD_GRAVITY_M_S2,
+    TESSERAL_GRAVITY_MAX_DEGREE, TESSERAL_GRAVITY_MAX_ORDER, TesseralGravity, TideSystem, WGS84_J2,
     fully_normalized_to_unnormalized_scale, standard_down_z_eci_m_s2,
 };
 #[cfg(feature = "std")]
