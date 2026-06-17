@@ -2846,6 +2846,26 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize)]
+    struct SpatialV2CompatibleOracleFixture {
+        source: SpatialV2CompatibleOracleSource,
+        q: Vec<f64>,
+        qd: Vec<f64>,
+        generalized_forces: Vec<f64>,
+        root_acceleration: SpatialMotionFixture,
+        external_forces: Vec<SpatialForceFixture>,
+        expected_qdd: Vec<f64>,
+        tolerances: SpatialV2CompatibleOracleThresholds,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SpatialV2CompatibleOracleSource {
+        solver: String,
+        export_format: String,
+        independence: String,
+        notes: String,
+    }
+
+    #[derive(Debug, Deserialize)]
     struct SpatialMotionFixture {
         angular: [f64; 3],
         linear: [f64; 3],
@@ -2861,6 +2881,11 @@ mod tests {
     struct AbaToleranceThresholds {
         aba_dense_max_abs: f64,
         rnea_round_trip_max_abs: f64,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SpatialV2CompatibleOracleThresholds {
+        qdd_max_abs: f64,
     }
 
     #[derive(Debug, Deserialize)]
@@ -2885,6 +2910,13 @@ mod tests {
             "../tests/expected/aba-chain-tolerance-v1.toml"
         ))
         .expect("ABA tolerance fixture parses")
+    }
+
+    fn load_spatial_v2_compatible_oracle_fixture() -> SpatialV2CompatibleOracleFixture {
+        toml::from_str(include_str!(
+            "../tests/expected/spatial-v2-compatible-aba-oracle-chain-v1.toml"
+        ))
+        .expect("Spatial_v2-compatible ABA oracle fixture parses")
     }
 
     fn load_double_pendulum_energy_momentum_fixture() -> DoublePendulumEnergyMomentumFixture {
@@ -4135,6 +4167,50 @@ mod tests {
             &fixture.generalized_forces,
             fixture.tolerances.rnea_round_trip_max_abs,
             "RNEA round trip",
+        );
+    }
+
+    #[test]
+    fn forward_dynamics_aba_matches_spatial_v2_compatible_oracle_fixture() {
+        let fixture = load_spatial_v2_compatible_oracle_fixture();
+        let tree = sample_tree();
+        assert_eq!(fixture.source.export_format, "spatial-v2-aba-qdd-v1");
+        assert_eq!(fixture.source.independence, "self-consistency");
+        assert_eq!(fixture.source.solver, "openbmp-multibody");
+        assert!(
+            fixture
+                .source
+                .notes
+                .contains("not an independent Featherstone Spatial_v2 run")
+        );
+        assert_eq!(fixture.q.len(), tree.n_q());
+        assert_eq!(fixture.qd.len(), tree.n_qd());
+        assert_eq!(fixture.generalized_forces.len(), tree.n_qd());
+        assert_eq!(fixture.expected_qdd.len(), tree.n_qd());
+        assert_eq!(fixture.external_forces.len(), tree.bodies().len());
+
+        let state = MultibodyState::new(SimTime::ZERO, fixture.q, fixture.qd);
+        let root_acceleration = motion_from_fixture(&fixture.root_acceleration);
+        let external_forces: Vec<SpatialForce> = fixture
+            .external_forces
+            .iter()
+            .map(force_from_fixture)
+            .collect();
+
+        let aba = tree
+            .forward_dynamics_aba_at_state(
+                &state,
+                &fixture.generalized_forces,
+                root_acceleration,
+                &external_forces,
+            )
+            .unwrap();
+
+        assert_max_abs_diff(
+            &aba,
+            &fixture.expected_qdd,
+            fixture.tolerances.qdd_max_abs,
+            "Spatial_v2-compatible ABA oracle qdd",
         );
     }
 

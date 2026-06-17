@@ -228,6 +228,11 @@ coordinates/rates (`REQ-MULTIBODY-036`).
 The same forecast path now projects articulated root slots back into
 `RigidBodyState`, preserving parent mass properties and proving powered
 translational and angular root response (`REQ-MULTIBODY-037`).
+The multibody crate now also ingests a provenance-bearing
+Spatial_v2-compatible ABA oracle fixture for the sample tree and compares ABA
+accelerations against the checked static vector (`REQ-MULTIBODY-038`); the
+fixture is explicitly labeled self-consistency, so it does not claim an
+independent Featherstone Spatial_v2 run.
 Missing for full WP-01.1:
 replacing the rigid-kernel propagation path, broader variable-mass multibody
 propagation beyond the primary-root and powered separated-lane shadow forecasts,
@@ -235,7 +240,8 @@ full momentum-conserving welded-to-free joint-release propagation and full
 separated-body multibody propagation beyond first-post-release separated shadow
 forecasts and the substrate handoff, full orbital-ascent gimballed validation,
 authoritative articulated thrust propagation including authoritative two-axis
-propagation, and Spatial_v2 oracle checks.
+propagation, and the independent Spatial_v2 oracle matrix across at least three
+small random trees.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO

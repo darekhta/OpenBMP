@@ -223,6 +223,12 @@ statement = "Prepared rigid-body sessions project each non-authoritative articul
 verification = ["V-MULTIBODY-037"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-038"
+title = "The multibody substrate ingests Spatial_v2-compatible ABA oracle fixtures"
+statement = "The openbmp-multibody crate ingests a provenance-bearing TOML fixture shaped for offline Spatial_v2 ABA qdd exports, validates source metadata and q/qd/generalized-force/root-acceleration/external-force dimensions against the sample free-flyer/revolute/prismatic tree, computes ABA forward dynamics, and compares the resulting generalized accelerations against a checked static expected_qdd vector at <= 1e-12. The checked-in fixture is explicitly labeled self-consistency and therefore makes no claim that an independent Featherstone Spatial_v2 run or the required three-tree external oracle matrix is complete."
+verification = ["V-MULTIBODY-038"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1628,6 +1634,27 @@ contains = [
   "REQ-MULTIBODY-037",
 ]
 requirements = ["REQ-MULTIBODY-037"]
+
+[[verification]]
+id = "V-MULTIBODY-038"
+kind = "test"
+command = "cargo test -p openbmp-multibody forward_dynamics_aba_matches_spatial_v2_compatible_oracle_fixture --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "crates/openbmp-multibody/tests/expected/spatial-v2-compatible-aba-oracle-chain-v1.toml",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "SpatialV2CompatibleOracleFixture",
+  "forward_dynamics_aba_matches_spatial_v2_compatible_oracle_fixture",
+  "spatial-v2-compatible-aba-oracle-chain-v1.toml",
+  "expected_qdd",
+  "independence = \"self-consistency\"",
+  "not an independent Featherstone Spatial_v2 run",
+  "REQ-MULTIBODY-038",
+]
+requirements = ["REQ-MULTIBODY-038"]
 
 [[verification]]
 id = "V-SIL-001"
