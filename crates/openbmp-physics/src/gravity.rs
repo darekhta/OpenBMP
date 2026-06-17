@@ -1088,6 +1088,12 @@ const FULLY_NORMALIZED_SCALE_MAX_DEGREE: usize = 4096;
 /// chooses a runtime policy.
 pub const HARMONIC_LONGITUDE_MAX_ORDER: usize = 4096;
 
+/// Maximum degree accepted by [`PinesLegendreTable`].
+///
+/// This comfortably covers the planned EGM2008 70/120/360 runtime tiers while
+/// keeping scratch allocation bounded before full synthesis lands.
+pub const PINES_LEGENDRE_MAX_DEGREE: usize = 720;
+
 /// Scale a real fully-normalized harmonic coefficient into the unnormalized
 /// associated-Legendre convention used by the current low-degree evaluators.
 ///
@@ -1356,6 +1362,200 @@ impl HarmonicTruncation {
     pub const fn order(&self) -> usize {
         self.order
     }
+}
+
+/// Holmes-Featherstone normalized Legendre table for the Pines kernel.
+///
+/// The table stores the derived Pines `A[n,m](u)` functions for
+/// `0 <= n <= max_degree` and `0 <= m <= min(n, max_order)`, where `u = z/r`
+/// is the Cartesian direction cosine. It follows the recurrence documented in
+/// `docs/parity/08-environment-gravity-and-frames.md` and is intended as a
+/// reusable substrate for the future singularity-free harmonic synthesis
+/// kernel. It does not assemble gravity acceleration by itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PinesLegendreTable {
+    u: f64,
+    max_degree: usize,
+    max_order: usize,
+    values: Vec<f64>,
+}
+
+impl PinesLegendreTable {
+    /// Build a normalized Pines `A[n,m](u)` table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `u` is non-finite or
+    /// outside `[-1, 1]`, if `max_order > max_degree`, or if `max_degree`
+    /// exceeds [`PINES_LEGENDRE_MAX_DEGREE`]. Returns
+    /// [`PhysicsError::NonFinite`] if the recurrence produces a non-finite
+    /// value.
+    pub fn new(u: f64, max_degree: usize, max_order: usize) -> Result<Self, PhysicsError> {
+        if !u.is_finite() || !(-1.0..=1.0).contains(&u) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines Legendre direction cosine must be finite and in [-1, 1]",
+            });
+        }
+        if max_degree > PINES_LEGENDRE_MAX_DEGREE {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines Legendre degree exceeds checked high-degree envelope",
+            });
+        }
+        HarmonicTruncation::new(max_degree, max_order)?;
+        let storage_len = normalized_harmonic_storage_len(max_degree, max_order).ok_or(
+            PhysicsError::InvalidParameter {
+                reason: "Pines Legendre table storage size overflowed",
+            },
+        )?;
+        let mut values = Vec::with_capacity(storage_len);
+        values.resize(storage_len, 0.0);
+
+        set_pines_legendre_value(&mut values, max_order, 0, 0, 1.0)?;
+        if max_degree >= 1 {
+            let sqrt_3 = 3.0_f64.sqrt();
+            set_pines_legendre_value(&mut values, max_order, 1, 0, u * sqrt_3)?;
+            if max_order >= 1 {
+                set_pines_legendre_value(&mut values, max_order, 1, 1, sqrt_3)?;
+            }
+        }
+
+        for order in 2..=max_degree.min(max_order) {
+            let order_f64 = harmonic_index_to_f64(order)?;
+            let factor = ((2.0 * order_f64 + 1.0) / (2.0 * order_f64)).sqrt();
+            let previous =
+                pines_legendre_value_from_slice(&values, max_order, order - 1, order - 1)?;
+            set_pines_legendre_value(&mut values, max_order, order, order, factor * previous)?;
+        }
+
+        for order in 0..=max_order {
+            let start_degree = if order == 0 { 2 } else { order + 1 };
+            if start_degree > max_degree {
+                continue;
+            }
+            for degree in start_degree..=max_degree {
+                let g = pines_legendre_g_factor(degree, order)?;
+                let previous =
+                    pines_legendre_value_from_slice(&values, max_order, degree - 1, order)?;
+                let h_previous = if degree == order + 1 {
+                    0.0
+                } else {
+                    pines_legendre_h_factor(degree, order)?
+                        * pines_legendre_value_from_slice(&values, max_order, degree - 2, order)?
+                };
+                let value = u * g * previous - h_previous;
+                if !value.is_finite() {
+                    return Err(PhysicsError::NonFinite {
+                        reason: "Pines Legendre recurrence produced non-finite output",
+                    });
+                }
+                set_pines_legendre_value(&mut values, max_order, degree, order, value)?;
+            }
+        }
+
+        Ok(Self {
+            u,
+            max_degree,
+            max_order,
+            values,
+        })
+    }
+
+    /// Direction cosine `u = z/r`.
+    #[must_use]
+    pub const fn u(&self) -> f64 {
+        self.u
+    }
+
+    /// Maximum tabulated harmonic degree.
+    #[must_use]
+    pub const fn max_degree(&self) -> usize {
+        self.max_degree
+    }
+
+    /// Maximum tabulated harmonic order.
+    #[must_use]
+    pub const fn max_order(&self) -> usize {
+        self.max_order
+    }
+
+    /// Number of packed table slots.
+    #[must_use]
+    pub fn storage_len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Return `A[n,m](u)` for a valid degree/order pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if the request is outside the
+    /// table envelope or has `order > degree`.
+    pub fn value(&self, degree: usize, order: usize) -> Result<f64, PhysicsError> {
+        HarmonicTruncation::within_envelope(degree, order, self.max_degree, self.max_order)?;
+        pines_legendre_value_from_slice(&self.values, self.max_order, degree, order)
+    }
+}
+
+fn set_pines_legendre_value(
+    values: &mut [f64],
+    max_order: usize,
+    degree: usize,
+    order: usize,
+    value: f64,
+) -> Result<(), PhysicsError> {
+    let index = normalized_harmonic_index(max_order, degree, order).ok_or(
+        PhysicsError::InvalidParameter {
+            reason: "Pines Legendre table index outside storage envelope",
+        },
+    )?;
+    let slot = values
+        .get_mut(index)
+        .ok_or(PhysicsError::InvalidParameter {
+            reason: "Pines Legendre table index exceeded storage length",
+        })?;
+    *slot = value;
+    Ok(())
+}
+
+fn pines_legendre_value_from_slice(
+    values: &[f64],
+    max_order: usize,
+    degree: usize,
+    order: usize,
+) -> Result<f64, PhysicsError> {
+    let index = normalized_harmonic_index(max_order, degree, order).ok_or(
+        PhysicsError::InvalidParameter {
+            reason: "Pines Legendre table lookup outside storage envelope",
+        },
+    )?;
+    values
+        .get(index)
+        .copied()
+        .ok_or(PhysicsError::InvalidParameter {
+            reason: "Pines Legendre table lookup exceeded storage length",
+        })
+}
+
+fn pines_legendre_g_factor(degree: usize, order: usize) -> Result<f64, PhysicsError> {
+    let n = harmonic_index_to_f64(degree)?;
+    let m = harmonic_index_to_f64(order)?;
+    Ok(((2.0 * n + 1.0) * (2.0 * n - 1.0) / ((n - m) * (n + m))).sqrt())
+}
+
+fn pines_legendre_h_factor(degree: usize, order: usize) -> Result<f64, PhysicsError> {
+    let n = harmonic_index_to_f64(degree)?;
+    let m = harmonic_index_to_f64(order)?;
+    Ok(
+        ((2.0 * n + 1.0) * (n + m - 1.0) * (n - m - 1.0) / ((2.0 * n - 3.0) * (n + m) * (n - m)))
+            .sqrt(),
+    )
+}
+
+fn harmonic_index_to_f64(value: usize) -> Result<f64, PhysicsError> {
+    let value_u32 = u32::try_from(value).map_err(|_| PhysicsError::InvalidParameter {
+        reason: "harmonic index does not fit checked integer range",
+    })?;
+    Ok(f64::from(value_u32))
 }
 
 /// One fully-normalized spherical-harmonic coefficient pair.
@@ -3251,6 +3451,68 @@ mod tests {
         ));
         assert!(matches!(
             HarmonicTruncation::for_normalized_field(&field, 3, 2),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tesseral_pines_legendre_table_matches_low_degree_closed_form() {
+        let u = 0.37_f64;
+        let table = PinesLegendreTable::new(u, 4, 4).unwrap();
+
+        assert_eq!(table.u().to_bits(), u.to_bits());
+        assert_eq!(table.max_degree(), 4);
+        assert_eq!(table.max_order(), 4);
+        assert_eq!(table.storage_len(), 15);
+
+        assert_abs_diff_eq!(table.value(0, 0).unwrap(), 1.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(
+            table.value(1, 0).unwrap(),
+            3.0_f64.sqrt() * u,
+            epsilon = 1.0e-15
+        );
+        assert_abs_diff_eq!(
+            table.value(1, 1).unwrap(),
+            3.0_f64.sqrt(),
+            epsilon = 1.0e-15
+        );
+        assert_abs_diff_eq!(
+            table.value(2, 0).unwrap(),
+            0.5 * 5.0_f64.sqrt() * (3.0 * u * u - 1.0),
+            epsilon = 1.0e-15
+        );
+        assert_abs_diff_eq!(
+            table.value(2, 1).unwrap(),
+            15.0_f64.sqrt() * u,
+            epsilon = 1.0e-15
+        );
+        assert_abs_diff_eq!(
+            table.value(2, 2).unwrap(),
+            0.5 * 15.0_f64.sqrt(),
+            epsilon = 1.0e-15
+        );
+        assert!(matches!(
+            table.value(3, 4),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tesseral_pines_legendre_table_rejects_invalid_inputs() {
+        assert!(matches!(
+            PinesLegendreTable::new(f64::NAN, 0, 0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            PinesLegendreTable::new(1.01, 0, 0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            PinesLegendreTable::new(0.0, 2, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            PinesLegendreTable::new(0.0, PINES_LEGENDRE_MAX_DEGREE + 1, 0),
             Err(PhysicsError::InvalidParameter { .. })
         ));
     }
