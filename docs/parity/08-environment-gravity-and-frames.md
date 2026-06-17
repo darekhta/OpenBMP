@@ -90,11 +90,11 @@ above. No artifact in this dimension ever claims `flight-qualified` / `certified
 
 Verified by reading the actual files (paths absolute under the repo root).
 
-### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (2968 lines)
+### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (3101 lines)
 
 - `trait GravityModel { fn gravity_eci_m_s2(&self, position_eci, time) -> Result<Vector3<f64>, PhysicsError> }` — the single environment-side acceleration surface used by current gravity/perturbation models; ephemeris-backed paths vary with time.
 - `ConstantGravity`, `PointMassGravity` (`−µ/r² r̂`), `J2Gravity` (point-mass + J₂ in closed Cartesian form, Vallado §8.6).
-- `Egm2008ZonalGravity` — **zonal-only** truncation J₂…J₆, **hard-capped at `EGM2008_MAX_DEGREE = 6`** (fixed-size arrays; `new(...)` rejects `degree ∉ [2,6]`).
+- `Egm2008ZonalGravity` — **zonal-only** truncation J₂…J₆, **hard-capped at `EGM2008_MAX_DEGREE = 6`** (fixed-size arrays; `new(...)` rejects `degree ∉ [2,6]`). It can now build the same zonal truncation from `NormalizedHarmonicField` zonal `Cbar_n0` entries via `J_n = -Cbar_n0 sqrt(2n + 1)`, preserving default-zero missing zonals and fail-closed field-envelope validation.
 - `TesseralGravity` — first WP-08.1 substrate: a static degree-2/order-2 ECI
   harmonic surface with `DegreeTwoTesseralCoefficients`,
   `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
@@ -651,9 +651,11 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   evaluator includes C21/S21 tesseral and C22/S22 sectoral terms through
   Cartesian solid-harmonic polynomials, the low-degree ingestion bridge converts
   fully-normalized degree-2 blocks and extracts them from a normalized harmonic
-  field parsed from `data/gravity/wgs84-degree2-normalized-v1.toml`, and tests
-  prove non-zonal acceleration, near-pole finite evaluation, point-mass
-  degeneration, default-zero missing coefficients, and fail-closed unsupported
+  field parsed from `data/gravity/wgs84-degree2-normalized-v1.toml`, and the
+  existing `Egm2008ZonalGravity` J2-J6 truncation can be rebuilt from normalized
+  zonal field coefficients. Tests prove non-zonal acceleration, near-pole finite
+  evaluation, point-mass degeneration, default-zero missing coefficients,
+  normalized-field zonal equivalence, and fail-closed unsupported
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:
   runtime-selectable high-degree Pines synthesis, independent normalized

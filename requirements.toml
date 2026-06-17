@@ -489,7 +489,7 @@ verification = ["V-TRAJOPT-002"]
 [[requirements]]
 id = "REQ-ENV-001"
 title = "The physics layer exposes a first tesseral gravity substrate"
-statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a reusable NormalizedHarmonicField / NormalizedHarmonicCoefficient substrate that stores Cbar/Sbar pairs in deterministic packed (n, m) order, defaults missing in-envelope coefficients to zero, and rejects duplicate or out-of-envelope entries, a provenance-pinned WGS84 normalized degree-2 fixture, a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, finite Cartesian evaluation near the pole, and deterministic non-zonal acceleration for sectoral/tesseral terms while making no high-degree EGM2008 or Pines/Gottlieb completion claim."
+statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a reusable NormalizedHarmonicField / NormalizedHarmonicCoefficient substrate that stores Cbar/Sbar pairs in deterministic packed (n, m) order, defaults missing in-envelope coefficients to zero, rejects duplicate or out-of-envelope entries, and can rebuild the current Egm2008ZonalGravity J2-J6 truncation from normalized zonal Cbar_n0 entries, a provenance-pinned WGS84 normalized degree-2 fixture, a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, finite Cartesian evaluation near the pole, and deterministic non-zonal acceleration for sectoral/tesseral terms while making no high-degree EGM2008 or Pines/Gottlieb completion claim."
 verification = ["V-ENV-001"]
 
 [[requirements]]
@@ -2757,7 +2757,7 @@ requirements = ["REQ-TRAJOPT-002"]
 [[verification]]
 id = "V-ENV-001"
 kind = "test"
-command = "cargo test -p openbmp-physics gravity::tests::tesseral --locked"
+command = "cargo test -p openbmp-physics gravity::tests --locked"
 paths = [
   "crates/openbmp-physics/src/gravity.rs",
   "crates/openbmp-physics/src/lib.rs",
@@ -2768,6 +2768,7 @@ paths = [
 ]
 contains = [
   "TesseralGravity",
+  "Egm2008ZonalGravity",
   "DegreeTwoTesseralCoefficients",
   "NormalizedDegreeTwoTesseralCoefficients",
   "NormalizedHarmonicCoefficient",
@@ -2776,6 +2777,7 @@ contains = [
   "from_normalized_field",
   "from_fully_normalized",
   "normalized_degree_two_tesseral_coefficients",
+  "fully_normalized_zonal_scale",
   "wgs84-degree2-normalized-v1.toml",
   "TideSystem",
   "TESSERAL_GRAVITY_MAX_DEGREE",
@@ -2789,6 +2791,9 @@ contains = [
   "tesseral_gravity_sectoral_term_changes_longitude_acceleration",
   "tesseral_gravity_tesseral_terms_are_finite_near_pole",
   "tesseral_gravity_rejects_unsupported_degree_order_and_nonfinite_coefficients",
+  "egm2008_zonal_from_normalized_field_matches_builtin_zonals",
+  "egm2008_zonal_from_normalized_field_defaults_missing_zonals_to_zero",
+  "egm2008_zonal_from_normalized_field_rejects_bad_degree_envelope",
   "WP-08.1 is now **partial**",
   "**implementation_status:** partial",
 ]

@@ -1950,6 +1950,42 @@ impl Egm2008ZonalGravity {
         })
     }
 
+    /// Construct the zonal `J_2..J_n` truncation from a fully-normalized
+    /// harmonic coefficient field.
+    ///
+    /// Fully-normalized zonal coefficients convert through
+    /// `J_n = -Cbar_n0 * sqrt(2n + 1)`, matching the degree-2 convention used
+    /// by [`NormalizedDegreeTwoTesseralCoefficients`]. Missing in-envelope
+    /// zonal entries default to zero through [`NormalizedHarmonicField`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] for invalid gravity
+    /// constants, requested degree outside `[2, 6]`, requested degree outside
+    /// the field envelope, or non-finite converted coefficients.
+    pub fn from_normalized_field(
+        mu_m3_s2: f64,
+        r_e_m: f64,
+        field: &NormalizedHarmonicField,
+        degree: usize,
+    ) -> Result<Self, PhysicsError> {
+        if degree > field.max_degree() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "requested EGM2008 zonal degree outside normalized harmonic field envelope",
+            });
+        }
+        let mut j_n = [0.0; EGM2008_MAX_DEGREE - 1];
+        for n in 2..=degree {
+            let (cbar_n0, _) = field.coefficient(n, 0)?;
+            j_n[n - 2] = if cbar_n0 == 0.0 {
+                0.0
+            } else {
+                -cbar_n0 * fully_normalized_zonal_scale(n)?
+            };
+        }
+        Self::new(mu_m3_s2, r_e_m, j_n, degree)
+    }
+
     /// WGS84 / EGM2008-zonal defaults: `µ = WGS84_MU_M3_S2`, `R_e =
     /// WGS84_A_M`, `J_n` from the public Pavlis et al. 2012 tables,
     /// truncation at degree 6.
@@ -1985,6 +2021,19 @@ impl Egm2008ZonalGravity {
     #[must_use]
     pub const fn j_n(&self) -> [f64; EGM2008_MAX_DEGREE - 1] {
         self.j_n
+    }
+}
+
+fn fully_normalized_zonal_scale(degree: usize) -> Result<f64, PhysicsError> {
+    match degree {
+        2 => Ok(5.0_f64.sqrt()),
+        3 => Ok(7.0_f64.sqrt()),
+        4 => Ok(3.0),
+        5 => Ok(11.0_f64.sqrt()),
+        6 => Ok(13.0_f64.sqrt()),
+        _ => Err(PhysicsError::InvalidParameter {
+            reason: "fully-normalized zonal bridge currently supports degrees 2 through 6",
+        }),
     }
 }
 
@@ -2867,6 +2916,90 @@ mod tests {
                 assert_eq!(g_zonal[axis].to_bits(), g_j2[axis].to_bits());
             }
         }
+    }
+
+    #[test]
+    fn egm2008_zonal_from_normalized_field_matches_builtin_zonals() {
+        let normalized = [
+            NormalizedHarmonicCoefficient::new(2, 0, -WGS84_J2 / 5.0_f64.sqrt(), 0.0).unwrap(),
+            NormalizedHarmonicCoefficient::new(3, 0, -EGM2008_J3 / 7.0_f64.sqrt(), 0.0).unwrap(),
+            NormalizedHarmonicCoefficient::new(4, 0, -EGM2008_J4 / 3.0, 0.0).unwrap(),
+            NormalizedHarmonicCoefficient::new(5, 0, -EGM2008_J5 / 11.0_f64.sqrt(), 0.0).unwrap(),
+            NormalizedHarmonicCoefficient::new(6, 0, -EGM2008_J6 / 13.0_f64.sqrt(), 0.0).unwrap(),
+        ];
+        let field = NormalizedHarmonicField::new(6, 0, TideSystem::TideFree, normalized).unwrap();
+        let from_field =
+            Egm2008ZonalGravity::from_normalized_field(WGS84_MU_M3_S2, WGS84_A_M, &field, 6)
+                .unwrap();
+        let direct = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+
+        assert_eq!(from_field.degree(), direct.degree());
+        let from_field_j = from_field.j_n();
+        let direct_j = direct.j_n();
+        for degree in 2..=6 {
+            assert_abs_diff_eq!(
+                from_field_j[degree - 2],
+                direct_j[degree - 2],
+                epsilon = 1.0e-21
+            );
+        }
+
+        let positions = [
+            at_xyz(7_200_000.0, -1_300_000.0, 900_000.0),
+            at_xyz(WGS84_A_M * 0.6, 0.0, WGS84_A_M * 0.8),
+        ];
+        for position in positions {
+            let from_field_accel = from_field
+                .gravity_eci_m_s2(position, SimTime::ZERO)
+                .unwrap();
+            let direct_accel = direct.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+            for axis in 0..3 {
+                assert_abs_diff_eq!(
+                    from_field_accel[axis],
+                    direct_accel[axis],
+                    epsilon = 1.0e-15
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn egm2008_zonal_from_normalized_field_defaults_missing_zonals_to_zero() {
+        let field = NormalizedHarmonicField::new(
+            6,
+            0,
+            TideSystem::TideFree,
+            [NormalizedHarmonicCoefficient::new(2, 0, -WGS84_J2 / 5.0_f64.sqrt(), 0.0).unwrap()],
+        )
+        .unwrap();
+        let zonal =
+            Egm2008ZonalGravity::from_normalized_field(WGS84_MU_M3_S2, WGS84_A_M, &field, 4)
+                .unwrap();
+
+        let j_n = zonal.j_n();
+        assert_abs_diff_eq!(j_n[0], WGS84_J2, epsilon = 1.0e-21);
+        assert_eq!(j_n[1].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(j_n[2].to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn egm2008_zonal_from_normalized_field_rejects_bad_degree_envelope() {
+        let field = NormalizedHarmonicField::new(
+            2,
+            0,
+            TideSystem::TideFree,
+            [NormalizedHarmonicCoefficient::new(2, 0, -WGS84_J2 / 5.0_f64.sqrt(), 0.0).unwrap()],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            Egm2008ZonalGravity::from_normalized_field(WGS84_MU_M3_S2, WGS84_A_M, &field, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            Egm2008ZonalGravity::from_normalized_field(WGS84_MU_M3_S2, WGS84_A_M, &field, 1),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
