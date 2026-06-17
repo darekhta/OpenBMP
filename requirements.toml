@@ -97,6 +97,12 @@ statement = "The openbmp-runner prepared rigid-body session maintains a primary 
 verification = ["V-MULTIBODY-016"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-017"
+title = "The primary multibody shadow exercises gimballed engine loads"
+statement = "The openbmp-runner primary root-free-flyer shadow is covered by a session-stepped synthetic gimballed-engine scenario that fires a real scenario_script engine_command, lets the runner apply the command through EngineRack, publishes the resulting engine snapshot to the kernel-held adapter views, and proves the multibody shadow derivative sees nonzero engine-cluster force and moment contributions from a mounted, pitch-gimballed liquid engine. The runner test proves the second pre-step shadow derivative carries signed angular and linear acceleration slots from off-axis axial thrust plus lateral gimbal thrust while making no claim that the rigid kernel has been replaced by a multibody kernel, that a full gimballed ascent has been validated, or that Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-017"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1073,6 +1079,25 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-016"]
+
+[[verification]]
+id = "V-MULTIBODY-017"
+kind = "test"
+command = "cargo test -p openbmp-runner primary_multibody_shadow_mirrors_gimballed_engine_loads --locked && cargo test -p openbmp-runner primary_multibody_shadow_mirrors_pre_step_runner_loads --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO",
+  "primary_multibody_shadow_mirrors_gimballed_engine_loads",
+  "EngineRack",
+  "REQ-MULTIBODY-017",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-017"]
 
 [[verification]]
 id = "V-SIL-001"

@@ -147,10 +147,14 @@ primary-body mass resources before each authoritative rigid-kernel step, and
 evaluates the current runner force/moment stacks with held rack snapshots,
 environment/wind, and mission-phase views; a session-stepped regression proves
 two pre-step shadow refreshes carry the expected gravity/direct-torque loads
-without changing rigid telemetry authority (`REQ-MULTIBODY-016`). Missing for
-full WP-01.1: replacing the rigid-kernel propagation path, separated-body
-multibody propagation, gimballed ascent exercise, and Spatial_v2 oracle checks.
-WP-01.2 … WP-01.6: **not started**.
+without changing rigid telemetry authority (`REQ-MULTIBODY-016`). A second
+session-stepped synthetic scenario fires a real `scenario_script`
+`engine_command`, publishes the resulting gimballed liquid-engine snapshot
+through the runner/kernel adapter views, and proves the primary shadow
+derivative sees signed engine-cluster force and moment contributions
+(`REQ-MULTIBODY-017`). Missing for full WP-01.1: replacing the rigid-kernel
+propagation path, separated-body multibody propagation, full gimballed ascent
+validation, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 

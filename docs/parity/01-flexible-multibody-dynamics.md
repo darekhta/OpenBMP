@@ -772,10 +772,14 @@ justification first, reviewed before the implementation lands.
   current runner force/moment stacks with held rack snapshots,
   environment/wind, and mission-phase views, and records the shadow derivative;
   a session-stepped regression proves two pre-step refreshes carry the expected
-  gravity/direct-torque loads without changing rigid telemetry authority.
+  gravity/direct-torque loads without changing rigid telemetry authority. A
+  second session-stepped synthetic scenario fires a real `scenario_script`
+  `engine_command`, publishes the resulting gimballed liquid-engine snapshot
+  through the runner/kernel adapter views, and proves the primary shadow
+  derivative sees signed engine-cluster force and moment contributions.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   separated-body multibody propagation, double-pendulum tolerance table,
-  Spatial_v2 oracle fixtures, and a gimballed ascent exercise.
+  Spatial_v2 oracle fixtures, and full gimballed ascent validation.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

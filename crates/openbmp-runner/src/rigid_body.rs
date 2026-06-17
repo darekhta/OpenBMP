@@ -4687,6 +4687,56 @@ mod tests {
         assert!(shadow.last_derivative.is_some());
     }
 
+    #[test]
+    fn primary_multibody_shadow_mirrors_gimballed_engine_loads() {
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO)
+                .expect("gimballed primary multibody scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step fires engine command");
+        session
+            .step_once(&scenario.document, None)
+            .expect("second step mirrors gimballed engine loads");
+
+        let shadow = session
+            .primary_multibody_shadow
+            .as_ref()
+            .expect("shadow present after gimballed step");
+        let derivative = shadow
+            .last_derivative
+            .as_ref()
+            .expect("gimballed pre-step derivative recorded");
+        assert_eq!(
+            shadow.seed.rigid_state.time.as_seconds().to_bits(),
+            0.1_f64.to_bits()
+        );
+        assert!(
+            derivative.qd_dot()[0] > 0.0,
+            "off-axis axial thrust should create positive roll/pitch-slot acceleration: {:?}",
+            derivative.qd_dot()
+        );
+        assert!(
+            derivative.qd_dot()[2] < 0.0,
+            "pitch gimbal lateral thrust should create signed yaw-slot acceleration: {:?}",
+            derivative.qd_dot()
+        );
+        assert!(
+            derivative.qd_dot()[3] > 0.0,
+            "pitch gimbal should create positive lateral acceleration: {:?}",
+            derivative.qd_dot()
+        );
+        assert!(
+            derivative.qd_dot()[5] > 0.0,
+            "engine thrust should create positive axial acceleration: {:?}",
+            derivative.qd_dot()
+        );
+    }
+
     const PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO: &str = r#"
 openbmp.scenario = 3
 
@@ -4743,6 +4793,94 @@ label = "coast"
 
 [telemetry]
 output.csv = "out/primary-multibody-bridge-byte-equivalence-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
+    const PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "primary-multibody-gimbal-shadow-test"
+description = "Synthetic rigid-body run used to prove the primary multibody shadow sees gimballed engine loads."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.3
+dt_s = 0.1
+seed = 44
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 10.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "primary-multibody-gimbal-shadow-test"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 10.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]]
+
+[[vehicle.assembly.engines]]
+id = "main_engine"
+mounted_to = "main"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 1.0, 0.0]
+limits = { max_thrust_n = 100.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.2 }
+
+[[vehicle.assembly.effectors]]
+id = "unused_pitch"
+mounted_to = "main"
+kind = { kind = "direct_torque", axis = "pitch", effectiveness_n_m_per_rad = 1.0 }
+limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["thrust"]
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[multi_body]
+primary_body_id = "main"
+
+[[multi_body.attitude_target]]
+body_id = "main"
+start_time_s = 1.0
+pitch_effector = "unused_pitch"
+kp = 1.0
+kd = 0.0
+max_command = 1.0
+target = { kind = "eci_vector", vector_eci = [0.0, 0.0, 1.0] }
+
+[scenario_script]
+[[scenario_script.events]]
+id = "ignite_main"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "main_engine", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.1, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+once = true
+
+[telemetry]
+output.csv = "out/primary-multibody-gimbal-shadow-test.csv"
 
 [validation]
 require_finite_state = true
