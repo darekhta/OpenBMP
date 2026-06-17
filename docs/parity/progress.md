@@ -358,13 +358,16 @@ WP-07.2 … WP-07.6: **not started**.
 Baseline confirmed: `Egm2008ZonalGravity` is zonal-only, hard-capped at
 degree 6 (`gravity.rs`), and WP-08.1 is now **partial** through
 `TesseralGravity`, `DegreeTwoTesseralCoefficients`,
-`NormalizedDegreeTwoTesseralCoefficients`, and `TideSystem`: the first
-degree-2/order-2 static harmonic surface supports C20, C21/S21, and C22/S22
-terms, converts fully-normalized degree-2 blocks, parses the
+`NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
+`NormalizedHarmonicField`, and `TideSystem`: the first degree-2/order-2 static
+harmonic surface supports C20, C21/S21, and C22/S22 terms, converts
+fully-normalized degree-2 blocks, stores normalized `Cbar/Sbar` fields in
+deterministic packed `(n, m)` order, parses the
 `data/gravity/wgs84-degree2-normalized-v1.toml` provenance pin, keeps the
 degree-2/order-0 WGS84 J2 path byte-identical to `J2Gravity`, stays finite near
-the pole, and rejects unsupported degree/order/coefficient requests fail-closed
-(`REQ-ENV-001`). Missing for full WP-08.1: high-degree Pines/Gottlieb
+the pole, and rejects unsupported degree/order/duplicate/out-of-envelope
+coefficient requests fail-closed (`REQ-ENV-001`). Missing for full WP-08.1:
+high-degree Pines/Gottlieb
 synthesis, high-degree EGM2008 coefficient ingestion/provenance/tripwire, and
 NGA HARMONIC_SYNTH benchmark tables. IAU 1976/1980 equinox frames remain
 the frame path (no CIO); NRLMSISE-00/HWM14 means only (no perturbed-atmosphere

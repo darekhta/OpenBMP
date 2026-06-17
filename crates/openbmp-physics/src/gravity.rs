@@ -24,6 +24,8 @@
 //! Determinism: pure arithmetic on `f64`; locked operand order on the
 //! J2 sum; no FMA.
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 use nalgebra::Vector3;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
@@ -1077,6 +1079,273 @@ impl TideSystem {
     }
 }
 
+/// One fully-normalized spherical-harmonic coefficient pair.
+///
+/// `degree` and `order` identify `(n, m)`. The cosine coefficient is `Cbar_nm`;
+/// the sine coefficient is `Sbar_nm`. Zonal `m = 0` entries must carry
+/// `Sbar = 0` because there is no sine term for order zero.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct NormalizedHarmonicCoefficient {
+    degree: usize,
+    order: usize,
+    cbar: f64,
+    sbar: f64,
+}
+
+impl NormalizedHarmonicCoefficient {
+    /// Construct a finite fully-normalized coefficient pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `order > degree`, either
+    /// coefficient is non-finite, or an order-zero sine coefficient is nonzero.
+    pub fn new(degree: usize, order: usize, cbar: f64, sbar: f64) -> Result<Self, PhysicsError> {
+        if order > degree {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "harmonic coefficient order must be <= degree",
+            });
+        }
+        if !cbar.is_finite() || !sbar.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "normalized harmonic coefficients must be finite",
+            });
+        }
+        if order == 0 && sbar != 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "order-zero harmonic sine coefficient must be zero",
+            });
+        }
+        Ok(Self {
+            degree,
+            order,
+            cbar,
+            sbar,
+        })
+    }
+
+    /// Harmonic degree `n`.
+    #[must_use]
+    pub const fn degree(&self) -> usize {
+        self.degree
+    }
+
+    /// Harmonic order `m`.
+    #[must_use]
+    pub const fn order(&self) -> usize {
+        self.order
+    }
+
+    /// Fully-normalized cosine coefficient `Cbar_nm`.
+    #[must_use]
+    pub const fn cbar(&self) -> f64 {
+        self.cbar
+    }
+
+    /// Fully-normalized sine coefficient `Sbar_nm`.
+    #[must_use]
+    pub const fn sbar(&self) -> f64 {
+        self.sbar
+    }
+}
+
+/// Fully-normalized spherical-harmonic coefficient field.
+///
+/// The field stores `Cbar/Sbar` pairs in deterministic packed `(n, m)` row
+/// order for `0 <= n <= max_degree` and `0 <= m <= min(n, max_order)`. Missing
+/// entries inside the declared envelope default to zero. Duplicate,
+/// out-of-range, and non-finite coefficients are rejected at construction so
+/// ingestion paths fail closed before force-model evaluation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NormalizedHarmonicField {
+    max_degree: usize,
+    max_order: usize,
+    tide_system: TideSystem,
+    coefficients: Vec<(f64, f64)>,
+    coefficient_count: usize,
+}
+
+impl NormalizedHarmonicField {
+    /// Construct a fully-normalized coefficient field.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `max_order > max_degree`,
+    /// the packed storage size overflows `usize`, any coefficient falls outside
+    /// the declared degree/order envelope, or a duplicate `(degree, order)` pair
+    /// is supplied.
+    pub fn new(
+        max_degree: usize,
+        max_order: usize,
+        tide_system: TideSystem,
+        coefficients: impl IntoIterator<Item = NormalizedHarmonicCoefficient>,
+    ) -> Result<Self, PhysicsError> {
+        if max_order > max_degree {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "normalized harmonic max_order must be <= max_degree",
+            });
+        }
+        let storage_len = normalized_harmonic_storage_len(max_degree, max_order).ok_or(
+            PhysicsError::InvalidParameter {
+                reason: "normalized harmonic field storage size overflowed",
+            },
+        )?;
+        let mut values = Vec::with_capacity(storage_len);
+        values.resize(storage_len, (0.0, 0.0));
+        let mut seen = Vec::with_capacity(storage_len);
+        seen.resize(storage_len, false);
+
+        let mut coefficient_count = 0;
+        for coefficient in coefficients {
+            if coefficient.degree > max_degree || coefficient.order > max_order {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "normalized harmonic coefficient outside declared field envelope",
+                });
+            }
+            let index = normalized_harmonic_index(max_order, coefficient.degree, coefficient.order)
+                .ok_or(PhysicsError::InvalidParameter {
+                    reason: "normalized harmonic coefficient order must be <= degree",
+                })?;
+            if seen[index] {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "duplicate normalized harmonic coefficient",
+                });
+            }
+            seen[index] = true;
+            values[index] = (coefficient.cbar, coefficient.sbar);
+            coefficient_count += 1;
+        }
+
+        Ok(Self {
+            max_degree,
+            max_order,
+            tide_system,
+            coefficients: values,
+            coefficient_count,
+        })
+    }
+
+    /// Declared maximum harmonic degree.
+    #[must_use]
+    pub const fn max_degree(&self) -> usize {
+        self.max_degree
+    }
+
+    /// Declared maximum harmonic order.
+    #[must_use]
+    pub const fn max_order(&self) -> usize {
+        self.max_order
+    }
+
+    /// Permanent-tide convention declared for the field.
+    #[must_use]
+    pub const fn tide_system(&self) -> TideSystem {
+        self.tide_system
+    }
+
+    /// Number of explicitly supplied coefficient pairs.
+    #[must_use]
+    pub const fn coefficient_count(&self) -> usize {
+        self.coefficient_count
+    }
+
+    /// Number of deterministic packed coefficient slots.
+    #[must_use]
+    pub fn storage_len(&self) -> usize {
+        self.coefficients.len()
+    }
+
+    /// Return a fully-normalized `Cbar/Sbar` pair for `(degree, order)`.
+    ///
+    /// Missing entries inside the declared envelope return `(0, 0)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if the requested pair is
+    /// outside the declared field envelope or has `order > degree`.
+    pub fn coefficient(&self, degree: usize, order: usize) -> Result<(f64, f64), PhysicsError> {
+        if degree > self.max_degree || order > self.max_order {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "normalized harmonic coefficient lookup outside field envelope",
+            });
+        }
+        let index = normalized_harmonic_index(self.max_order, degree, order).ok_or(
+            PhysicsError::InvalidParameter {
+                reason: "normalized harmonic coefficient lookup order must be <= degree",
+            },
+        )?;
+        Ok(self.coefficients[index])
+    }
+
+    /// Extract the degree-2 coefficients used by the current tesseral evaluator.
+    ///
+    /// Missing `m = 1` or `m = 2` entries inside a lower-order field are treated
+    /// as zeros; this lets an order-0 field feed the byte-identical J2 path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if the field does not declare
+    /// at least degree 2.
+    pub fn normalized_degree_two_tesseral_coefficients(
+        &self,
+    ) -> Result<NormalizedDegreeTwoTesseralCoefficients, PhysicsError> {
+        if self.max_degree < 2 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "normalized harmonic field does not include degree 2",
+            });
+        }
+        let (cbar20, _) = self.coefficient(2, 0)?;
+        let (cbar21, sbar21) = self.coefficient_or_default(2, 1);
+        let (cbar22, sbar22) = self.coefficient_or_default(2, 2);
+        NormalizedDegreeTwoTesseralCoefficients::new(
+            cbar20,
+            cbar21,
+            sbar21,
+            cbar22,
+            sbar22,
+            self.tide_system,
+        )
+    }
+
+    fn coefficient_or_default(&self, degree: usize, order: usize) -> (f64, f64) {
+        if degree > self.max_degree || order > self.max_order || order > degree {
+            return (0.0, 0.0);
+        }
+        self.coefficient(degree, order).unwrap_or((0.0, 0.0))
+    }
+}
+
+fn normalized_harmonic_storage_len(max_degree: usize, max_order: usize) -> Option<usize> {
+    if max_degree <= max_order {
+        checked_triangular_count(max_degree.checked_add(1)?)
+    } else {
+        let prefix = checked_triangular_count(max_order.checked_add(1)?)?;
+        let tail_rows = max_degree.checked_sub(max_order)?;
+        let row_width = max_order.checked_add(1)?;
+        prefix.checked_add(tail_rows.checked_mul(row_width)?)
+    }
+}
+
+fn normalized_harmonic_index(max_order: usize, degree: usize, order: usize) -> Option<usize> {
+    if order > degree || order > max_order {
+        return None;
+    }
+    let row_start = if degree <= max_order {
+        checked_triangular_count(degree)?
+    } else {
+        let prefix = checked_triangular_count(max_order.checked_add(1)?)?;
+        let tail_rows_before = degree.checked_sub(max_order)?.checked_sub(1)?;
+        let row_width = max_order.checked_add(1)?;
+        prefix.checked_add(tail_rows_before.checked_mul(row_width)?)?
+    };
+    row_start.checked_add(order)
+}
+
+fn checked_triangular_count(row_count: usize) -> Option<usize> {
+    row_count
+        .checked_mul(row_count.checked_add(1)?)?
+        .checked_div(2)
+}
+
 /// Degree-2 fully-normalized harmonic coefficients for [`TesseralGravity`].
 ///
 /// This is the ingestion-facing low-degree coefficient block used before the
@@ -1416,6 +1685,39 @@ impl TesseralGravity {
             degree,
             order,
         )
+    }
+
+    /// Construct from a fully-normalized harmonic field.
+    ///
+    /// This bridges the reusable coefficient substrate into the current
+    /// degree-2 evaluator. It remains fail-closed: the requested degree/order
+    /// must be supported both by the field and by [`TesseralGravity::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] for invalid constants,
+    /// requested degree/order outside the field envelope, unsupported
+    /// [`TesseralGravity`] degree/order, or non-finite coefficients.
+    pub fn from_normalized_field(
+        mu_m3_s2: f64,
+        r_e_m: f64,
+        field: &NormalizedHarmonicField,
+        degree: usize,
+        order: usize,
+    ) -> Result<Self, PhysicsError> {
+        if degree > field.max_degree() || order > field.max_order() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "requested tesseral truncation outside normalized harmonic field envelope",
+            });
+        }
+        let coefficients = if degree == 0 {
+            DegreeTwoTesseralCoefficients::zero(field.tide_system())
+        } else {
+            field
+                .normalized_degree_two_tesseral_coefficients()?
+                .to_unnormalized()?
+        };
+        Self::new(mu_m3_s2, r_e_m, coefficients, degree, order)
     }
 
     /// Configured `µ` (m³/s²).
@@ -1849,6 +2151,23 @@ mod tests {
         .expect("finite normalized degree-2 coefficients")
     }
 
+    fn load_wgs84_normalized_harmonic_field_fixture() -> NormalizedHarmonicField {
+        let normalized = load_wgs84_normalized_degree_two_fixture();
+        NormalizedHarmonicField::new(
+            2,
+            2,
+            normalized.tide_system(),
+            [
+                NormalizedHarmonicCoefficient::new(2, 0, normalized.cbar20(), 0.0).unwrap(),
+                NormalizedHarmonicCoefficient::new(2, 1, normalized.cbar21(), normalized.sbar21())
+                    .unwrap(),
+                NormalizedHarmonicCoefficient::new(2, 2, normalized.cbar22(), normalized.sbar22())
+                    .unwrap(),
+            ],
+        )
+        .expect("finite normalized harmonic field")
+    }
+
     #[derive(Copy, Clone, Debug)]
     struct FixedEphemeris {
         position: Vector3<f64>,
@@ -2259,6 +2578,86 @@ mod tests {
         for axis in 0..3 {
             assert_abs_diff_eq!(from_file[axis], direct_j2[axis], epsilon = 1.0e-17);
         }
+    }
+
+    #[test]
+    fn tesseral_gravity_loads_normalized_harmonic_field_pin() {
+        let field = load_wgs84_normalized_harmonic_field_fixture();
+        assert_eq!(field.max_degree(), 2);
+        assert_eq!(field.max_order(), 2);
+        assert_eq!(field.tide_system(), TideSystem::TideFree);
+        assert_eq!(field.coefficient_count(), 3);
+        assert_eq!(field.storage_len(), 6);
+
+        let normalized = field
+            .normalized_degree_two_tesseral_coefficients()
+            .expect("degree-2 field extracts");
+        let coefficients = normalized
+            .to_unnormalized()
+            .expect("degree-2 field converts");
+        assert_abs_diff_eq!(coefficients.c20(), -WGS84_J2, epsilon = 1.0e-18);
+
+        let tesseral =
+            TesseralGravity::from_normalized_field(WGS84_MU_M3_S2, WGS84_A_M, &field, 2, 0)
+                .expect("normalized field builds tesseral gravity");
+        let j2 = J2Gravity::wgs84();
+        let position = Position3::new(7_200_000.0, -1_300_000.0, 900_000.0);
+        let from_field = tesseral.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        let direct_j2 = j2.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        for axis in 0..3 {
+            assert_abs_diff_eq!(from_field[axis], direct_j2[axis], epsilon = 1.0e-17);
+        }
+    }
+
+    #[test]
+    fn tesseral_normalized_harmonic_field_defaults_missing_coefficients_to_zero() {
+        let field = NormalizedHarmonicField::new(
+            4,
+            2,
+            TideSystem::ZeroTide,
+            [
+                NormalizedHarmonicCoefficient::new(4, 2, 4.2e-9, -7.0e-10).unwrap(),
+                NormalizedHarmonicCoefficient::new(2, 0, -4.0e-4, 0.0).unwrap(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(field.coefficient_count(), 2);
+        assert_eq!(field.storage_len(), 12);
+        assert_eq!(field.coefficient(0, 0).unwrap(), (0.0, 0.0));
+        assert_eq!(field.coefficient(2, 1).unwrap(), (0.0, 0.0));
+        assert_eq!(field.coefficient(4, 2).unwrap(), (4.2e-9, -7.0e-10));
+        assert!(matches!(
+            field.coefficient(4, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            field.coefficient(1, 2),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tesseral_normalized_harmonic_field_rejects_invalid_or_duplicate_coefficients() {
+        assert!(NormalizedHarmonicCoefficient::new(2, 3, 1.0, 0.0).is_err());
+        assert!(NormalizedHarmonicCoefficient::new(2, 0, 1.0, 1.0e-12).is_err());
+        assert!(NormalizedHarmonicCoefficient::new(2, 1, f64::NAN, 0.0).is_err());
+        assert!(NormalizedHarmonicField::new(2, 3, TideSystem::TideFree, []).is_err());
+
+        let duplicate = [
+            NormalizedHarmonicCoefficient::new(2, 0, -4.0e-4, 0.0).unwrap(),
+            NormalizedHarmonicCoefficient::new(2, 0, -5.0e-4, 0.0).unwrap(),
+        ];
+        assert!(matches!(
+            NormalizedHarmonicField::new(2, 2, TideSystem::TideFree, duplicate),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let out_of_range = [NormalizedHarmonicCoefficient::new(3, 0, -1.0e-6, 0.0).unwrap()];
+        assert!(matches!(
+            NormalizedHarmonicField::new(2, 2, TideSystem::TideFree, out_of_range),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
