@@ -4607,20 +4607,22 @@ mod tests {
             .state
     }
 
-    fn phalcon9_tvc_probe_multibody_scenario() -> openbmp_scenario::Scenario {
+    fn phalcon9_tvc_probe_multibody_scenario(accelerated: bool) -> openbmp_scenario::Scenario {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../scenarios/phalcon9/phalcon9-tvc-probe.toml");
-        let toml = std::fs::read_to_string(&path).expect("read Phalcon-9 TVC probe scenario");
-        let toml = toml
-            .replace("stop_s  = 40.0", "stop_s  = 2.0")
-            .replace(
+        let mut toml = std::fs::read_to_string(&path).expect("read Phalcon-9 TVC probe scenario");
+        if accelerated {
+            toml = toml.replace("stop_s  = 40.0", "stop_s  = 2.0");
+            toml = toml.replace(
                 "schedule_s = [0.0, 10.0, 30.0, 40.0]",
                 "schedule_s = [0.0, 0.2, 1.0, 2.0]",
-            )
-            .replace(
+            );
+            toml = toml.replace(
                 "pitch_rad  = [0.0, 0.0, 0.5, 0.5]",
                 "pitch_rad  = [0.0, 0.0, 0.2, 0.2]",
             )
+        }
+        let toml = toml
             .replace(
                 "[environment]\n",
                 "[[vehicle.assembly.effectors]]\n\
@@ -4650,6 +4652,49 @@ mod tests {
         let source_dir = path.parent().map(std::path::Path::to_path_buf);
         openbmp_scenario::Scenario::from_toml_str_with_source_dir(&toml, source_dir)
             .expect("Phalcon-9 TVC multibody probe parses")
+    }
+
+    fn assert_phalcon9_tvc_multibody_forecasts(
+        scenario: &openbmp_scenario::Scenario,
+        max_steps: Option<usize>,
+    ) -> (usize, f64) {
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(scenario, &resolved_files).expect("session prepares");
+        let mut max_lateral_thrust_n = 0.0_f64;
+        let mut step_count = 0usize;
+
+        while !session.is_finished() && max_steps.is_none_or(|limit| step_count < limit) {
+            session
+                .step_once(&scenario.document, None)
+                .expect("Phalcon-9 TVC multibody step forecasts primary root");
+            step_count += 1;
+            let forecast = session
+                .primary_multibody_shadow
+                .as_ref()
+                .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+                .expect("Phalcon-9 TVC RK4 forecast recorded");
+            assert_rigid_forecast_matches_state(
+                &forecast.rigid_state,
+                session.state(),
+                session.state().time.as_seconds(),
+            );
+
+            for snapshot in session.engine_snapshots().values() {
+                max_lateral_thrust_n = max_lateral_thrust_n.max(
+                    (snapshot.thrust_body.x * snapshot.thrust_body.x
+                        + snapshot.thrust_body.y * snapshot.thrust_body.y)
+                        .sqrt(),
+                );
+            }
+        }
+
+        assert!(step_count > 0, "Phalcon-9 TVC probe must advance");
+        assert!(
+            max_lateral_thrust_n > 1.0,
+            "vehicle-scale TVC probe should apply lateral gimballed thrust"
+        );
+        (step_count, max_lateral_thrust_n)
     }
 
     #[test]
@@ -5445,40 +5490,16 @@ mod tests {
 
     #[test]
     fn primary_multibody_shadow_rk4_forecast_matches_phalcon9_tvc_probe_ascent() {
-        let scenario = phalcon9_tvc_probe_multibody_scenario();
-        let resolved_files = scenario.resolved_files().expect("resolved files");
-        let mut session =
-            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
-        let mut max_lateral_thrust_n = 0.0_f64;
+        let scenario = phalcon9_tvc_probe_multibody_scenario(true);
+        let (step_count, _) = assert_phalcon9_tvc_multibody_forecasts(&scenario, Some(150));
+        assert_eq!(step_count, 150);
+    }
 
-        for _ in 0..150 {
-            session
-                .step_once(&scenario.document, None)
-                .expect("Phalcon-9 TVC multibody step forecasts primary root");
-            let forecast = session
-                .primary_multibody_shadow
-                .as_ref()
-                .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
-                .expect("Phalcon-9 TVC RK4 forecast recorded");
-            assert_rigid_forecast_matches_state(
-                &forecast.rigid_state,
-                session.state(),
-                session.state().time.as_seconds(),
-            );
-
-            for snapshot in session.engine_snapshots().values() {
-                max_lateral_thrust_n = max_lateral_thrust_n.max(
-                    (snapshot.thrust_body.x * snapshot.thrust_body.x
-                        + snapshot.thrust_body.y * snapshot.thrust_body.y)
-                        .sqrt(),
-                );
-            }
-        }
-
-        assert!(
-            max_lateral_thrust_n > 1.0,
-            "vehicle-scale TVC probe should apply lateral gimballed thrust"
-        );
+    #[test]
+    fn primary_multibody_shadow_rk4_forecast_matches_full_duration_phalcon9_tvc_probe() {
+        let scenario = phalcon9_tvc_probe_multibody_scenario(false);
+        let (step_count, _) = assert_phalcon9_tvc_multibody_forecasts(&scenario, None);
+        assert_eq!(step_count, 4000);
     }
 
     #[test]

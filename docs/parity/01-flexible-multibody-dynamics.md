@@ -833,14 +833,17 @@ justification first, reviewed before the implementation lands.
   ascent. A clipped Phalcon-9 TVC probe now validates the same primary-shadow
   forecast path over 150 real runner ticks with the nine-engine gimballed
   liquid-engine cluster, real FC guidance/autopilot surfaces, and nonzero
-  lateral gimballed thrust.
+  lateral gimballed thrust; the same validation now also runs the full 40 s
+  Phalcon-9 TVC probe to completion with the original pitch schedule and proves
+  every recorded primary-shadow RK4 forecast matches the authoritative rigid
+  state.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   broader variable-mass multibody propagation beyond the primary-root and
   powered separated-lane shadow forecasts, runner-side momentum-conserving
   welded-to-free joint-release propagation and full separated-body multibody
   propagation beyond the substrate handoff and first-post-release separated
-  shadow forecasts, Spatial_v2 oracle fixtures, full-duration vehicle-scale
-  gimballed ascent validation, and articulated gimbal-joint inertia coupling.
+  shadow forecasts, Spatial_v2 oracle fixtures, full orbital-ascent gimballed
+  validation, and articulated gimbal-joint inertia coupling.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

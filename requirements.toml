@@ -175,6 +175,12 @@ statement = "The openbmp-runner primary root-free-flyer multibody shadow is cove
 verification = ["V-MULTIBODY-029"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-030"
+title = "The primary multibody shadow validates the full Phalcon-9 TVC probe"
+statement = "The openbmp-runner primary root-free-flyer multibody shadow is covered over the full 40 s Phalcon-9 TVC probe scenario, preserving the scenario's original pitch schedule while adding only a dormant multi_body attitude-target hook to enable the shadow. The runner test advances all 4000 RigidBodySession ticks to completion, proves each recorded primary-shadow RK4 forecast matches the authoritative rigid state at every tick, and proves the nine-engine vehicle-scale TVC stack applies nonzero lateral gimballed thrust over the full run. This makes no claim that the rigid-kernel propagation path has been replaced, full orbital-ascent validation is complete, articulated gimbal-joint inertia coupling is modeled, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-030"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1404,6 +1410,26 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-029"]
+
+[[verification]]
+id = "V-MULTIBODY-030"
+kind = "test"
+command = "cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_matches_full_duration_phalcon9_tvc_probe --locked && cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_matches_phalcon9_tvc_probe_ascent --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "scenarios/phalcon9/phalcon9-tvc-probe.toml",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "primary_multibody_shadow_rk4_forecast_matches_full_duration_phalcon9_tvc_probe",
+  "phalcon9_tvc_probe_multibody_scenario(false)",
+  "assert_eq!(step_count, 4000)",
+  "REQ-MULTIBODY-030",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-030"]
 
 [[verification]]
 id = "V-SIL-001"
