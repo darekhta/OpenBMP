@@ -13885,8 +13885,8 @@ pub enum MultiBodyPropagationAuthorityConfig {
     /// Replace active separated rigid-body lane states with their
     /// root-free-flyer multibody forecasts after each fixed-step RK4 tick.
     SeparatedRootFreeFlyer,
-    /// Install single-stage jettison states computed through an identity
-    /// welded-pair release into explicit continuing/departing rigid lanes.
+    /// Install jettison states computed through a configured welded-pair
+    /// release into explicit continuing/departing rigid lanes.
     WeldedReleaseJettison,
     /// Replace the primary rigid-body state with the projected root of a
     /// single articulated gimbal multibody forecast after each fixed-step
@@ -13978,6 +13978,15 @@ pub struct MultiBodySeparationConfig {
     /// (the departing body keeps the stack attitude).
     #[serde(default)]
     pub lower_attitude_offset_body_xyzw: Option<[f64; 4]>,
+    /// Optional fixed welded-joint translation from the upper body origin to
+    /// the lower body origin, expressed in the upper body frame (m). Defaults
+    /// to zero, preserving the legacy coincident-body separation geometry.
+    #[serde(default)]
+    pub lower_weld_translation_upper_body_m: Option<[f64; 3]>,
+    /// Optional fixed welded-joint orientation from upper body frame to lower
+    /// body frame, `[x, y, z, w]`. Defaults to identity.
+    #[serde(default)]
+    pub lower_weld_quaternion_upper_to_lower_xyzw: Option<[f64; 4]>,
     /// Whether the loader must verify momentum conservation
     /// (`m_u·Δv_u + m_l·Δv_l ≈ 0`). Default `true`.
     #[serde(default = "default_true")]
@@ -14032,6 +14041,25 @@ impl MultiBodySeparationConfig {
         }
         if let Some(q) = self.lower_attitude_offset_body_xyzw {
             let field = format!("multi_body.separation[{index}].lower_attitude_offset_body_xyzw");
+            require_finite_array(&field, &q)?;
+            let norm_sq: f64 = q.iter().map(|c| c * c).sum();
+            if (norm_sq - 1.0).abs() > 1.0e-6 {
+                return Err(ScenarioError::InvalidNumber {
+                    field,
+                    value: norm_sq,
+                    rule: "must be a unit quaternion (||q||² = 1)",
+                });
+            }
+        }
+        if let Some(translation) = self.lower_weld_translation_upper_body_m {
+            require_finite_array(
+                &format!("multi_body.separation[{index}].lower_weld_translation_upper_body_m"),
+                &translation,
+            )?;
+        }
+        if let Some(q) = self.lower_weld_quaternion_upper_to_lower_xyzw {
+            let field =
+                format!("multi_body.separation[{index}].lower_weld_quaternion_upper_to_lower_xyzw");
             require_finite_array(&field, &q)?;
             let norm_sq: f64 = q.iter().map(|c| c * c).sum();
             if (norm_sq - 1.0).abs() > 1.0e-6 {

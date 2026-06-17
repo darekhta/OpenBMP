@@ -2099,6 +2099,8 @@ struct RigidBodySeparationSpec {
     stack_delta_omega_body_rad_s: [f64; 3],
     stage_delta_omega_body_rad_s: [f64; 3],
     stage_attitude_offset_body_xyzw: [f64; 4],
+    stage_weld_translation_stack_body_m: [f64; 3],
+    stage_weld_quaternion_stack_to_stage_xyzw: [f64; 4],
 }
 
 fn build_rigid_body_separations(
@@ -2156,6 +2158,12 @@ fn build_rigid_body_separations(
                     .unwrap_or([0.0, 0.0, 0.0]),
                 stage_attitude_offset_body_xyzw: separation
                     .lower_attitude_offset_body_xyzw
+                    .unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                stage_weld_translation_stack_body_m: separation
+                    .lower_weld_translation_upper_body_m
+                    .unwrap_or([0.0, 0.0, 0.0]),
+                stage_weld_quaternion_stack_to_stage_xyzw: separation
+                    .lower_weld_quaternion_upper_to_lower_xyzw
                     .unwrap_or([0.0, 0.0, 0.0, 1.0]),
             },
         );
@@ -2414,6 +2422,29 @@ where
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("welded-release stage spatial inertia failed: {err}"),
         })?;
+    let stage_translation_stack_body_m = Vector3::new(
+        separation.stage_weld_translation_stack_body_m[0],
+        separation.stage_weld_translation_stack_body_m[1],
+        separation.stage_weld_translation_stack_body_m[2],
+    );
+    let stage_quaternion_stack_to_stage =
+        nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            separation.stage_weld_quaternion_stack_to_stage_xyzw[3],
+            separation.stage_weld_quaternion_stack_to_stage_xyzw[0],
+            separation.stage_weld_quaternion_stack_to_stage_xyzw[1],
+            separation.stage_weld_quaternion_stack_to_stage_xyzw[2],
+        ));
+    let rot_stage_from_stack = stage_quaternion_stack_to_stage
+        .to_rotation_matrix()
+        .matrix()
+        .clone_owned();
+    let rot_stack_from_stage = rot_stage_from_stack.transpose();
+    let stage_parent_to_body =
+        PluckerTransform::new(rot_stage_from_stack, stage_translation_stack_body_m).map_err(
+            |err| RunnerError::UnsupportedScenario {
+                what: format!("welded-release fixed transform failed: {err}"),
+            },
+        )?;
     let tree = MultibodyTree::new(vec![
         TreeBodySpec {
             id: runtime.stack_body,
@@ -2427,7 +2458,7 @@ where
             parent: Some(openbmp_multibody::BodyIndex::new(0)),
             joint: Joint::Welded { released: false },
             inertia: stage_inertia,
-            parent_to_body: PluckerTransform::identity(),
+            parent_to_body: stage_parent_to_body,
         },
     ])
     .map_err(|err| RunnerError::UnsupportedScenario {
@@ -2491,6 +2522,10 @@ where
         &current,
         &stack_state,
         runtime.stack_mass_properties,
+        WeldedReleaseGeometry {
+            body_origin_parent_m: Vector3::zeros(),
+            rot_parent_from_body: nalgebra::Matrix3::identity(),
+        },
         runtime.stack_delta_v_body_m_s,
         runtime.stack_delta_omega_body_rad_s,
         [0.0, 0.0, 0.0, 1.0],
@@ -2499,6 +2534,10 @@ where
         &current,
         &stage_state,
         runtime.stage_mass_properties,
+        WeldedReleaseGeometry {
+            body_origin_parent_m: stage_translation_stack_body_m,
+            rot_parent_from_body: rot_stack_from_stage,
+        },
         runtime.stage_delta_v_body_m_s,
         runtime.stage_delta_omega_body_rad_s,
         runtime.stage_attitude_offset_body_xyzw,
@@ -2511,18 +2550,25 @@ where
     })
 }
 
+struct WeldedReleaseGeometry {
+    body_origin_parent_m: Vector3<f64>,
+    rot_parent_from_body: nalgebra::Matrix3<f64>,
+}
+
 fn apply_welded_release_impulses(
     pre_split: &RigidBodyState,
     released: &RigidBodyState,
     mass_properties: MassProperties,
+    geometry: WeldedReleaseGeometry,
     delta_v_body_m_s: [f64; 3],
     delta_omega_body_rad_s: [f64; 3],
     attitude_offset_body_xyzw: [f64; 4],
 ) -> RigidBodyState {
-    let relative_body_m = mass_properties.center_of_mass_body.vector
+    let relative_parent_m = geometry.body_origin_parent_m
+        + geometry.rot_parent_from_body * mass_properties.center_of_mass_body.vector
         - pre_split.mass_props.center_of_mass_body.vector;
-    let position_offset_eci_m = pre_split.orientation.q * relative_body_m;
-    let rotational_velocity_body_m_s = pre_split.angular_velocity.vector.cross(&relative_body_m);
+    let position_offset_eci_m = pre_split.orientation.q * relative_parent_m;
+    let rotational_velocity_body_m_s = pre_split.angular_velocity.vector.cross(&relative_parent_m);
     let rotational_velocity_eci_m_s = pre_split.orientation.q * rotational_velocity_body_m_s;
     let delta_v_eci_m_s = released.orientation.q
         * Vector3::new(
@@ -2543,9 +2589,9 @@ fn apply_welded_release_impulses(
     ));
     RigidBodyState::new(
         released.time,
-        Position3::from_vector(released.position.vector + position_offset_eci_m),
+        Position3::from_vector(pre_split.position.vector + position_offset_eci_m),
         Velocity3::from_vector(
-            released.velocity.vector + rotational_velocity_eci_m_s + delta_v_eci_m_s,
+            pre_split.velocity.vector + rotational_velocity_eci_m_s + delta_v_eci_m_s,
         ),
         Quaternion::from_unit_quaternion(released.orientation.q * offset),
         AngularVelocity3::from_vector(released.angular_velocity.vector + delta_omega_body),
@@ -7319,6 +7365,64 @@ once = true
                 < 1.0e-12,
             "identity welded release should preserve same angular velocity"
         );
+    }
+
+    #[test]
+    fn welded_release_jettison_authority_applies_weld_transform() {
+        let initial_lane = r#"
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [0.0, 0.0, 10.0]
+velocity_eci_m_s = [0.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+"#;
+        let jettison = r#"
+[[multi_body.separation]]
+event_id = "drop_booster"
+upper_body_id = "bus"
+lower_body_id = "booster"
+lower_weld_translation_upper_body_m = [0.0, 2.0, 0.0]
+lower_weld_quaternion_upper_to_lower_xyzw = [0.0, 0.0, 0.7071067811865475, 0.7071067811865476]
+
+[scenario_script]
+[[scenario_script.events]]
+id = "drop_booster"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "jettison_stage", body = "booster" }
+once = true
+"#;
+        let toml = SEPARATED_DIRECT_TORQUE_SCENARIO
+            .replace(initial_lane, jettison)
+            .replace(
+                "[multi_body]\n",
+                "[multi_body]\npropagation_authority = \"welded_release_jettison\"\n",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("welded-release transform jettison step succeeds");
+
+        let booster = body_id_from_scenario_text("booster");
+        let lane = separated_lane_state(&session, booster);
+        let expected_offset = session.state().orientation.q * Vector3::new(0.0, 2.0, 0.0);
+        assert!(
+            (lane.position.vector - session.state().position.vector - expected_offset).norm()
+                < 1.0e-12,
+            "departing welded transform should offset lane position: lane={:?} stack={:?} expected_offset={expected_offset:?}",
+            lane.position.vector,
+            session.state().position.vector
+        );
+        let q = (session.state().orientation.q.inverse() * lane.orientation.q).into_inner();
+        assert!((q.i - 0.0).abs() < 1.0e-12);
+        assert!((q.j - 0.0).abs() < 1.0e-12);
+        assert!((q.k + std::f64::consts::FRAC_1_SQRT_2).abs() < 1.0e-12);
+        assert!((q.w - std::f64::consts::FRAC_1_SQRT_2).abs() < 1.0e-12);
     }
 
     #[test]

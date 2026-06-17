@@ -5174,6 +5174,10 @@ angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
         let toml = VALID_STAGE_SEPARATION_SCENARIO.replace(
             "\n[multi_body]\n",
             "\n[multi_body]\nprimary_body_id = \"upper\"\npropagation_authority = \"welded_release_jettison\"\n",
+        )
+        .replace(
+            "lower_body_id             = \"lower\"",
+            "lower_body_id             = \"lower\"\nlower_weld_translation_upper_body_m = [0.0, 0.0, 2.0]\nlower_weld_quaternion_upper_to_lower_xyzw = [0.0, 0.0, 0.7071067811865475, 0.7071067811865476]",
         );
         let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
         let multi_body = scenario
@@ -5187,6 +5191,14 @@ angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
             crate::document::MultiBodyPropagationAuthorityConfig::WeldedReleaseJettison
         );
         assert_eq!(multi_body.separations.len(), 1);
+        assert_eq!(
+            multi_body.separations[0].lower_weld_translation_upper_body_m,
+            Some([0.0, 0.0, 2.0])
+        );
+        assert_eq!(
+            multi_body.separations[0].lower_weld_quaternion_upper_to_lower_xyzw,
+            Some([0.0, 0.0, 0.7071067811865475, 0.7071067811865476])
+        );
     }
 
     #[test]

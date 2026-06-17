@@ -3005,6 +3005,8 @@ angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
 event_id              = "fairing_separation"
 upper_body_id         = "bus"
 lower_body_id         = "lower_stage"
+lower_weld_translation_upper_body_m = [0.0, 0.0, -2.0]
+lower_weld_quaternion_upper_to_lower_xyzw = [0.0, 0.0, 0.0, 1.0]
 upper_delta_v_body_m_s = [0.0, 0.0, 0.5]
 lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
 conserve_momentum     = true
@@ -3037,13 +3039,13 @@ rewritten before a pre-step forecast exists. Setting it to
 `"welded_release_jettison"` is a guarded jettison handoff mode: it
 requires `primary_body_id` and at least one `[[multi_body.separation]]`, rejects
 `[[multi_body.initial_lane]]` and `[[multi_body.gimbal_joint]]`, computes the
-departing lower body or bodies by releasing identity welded upper/lower
+departing lower body or bodies by releasing configured welded upper/lower
 multibody pairs with `release_welded_subtree_as_free_flyer()`, and installs the
 continuing and departing same-time rigid states through the explicit
 separation-state kernel API. This mode supports `jettison_stage` and
-`jettison_bodies`, and applies the declared separation delta-v, angular-rate
-tip-off, lower attitude offset, and mass-property COM-offset semantics after the
-welded release. Setting it to
+`jettison_bodies`, and applies the declared welded translation/orientation,
+separation delta-v, angular-rate tip-off, lower attitude offset, and
+mass-property COM-offset semantics after the welded release. Setting it to
 `"articulated_gimbal_root"` is a single-gimbal root-state handoff mode: it
 requires `primary_body_id` and exactly one `[[multi_body.gimbal_joint]]` whose
 `body_id` matches `primary_body_id`, rejects initial lanes, separation
@@ -3057,9 +3059,13 @@ gimbals.
 
 Each `[[multi_body.separation]]` entry binds to a mission event by id
 and declares the two `vehicle.assembly.bodies[*].id` values that
-continue propagating after the event. Optional impulsive delta-V
-fields apply at the separation moment. `conserve_momentum` defaults
-to `true`; the loader verifies
+continue propagating after the event.
+`lower_weld_translation_upper_body_m` and
+`lower_weld_quaternion_upper_to_lower_xyzw` optionally declare the fixed welded
+pose of the departing body relative to the continuing upper body before release;
+they default to zero translation and identity orientation. Optional impulsive
+delta-V fields apply at the separation moment. `conserve_momentum` defaults to
+`true`; the loader verifies
 `m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance.
 
 The runtime consumer supports fixed-step RK4 rigid-body profiles.
