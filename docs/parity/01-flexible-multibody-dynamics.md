@@ -230,12 +230,14 @@ adapter at RK stages and matches the current rigid kernel for a no-rotation
 solid-motor burn, including the next-step mass. It also avoids double-counting
 liquid-engine snapshot consumption when the single-body primary stack is already
 the kernel-authoritative lane, and matches a pitch-gimballed liquid-engine burn
-over one powered step. Authoritative propagation is still the rigid kernel.
+over one powered step and over two consecutive powered ticks in the same
+synthetic ascent. Authoritative propagation is still the rigid kernel.
 Replacing the rigid propagation path, broader variable-mass multibody
 propagation beyond the one-body root forecast, double-pendulum tolerance
 tables, full separated-lane multibody propagation beyond the one-step separated
-shadow forecast, full multi-step gimballed ascent validation, and external
-Spatial_v2 oracle fixtures remain open.
+shadow forecast, vehicle-scale gimballed ascent validation, articulated
+gimbal-joint inertia coupling, and external Spatial_v2 oracle fixtures remain
+open.
 
 ---
 
@@ -813,13 +815,14 @@ justification first, reviewed before the implementation lands.
   without changing separated-lane telemetry authority. The primary shadow also
   seeds single-body active stacks from the kernel's authoritative mass state
   and proves a pitch-gimballed liquid-engine burn forecasts the same next rigid
-  state over one powered step.
+  state over one powered step and over two consecutive powered ticks in the
+  same synthetic ascent.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   broader variable-mass multibody propagation beyond the one-body root
   forecast, welded-to-free joint-release propagation and full separated-body
   multibody propagation beyond the one-step separated shadow forecast,
-  double-pendulum tolerance table, Spatial_v2 oracle fixtures, and full
-  multi-step gimballed ascent validation.
+  double-pendulum tolerance table, Spatial_v2 oracle fixtures, vehicle-scale
+  gimballed ascent validation, and articulated gimbal-joint inertia coupling.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

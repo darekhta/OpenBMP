@@ -4549,6 +4549,55 @@ mod tests {
     use super::*;
     use openbmp_telemetry::TelemetryValue;
 
+    fn assert_rigid_forecast_matches_state(
+        predicted: &RigidBodyState,
+        actual: &RigidBodyState,
+        expected_time_s: f64,
+    ) {
+        assert!(
+            (predicted.time.as_seconds() - expected_time_s).abs() < 1.0e-12,
+            "time predicted={} expected={}",
+            predicted.time.as_seconds(),
+            expected_time_s
+        );
+        assert!(
+            (predicted.mass_props.mass_kg() - actual.mass_props.mass_kg()).abs() < 1.0e-12,
+            "mass predicted={} actual={}",
+            predicted.mass_props.mass_kg(),
+            actual.mass_props.mass_kg()
+        );
+        assert!(
+            (predicted.position.vector - actual.position.vector).norm() < 1.0e-12,
+            "position predicted={:?} actual={:?} diff={:?}",
+            predicted.position.vector,
+            actual.position.vector,
+            predicted.position.vector - actual.position.vector
+        );
+        assert!(
+            (predicted.velocity.vector - actual.velocity.vector).norm() < 1.0e-12,
+            "velocity predicted={:?} actual={:?} diff={:?}",
+            predicted.velocity.vector,
+            actual.velocity.vector,
+            predicted.velocity.vector - actual.velocity.vector
+        );
+        assert!(
+            (predicted.angular_velocity.vector - actual.angular_velocity.vector).norm() < 1.0e-12,
+            "omega predicted={:?} actual={:?} diff={:?}",
+            predicted.angular_velocity.vector,
+            actual.angular_velocity.vector,
+            predicted.angular_velocity.vector - actual.angular_velocity.vector
+        );
+        let predicted_q = predicted.orientation.q.into_inner();
+        let actual_q = actual.orientation.q.into_inner();
+        assert!(
+            (predicted_q.coords - actual_q.coords).norm() < 1.0e-12,
+            "q predicted={:?} actual={:?} diff={:?}",
+            predicted_q.coords,
+            actual_q.coords,
+            predicted_q.coords - actual_q.coords
+        );
+    }
+
     #[test]
     fn combine_dry_body_adds_mass_weights_cg_and_sums_inertia() {
         let base = MassProperties::new(
@@ -5306,43 +5355,38 @@ mod tests {
             .expect("gimballed primary RK4 forecast recorded");
         let predicted = &forecast.rigid_state;
         let actual = session.state();
-        assert_eq!(predicted.time.as_seconds().to_bits(), 0.2_f64.to_bits());
-        assert!(
-            (predicted.mass_props.mass_kg() - actual.mass_props.mass_kg()).abs() < 1.0e-12,
-            "mass predicted={} actual={}",
-            predicted.mass_props.mass_kg(),
-            actual.mass_props.mass_kg()
-        );
-        assert!(
-            (predicted.position.vector - actual.position.vector).norm() < 1.0e-12,
-            "position predicted={:?} actual={:?} diff={:?}",
-            predicted.position.vector,
-            actual.position.vector,
-            predicted.position.vector - actual.position.vector
-        );
-        assert!(
-            (predicted.velocity.vector - actual.velocity.vector).norm() < 1.0e-12,
-            "velocity predicted={:?} actual={:?} diff={:?}",
-            predicted.velocity.vector,
-            actual.velocity.vector,
-            predicted.velocity.vector - actual.velocity.vector
-        );
-        assert!(
-            (predicted.angular_velocity.vector - actual.angular_velocity.vector).norm() < 1.0e-12,
-            "omega predicted={:?} actual={:?} diff={:?}",
-            predicted.angular_velocity.vector,
-            actual.angular_velocity.vector,
-            predicted.angular_velocity.vector - actual.angular_velocity.vector
-        );
-        let predicted_q = predicted.orientation.q.into_inner();
-        let actual_q = actual.orientation.q.into_inner();
-        assert!(
-            (predicted_q.coords - actual_q.coords).norm() < 1.0e-12,
-            "q predicted={:?} actual={:?} diff={:?}",
-            predicted_q.coords,
-            actual_q.coords,
-            predicted_q.coords - actual_q.coords
-        );
+        assert_rigid_forecast_matches_state(predicted, actual, 0.2);
+    }
+
+    #[test]
+    fn primary_multibody_shadow_rk4_forecast_matches_multi_step_gimballed_ascent() {
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO)
+                .expect("gimballed primary multibody scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step fires engine command");
+
+        for expected_time_s in [0.2, 0.3] {
+            session
+                .step_once(&scenario.document, None)
+                .expect("powered gimballed step forecasts primary root");
+
+            let forecast = session
+                .primary_multibody_shadow
+                .as_ref()
+                .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+                .expect("gimballed primary RK4 forecast recorded");
+            assert_rigid_forecast_matches_state(
+                &forecast.rigid_state,
+                session.state(),
+                expected_time_s,
+            );
+        }
     }
 
     #[test]
