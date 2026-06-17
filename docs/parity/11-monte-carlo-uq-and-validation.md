@@ -1096,8 +1096,11 @@ reviewable commit (`13` §5).
   order when applying an optional correlation matrix. Crate-level helpers now
   map doc-02 structural bending, doc-03 aerodynamic coefficient, doc-04
   aerothermal model, and doc-05 thermochemistry `c_star_efficiency` bands into
-  epistemic budget sources with credibility evidence. Runner gathering and MC
-  campaign consumption are still future work.
+  epistemic budget sources with credibility evidence. `EngineRack` now gathers
+  resolved thermochemical liquid-engine `c_star_efficiency` bands into upstream
+  UQ sources without changing nominal engine performance. MC campaign
+  consumption and runner gathering for the remaining structural/aero/
+  aerothermal bands are still future work.
 - **goal:** Close the loop: consume the per-entry bias/random margins the aero (`03`), aerothermal (`04`), propulsion (`05`), and structural (`02`) database objects produce, mapping them into the source-tagged error budget as epistemic model-form bands, so a campaign's credibility report reflects the *actual* upstream uncertainty rather than hand-set figures.
 - **fidelity_tier:** T4
 - **depends_on:** [WP-11.2, WP-11.3]

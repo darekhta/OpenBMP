@@ -41,6 +41,7 @@ openbmp-sim         = { workspace = true }
 openbmp-state       = { workspace = true }
 openbmp-telemetry   = { workspace = true }
 openbmp-thermochem  = { workspace = true }
+openbmp-uq          = { workspace = true }
 openbmp-vehicle     = { workspace = true }
 serde               = { workspace = true }
 serde_json          = { workspace = true }

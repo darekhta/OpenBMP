@@ -45,6 +45,10 @@ use openbmp_scenario::{
 };
 use openbmp_sim::{EngineSnapshot, FiredEvent, ScenarioScriptAction};
 use openbmp_thermochem::{ThermochemDeck, ThermochemQuery, ThermochemTable};
+use openbmp_uq::{
+    CorrelatedErrorBudget, CredibilityLevel, UncertaintySource,
+    propulsion_c_star_efficiency_margin_source,
+};
 use openbmp_vehicle::PropellantBudgetReport;
 
 use crate::error::RunnerError;
@@ -62,6 +66,7 @@ pub struct EngineRack {
     cavitation_faults: Vec<CavitationEngineFault>,
     applied_fault_ids: BTreeSet<String>,
     liquid_plume: BTreeMap<EngineId, crate::plume::LiquidPlumeEngine>,
+    upstream_uq_sources: Vec<UncertaintySource>,
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +105,7 @@ impl EngineRack {
         let mut engine_ids: Vec<EngineId> = Vec::new();
         let mut engine_owners: BTreeMap<EngineId, BodyId> = BTreeMap::new();
         let mut liquid_plume: BTreeMap<EngineId, crate::plume::LiquidPlumeEngine> = BTreeMap::new();
+        let mut upstream_uq_sources: Vec<UncertaintySource> = Vec::new();
         let assembly = &document.vehicle.assembly;
         let layout = assembly.cluster_layout.unwrap_or_default();
         let thermochem = document
@@ -116,6 +122,7 @@ impl EngineRack {
             if let Some(plume) = built.liquid_plume {
                 liquid_plume.insert(id, plume);
             }
+            upstream_uq_sources.extend(built.upstream_uq_sources);
             engines.push(Box::new(engine));
             mount_points_body.push(Position3::<Body>::new(
                 config.mount_point_body_m[0],
@@ -149,6 +156,7 @@ impl EngineRack {
             cavitation_faults,
             applied_fault_ids: BTreeSet::new(),
             liquid_plume,
+            upstream_uq_sources,
         })
     }
 
@@ -184,6 +192,24 @@ impl EngineRack {
         &self,
     ) -> &BTreeMap<EngineId, crate::plume::LiquidPlumeEngine> {
         &self.liquid_plume
+    }
+
+    /// Upstream UQ sources gathered while resolving engine decks.
+    #[must_use]
+    pub fn upstream_uq_sources(&self) -> &[UncertaintySource] {
+        &self.upstream_uq_sources
+    }
+
+    /// Source-tagged UQ budget gathered while resolving engine decks.
+    ///
+    /// The runner does not infer correlations yet, so this budget uses the
+    /// identity correlation (`None`) over the gathered source order.
+    #[must_use]
+    pub fn upstream_uq_budget(&self) -> CorrelatedErrorBudget {
+        CorrelatedErrorBudget {
+            sources: self.upstream_uq_sources.clone(),
+            correlation: None,
+        }
     }
 
     /// Replace the set of rigid-body lanes that have been retired
@@ -578,6 +604,14 @@ fn engine_state_index(state: EngineState) -> u8 {
 struct BuiltEngine {
     engine: LiquidEngine,
     liquid_plume: Option<crate::plume::LiquidPlumeEngine>,
+    upstream_uq_sources: Vec<UncertaintySource>,
+}
+
+#[derive(Debug)]
+struct BuiltLiquidPerformance {
+    performance: LiquidEnginePerformance,
+    liquid_plume: crate::plume::LiquidPlumeEngine,
+    upstream_uq_source: UncertaintySource,
 }
 
 /// Engine resolver: scenario `EngineConfig` → `LiquidEngine` plus optional
@@ -624,9 +658,13 @@ fn build_engine(
             load_liquid_engine_performance(index, performance, thermochem, resolved_files)
         })
         .transpose()?;
-    let (performance, liquid_plume) = match performance {
-        Some((performance, liquid_plume)) => (Some(performance), Some(liquid_plume)),
-        None => (None, None),
+    let (performance, liquid_plume, upstream_uq_sources) = match performance {
+        Some(built) => (
+            Some(built.performance),
+            Some(built.liquid_plume),
+            vec![built.upstream_uq_source],
+        ),
+        None => (None, None, Vec::new()),
     };
     let mut engine = match performance {
         Some(performance) => LiquidEngine::new_with_performance(id, limits, performance),
@@ -649,6 +687,7 @@ fn build_engine(
     Ok(BuiltEngine {
         engine,
         liquid_plume,
+        upstream_uq_sources,
     })
 }
 
@@ -657,7 +696,7 @@ fn load_liquid_engine_performance(
     config: &EngineThermochemicalPerformanceConfig,
     thermochem: &PropulsionThermochemConfig,
     resolved_files: &BTreeMap<String, ResolvedFile>,
-) -> Result<(LiquidEnginePerformance, crate::plume::LiquidPlumeEngine), RunnerError> {
+) -> Result<BuiltLiquidPerformance, RunnerError> {
     let resolved =
         resolved_files
             .get("propulsion.thermochem.file")
@@ -705,17 +744,75 @@ fn load_liquid_engine_performance(
         field: format!("vehicle.assembly.engines[{index}].thermochemical_performance"),
         reason: err.to_string(),
     })?;
-    Ok((
+    let upstream_uq_source = propulsion_c_star_efficiency_margin_source(
+        thermochem_deck_uq_id(resolved),
+        state.c_star_efficiency.min,
+        state.c_star_efficiency.nominal,
+        state.c_star_efficiency.max,
+        CredibilityLevel::L1,
+        thermochem_uq_evidence(resolved, thermochem),
+    )
+    .map_err(|err| RunnerError::Engine {
+        field: format!("vehicle.assembly.engines[{index}].thermochemical_performance.uq"),
+        reason: err.to_string(),
+    })?;
+    let nominal_mass_flow_kg_per_s = performance.mass_flow_kg_per_s;
+    Ok(BuiltLiquidPerformance {
         performance,
-        crate::plume::LiquidPlumeEngine {
+        liquid_plume: crate::plume::LiquidPlumeEngine {
             chamber_pressure_pa: thermochem.chamber_pressure_pa,
             gamma: state.gamma,
             throat_area_m2: config.throat_area_m2,
             exit_area_m2: config.exit_area_m2,
-            nominal_mass_flow_kg_per_s: performance.mass_flow_kg_per_s,
+            nominal_mass_flow_kg_per_s,
             separation,
         },
-    ))
+        upstream_uq_source,
+    })
+}
+
+fn thermochem_deck_uq_id(resolved: &ResolvedFile) -> String {
+    let stem = resolved
+        .path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("thermochem");
+    let slug = source_component_slug(stem, "thermochem");
+    let sha = resolved.sha256_hex.chars().take(12).collect::<String>();
+    if sha.is_empty() {
+        slug
+    } else {
+        format!("{slug}.{sha}")
+    }
+}
+
+fn source_component_slug(value: &str, fallback: &str) -> String {
+    let mut slug = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+            slug.push(ch);
+        } else {
+            slug.push('_');
+        }
+    }
+    if slug.trim_matches('_').is_empty() {
+        fallback.to_owned()
+    } else {
+        slug
+    }
+}
+
+fn thermochem_uq_evidence(
+    resolved: &ResolvedFile,
+    thermochem: &PropulsionThermochemConfig,
+) -> String {
+    format!(
+        "{}#sha256={} pc={:.12e} mr={:.12e}",
+        resolved.path.display(),
+        resolved.sha256_hex,
+        thermochem.chamber_pressure_pa,
+        thermochem.mixture_ratio
+    )
 }
 
 fn scheduled_faults(document: &ScenarioDocument) -> Vec<ScheduledEngineFault> {
@@ -802,6 +899,7 @@ mod tests {
         EngineLimitsConfig, EngineThermochemicalPerformanceConfig, PropulsionThermochemConfig,
     };
     use openbmp_sim::EventId;
+    use openbmp_uq::UncertaintyClass;
     use std::path::PathBuf;
 
     fn test_limits() -> EngineLimits {
@@ -853,6 +951,7 @@ mod tests {
                 cavitation_faults: Vec::new(),
                 applied_fault_ids: BTreeSet::new(),
                 liquid_plume: BTreeMap::new(),
+                upstream_uq_sources: Vec::new(),
             },
             id,
         )
@@ -1095,6 +1194,35 @@ mod tests {
         .unwrap();
 
         let built = build_engine(0, &config, Some(&thermochem), &resolved_files).unwrap();
+        assert_eq!(built.upstream_uq_sources.len(), 1);
+        let uq_source = &built.upstream_uq_sources[0];
+        assert_eq!(
+            uq_source.source_id,
+            "05.propulsion.synthetic-grain.fixture.c_star_efficiency"
+        );
+        assert_eq!(uq_source.class, UncertaintyClass::Epistemic);
+        assert_eq!(uq_source.credibility.binding_level(), CredibilityLevel::L1);
+        assert!(
+            uq_source
+                .justification
+                .contains("tests/fixtures/thermochem/synthetic-grain.toml#sha256=fixture")
+        );
+        let expected_eta_sigma = (expected_state.c_star_efficiency.nominal
+            - expected_state.c_star_efficiency.min)
+            .abs()
+            .max(
+                (expected_state.c_star_efficiency.max - expected_state.c_star_efficiency.nominal)
+                    .abs(),
+            );
+        assert!((uq_source.one_sigma - expected_eta_sigma).abs() < 1.0e-15);
+        let gathered_budget = CorrelatedErrorBudget {
+            sources: built.upstream_uq_sources.clone(),
+            correlation: None,
+        };
+        assert!(
+            (gathered_budget.epistemic_one_sigma().unwrap() - expected_eta_sigma).abs() < 1.0e-15
+        );
+
         let mut engine = built.engine;
         let plume = built
             .liquid_plume

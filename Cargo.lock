@@ -1792,6 +1792,7 @@ dependencies = [
  "openbmp-telemetry",
  "openbmp-testkit",
  "openbmp-thermochem",
+ "openbmp-uq",
  "openbmp-vehicle",
  "serde",
  "serde_json",
