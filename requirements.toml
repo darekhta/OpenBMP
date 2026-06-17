@@ -151,6 +151,12 @@ statement = "The openbmp-runner separated-lane multibody shadow path is covered 
 verification = ["V-MULTIBODY-025"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-026"
+title = "The multibody ABA substrate is backed by a checked tolerance-table fixture"
+statement = "The openbmp-multibody crate ships a checked TOML tolerance fixture for the moving free-flyer/revolute/prismatic sample chain, parses its generalized state, generalized forces, root acceleration, per-body external forces, and strict maximum-absolute-error thresholds in a crate test, and proves forward_dynamics_aba_at_state matches the dense forward-dynamics bridge and recovers the input generalized forces through biased RNEA within the fixture tolerances. This makes no claim that double-pendulum energy/momentum tolerance tables, Spatial_v2 oracle validation, scenario wiring, runner-level byte-equivalence, or replacing rigid-kernel propagation are complete."
+verification = ["V-MULTIBODY-026"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1299,6 +1305,27 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-025"]
+
+[[verification]]
+id = "V-MULTIBODY-026"
+kind = "test"
+command = "cargo test -p openbmp-multibody forward_dynamics_aba_matches_checked_tolerance_table --locked && cargo test -p openbmp-multibody forward_dynamics_aba_matches_dense_bridge --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "crates/openbmp-multibody/Cargo.toml",
+  "crates/openbmp-multibody/tests/expected/aba-chain-tolerance-v1.toml",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "forward_dynamics_aba_matches_checked_tolerance_table",
+  "aba-chain-tolerance-v1.toml",
+  "ABA tolerance fixture",
+  "REQ-MULTIBODY-026",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-026"]
 
 [[verification]]
 id = "V-SIL-001"

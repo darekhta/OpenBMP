@@ -233,11 +233,11 @@ the kernel-authoritative lane, and matches a pitch-gimballed liquid-engine burn
 over one powered step and over two consecutive powered ticks in the same
 synthetic ascent. Authoritative propagation is still the rigid kernel.
 Replacing the rigid propagation path, broader variable-mass multibody
-propagation beyond the one-body root forecast, double-pendulum tolerance
-tables, full separated-lane multibody propagation beyond the one-step separated
-shadow forecast, vehicle-scale gimballed ascent validation, articulated
-gimbal-joint inertia coupling, and external Spatial_v2 oracle fixtures remain
-open.
+propagation beyond the one-body root forecast, double-pendulum energy/momentum
+tolerance tables, full separated-lane multibody propagation beyond the one-step
+separated shadow forecast, vehicle-scale gimballed ascent validation,
+articulated gimbal-joint inertia coupling, and external Spatial_v2 oracle
+fixtures remain open.
 
 ---
 
@@ -734,8 +734,9 @@ justification first, reviewed before the implementation lands.
   velocity-bias terms, root parent acceleration, and per-body external spatial
   forces with fixed-order symmetric LDLT local joint solves; tests prove ABA
   matches the dense bridge and biased RNEA round trip on a moving nontrivial
-  tree, plus fail-closed generalized-force, external-force, and singular-block
-  handling.
+  tree, a checked TOML tolerance fixture now backs the same ABA-vs-dense and
+  RNEA round-trip case, and tests cover fail-closed generalized-force,
+  external-force, and singular-block handling.
   The state-integration substrate now exposes `MultibodyDerivative`,
   `advance_state_by()`, `project_state()`, `scalar_state_size()`, and
   `weighted_error_norm()`; tests prove derivative arithmetic, locked-order
@@ -825,8 +826,9 @@ justification first, reviewed before the implementation lands.
   powered separated-lane shadow forecasts, full momentum-conserving
   welded-to-free joint-release propagation and full separated-body multibody
   propagation beyond first-post-release separated shadow forecasts,
-  double-pendulum tolerance table, Spatial_v2 oracle fixtures, vehicle-scale
-  gimballed ascent validation, and articulated gimbal-joint inertia coupling.
+  double-pendulum energy/momentum tolerance table, Spatial_v2 oracle fixtures,
+  vehicle-scale gimballed ascent validation, and articulated gimbal-joint
+  inertia coupling.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

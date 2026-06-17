@@ -1708,7 +1708,9 @@ dependencies = [
  "openbmp-core",
  "openbmp-models",
  "openbmp-state",
+ "serde",
  "thiserror 2.0.18",
+ "toml",
  "uom",
 ]
 

@@ -2609,8 +2609,71 @@ mod tests {
     use nalgebra::UnitQuaternion;
     use openbmp_core::{Body, Position3};
     use openbmp_models::{RigidBodyDerivative, SimState};
+    use serde::Deserialize;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
+
+    #[derive(Debug, Deserialize)]
+    struct AbaToleranceFixture {
+        q: Vec<f64>,
+        qd: Vec<f64>,
+        generalized_forces: Vec<f64>,
+        root_acceleration: SpatialMotionFixture,
+        external_forces: Vec<SpatialForceFixture>,
+        tolerances: AbaToleranceThresholds,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SpatialMotionFixture {
+        angular: [f64; 3],
+        linear: [f64; 3],
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SpatialForceFixture {
+        moment: [f64; 3],
+        force: [f64; 3],
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct AbaToleranceThresholds {
+        aba_dense_max_abs: f64,
+        rnea_round_trip_max_abs: f64,
+    }
+
+    fn load_aba_tolerance_fixture() -> AbaToleranceFixture {
+        toml::from_str(include_str!(
+            "../tests/expected/aba-chain-tolerance-v1.toml"
+        ))
+        .expect("ABA tolerance fixture parses")
+    }
+
+    fn motion_from_fixture(fixture: &SpatialMotionFixture) -> SpatialMotion {
+        SpatialMotion::new(
+            Vector3::from(fixture.angular),
+            Vector3::from(fixture.linear),
+        )
+    }
+
+    fn force_from_fixture(fixture: &SpatialForceFixture) -> SpatialForce {
+        SpatialForce::new(Vector3::from(fixture.moment), Vector3::from(fixture.force))
+    }
+
+    fn assert_max_abs_diff(actual: &[f64], expected: &[f64], tolerance: f64, label: &str) {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{label} vector length mismatch"
+        );
+        let mut max_abs = 0.0_f64;
+        for (actual_value, expected_value) in actual.iter().zip(expected.iter()) {
+            max_abs = max_abs.max((actual_value - expected_value).abs());
+        }
+        assert!(
+            max_abs <= tolerance,
+            "{label} max_abs={max_abs:.17e} tolerance={tolerance:.17e}"
+        );
+    }
 
     fn mass_properties() -> MassProperties {
         MassProperties::with_diagonal_inertia(
@@ -3632,6 +3695,57 @@ mod tests {
         for (actual, expected) in tau_round_trip.iter().zip(generalized_forces.iter()) {
             assert_abs_diff_eq!(*actual, *expected, epsilon = 1.0e-10);
         }
+    }
+
+    #[test]
+    fn forward_dynamics_aba_matches_checked_tolerance_table() {
+        let fixture = load_aba_tolerance_fixture();
+        let tree = sample_tree();
+        assert_eq!(fixture.q.len(), tree.n_q());
+        assert_eq!(fixture.qd.len(), tree.n_qd());
+        assert_eq!(fixture.generalized_forces.len(), tree.n_qd());
+        assert_eq!(fixture.external_forces.len(), tree.bodies().len());
+
+        let state = MultibodyState::new(SimTime::ZERO, fixture.q, fixture.qd);
+        let root_acceleration = motion_from_fixture(&fixture.root_acceleration);
+        let external_forces: Vec<SpatialForce> = fixture
+            .external_forces
+            .iter()
+            .map(force_from_fixture)
+            .collect();
+
+        let dense = tree
+            .forward_dynamics_dense_at_state(
+                &state,
+                &fixture.generalized_forces,
+                root_acceleration,
+                &external_forces,
+            )
+            .unwrap();
+        let aba = tree
+            .forward_dynamics_aba_at_state(
+                &state,
+                &fixture.generalized_forces,
+                root_acceleration,
+                &external_forces,
+            )
+            .unwrap();
+        let tau_round_trip = tree
+            .inverse_dynamics_rnea_at_state(&state, &aba, root_acceleration, &external_forces)
+            .unwrap();
+
+        assert_max_abs_diff(
+            &aba,
+            &dense,
+            fixture.tolerances.aba_dense_max_abs,
+            "ABA versus dense",
+        );
+        assert_max_abs_diff(
+            &tau_round_trip,
+            &fixture.generalized_forces,
+            fixture.tolerances.rnea_round_trip_max_abs,
+            "RNEA round trip",
+        );
     }
 
     #[test]

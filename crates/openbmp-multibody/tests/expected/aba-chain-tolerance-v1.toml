@@ -1,0 +1,43 @@
+case = "moving-free-flyer-revolute-prismatic-chain"
+description = "Synthetic WP-01.1 ABA tolerance fixture for the sample three-body chain."
+
+q = [
+  1.0, 0.0, 0.0, 0.0,
+  0.2, -0.1, 0.3,
+  0.4,
+  0.15,
+]
+
+qd = [
+  0.1, -0.2, 0.3,
+  -0.4, 0.5, -0.6,
+  0.7,
+  -0.8,
+]
+
+generalized_forces = [
+  1.0, -0.5, 0.25,
+  -0.75, 0.6, -0.4,
+  0.9,
+  -0.2,
+]
+
+[root_acceleration]
+angular = [0.0, 0.0, 0.0]
+linear = [0.0, 0.0, -9.81]
+
+[[external_forces]]
+moment = [0.0, 0.0, 0.0]
+force = [0.0, 0.0, 0.0]
+
+[[external_forces]]
+moment = [0.2, -0.1, 0.05]
+force = [0.3, -0.2, 0.1]
+
+[[external_forces]]
+moment = [-0.05, 0.08, -0.03]
+force = [-0.4, 0.2, -0.1]
+
+[tolerances]
+aba_dense_max_abs = 1.0e-10
+rnea_round_trip_max_abs = 1.0e-10

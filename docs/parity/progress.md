@@ -100,7 +100,10 @@ three-pass articulated-body recursion over q-dependent transforms, velocity
 bias terms, root parent acceleration, and per-body external forces with
 fixed-order symmetric LDLT local joint solves; tests prove it matches the
 dense bridge and RNEA round-trip on a moving nontrivial tree and rejects bad
-forces or singular articulated blocks fail-closed (`REQ-MULTIBODY-007`).
+forces or singular articulated blocks fail-closed (`REQ-MULTIBODY-007`). The
+same ABA-vs-dense and RNEA round-trip sample chain is now also driven from a
+checked TOML tolerance fixture with strict max-absolute-error thresholds
+(`REQ-MULTIBODY-026`).
 The state-integration substrate adds `MultibodyDerivative`,
 `advance_state_by()`, `project_state()`, `scalar_state_size()`, and
 `weighted_error_norm()` with derivative arithmetic, quaternion projection,
@@ -190,8 +193,9 @@ WP-01.1: replacing the rigid-kernel propagation path, broader variable-mass
 multibody propagation beyond the primary-root and powered separated-lane shadow
 forecasts, full momentum-conserving welded-to-free joint-release propagation and
 full separated-body multibody propagation beyond first-post-release separated
-shadow forecasts, vehicle-scale gimballed ascent validation, articulated
-gimbal-joint inertia coupling, and Spatial_v2 oracle checks.
+shadow forecasts, double-pendulum energy/momentum tolerance tables,
+vehicle-scale gimballed ascent validation, articulated gimbal-joint inertia
+coupling, and Spatial_v2 oracle checks.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
