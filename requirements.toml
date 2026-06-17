@@ -229,6 +229,12 @@ statement = "The openbmp-multibody crate ingests a provenance-bearing TOML fixtu
 verification = ["V-MULTIBODY-038"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-039"
+title = "The rigid runner can hand primary root authority to the multibody forecast"
+statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"primary_root_free_flyer\" as an explicit guarded mode that requires primary_body_id and rejects simultaneous initial lanes, separation declarations, landing controllers, and articulated gimbal joints. In that mode, the rigid runner validates and records the usual primary root-free-flyer multibody RK4 forecast, advances the existing rigid kernel tick to preserve event and stop machinery, replaces the current primary RigidBodyState with the same-tick root-free-flyer multibody forecast through a validity-checked kernel handoff API, and records the applied authoritative handoff on the shadow. This makes no claim that separated-lane authority, articulated gimbal authority, or full rigid-kernel removal is complete."
+verification = ["V-MULTIBODY-039"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1655,6 +1661,34 @@ contains = [
   "REQ-MULTIBODY-038",
 ]
 requirements = ["REQ-MULTIBODY-038"]
+
+[[verification]]
+id = "V-MULTIBODY-039"
+kind = "test"
+command = "cargo test -p openbmp-scenario primary_root_free_flyer --locked && cargo test -p openbmp-sim replace_current_rigid_state_requires_valid_same_time_state --locked && cargo test -p openbmp-runner primary_multibody_root_free_flyer_authority_records_handoff --locked && cargo check -p openbmp-scenario -p openbmp-sim -p openbmp-runner --locked && cargo clippy -p openbmp-scenario -p openbmp-sim -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-sim/src/kernel.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "MultiBodyPropagationAuthorityConfig",
+  "propagation_authority",
+  "PrimaryRootFreeFlyer",
+  "replace_current_rigid_state",
+  "replace_current_rigid_state_requires_valid_same_time_state",
+  "apply_primary_root_free_flyer_authority",
+  "last_authoritative_state",
+  "primary_multibody_root_free_flyer_authority_records_handoff",
+  "rejects_primary_root_free_flyer_authority_with_initial_lanes",
+  "REQ-MULTIBODY-039",
+]
+requirements = ["REQ-MULTIBODY-039"]
 
 [[verification]]
 id = "V-SIL-001"

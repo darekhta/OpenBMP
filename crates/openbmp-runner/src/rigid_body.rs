@@ -48,7 +48,10 @@ use openbmp_physics::{
     AtmosphereModel, ConstantGravity, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
 };
 use openbmp_propulsion::{Motor, SolidMotor};
-use openbmp_scenario::{MultiBodyGimbalJointConfig, ResolvedFile, Scenario, ScenarioDocument};
+use openbmp_scenario::{
+    MultiBodyGimbalJointConfig, MultiBodyPropagationAuthorityConfig, ResolvedFile, Scenario,
+    ScenarioDocument,
+};
 use openbmp_sim::{
     AnyStop, ConstantMass, EffectorActualsView, EndTime, EngineSnapshotView, EnvironmentModel,
     EnvironmentQuery, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane, Integrator,
@@ -413,6 +416,7 @@ impl RigidBodySession {
                 seed,
                 last_derivative: None,
                 last_rk4_forecast: None,
+                last_authoritative_state: None,
             });
         let multibody_moment_model = if document.multi_body.is_some() {
             Some(build_moment_model(
@@ -792,6 +796,7 @@ impl RigidBodySession {
         let prev_velocity_eci = self.kernel.current_state().velocity.vector;
         let prev_orientation = self.kernel.current_state().orientation.q;
         self.kernel.step()?;
+        self.apply_primary_root_free_flyer_authority(document)?;
         // Refresh tank-rack drivers from the post-step
         // rigid-body state. `accel_body_m_s2` is finite-differenced
         // from the velocity change rotated into the prior-step body
@@ -996,6 +1001,7 @@ impl RigidBodySession {
         shadow.seed = seed;
         shadow.last_derivative = Some(derivative);
         shadow.last_rk4_forecast = Some(forecast);
+        shadow.last_authoritative_state = None;
         debug_assert_eq!(
             shadow
                 .last_derivative
@@ -1076,8 +1082,39 @@ impl RigidBodySession {
                     seed,
                     last_derivative: Some(derivative),
                     last_rk4_forecast: Some(forecast),
+                    last_authoritative_state: None,
                 },
             );
+        }
+        Ok(())
+    }
+
+    fn apply_primary_root_free_flyer_authority(
+        &mut self,
+        document: &ScenarioDocument,
+    ) -> Result<(), RunnerError> {
+        if !primary_root_free_flyer_authority_enabled(document) {
+            return Ok(());
+        }
+        if !self.kernel.separated_rigid_bodies().is_empty() {
+            return Err(RunnerError::UnsupportedScenario {
+                what:
+                    "primary_root_free_flyer propagation authority does not support separated lanes"
+                        .to_owned(),
+            });
+        }
+        let replacement = self
+            .primary_multibody_shadow
+            .as_ref()
+            .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+            .map(|forecast| forecast.rigid_state)
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "primary_root_free_flyer propagation authority requires a recorded primary root multibody forecast"
+                    .to_owned(),
+            })?;
+        self.kernel.replace_current_rigid_state(replacement)?;
+        if let Some(shadow) = self.primary_multibody_shadow.as_mut() {
+            shadow.last_authoritative_state = Some(replacement);
         }
         Ok(())
     }
@@ -1505,6 +1542,13 @@ fn require_supported_multi_body_shape(document: &ScenarioDocument) -> Result<(),
         }
     }
     Ok(())
+}
+
+fn primary_root_free_flyer_authority_enabled(document: &ScenarioDocument) -> bool {
+    document.multi_body.as_ref().is_some_and(|multi_body| {
+        multi_body.propagation_authority
+            == MultiBodyPropagationAuthorityConfig::PrimaryRootFreeFlyer
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -2261,6 +2305,7 @@ struct RootFreeFlyerMultibodyShadow {
     seed: RootFreeFlyerMultibodySeed,
     last_derivative: Option<MultibodyDerivative>,
     last_rk4_forecast: Option<RootFreeFlyerMultibodySeed>,
+    last_authoritative_state: Option<RigidBodyState>,
 }
 
 fn build_initial_root_free_flyer_multibody_seed(
@@ -6214,6 +6259,14 @@ mod tests {
             .as_ref()
             .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
             .expect("primary RK4 forecast recorded");
+        assert!(
+            session
+                .primary_multibody_shadow
+                .as_ref()
+                .and_then(|shadow| shadow.last_authoritative_state.as_ref())
+                .is_none(),
+            "default rigid-kernel authority must not record a multibody handoff"
+        );
         let predicted = &forecast.rigid_state;
         let actual = session.state();
         assert_eq!(predicted.time.as_seconds().to_bits(), 0.1_f64.to_bits());
@@ -6247,6 +6300,40 @@ mod tests {
             actual_q.coords,
             predicted_q.coords - actual_q.coords
         );
+    }
+
+    #[test]
+    fn primary_multibody_root_free_flyer_authority_records_handoff() {
+        let toml = PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO
+            .replace("gravity_m_s2 = 0.0", "gravity_m_s2 = 2.0")
+            .replace(
+                "[telemetry]\n",
+                "[multi_body]\nprimary_body_id = \"main\"\npropagation_authority = \"primary_root_free_flyer\"\n\n[[multi_body.attitude_target]]\nbody_id = \"main\"\nstart_time_s = 1.0\npitch_effector = \"main-pitch-torque\"\nkp = 1.0\nkd = 0.0\nmax_command = 1.0\ntarget = { kind = \"eci_vector\", vector_eci = [0.0, 0.0, 1.0] }\n\n[telemetry]\n",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step applies primary root authority");
+
+        let shadow = session
+            .primary_multibody_shadow
+            .as_ref()
+            .expect("primary multibody shadow exists");
+        let forecast = shadow
+            .last_rk4_forecast
+            .as_ref()
+            .expect("primary RK4 forecast recorded");
+        let authoritative = shadow
+            .last_authoritative_state
+            .as_ref()
+            .expect("primary root multibody handoff recorded");
+        assert_rigid_forecast_matches_state(&forecast.rigid_state, session.state(), 0.1);
+        assert_rigid_forecast_matches_state(authoritative, session.state(), 0.1);
     }
 
     #[test]

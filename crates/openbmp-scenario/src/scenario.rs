@@ -5079,6 +5079,64 @@ angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
     }
 
     #[test]
+    fn accepts_primary_root_free_flyer_propagation_authority() {
+        let prefix = VALID_STAGE_SEPARATION_SCENARIO
+            .split("\n[mission]\n")
+            .next()
+            .expect("fixture contains mission block");
+        let toml = format!(
+            r#"{prefix}
+[multi_body]
+primary_body_id = "upper"
+propagation_authority = "primary_root_free_flyer"
+"#
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
+        let multi_body = scenario
+            .document
+            .multi_body
+            .as_ref()
+            .expect("multi_body present");
+        assert_eq!(multi_body.primary_body_id.as_deref(), Some("upper"));
+        assert_eq!(
+            multi_body.propagation_authority,
+            crate::document::MultiBodyPropagationAuthorityConfig::PrimaryRootFreeFlyer
+        );
+    }
+
+    #[test]
+    fn rejects_primary_root_free_flyer_authority_with_initial_lanes() {
+        let prefix = VALID_STAGE_SEPARATION_SCENARIO
+            .split("\n[mission]\n")
+            .next()
+            .expect("fixture contains mission block");
+        let toml = format!(
+            r#"{prefix}
+[multi_body]
+primary_body_id = "upper"
+propagation_authority = "primary_root_free_flyer"
+
+[[multi_body.initial_lane]]
+body_id                         = "lower"
+position_eci_m                  = [10.0, 0.0, 100.0]
+velocity_eci_m_s                = [0.0, 1.0, 10.0]
+quaternion_body_to_eci_xyzw     = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
+"#
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                    if field_a == "multi_body.propagation_authority"
+                        && field_b == "multi_body.initial_lane"
+            ),
+            "expected primary root authority/initial lane conflict, got {err:?}",
+        );
+    }
+
+    #[test]
     fn accepts_multi_body_attitude_target_with_direct_torque_effector() {
         let prefix = VALID_STAGE_SEPARATION_SCENARIO
             .split("\n[environment]\n")

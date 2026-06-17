@@ -253,14 +253,19 @@ future propagation handoff checks. The multibody crate now ingests a
 provenance-bearing Spatial_v2-compatible ABA oracle fixture for the sample tree
 and compares checked static generalized accelerations against the current ABA
 path; the fixture is explicitly marked self-consistency, not an independent
-Featherstone Spatial_v2 run.
-Authoritative propagation is still the rigid kernel.
-Replacing the rigid propagation path, broader variable-mass multibody
-propagation beyond the one-body root forecast, full separated-lane multibody
-propagation beyond the one-step separated shadow forecast, authoritative
-articulated thrust propagation including authoritative two-axis propagation,
-full orbital-ascent gimballed validation, and the independent Spatial_v2 oracle
-matrix across at least three small random trees remain open.
+Featherstone Spatial_v2 run. The scenario schema and rigid runner now also
+expose guarded `propagation_authority = "primary_root_free_flyer"` mode, which
+is limited to primary root-free-flyer handoff, rejects separated/articulated
+combinations, and replaces the primary rigid state with the recorded
+root-free-flyer multibody forecast after each fixed-step RK4 tick.
+Default authoritative propagation is still the rigid kernel.
+Replacing the rigid propagation path beyond that guarded primary-root handoff,
+broader variable-mass multibody propagation beyond the one-body root forecast,
+full separated-lane multibody propagation beyond the one-step separated shadow
+forecast, authoritative articulated thrust propagation including authoritative
+two-axis propagation, full orbital-ascent gimballed validation, and the
+independent Spatial_v2 oracle matrix across at least three small random trees
+remain open.
 
 ---
 
@@ -892,16 +897,20 @@ justification first, reviewed before the implementation lands.
   (`REQ-MULTIBODY-037`). The multibody crate now also ingests a
   provenance-bearing Spatial_v2-compatible ABA oracle fixture for the sample
   tree and compares ABA output against the checked static acceleration vector
-  while labeling the source as self-consistency (`REQ-MULTIBODY-038`).
-  Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
-  broader variable-mass multibody propagation beyond the primary-root and
-  powered separated-lane shadow forecasts, runner-side momentum-conserving
-  welded-to-free joint-release propagation and full separated-body multibody
-  propagation beyond the substrate handoff and first-post-release separated
-  shadow forecasts, the independent Spatial_v2 oracle matrix across at least
-  three small random trees, full orbital-ascent gimballed validation, and
-  authoritative articulated thrust propagation including authoritative two-axis
-  propagation.
+  while labeling the source as self-consistency (`REQ-MULTIBODY-038`). The
+  schema and runner now also expose guarded
+  `propagation_authority = "primary_root_free_flyer"` mode, reject
+  separated/articulated combinations for that mode, and record the applied
+  post-step primary-root multibody handoff (`REQ-MULTIBODY-039`).
+  Remaining WP-01.1 work: replacing the rigid-kernel propagation path beyond
+  the guarded primary-root handoff, broader variable-mass multibody propagation
+  beyond the primary-root and powered separated-lane shadow forecasts,
+  runner-side momentum-conserving welded-to-free joint-release propagation and
+  full separated-body multibody propagation beyond the substrate handoff and
+  first-post-release separated shadow forecasts, the independent Spatial_v2
+  oracle matrix across at least three small random trees, full orbital-ascent
+  gimballed validation, and authoritative articulated thrust propagation
+  including authoritative two-axis propagation.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

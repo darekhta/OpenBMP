@@ -233,9 +233,15 @@ Spatial_v2-compatible ABA oracle fixture for the sample tree and compares ABA
 accelerations against the checked static vector (`REQ-MULTIBODY-038`); the
 fixture is explicitly labeled self-consistency, so it does not claim an
 independent Featherstone Spatial_v2 run.
+The scenario schema and rigid runner now also expose guarded
+`propagation_authority = "primary_root_free_flyer"` mode, which rejects
+separated/articulated combinations, replaces the primary rigid state with the
+root-free-flyer multibody forecast after each fixed-step RK4 tick, and records
+the applied handoff (`REQ-MULTIBODY-039`).
 Missing for full WP-01.1:
-replacing the rigid-kernel propagation path, broader variable-mass multibody
-propagation beyond the primary-root and powered separated-lane shadow forecasts,
+replacing the rigid-kernel propagation path beyond the guarded primary-root
+handoff, broader variable-mass multibody propagation beyond the primary-root and
+powered separated-lane shadow forecasts,
 full momentum-conserving welded-to-free joint-release propagation and full
 separated-body multibody propagation beyond first-post-release separated shadow
 forecasts and the substrate handoff, full orbital-ascent gimballed validation,

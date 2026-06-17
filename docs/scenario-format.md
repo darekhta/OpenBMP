@@ -3021,6 +3021,15 @@ telemetry uses the same `body.<body_id>.*` channel family as detached
 bodies; `body.<body_id>.separated` is `true` from the first row for
 these lanes.
 
+`propagation_authority` defaults to `"rigid_kernel"`. Setting it to
+`"primary_root_free_flyer"` is a guarded root-only handoff mode: it
+requires `primary_body_id`, rejects `[[multi_body.initial_lane]]`,
+`[[multi_body.separation]]`, `[[multi_body.landing_controller]]`, and
+`[[multi_body.gimbal_joint]]`, and after each fixed-step RK4 tick replaces the
+primary rigid state with the root-free-flyer multibody forecast recorded for
+that same tick. Separated lanes and articulated gimbals remain outside this
+authority mode.
+
 Each `[[multi_body.separation]]` entry binds to a mission event by id
 and declares the two `vehicle.assembly.bodies[*].id` values that
 continue propagating after the event. Optional impulsive delta-V

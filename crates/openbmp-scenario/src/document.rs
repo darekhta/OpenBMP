@@ -13593,6 +13593,10 @@ impl ScheduleGroupConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MultiBodyConfig {
+    /// Which propagation result is authoritative for the primary lane.
+    /// The default leaves the rigid kernel authoritative.
+    #[serde(default)]
+    pub propagation_authority: MultiBodyPropagationAuthorityConfig,
     /// Assembly body represented by the primary rigid-body lane when
     /// `[[multi_body.initial_lane]]` entries are declared. Existing
     /// separation-only scenarios leave this unset so the primary lane
@@ -13635,11 +13639,54 @@ impl MultiBodyConfig {
             && self.attitude_targets.is_empty()
             && self.landing_controllers.is_empty()
             && self.gimbal_joints.is_empty()
+            && self.propagation_authority == MultiBodyPropagationAuthorityConfig::RigidKernel
         {
             return Err(ScenarioError::EmptyList {
                 field: "multi_body.initial_lane, multi_body.separation, multi_body.attitude_target, multi_body.landing_controller, or multi_body.gimbal_joint"
                     .to_owned(),
             });
+        }
+        if self.propagation_authority == MultiBodyPropagationAuthorityConfig::PrimaryRootFreeFlyer {
+            let primary_body_id = self.primary_body_id.as_ref().ok_or_else(|| {
+                ScenarioError::MissingRequiredField {
+                    field: "multi_body.primary_body_id".to_owned(),
+                    role: ModelRole::Vehicle,
+                    name: "multi_body.propagation_authority".to_owned(),
+                }
+            })?;
+            require_non_empty("multi_body.primary_body_id", primary_body_id)?;
+            if !self.initial_lanes.is_empty() {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "multi_body.propagation_authority".to_owned(),
+                    value_a: "primary_root_free_flyer".to_owned(),
+                    field_b: "multi_body.initial_lane".to_owned(),
+                    value_b: "present".to_owned(),
+                });
+            }
+            if !self.separations.is_empty() {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "multi_body.propagation_authority".to_owned(),
+                    value_a: "primary_root_free_flyer".to_owned(),
+                    field_b: "multi_body.separation".to_owned(),
+                    value_b: "present".to_owned(),
+                });
+            }
+            if !self.landing_controllers.is_empty() {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "multi_body.propagation_authority".to_owned(),
+                    value_a: "primary_root_free_flyer".to_owned(),
+                    field_b: "multi_body.landing_controller".to_owned(),
+                    value_b: "present".to_owned(),
+                });
+            }
+            if !self.gimbal_joints.is_empty() {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "multi_body.propagation_authority".to_owned(),
+                    value_a: "primary_root_free_flyer".to_owned(),
+                    field_b: "multi_body.gimbal_joint".to_owned(),
+                    value_b: "present".to_owned(),
+                });
+            }
         }
         if !self.initial_lanes.is_empty() {
             let primary_body_id = self.primary_body_id.as_ref().ok_or_else(|| {
@@ -13690,6 +13737,18 @@ impl MultiBodyConfig {
         }
         Ok(())
     }
+}
+
+/// Authority selector for `[multi_body]` primary-lane propagation.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MultiBodyPropagationAuthorityConfig {
+    /// Keep the legacy rigid-body kernel authoritative.
+    #[default]
+    RigidKernel,
+    /// Replace the primary rigid-body state with the root-free-flyer
+    /// multibody forecast after each fixed-step RK4 tick.
+    PrimaryRootFreeFlyer,
 }
 
 /// One entry under `[[multi_body.initial_lane]]`.

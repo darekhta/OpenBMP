@@ -1918,6 +1918,35 @@ where
         &self.state
     }
 
+    /// Replace the current rigid-body state after an externally computed
+    /// fixed-step propagation has advanced to the same kernel time.
+    ///
+    /// This intentionally does not advance the step index or re-run event
+    /// detection; callers must invoke it only after [`Self::step`] has moved
+    /// the kernel clock for the current tick.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError`] if the replacement state is invalid or its
+    /// timestamp differs from the current kernel state timestamp.
+    pub fn replace_current_rigid_state(
+        &mut self,
+        state: openbmp_state::RigidBodyState,
+    ) -> Result<(), SimulationError> {
+        state.require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)?;
+        if state.time.as_seconds().to_bits() != self.state.time.as_seconds().to_bits() {
+            return Err(SimulationError::InvalidConfig {
+                reason: format!(
+                    "replacement rigid-body state time {} s does not match current kernel time {} s",
+                    state.time.as_seconds(),
+                    self.state.time.as_seconds()
+                ),
+            });
+        }
+        self.state = state;
+        Ok(())
+    }
+
     /// Detached rigid-body lanes, in deterministic propagation order.
     #[must_use]
     pub fn separated_rigid_bodies(&self) -> &[SeparatedRigidBody] {
@@ -2782,6 +2811,63 @@ mod tests {
             1.0,
             1.0,
         )
+    }
+
+    fn zero_force_rigid_kernel(
+        dt_s: f64,
+    ) -> RigidBodyKernel<
+        Rk4FixedStep,
+        ZeroForce,
+        ZeroMoment,
+        ConstantMassRigid,
+        NullEnvironment,
+        AlwaysContinue,
+    > {
+        let mass_props = unit_rigid_mass_properties();
+        let config = SimulationConfig {
+            initial_state: RigidBodyState::new(
+                SimTime::ZERO,
+                Position3::origin(),
+                Velocity3::zero(),
+                Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+                AngularVelocity3::zero(),
+                mass_props,
+            ),
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: RigidModels::new(ZeroMoment, ConstantMassRigid::new(mass_props)),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(dt_s),
+            scenario_seed: 1,
+        };
+        SimulationKernel::new_rigid(config).expect("construct")
+    }
+
+    #[test]
+    fn replace_current_rigid_state_requires_valid_same_time_state() {
+        let mut kernel = zero_force_rigid_kernel(0.1);
+        kernel.step().expect("advance clock");
+
+        let mut replacement = *kernel.current_state();
+        replacement.position = Position3::new(1.0, 2.0, 3.0);
+        kernel
+            .replace_current_rigid_state(replacement)
+            .expect("same-time valid replacement is accepted");
+        assert_eq!(kernel.current_state().position, replacement.position);
+
+        let mut wrong_time = replacement;
+        wrong_time.time = SimTime::from_seconds(0.2);
+        let err = kernel.replace_current_rigid_state(wrong_time).unwrap_err();
+        assert!(
+            matches!(err, SimulationError::InvalidConfig { ref reason } if reason.contains("does not match current kernel time")),
+            "expected replacement time mismatch, got {err:?}",
+        );
+
+        let mut nonfinite = replacement;
+        nonfinite.position = Position3::new(f64::NAN, 0.0, 0.0);
+        let err = kernel.replace_current_rigid_state(nonfinite).unwrap_err();
+        assert!(matches!(err, SimulationError::State(_)));
     }
 
     #[test]
