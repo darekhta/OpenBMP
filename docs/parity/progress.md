@@ -360,12 +360,13 @@ degree 6 (`gravity.rs`), and WP-08.1 is now **partial** through
 `TesseralGravity`, `DegreeTwoTesseralCoefficients`,
 `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
 `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
-`HarmonicLongitudeTrigonometry`, and `TideSystem`: the first degree-2/order-2
-static harmonic surface supports C20, C21/S21, and C22/S22 terms, converts
-fully-normalized degree-2 blocks, stores normalized `Cbar/Sbar` fields in
-deterministic packed `(n, m)` order, exposes checked fully-normalized scale
-factors, a bounded `cos(mλ)`/`sin(mλ)` recurrence table, and default-zero
-coefficient-slot iteration, rebuilds the current
+`HarmonicLongitudeTrigonometry`, `HarmonicTruncation`, and `TideSystem`: the
+first degree-2/order-2 static harmonic surface supports C20, C21/S21, and
+C22/S22 terms, converts fully-normalized degree-2 blocks, stores normalized
+`Cbar/Sbar` fields in deterministic packed `(n, m)` order, exposes checked
+fully-normalized scale factors, a bounded `cos(mλ)`/`sin(mλ)` recurrence table,
+a reusable truncation-envelope validator, and default-zero coefficient-slot
+iteration, rebuilds the current
 `Egm2008ZonalGravity` J2-J6 truncation from the
 `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
 fixture, parses the `data/gravity/wgs84-degree2-normalized-v1.toml` provenance

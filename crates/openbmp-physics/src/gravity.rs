@@ -1276,6 +1276,88 @@ impl HarmonicLongitudeTrigonometry {
     }
 }
 
+/// Checked harmonic degree/order truncation request.
+///
+/// The type validates only the mathematical truncation shape (`order <= degree`)
+/// and optional data-envelope bounds. It does not imply that a particular
+/// evaluator supports the requested degree; model constructors still enforce
+/// their own implementation limits.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct HarmonicTruncation {
+    degree: usize,
+    order: usize,
+}
+
+impl HarmonicTruncation {
+    /// Construct a truncation request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when `order > degree`.
+    pub fn new(degree: usize, order: usize) -> Result<Self, PhysicsError> {
+        if order > degree {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "harmonic truncation order must be <= degree",
+            });
+        }
+        Ok(Self { degree, order })
+    }
+
+    /// Construct a truncation request constrained by a declared data envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when `order > degree`, the
+    /// envelope itself is invalid, or the request exceeds `max_degree` /
+    /// `max_order`.
+    pub fn within_envelope(
+        degree: usize,
+        order: usize,
+        max_degree: usize,
+        max_order: usize,
+    ) -> Result<Self, PhysicsError> {
+        let truncation = Self::new(degree, order)?;
+        if max_order > max_degree {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "harmonic truncation envelope max_order must be <= max_degree",
+            });
+        }
+        if degree > max_degree || order > max_order {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "harmonic truncation outside declared envelope",
+            });
+        }
+        Ok(truncation)
+    }
+
+    /// Construct a truncation request constrained by a normalized coefficient
+    /// field.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when the request is not a
+    /// valid truncation or exceeds the field envelope.
+    pub fn for_normalized_field(
+        field: &NormalizedHarmonicField,
+        degree: usize,
+        order: usize,
+    ) -> Result<Self, PhysicsError> {
+        Self::within_envelope(degree, order, field.max_degree(), field.max_order())
+    }
+
+    /// Inclusive maximum harmonic degree.
+    #[must_use]
+    pub const fn degree(&self) -> usize {
+        self.degree
+    }
+
+    /// Inclusive maximum harmonic order.
+    #[must_use]
+    pub const fn order(&self) -> usize {
+        self.order
+    }
+}
+
 /// One fully-normalized spherical-harmonic coefficient pair.
 ///
 /// `degree` and `order` identify `(n, m)`. The cosine coefficient is `Cbar_nm`;
@@ -1297,11 +1379,7 @@ impl NormalizedHarmonicCoefficient {
     /// Returns [`PhysicsError::InvalidParameter`] if `order > degree`, either
     /// coefficient is non-finite, or an order-zero sine coefficient is nonzero.
     pub fn new(degree: usize, order: usize, cbar: f64, sbar: f64) -> Result<Self, PhysicsError> {
-        if order > degree {
-            return Err(PhysicsError::InvalidParameter {
-                reason: "harmonic coefficient order must be <= degree",
-            });
-        }
+        let truncation = HarmonicTruncation::new(degree, order)?;
         if !cbar.is_finite() || !sbar.is_finite() {
             return Err(PhysicsError::InvalidParameter {
                 reason: "normalized harmonic coefficients must be finite",
@@ -1313,8 +1391,8 @@ impl NormalizedHarmonicCoefficient {
             });
         }
         Ok(Self {
-            degree,
-            order,
+            degree: truncation.degree,
+            order: truncation.order,
             cbar,
             sbar,
         })
@@ -1522,11 +1600,7 @@ impl NormalizedHarmonicField {
     /// Returns [`PhysicsError::InvalidParameter`] if the requested pair is
     /// outside the declared field envelope or has `order > degree`.
     pub fn coefficient(&self, degree: usize, order: usize) -> Result<(f64, f64), PhysicsError> {
-        if degree > self.max_degree || order > self.max_order {
-            return Err(PhysicsError::InvalidParameter {
-                reason: "normalized harmonic coefficient lookup outside field envelope",
-            });
-        }
+        HarmonicTruncation::for_normalized_field(self, degree, order)?;
         let index = normalized_harmonic_index(self.max_order, degree, order).ok_or(
             PhysicsError::InvalidParameter {
                 reason: "normalized harmonic coefficient lookup order must be <= degree",
@@ -1964,11 +2038,7 @@ impl TesseralGravity {
         degree: usize,
         order: usize,
     ) -> Result<Self, PhysicsError> {
-        if degree > field.max_degree() || order > field.max_order() {
-            return Err(PhysicsError::InvalidParameter {
-                reason: "requested tesseral truncation outside normalized harmonic field envelope",
-            });
-        }
+        let truncation = HarmonicTruncation::for_normalized_field(field, degree, order)?;
         let coefficients = if degree == 0 {
             DegreeTwoTesseralCoefficients::zero(field.tide_system())
         } else {
@@ -1976,7 +2046,13 @@ impl TesseralGravity {
                 .normalized_degree_two_tesseral_coefficients()?
                 .to_unnormalized()?
         };
-        Self::new(mu_m3_s2, r_e_m, coefficients, degree, order)
+        Self::new(
+            mu_m3_s2,
+            r_e_m,
+            coefficients,
+            truncation.degree(),
+            truncation.order(),
+        )
     }
 
     /// Configured `µ` (m³/s²).
@@ -2228,13 +2304,9 @@ impl Egm2008ZonalGravity {
         field: &NormalizedHarmonicField,
         degree: usize,
     ) -> Result<Self, PhysicsError> {
-        if degree > field.max_degree() {
-            return Err(PhysicsError::InvalidParameter {
-                reason: "requested EGM2008 zonal degree outside normalized harmonic field envelope",
-            });
-        }
+        let truncation = HarmonicTruncation::for_normalized_field(field, degree, 0)?;
         let mut j_n = [0.0; EGM2008_MAX_DEGREE - 1];
-        for n in 2..=degree {
+        for n in 2..=truncation.degree() {
             let (cbar_n0, _) = field.coefficient(n, 0)?;
             j_n[n - 2] = if cbar_n0 == 0.0 {
                 0.0
@@ -2242,7 +2314,7 @@ impl Egm2008ZonalGravity {
                 -cbar_n0 * fully_normalized_zonal_scale(n)?
             };
         }
-        Self::new(mu_m3_s2, r_e_m, j_n, degree)
+        Self::new(mu_m3_s2, r_e_m, j_n, truncation.degree())
     }
 
     /// WGS84 / EGM2008-zonal defaults: `µ = WGS84_MU_M3_S2`, `R_e =
@@ -3143,6 +3215,42 @@ mod tests {
         ));
         assert!(matches!(
             table.sine(4),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tesseral_harmonic_truncation_validates_degree_order_envelopes() {
+        let truncation = HarmonicTruncation::new(12, 5).unwrap();
+        assert_eq!(truncation.degree(), 12);
+        assert_eq!(truncation.order(), 5);
+
+        let bounded = HarmonicTruncation::within_envelope(4, 2, 6, 3).unwrap();
+        assert_eq!(bounded, HarmonicTruncation::new(4, 2).unwrap());
+
+        let field = NormalizedHarmonicField::new(3, 1, TideSystem::TideFree, []).unwrap();
+        let field_truncation = HarmonicTruncation::for_normalized_field(&field, 3, 1).unwrap();
+        assert_eq!(field_truncation.degree(), 3);
+        assert_eq!(field_truncation.order(), 1);
+
+        assert!(matches!(
+            HarmonicTruncation::new(2, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            HarmonicTruncation::within_envelope(7, 0, 6, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            HarmonicTruncation::within_envelope(4, 4, 6, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            HarmonicTruncation::within_envelope(0, 0, 0, 1),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            HarmonicTruncation::for_normalized_field(&field, 3, 2),
             Err(PhysicsError::InvalidParameter { .. })
         ));
     }
