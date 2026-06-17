@@ -316,12 +316,14 @@ impl RigidBodySession {
                 &initial_engine_snapshot,
                 kernel_step_s,
             )?;
+            let root_forecast = articulated_gimbal_root_rigid_state_from_seed(&forecast)?;
             articulated_gimbal_shadows.insert(
                 seed.engine,
                 ArticulatedGimbalMultibodyShadow {
                     seed,
                     last_derivative: Some(derivative),
                     last_rk4_forecast: Some(forecast),
+                    last_root_rk4_forecast: Some(root_forecast),
                 },
             );
         }
@@ -1141,13 +1143,15 @@ impl RigidBodySession {
                 engine_snapshot,
                 self.kernel_step_s,
             )?;
-            updates.push((seed.engine, seed, derivative, forecast));
+            let root_forecast = articulated_gimbal_root_rigid_state_from_seed(&forecast)?;
+            updates.push((seed.engine, seed, derivative, forecast, root_forecast));
         }
-        for (engine, seed, derivative, forecast) in updates {
+        for (engine, seed, derivative, forecast, root_forecast) in updates {
             if let Some(shadow) = self.articulated_gimbal_shadows.get_mut(&engine) {
                 shadow.seed = seed;
                 shadow.last_derivative = Some(derivative);
                 shadow.last_rk4_forecast = Some(forecast);
+                shadow.last_root_rk4_forecast = Some(root_forecast);
             }
         }
         Ok(())
@@ -2233,6 +2237,7 @@ struct ArticulatedGimbalMultibodySeed {
     body: BodyId,
     engine: EngineId,
     joint: MultiBodyGimbalJointConfig,
+    parent_mass_props: MassProperties,
     tree: MultibodyTree,
     sim_state: MultibodySimState,
 }
@@ -2248,6 +2253,7 @@ struct ArticulatedGimbalMultibodyShadow {
     seed: ArticulatedGimbalMultibodySeed,
     last_derivative: Option<MultibodyDerivative>,
     last_rk4_forecast: Option<ArticulatedGimbalMultibodySeed>,
+    last_root_rk4_forecast: Option<RigidBodyState>,
 }
 
 #[derive(Debug)]
@@ -2534,6 +2540,7 @@ fn articulated_gimbal_multibody_seed_from_config_with_joint_state(
             body,
             engine,
             joint: joint.clone(),
+            parent_mass_props: parent_state.mass_props,
             tree,
             sim_state,
         })
@@ -2638,9 +2645,16 @@ fn articulated_gimbal_multibody_rk4_forecast_from_engine_thrust(
         body: seed.body,
         engine: seed.engine,
         joint: seed.joint.clone(),
+        parent_mass_props: seed.parent_mass_props,
         tree: seed.tree.clone(),
         sim_state: next_sim_state,
     })
+}
+
+fn articulated_gimbal_root_rigid_state_from_seed(
+    seed: &ArticulatedGimbalMultibodySeed,
+) -> Result<RigidBodyState, RunnerError> {
+    root_rigid_state_from_multibody_root_slots(seed.body, &seed.sim_state, seed.parent_mass_props)
 }
 
 fn articulated_gimbal_joint_state_from_engine_thrust(
@@ -2787,6 +2801,26 @@ fn root_free_flyer_rigid_state_from_multibody_state(
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "root free-flyer multibody state for body {} has q/qd dimensions {}/{}",
+                body.value(),
+                q.len(),
+                qd.len()
+            ),
+        });
+    }
+    root_rigid_state_from_multibody_root_slots(body, state, mass_props)
+}
+
+fn root_rigid_state_from_multibody_root_slots(
+    body: BodyId,
+    state: &MultibodySimState,
+    mass_props: MassProperties,
+) -> Result<RigidBodyState, RunnerError> {
+    let q = state.q();
+    let qd = state.qd();
+    if q.len() < 7 || qd.len() < 6 {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "multibody root projection for body {} has q/qd dimensions {}/{}",
                 body.value(),
                 q.len(),
                 qd.len()
@@ -5848,6 +5882,40 @@ mod tests {
             "held live thrust should advance two-axis gimbal rates: seed={:?} forecast={:?}",
             shadow.seed.sim_state.qd(),
             forecast.sim_state.qd()
+        );
+        let seed_root = articulated_gimbal_root_rigid_state_from_seed(&shadow.seed)
+            .expect("seed root projects");
+        let root_forecast = shadow
+            .last_root_rk4_forecast
+            .as_ref()
+            .expect("articulated gimbal root RK4 forecast recorded");
+        assert!(
+            (root_forecast.time.as_seconds() - seed_root.time.as_seconds() - session.kernel_step_s)
+                .abs()
+                < 1.0e-12,
+            "projected root forecast should advance exactly one session step: seed={} forecast={} dt={}",
+            seed_root.time.as_seconds(),
+            root_forecast.time.as_seconds(),
+            session.kernel_step_s
+        );
+        assert_eq!(
+            root_forecast.mass_props.mass_kg().to_bits(),
+            shadow.seed.parent_mass_props.mass_kg().to_bits()
+        );
+        let velocity_delta = (root_forecast.velocity.vector - seed_root.velocity.vector).norm();
+        let angular_delta =
+            (root_forecast.angular_velocity.vector - seed_root.angular_velocity.vector).norm();
+        assert!(
+            velocity_delta > 1.0e-6,
+            "projected root forecast should carry powered translational response: seed={:?} forecast={:?}",
+            seed_root.velocity.vector,
+            root_forecast.velocity.vector
+        );
+        assert!(
+            angular_delta > 1.0e-6,
+            "projected root forecast should carry powered angular response: seed={:?} forecast={:?}",
+            seed_root.angular_velocity.vector,
+            root_forecast.angular_velocity.vector
         );
     }
 

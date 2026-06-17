@@ -3163,8 +3163,10 @@ as a root free-flyer plus one or two revolute articulated bodies, validates its
 CRBA inertia matrix, and refreshes a non-authoritative ABA derivative from the
 live engine snapshot before each rigid-body tick. It also stores a
 non-authoritative one-step RK4 forecast over the articulated gimbal tree under
-the held live engine snapshot. The current rigid force/moment path remains
-authoritative until the WP-01.2 propagation handoff lands.
+the held live engine snapshot and projects the forecast root slots back into a
+rigid-state shape for future propagation handoff checks. The current rigid
+force/moment path remains authoritative until the WP-01.2 propagation handoff
+lands.
 
 ### v3-only `[fc]` sub-blocks
 

@@ -225,6 +225,9 @@ Articulated gimbal shadows now also store a non-authoritative one-step RK4
 forecast over the articulated tree under held live thrust, with the two-axis
 regression proving the forecast advances one session step and changes gimbal
 coordinates/rates (`REQ-MULTIBODY-036`).
+The same forecast path now projects articulated root slots back into
+`RigidBodyState`, preserving parent mass properties and proving powered
+translational and angular root response (`REQ-MULTIBODY-037`).
 Missing for full WP-01.1:
 replacing the rigid-kernel propagation path, broader variable-mass multibody
 propagation beyond the primary-root and powered separated-lane shadow forecasts,

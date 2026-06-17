@@ -248,7 +248,8 @@ neutral thrust axis, and accepts an optional right-handed
 live pitch/yaw thrust direction drives secondary and primary joint coordinates.
 The articulated gimbal shadow now also records a non-authoritative one-step RK4
 forecast over the one-axis or two-axis gimbal tree under the held live thrust
-snapshot.
+snapshot, and projects the forecast root slots into a rigid-state shape for
+future propagation handoff checks.
 Authoritative propagation is still the rigid kernel.
 Replacing the rigid propagation path, broader variable-mass multibody
 propagation beyond the one-body root forecast, full separated-lane multibody
@@ -881,7 +882,10 @@ justification first, reviewed before the implementation lands.
   non-authoritative one-step RK4 forecast over the articulated tree under held
   live thrust, with the two-axis regression proving the forecast advances one
   session step and changes the gimbal coordinates/rates
-  (`REQ-MULTIBODY-036`).
+  (`REQ-MULTIBODY-036`). The same forecast path now also projects the
+  articulated root slots back into `RigidBodyState`, preserving the parent mass
+  properties and proving powered translational and angular root response
+  (`REQ-MULTIBODY-037`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   broader variable-mass multibody propagation beyond the primary-root and
   powered separated-lane shadow forecasts, runner-side momentum-conserving

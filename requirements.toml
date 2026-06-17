@@ -217,6 +217,12 @@ statement = "Prepared rigid-body sessions record a non-authoritative one-step RK
 verification = ["V-MULTIBODY-036"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-037"
+title = "Articulated gimbal forecasts project a root rigid state"
+statement = "Prepared rigid-body sessions project each non-authoritative articulated gimbal RK4 forecast's root free-flyer slots back into the existing RigidBodyState shape using the parent mass properties that seeded the articulated tree. The regression uses the powered two-axis pitch/yaw gimbal scenario and proves the projected root forecast advances exactly one session step, preserves parent mass, and carries nonzero translational and angular response from held live articulated thrust. This makes no claim that the projected root forecast is authoritative, that it has replaced the rigid kernel's propagated state, or that Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-037"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1601,6 +1607,27 @@ contains = [
   "REQ-MULTIBODY-036",
 ]
 requirements = ["REQ-MULTIBODY-036"]
+
+[[verification]]
+id = "V-MULTIBODY-037"
+kind = "test"
+command = "cargo test -p openbmp-runner articulated_gimbal_shadow_rk4_forecast_advances_two_axis_tree --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "parent_mass_props",
+  "last_root_rk4_forecast",
+  "root_rigid_state_from_multibody_root_slots",
+  "articulated_gimbal_root_rigid_state_from_seed",
+  "projected root forecast should carry powered translational response",
+  "projected root forecast should carry powered angular response",
+  "REQ-MULTIBODY-037",
+]
+requirements = ["REQ-MULTIBODY-037"]
 
 [[verification]]
 id = "V-SIL-001"
