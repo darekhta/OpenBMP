@@ -752,8 +752,13 @@ justification first, reviewed before the implementation lands.
   `MultibodySimState` from the existing `RigidBodyState` seed for `[multi_body]`
   scenarios with `primary_body_id`, preserving the deterministic q/qd ordering
   and rotating ECI linear velocity into body-frame free-flyer velocity slots.
+  The same runner bridge now feeds root body-frame moments and ECI-frame forces
+  through the multibody root load adapter, validates the zero-load derivative
+  path during primary `[multi_body]` setup, and proves runner-level no-joint
+  identity-orientation equivalence against the current `RigidBodyDerivative`
+  force, moment, quaternion-rate, and acceleration equations.
   Remaining WP-01.1 work: full kernel/runner force adapter wiring,
-  runner-level no-joint byte-equivalence against the current `RigidBodyState`
+  runner-level scenario byte-equivalence against the current `RigidBodyState`
   kernel, simulator/environment force wiring, double-pendulum tolerance table,
   Spatial_v2 oracle fixtures, and scenario exercise.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker

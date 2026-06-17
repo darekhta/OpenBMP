@@ -41,8 +41,8 @@ use openbmp_core::{
     RecoveryId, SimTime, TankId, ValidationStatus, Velocity3,
 };
 use openbmp_multibody::{
-    Joint, MultibodySimState, MultibodyState, MultibodyTree, PluckerTransform, SpatialInertia,
-    TreeBodySpec,
+    Joint, MultibodyDerivative, MultibodySimState, MultibodyState, MultibodyTree, PluckerTransform,
+    SpatialForce, SpatialInertia, SpatialMotion, TreeBodySpec,
 };
 use openbmp_physics::{
     AtmosphereModel, ConstantGravity, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
@@ -280,10 +280,18 @@ impl RigidBodySession {
             .as_ref()
             .and_then(|multi_body| multi_body.primary_body_id.as_deref())
         {
-            let _initial_multibody_root = build_root_free_flyer_multibody_state(
-                body_id_from_scenario_text(primary_body_id),
-                &initial_state,
-            )?;
+            let (initial_multibody_tree, initial_multibody_state) =
+                build_root_free_flyer_multibody_state(
+                    body_id_from_scenario_text(primary_body_id),
+                    &initial_state,
+                )?;
+            let _initial_multibody_derivative =
+                root_free_flyer_multibody_derivative_from_rigid_loads(
+                    &initial_multibody_tree,
+                    &initial_multibody_state,
+                    Vector3::zeros(),
+                    Vector3::zeros(),
+                )?;
         }
         let kernel_vehicle = build_vehicle(
             document,
@@ -1901,6 +1909,25 @@ fn build_root_free_flyer_multibody_state(
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("root free-flyer multibody state failed: {err}"),
         })
+}
+
+fn root_free_flyer_multibody_derivative_from_rigid_loads(
+    tree: &MultibodyTree,
+    state: &MultibodySimState,
+    moment_body_n_m: Vector3<f64>,
+    force_eci_n: Vector3<f64>,
+) -> Result<MultibodyDerivative, RunnerError> {
+    let external_forces_body = vec![SpatialForce::zero(); tree.bodies().len()];
+    tree.derivative_from_root_free_flyer_loads(
+        state.state(),
+        moment_body_n_m,
+        force_eci_n,
+        SpatialMotion::zero(),
+        &external_forces_body,
+    )
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("root free-flyer multibody derivative failed: {err}"),
+    })
 }
 
 fn seed_initial_rigid_body_lanes<I, F, MOM, MM, E, SC>(
@@ -4087,6 +4114,111 @@ mod tests {
         match err {
             RunnerError::UnsupportedScenario { what } => {
                 assert!(what.contains("root free-flyer multibody spatial inertia"));
+            }
+            other => panic!("expected UnsupportedScenario, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn root_free_flyer_multibody_derivative_bridge_matches_rigid_equations() {
+        let state = RigidBodyState::new(
+            SimTime::ZERO,
+            Position3::<openbmp_core::Eci>::new(100.0, -200.0, 300.0),
+            Velocity3::<openbmp_core::Eci>::zero(),
+            Quaternion::<Body, openbmp_core::Eci>::from_unit_quaternion(
+                nalgebra::UnitQuaternion::identity(),
+            ),
+            AngularVelocity3::<Body>::new(2.0, 4.0, 6.0),
+            MassProperties::with_uniform_inertia(
+                Mass::new::<kilogram>(2.0),
+                Position3::<Body>::origin(),
+                2.0,
+            ),
+        );
+        let (tree, sim_state) =
+            build_root_free_flyer_multibody_state(body_id_from_scenario_text("main"), &state)
+                .expect("root seed builds");
+
+        let derivative = root_free_flyer_multibody_derivative_from_rigid_loads(
+            &tree,
+            &sim_state,
+            Vector3::new(4.0, 8.0, 12.0),
+            Vector3::new(14.0, 16.0, 18.0),
+        )
+        .expect("root derivative builds");
+        let expected_rigid = openbmp_sim::RigidBodyDerivative::new(
+            Vector3::zeros(),
+            Vector3::new(7.0, 8.0, 9.0),
+            nalgebra::Quaternion::new(0.0, 1.0, 2.0, 3.0),
+            Vector3::new(2.0, 4.0, 6.0),
+            0.0,
+            Vector3::zeros(),
+            nalgebra::Matrix3::zeros(),
+        );
+
+        assert_eq!(
+            derivative.q_dot()[0].to_bits(),
+            expected_rigid.quaternion_rate.w.to_bits()
+        );
+        assert_eq!(
+            derivative.q_dot()[1].to_bits(),
+            expected_rigid.quaternion_rate.i.to_bits()
+        );
+        assert_eq!(
+            derivative.q_dot()[2].to_bits(),
+            expected_rigid.quaternion_rate.j.to_bits()
+        );
+        assert_eq!(
+            derivative.q_dot()[3].to_bits(),
+            expected_rigid.quaternion_rate.k.to_bits()
+        );
+        for axis in 0..3 {
+            assert_eq!(
+                derivative.q_dot()[4 + axis].to_bits(),
+                expected_rigid.velocity_m_s_eci[axis].to_bits()
+            );
+            assert_eq!(
+                derivative.qd_dot()[axis].to_bits(),
+                expected_rigid.angular_acceleration_rad_s2_body[axis].to_bits()
+            );
+            assert_eq!(
+                derivative.qd_dot()[3 + axis].to_bits(),
+                expected_rigid.acceleration_m_s2_eci[axis].to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn root_free_flyer_multibody_derivative_bridge_rejects_nonfinite_loads() {
+        let state = RigidBodyState::new(
+            SimTime::ZERO,
+            Position3::<openbmp_core::Eci>::origin(),
+            Velocity3::<openbmp_core::Eci>::zero(),
+            Quaternion::<Body, openbmp_core::Eci>::from_unit_quaternion(
+                nalgebra::UnitQuaternion::identity(),
+            ),
+            AngularVelocity3::<Body>::zero(),
+            MassProperties::with_uniform_inertia(
+                Mass::new::<kilogram>(2.0),
+                Position3::<Body>::origin(),
+                2.0,
+            ),
+        );
+        let (tree, sim_state) =
+            build_root_free_flyer_multibody_state(body_id_from_scenario_text("main"), &state)
+                .expect("root seed builds");
+
+        let err = root_free_flyer_multibody_derivative_from_rigid_loads(
+            &tree,
+            &sim_state,
+            Vector3::new(f64::NAN, 0.0, 0.0),
+            Vector3::zeros(),
+        )
+        .unwrap_err();
+
+        match err {
+            RunnerError::UnsupportedScenario { what } => {
+                assert!(what.contains("root free-flyer multibody derivative"));
             }
             other => panic!("expected UnsupportedScenario, got {other:?}"),
         }

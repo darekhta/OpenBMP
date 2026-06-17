@@ -73,6 +73,12 @@ statement = "The openbmp-runner crate depends on openbmp-multibody and exposes a
 verification = ["V-MULTIBODY-012"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-013"
+title = "The rigid runner bridges root free-flyer loads into multibody derivatives"
+statement = "The openbmp-runner crate exposes a runner-side root-free-flyer derivative bridge that feeds body-frame moments and ECI-frame forces through the openbmp-multibody root load adapter, allocates one zero external spatial-force slot per tree body, and validates the zero-load derivative path during primary multi_body scenario setup without mutating current rigid-kernel behavior. The runner tests prove identity-orientation, zero-CG-offset no-joint equivalence against the current RigidBodyDerivative force, moment, quaternion-rate, and acceleration equations, plus fail-closed non-finite load handling, while making no claim that the rigid kernel has been replaced by a multibody kernel, that full environment/force adapter wiring is complete, or that Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-013"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -972,6 +978,25 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-012"]
+
+[[verification]]
+id = "V-MULTIBODY-013"
+kind = "test"
+command = "cargo test -p openbmp-runner root_free_flyer_multibody_derivative_bridge --locked && cargo test -p openbmp-runner root_free_flyer_multibody_seed --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "root_free_flyer_multibody_derivative_from_rigid_loads",
+  "root_free_flyer_multibody_derivative_bridge_matches_rigid_equations",
+  "root_free_flyer_multibody_derivative_bridge_rejects_nonfinite_loads",
+  "REQ-MULTIBODY-013",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-013"]
 
 [[verification]]
 id = "V-SIL-001"

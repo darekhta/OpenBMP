@@ -127,11 +127,15 @@ constructs a one-body root free-flyer `MultibodyTree` plus `MultibodySimState`
 from the existing rigid-body initial seed for primary `[multi_body]` scenarios,
 including deterministic quaternion, position, angular-rate, and body-frame
 linear-velocity q/qd mapping with fail-closed mass-property validation
-(`REQ-MULTIBODY-012`). Missing for full WP-01.1: full kernel/runner force
-adapter wiring, runner-level single-free-flyer byte-equivalence against the
-current kernel, simulator/environment force wiring, scenario wiring, gimballed
-ascent exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not
-started**.
+(`REQ-MULTIBODY-012`). The runner derivative bridge now feeds root body-frame
+moments and ECI-frame forces through the multibody load adapter, validates the
+zero-load derivative path during primary `[multi_body]` setup, and proves
+runner-level no-joint identity-orientation equivalence against the current
+`RigidBodyDerivative` equations (`REQ-MULTIBODY-013`). Missing for full
+WP-01.1: full kernel/runner force adapter wiring, runner-level scenario
+byte-equivalence against the current kernel, simulator/environment force
+wiring, gimballed ascent exercise, and Spatial_v2 oracle checks. WP-01.2 …
+WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 
