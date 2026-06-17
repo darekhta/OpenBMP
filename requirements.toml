@@ -489,7 +489,7 @@ verification = ["V-TRAJOPT-002"]
 [[requirements]]
 id = "REQ-ENV-001"
 title = "The physics layer exposes a first tesseral gravity substrate"
-statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, finite Cartesian evaluation near the pole, and deterministic non-zonal acceleration for sectoral/tesseral terms while making no high-degree EGM2008 or Pines/Gottlieb completion claim."
+statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a provenance-pinned WGS84 normalized degree-2 fixture, a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, finite Cartesian evaluation near the pole, and deterministic non-zonal acceleration for sectoral/tesseral terms while making no high-degree EGM2008 or Pines/Gottlieb completion claim."
 verification = ["V-ENV-001"]
 
 [[requirements]]
@@ -2761,16 +2761,23 @@ command = "cargo test -p openbmp-physics gravity::tests::tesseral --locked"
 paths = [
   "crates/openbmp-physics/src/gravity.rs",
   "crates/openbmp-physics/src/lib.rs",
+  "data/gravity/wgs84-degree2-normalized-v1.toml",
+  "data/gravity/provenance.md",
   "docs/parity/08-environment-gravity-and-frames.md",
   "docs/parity/progress.md",
 ]
 contains = [
   "TesseralGravity",
   "DegreeTwoTesseralCoefficients",
+  "NormalizedDegreeTwoTesseralCoefficients",
+  "from_normalized_degree_two",
+  "from_fully_normalized",
+  "wgs84-degree2-normalized-v1.toml",
   "TideSystem",
   "TESSERAL_GRAVITY_MAX_DEGREE",
   "TESSERAL_GRAVITY_MAX_ORDER",
   "tesseral_gravity_degree_two_zonal_matches_existing_j2_byte_for_byte",
+  "tesseral_gravity_loads_normalized_degree_two_pin",
   "tesseral_gravity_zero_degree_reduces_to_point_mass",
   "tesseral_gravity_sectoral_term_changes_longitude_acceleration",
   "tesseral_gravity_tesseral_terms_are_finite_near_pole",

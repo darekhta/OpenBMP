@@ -1047,6 +1047,137 @@ pub enum TideSystem {
     MeanTide,
 }
 
+impl TideSystem {
+    /// Parse a canonical tide-system tag used by gravity coefficient blocks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] for unknown tags. The parser
+    /// is intentionally narrow so data-ingestion call sites fail closed instead
+    /// of silently accepting alternate spellings.
+    pub fn from_tag(tag: &str) -> Result<Self, PhysicsError> {
+        match tag {
+            "tide_free" => Ok(Self::TideFree),
+            "zero_tide" => Ok(Self::ZeroTide),
+            "mean_tide" => Ok(Self::MeanTide),
+            _ => Err(PhysicsError::InvalidParameter {
+                reason: "unknown gravity coefficient tide_system tag",
+            }),
+        }
+    }
+
+    /// Canonical tide-system tag.
+    #[must_use]
+    pub const fn tag(&self) -> &'static str {
+        match self {
+            Self::TideFree => "tide_free",
+            Self::ZeroTide => "zero_tide",
+            Self::MeanTide => "mean_tide",
+        }
+    }
+}
+
+/// Degree-2 fully-normalized harmonic coefficients for [`TesseralGravity`].
+///
+/// This is the ingestion-facing low-degree coefficient block used before the
+/// full high-degree Pines/Gottlieb kernel lands. It accepts the common
+/// fully-normalized `Cbar/Sbar` convention and converts to the current
+/// degree-2 unnormalized evaluator deterministically.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct NormalizedDegreeTwoTesseralCoefficients {
+    cbar20: f64,
+    cbar21: f64,
+    sbar21: f64,
+    cbar22: f64,
+    sbar22: f64,
+    tide_system: TideSystem,
+}
+
+impl NormalizedDegreeTwoTesseralCoefficients {
+    /// Construct finite degree-2 fully-normalized coefficients.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if any coefficient is
+    /// non-finite.
+    pub fn new(
+        cbar20: f64,
+        cbar21: f64,
+        sbar21: f64,
+        cbar22: f64,
+        sbar22: f64,
+        tide_system: TideSystem,
+    ) -> Result<Self, PhysicsError> {
+        let coefficients = [cbar20, cbar21, sbar21, cbar22, sbar22];
+        if !coefficients.iter().all(|value| value.is_finite()) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "degree-2 normalized tesseral coefficients must be finite",
+            });
+        }
+        Ok(Self {
+            cbar20,
+            cbar21,
+            sbar21,
+            cbar22,
+            sbar22,
+            tide_system,
+        })
+    }
+
+    /// Fully-normalized `Cbar20`.
+    #[must_use]
+    pub const fn cbar20(&self) -> f64 {
+        self.cbar20
+    }
+
+    /// Fully-normalized `Cbar21`.
+    #[must_use]
+    pub const fn cbar21(&self) -> f64 {
+        self.cbar21
+    }
+
+    /// Fully-normalized `Sbar21`.
+    #[must_use]
+    pub const fn sbar21(&self) -> f64 {
+        self.sbar21
+    }
+
+    /// Fully-normalized `Cbar22`.
+    #[must_use]
+    pub const fn cbar22(&self) -> f64 {
+        self.cbar22
+    }
+
+    /// Fully-normalized `Sbar22`.
+    #[must_use]
+    pub const fn sbar22(&self) -> f64 {
+        self.sbar22
+    }
+
+    /// Permanent-tide convention declared for the coefficients.
+    #[must_use]
+    pub const fn tide_system(&self) -> TideSystem {
+        self.tide_system
+    }
+
+    /// Convert to the unnormalized degree-2 coefficient convention used by the
+    /// current [`TesseralGravity`] evaluator.
+    ///
+    /// The factors are the real fully-normalized associated-Legendre factors
+    /// for `(n, m) = (2, 0), (2, 1), (2, 2)`: `sqrt(5)`, `sqrt(5/3)`, and
+    /// `sqrt(5/12)`.
+    pub fn to_unnormalized(self) -> Result<DegreeTwoTesseralCoefficients, PhysicsError> {
+        DegreeTwoTesseralCoefficients::new(
+            self.cbar20 * 5.0_f64.sqrt(),
+            self.cbar21 * (5.0_f64 / 3.0).sqrt(),
+            self.sbar21 * (5.0_f64 / 3.0).sqrt(),
+            self.cbar22 * (5.0_f64 / 12.0).sqrt(),
+            self.sbar22 * (5.0_f64 / 12.0).sqrt(),
+            self.tide_system,
+        )
+    }
+}
+
 /// Degree-2 unnormalised harmonic coefficients for [`TesseralGravity`].
 ///
 /// Coefficients follow the low-degree geopotential convention
@@ -1111,6 +1242,19 @@ impl DegreeTwoTesseralCoefficients {
             });
         }
         Self::new(-j2, 0.0, 0.0, 0.0, 0.0, tide_system)
+    }
+
+    /// Convert a fully-normalized degree-2 coefficient block into the
+    /// unnormalized convention used by this evaluator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if the normalized block
+    /// contains non-finite coefficients.
+    pub fn from_fully_normalized(
+        normalized: NormalizedDegreeTwoTesseralCoefficients,
+    ) -> Result<Self, PhysicsError> {
+        normalized.to_unnormalized()
     }
 
     /// All harmonic coefficients set to zero.
@@ -1245,6 +1389,33 @@ impl TesseralGravity {
             degree: 2,
             order: 0,
         }
+    }
+
+    /// Construct from a fully-normalized degree-2 coefficient block.
+    ///
+    /// This is the data-ingestion bridge for the current low-degree tesseral
+    /// substrate. It does not lift the degree/order ceiling; high-degree
+    /// EGM2008 synthesis remains guarded behind the future Pines/Gottlieb
+    /// kernel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] for invalid constants,
+    /// unsupported degree/order, or non-finite coefficients.
+    pub fn from_normalized_degree_two(
+        mu_m3_s2: f64,
+        r_e_m: f64,
+        normalized: NormalizedDegreeTwoTesseralCoefficients,
+        degree: usize,
+        order: usize,
+    ) -> Result<Self, PhysicsError> {
+        Self::new(
+            mu_m3_s2,
+            r_e_m,
+            normalized.to_unnormalized()?,
+            degree,
+            order,
+        )
     }
 
     /// Configured `µ` (m³/s²).
@@ -1627,6 +1798,55 @@ mod tests {
 
     fn at_z(z: f64) -> Position3<Eci> {
         Position3::new(0.0, 0.0, z)
+    }
+
+    fn load_wgs84_normalized_degree_two_fixture() -> NormalizedDegreeTwoTesseralCoefficients {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/gravity/wgs84-degree2-normalized-v1.toml"
+        ));
+        let value: toml::Value = toml::from_str(fixture).expect("gravity coefficient TOML parses");
+        let table = value.as_table().expect("gravity coefficient TOML table");
+        assert_eq!(
+            table
+                .get("dataset_id")
+                .and_then(toml::Value::as_str)
+                .expect("dataset_id"),
+            "openbmp.wgs84.gravity.degree2-normalized.v1"
+        );
+        assert_eq!(
+            table
+                .get("normalization")
+                .and_then(toml::Value::as_str)
+                .expect("normalization"),
+            "fully_normalized"
+        );
+        let tide_system = TideSystem::from_tag(
+            table
+                .get("tide_system")
+                .and_then(toml::Value::as_str)
+                .expect("tide_system"),
+        )
+        .expect("known tide system");
+        let coefficients = table
+            .get("degree_2")
+            .and_then(toml::Value::as_table)
+            .expect("degree_2 table");
+        let scalar = |key: &str| -> f64 {
+            coefficients
+                .get(key)
+                .and_then(toml::Value::as_float)
+                .expect(key)
+        };
+        NormalizedDegreeTwoTesseralCoefficients::new(
+            scalar("cbar20"),
+            scalar("cbar21"),
+            scalar("sbar21"),
+            scalar("cbar22"),
+            scalar("sbar22"),
+            tide_system,
+        )
+        .expect("finite normalized degree-2 coefficients")
     }
 
     #[derive(Copy, Clone, Debug)]
@@ -2012,6 +2232,36 @@ mod tests {
     }
 
     #[test]
+    fn tesseral_gravity_loads_normalized_degree_two_pin() {
+        let normalized = load_wgs84_normalized_degree_two_fixture();
+        assert_eq!(normalized.tide_system().tag(), "tide_free");
+
+        let coefficients = DegreeTwoTesseralCoefficients::from_fully_normalized(normalized)
+            .expect("normalized WGS84 degree-2 coefficients convert");
+        assert_abs_diff_eq!(coefficients.c20(), -WGS84_J2, epsilon = 1.0e-18);
+        assert_eq!(coefficients.c21().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(coefficients.s21().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(coefficients.c22().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(coefficients.s22().to_bits(), 0.0_f64.to_bits());
+
+        let tesseral = TesseralGravity::from_normalized_degree_two(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            normalized,
+            2,
+            0,
+        )
+        .expect("normalized coefficient block builds tesseral gravity");
+        let j2 = J2Gravity::wgs84();
+        let position = Position3::new(7_200_000.0, -1_300_000.0, 900_000.0);
+        let from_file = tesseral.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        let direct_j2 = j2.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        for axis in 0..3 {
+            assert_abs_diff_eq!(from_file[axis], direct_j2[axis], epsilon = 1.0e-17);
+        }
+    }
+
+    #[test]
     fn tesseral_gravity_zero_degree_reduces_to_point_mass() {
         let tesseral = TesseralGravity::new(
             WGS84_MU_M3_S2,
@@ -2081,6 +2331,18 @@ mod tests {
     #[test]
     fn tesseral_gravity_rejects_unsupported_degree_order_and_nonfinite_coefficients() {
         assert!(DegreeTwoTesseralCoefficients::from_j2(f64::NAN, TideSystem::TideFree).is_err());
+        assert!(
+            NormalizedDegreeTwoTesseralCoefficients::new(
+                f64::NAN,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                TideSystem::TideFree
+            )
+            .is_err()
+        );
+        assert!(TideSystem::from_tag("solid_tide").is_err());
         let coefficients = DegreeTwoTesseralCoefficients::zero(TideSystem::TideFree);
 
         assert!(matches!(

@@ -1,0 +1,19 @@
+# WGS84 degree-2 gravity coefficients in fully-normalized form.
+#
+# This file is a low-degree ingestion fixture for the current
+# `TesseralGravity` substrate. It is derived from the unnormalised WGS84 J2
+# pin in `wgs84-j2.toml` using Cbar20 = -J2 / sqrt(5); non-zonal degree-2
+# terms are explicitly zero. It is not an EGM2008 high-degree coefficient
+# block.
+
+dataset_id     = "openbmp.wgs84.gravity.degree2-normalized.v1"
+schema_version = "openbmp.gravity.normalized-degree2.v1"
+normalization  = "fully_normalized"
+tide_system    = "tide_free"
+
+[degree_2]
+cbar20 = -4.8416537148862317e-4
+cbar21 = 0.0
+sbar21 = 0.0
+cbar22 = 0.0
+sbar22 = 0.0

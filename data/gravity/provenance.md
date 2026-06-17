@@ -9,6 +9,7 @@ contract this record satisfies.
 dataset_id:       openbmp.wgs84.gravity.j2.v1
 files:
   - data/gravity/wgs84-j2.toml
+  - data/gravity/wgs84-degree2-normalized-v1.toml
 source_class:     public-standard
 source_title:     >-
   Department of Defense World Geodetic System 1984: Its Definition
@@ -26,7 +27,11 @@ transformation:
     Manual transcription of the four defining-parameter values
     (semi-major axis, inverse flattening, gravitational parameter,
     angular velocity) and the J2 zonal harmonic from the cited
-    document into a TOML file. No derivation, no fit, no scaling.
+    document into a TOML file. The companion normalized degree-2
+    file derives Cbar20 = -J2 / sqrt(5) from that pin and sets the
+    remaining degree-2 tesseral/sectoral terms to zero as an ingestion
+    fixture for the current low-degree `TesseralGravity` substrate. No
+    fit, no high-degree EGM2008 coefficients.
   script: none
 verification:
   method: >-
@@ -34,7 +39,8 @@ verification:
     `WGS84_INV_FLATTENING`, `WGS84_MU_M3_S2`, `WGS84_OMEGA_RAD_S`)
     and `openbmp-physics::gravity::WGS84_J2`. Unit tests in
     `openbmp-physics::gravity::tests` exercise the constants through the
-    three gravity models. The `openbmp
+    three gravity models and parse the normalized degree-2 data pin through
+    the coefficient-ingestion bridge. The `openbmp
     check-provenance` walk additionally cross-checks the in-source
     values against this TOML pin.
   test:   crates/openbmp-physics/src/gravity.rs
@@ -52,8 +58,10 @@ safety_review:
 These constants describe the WGS84 reference ellipsoid and its
 gravitational field. They are *frame primitives* (semi-major axis,
 inverse flattening, GM, angular velocity) plus the second-degree
-zonal harmonic (J2). Higher-degree zonal and tesseral harmonics
-(EGM2008 truncated) are out of scope — the gravity model uses only J2.
+zonal harmonic (J2). The normalized degree-2 fixture is a deterministic
+conversion of that same J2 value for parser/ingestion coverage. Higher-degree
+zonal and tesseral harmonics (EGM2008 truncated) remain out of scope for this
+record.
 
 ## Why public-standard, not synthetic-openbmp
 
