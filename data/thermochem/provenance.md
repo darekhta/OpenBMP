@@ -13,7 +13,7 @@ license_or_terms: "Cantera BSD-3-Clause; GRI-Mech 3.0 mechanism terms documented
 retrieved_utc: "2026-06-11"
 source_hash_sha256: "not applicable: generated from installed Cantera package and gri30.yaml mechanism"
 transformation:
-  method: "Cantera gas-phase HP equilibrium for CH4/O2 reactants at the declared chamber pressure and oxidizer/fuel mass ratio, followed by OpenBMP's documented ideal c* closed form and an independently implemented ideal-nozzle sea-level performance calculation"
+  method: "Cantera gas-phase HP equilibrium for CH4/O2 reactants at the four committed deck-corner chamber pressure / oxidizer-fuel mass-ratio points; the pc2mpa_mr3p1_interpolated tolerance case is an in-deck log-pressure/mixture-ratio interpolation check over those corners, followed by OpenBMP's documented ideal c* closed form and an independently implemented ideal-nozzle sea-level performance calculation"
   script: "scripts/generate_cantera_thermochem_reference.py"
 verification:
   method: "parse the Schema-1 deck and compare lookup values plus LiquidEnginePerformance mass-flow/Isp/thrust against the checked reference table"

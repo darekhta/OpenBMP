@@ -763,9 +763,10 @@ Effort sizes are from the research ladder.
   mass-flow and `Isp` envelope evidence. A first provenance-recorded Cantera
   3.2.0 `gri30.yaml` LOX/LCH4 reference deck and tolerance table now checks
   deck lookup plus liquid-engine mass-flow/thrust/`Isp` against independently
-  generated values (`REQ-PROP-030` / `V-PROP-030`). The full CEARUN/Cantera
-  tolerance-table matrix for LOX/RP-1, LOX/LH2, NTO/MMH, and broader LOX/LCH4
-  coverage remains future evidence before this WP is complete.
+  generated values, including a committed in-deck midpoint interpolation case
+  (`REQ-PROP-030` / `V-PROP-030`). The full CEARUN/Cantera tolerance-table
+  matrix for LOX/RP-1, LOX/LH2, NTO/MMH, and broader externally generated
+  LOX/LCH4 coverage remains future evidence before this WP is complete.
 - **goal:** Derive `c*(pc,MR)`, `Tc`, `γ`, `MW` from a CEA/Cantera deck instead
   of hardcoded constants; enable mixture-ratio-aware liquid performance and the
   documented efficiency band.

@@ -837,7 +837,7 @@ verification = ["V-PROP-029"]
 [[requirements]]
 id = "REQ-PROP-030"
 title = "Thermochemistry decks carry checked Cantera reference evidence"
-statement = "The repository ships a provenance-recorded Cantera 3.2.0 gri30.yaml LOX/LCH4 Schema-1 thermochemistry deck plus an independent tolerance table over chamber pressure and mixture ratio; the runner validation harness loads the deck, checks looked-up temperature, gamma, molecular weight, and ideal c* against the table, and checks LiquidEnginePerformance nominal mass flow, mass-flow envelope, sea-level thrust, and nominal Isp against independently generated nozzle references."
+statement = "The repository ships a provenance-recorded Cantera 3.2.0 gri30.yaml LOX/LCH4 Schema-1 thermochemistry deck plus an independent tolerance table over chamber pressure and mixture ratio, including an in-deck midpoint interpolation case; the runner validation harness loads the deck, checks looked-up temperature, gamma, molecular weight, and ideal c* against the table, and checks LiquidEnginePerformance nominal mass flow, mass-flow envelope, sea-level thrust, and nominal Isp against independently generated nozzle references."
 verification = ["V-PROP-030"]
 
 [[requirements]]
@@ -4612,6 +4612,7 @@ contains = [
   "Cantera 3.2.0",
   "gri30.yaml",
   "LOX/LCH4",
+  "pc2mpa_mr3p1_interpolated",
   "cantera_gri30_reference_table_matches_thermochem_and_liquid_performance",
   "ThermochemTable::load_from_str",
   "ThermochemQuery",

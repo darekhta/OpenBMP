@@ -57,6 +57,20 @@ expected_thrust_n = 10856.485806830628
 expected_isp_s = 96.54871008954467
 
 [[case]]
+name = "pc2mpa_mr3p1_interpolated"
+chamber_pressure_pa = 2000000.0
+mixture_ratio = 3.1
+expected_chamber_temperature_k = 3399.141414189759
+expected_gamma = 1.20867347824686
+expected_molecular_weight_kg_per_mol = 0.020139870264582395
+expected_c_star_m_s = 1822.6053478355623
+expected_nominal_mass_flow_kg_per_s = 22.394495099602192
+expected_mass_flow_min_kg_per_s = 21.946605197610147
+expected_mass_flow_max_kg_per_s = 22.861047080843903
+expected_thrust_n = 46036.05215592963
+expected_isp_s = 209.62164387324296
+
+[[case]]
 name = "pc4mpa_mr2p8"
 chamber_pressure_pa = 4000000.0
 mixture_ratio = 2.8
