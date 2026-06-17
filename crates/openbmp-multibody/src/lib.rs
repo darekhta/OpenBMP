@@ -1484,6 +1484,57 @@ impl MultibodyTree {
         Ok((released_tree, released_state))
     }
 
+    /// Generalized momentum `p = H(q) qd` in locked generalized-velocity order.
+    ///
+    /// This is the deterministic momentum conjugate to [`MultibodyState::qd`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the state is invalid, if CRBA rejects the
+    /// state-dependent transforms, or if the resulting momentum is non-finite.
+    pub fn generalized_momentum_at_state(
+        &self,
+        state: &MultibodyState,
+    ) -> Result<Vec<f64>, MultibodyError> {
+        self.validate_state(state)?;
+        let inertia = self.joint_space_inertia_crba_at_state(state)?;
+        let mut momentum = vec![0.0; self.n_qd];
+        for (row, value) in momentum.iter_mut().enumerate() {
+            for col in 0..self.n_qd {
+                *value += inertia.values_row_major()[row * self.n_qd + col] * state.qd[col];
+            }
+        }
+        if !momentum.iter().all(|value| value.is_finite()) {
+            return Err(MultibodyError::NonFinite {
+                reason: "generalized momentum contains non-finite components",
+            });
+        }
+        Ok(momentum)
+    }
+
+    /// Kinetic energy in joules from the state-dependent joint-space inertia.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if generalized momentum evaluation fails or
+    /// the resulting scalar is non-finite.
+    pub fn kinetic_energy_at_state(&self, state: &MultibodyState) -> Result<f64, MultibodyError> {
+        let momentum = self.generalized_momentum_at_state(state)?;
+        let energy = 0.5
+            * state
+                .qd
+                .iter()
+                .zip(momentum.iter())
+                .map(|(velocity, conjugate)| velocity * conjugate)
+                .sum::<f64>();
+        if !energy.is_finite() {
+            return Err(MultibodyError::NonFinite {
+                reason: "kinetic energy is non-finite",
+            });
+        }
+        Ok(energy)
+    }
+
     /// Composite-rigid-body joint-space inertia at a generalized state.
     ///
     /// This applies q-dependent joint transforms but still omits velocity bias,
@@ -2812,11 +2863,35 @@ mod tests {
         rnea_round_trip_max_abs: f64,
     }
 
+    #[derive(Debug, Deserialize)]
+    struct DoublePendulumEnergyMomentumFixture {
+        link_lengths_m: [f64; 2],
+        masses_kg: [f64; 2],
+        q: [f64; 2],
+        qd: [f64; 2],
+        expected_kinetic_energy_j: f64,
+        expected_revolute_generalized_momentum: [f64; 2],
+        tolerances: DoublePendulumEnergyMomentumThresholds,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct DoublePendulumEnergyMomentumThresholds {
+        kinetic_energy_abs: f64,
+        generalized_momentum_max_abs: f64,
+    }
+
     fn load_aba_tolerance_fixture() -> AbaToleranceFixture {
         toml::from_str(include_str!(
             "../tests/expected/aba-chain-tolerance-v1.toml"
         ))
         .expect("ABA tolerance fixture parses")
+    }
+
+    fn load_double_pendulum_energy_momentum_fixture() -> DoublePendulumEnergyMomentumFixture {
+        toml::from_str(include_str!(
+            "../tests/expected/double-pendulum-energy-momentum-v1.toml"
+        ))
+        .expect("double-pendulum energy/momentum fixture parses")
     }
 
     fn motion_from_fixture(fixture: &SpatialMotionFixture) -> SpatialMotion {
@@ -2858,6 +2933,61 @@ mod tests {
 
     fn inertia() -> SpatialInertia {
         SpatialInertia::from_mass_properties(&mass_properties()).unwrap()
+    }
+
+    fn point_mass_spatial_inertia(mass_kg: f64, com_body_m: Vector3<f64>) -> SpatialInertia {
+        let com_cross = skew(com_body_m);
+        let mut matrix = SpatialMatrix::zeros();
+        matrix
+            .fixed_view_mut::<3, 3>(0, 0)
+            .copy_from(&(-mass_kg * com_cross * com_cross));
+        matrix
+            .fixed_view_mut::<3, 3>(0, 3)
+            .copy_from(&(mass_kg * com_cross));
+        matrix
+            .fixed_view_mut::<3, 3>(3, 0)
+            .copy_from(&(-mass_kg * com_cross));
+        matrix
+            .fixed_view_mut::<3, 3>(3, 3)
+            .copy_from(&(mass_kg * Matrix3::identity()));
+        SpatialInertia::from_matrix(matrix).unwrap()
+    }
+
+    fn double_pendulum_fixture_tree(
+        fixture: &DoublePendulumEnergyMomentumFixture,
+    ) -> MultibodyTree {
+        let root = TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: SpatialInertia::from_matrix(SpatialMatrix::zeros()).unwrap(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let link_1 = TreeBodySpec {
+            id: BodyId::new(2),
+            parent: Some(BodyIndex::new(0)),
+            joint: Joint::revolute(Vector3::new(0.0, 0.0, 1.0)).unwrap(),
+            inertia: point_mass_spatial_inertia(
+                fixture.masses_kg[0],
+                Vector3::new(fixture.link_lengths_m[0], 0.0, 0.0),
+            ),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let link_2 = TreeBodySpec {
+            id: BodyId::new(3),
+            parent: Some(BodyIndex::new(1)),
+            joint: Joint::revolute(Vector3::new(0.0, 0.0, 1.0)).unwrap(),
+            inertia: point_mass_spatial_inertia(
+                fixture.masses_kg[1],
+                Vector3::new(fixture.link_lengths_m[1], 0.0, 0.0),
+            ),
+            parent_to_body: PluckerTransform::new(
+                Matrix3::identity(),
+                Vector3::new(fixture.link_lengths_m[0], 0.0, 0.0),
+            )
+            .unwrap(),
+        };
+        MultibodyTree::new(vec![root, link_1, link_2]).unwrap()
     }
 
     fn sample_tree() -> MultibodyTree {
@@ -4005,6 +4135,42 @@ mod tests {
             &fixture.generalized_forces,
             fixture.tolerances.rnea_round_trip_max_abs,
             "RNEA round trip",
+        );
+    }
+
+    #[test]
+    fn energy_and_generalized_momentum_match_double_pendulum_tolerance_table() {
+        let fixture = load_double_pendulum_energy_momentum_fixture();
+        let tree = double_pendulum_fixture_tree(&fixture);
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                fixture.q[0],
+                fixture.q[1],
+            ],
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, fixture.qd[0], fixture.qd[1]],
+        );
+
+        let kinetic_energy = tree.kinetic_energy_at_state(&state).unwrap();
+        let generalized_momentum = tree.generalized_momentum_at_state(&state).unwrap();
+
+        assert_abs_diff_eq!(
+            kinetic_energy,
+            fixture.expected_kinetic_energy_j,
+            epsilon = fixture.tolerances.kinetic_energy_abs
+        );
+        assert_max_abs_diff(
+            &generalized_momentum[6..8],
+            &fixture.expected_revolute_generalized_momentum,
+            fixture.tolerances.generalized_momentum_max_abs,
+            "double-pendulum revolute generalized momentum",
         );
     }
 

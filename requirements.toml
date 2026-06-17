@@ -153,7 +153,7 @@ verification = ["V-MULTIBODY-025"]
 [[requirements]]
 id = "REQ-MULTIBODY-026"
 title = "The multibody ABA substrate is backed by a checked tolerance-table fixture"
-statement = "The openbmp-multibody crate ships a checked TOML tolerance fixture for the moving free-flyer/revolute/prismatic sample chain, parses its generalized state, generalized forces, root acceleration, per-body external forces, and strict maximum-absolute-error thresholds in a crate test, and proves forward_dynamics_aba_at_state matches the dense forward-dynamics bridge and recovers the input generalized forces through biased RNEA within the fixture tolerances. This makes no claim that double-pendulum energy/momentum tolerance tables, Spatial_v2 oracle validation, scenario wiring, runner-level byte-equivalence, or replacing rigid-kernel propagation are complete."
+statement = "The openbmp-multibody crate ships a checked TOML tolerance fixture for the moving free-flyer/revolute/prismatic sample chain, parses its generalized state, generalized forces, root acceleration, per-body external forces, and strict maximum-absolute-error thresholds in a crate test, and proves forward_dynamics_aba_at_state matches the dense forward-dynamics bridge and recovers the input generalized forces through biased RNEA within the fixture tolerances. This makes no claim that Spatial_v2 oracle validation, scenario wiring, runner-level byte-equivalence, or replacing rigid-kernel propagation are complete."
 verification = ["V-MULTIBODY-026"]
 
 [[requirements]]
@@ -161,6 +161,12 @@ id = "REQ-MULTIBODY-027"
 title = "The multibody substrate can hand off an unreleased welded subtree as a free flyer"
 statement = "The openbmp-multibody crate exposes release_welded_subtree_as_free_flyer for an unreleased non-root welded body, remapping the selected subtree into a new deterministic MultibodyTree whose released body is a free-flyer root, whose descendants keep their original joint coordinates and velocities, and whose released root state preserves the selected body's parent-frame pose plus body-frame spatial velocity at the release instant. The crate tests prove pose, velocity, descendant state, and fail-closed root/non-welded rejection on a synthetic welded stack with a descendant revolute joint. This makes no claim that runner-side jettison has been replaced, full momentum-conserving separated-lane multibody propagation is complete, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-027"]
+
+[[requirements]]
+id = "REQ-MULTIBODY-028"
+title = "The multibody substrate exposes checked energy and generalized momentum"
+statement = "The openbmp-multibody crate exposes generalized_momentum_at_state and kinetic_energy_at_state, evaluating p = H(q) qd in locked generalized-velocity order and scalar kinetic energy from the state-dependent CRBA matrix. A checked TOML fixture backs a planar point-mass double-pendulum regression with a zero-velocity free-flyer root, analytic total kinetic energy, and analytic revolute generalized momenta under strict absolute tolerances. This makes no claim that Spatial_v2 oracle validation, runner-level propagation replacement, articulated gimbal-joint inertia coupling, or vehicle-scale gimballed ascent validation is complete."
+verification = ["V-MULTIBODY-028"]
 
 [[requirements]]
 id = "REQ-SIL-001"
@@ -1351,6 +1357,27 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-027"]
+
+[[verification]]
+id = "V-MULTIBODY-028"
+kind = "test"
+command = "cargo test -p openbmp-multibody energy_and_generalized_momentum_match_double_pendulum_tolerance_table --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "crates/openbmp-multibody/tests/expected/double-pendulum-energy-momentum-v1.toml",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "generalized_momentum_at_state",
+  "kinetic_energy_at_state",
+  "energy_and_generalized_momentum_match_double_pendulum_tolerance_table",
+  "double-pendulum-energy-momentum-v1.toml",
+  "REQ-MULTIBODY-028",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-028"]
 
 [[verification]]
 id = "V-SIL-001"

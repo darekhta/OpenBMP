@@ -737,6 +737,10 @@ justification first, reviewed before the implementation lands.
   tree, a checked TOML tolerance fixture now backs the same ABA-vs-dense and
   RNEA round-trip case, and tests cover fail-closed generalized-force,
   external-force, and singular-block handling.
+  The energy/momentum substrate now exposes
+  `generalized_momentum_at_state()` and `kinetic_energy_at_state()`; a checked
+  TOML fixture backs a planar point-mass double-pendulum regression against
+  analytic total kinetic energy and revolute generalized momenta.
   The welded-release substrate now exposes
   `release_welded_subtree_as_free_flyer()`, which converts an unreleased
   non-root welded subtree into a new deterministic free-flyer tree while
@@ -832,10 +836,8 @@ justification first, reviewed before the implementation lands.
   powered separated-lane shadow forecasts, runner-side momentum-conserving
   welded-to-free joint-release propagation and full separated-body multibody
   propagation beyond the substrate handoff and first-post-release separated
-  shadow forecasts,
-  double-pendulum energy/momentum tolerance table, Spatial_v2 oracle fixtures,
-  vehicle-scale gimballed ascent validation, and articulated gimbal-joint
-  inertia coupling.
+  shadow forecasts, Spatial_v2 oracle fixtures, vehicle-scale gimballed ascent
+  validation, and articulated gimbal-joint inertia coupling.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

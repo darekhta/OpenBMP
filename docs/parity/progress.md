@@ -104,6 +104,10 @@ forces or singular articulated blocks fail-closed (`REQ-MULTIBODY-007`). The
 same ABA-vs-dense and RNEA round-trip sample chain is now also driven from a
 checked TOML tolerance fixture with strict max-absolute-error thresholds
 (`REQ-MULTIBODY-026`).
+The energy/momentum substrate adds `generalized_momentum_at_state()` and
+`kinetic_energy_at_state()`, with a checked planar point-mass
+double-pendulum TOML fixture proving analytic kinetic energy and revolute
+generalized momentum within strict tolerances (`REQ-MULTIBODY-028`).
 The state-integration substrate adds `MultibodyDerivative`,
 `advance_state_by()`, `project_state()`, `scalar_state_size()`, and
 `weighted_error_norm()` with derivative arithmetic, quaternion projection,
@@ -197,9 +201,9 @@ WP-01.1: replacing the rigid-kernel propagation path, broader variable-mass
 multibody propagation beyond the primary-root and powered separated-lane shadow
 forecasts, full momentum-conserving welded-to-free joint-release propagation and
 full separated-body multibody propagation beyond first-post-release separated
-shadow forecasts and the substrate handoff, double-pendulum energy/momentum
-tolerance tables, vehicle-scale gimballed ascent validation, articulated
-gimbal-joint inertia coupling, and Spatial_v2 oracle checks.
+shadow forecasts and the substrate handoff, vehicle-scale gimballed ascent
+validation, articulated gimbal-joint inertia coupling, and Spatial_v2 oracle
+checks.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO

@@ -1,0 +1,25 @@
+case = "planar-point-mass-double-pendulum"
+description = "Synthetic WP-01.1 tolerance fixture for kinetic energy and revolute generalized momenta on a planar double pendulum with a zero-velocity free-flyer root."
+
+link_lengths_m = [2.0, 1.5]
+masses_kg = [3.0, 2.0]
+
+q = [
+  0.25,
+  1.0471975511965979,
+]
+
+qd = [
+  0.4,
+  -0.7,
+]
+
+expected_kinetic_energy_j = 1.4425
+expected_revolute_generalized_momentum = [
+  6.95,
+  -0.15,
+]
+
+[tolerances]
+kinetic_energy_abs = 1.0e-12
+generalized_momentum_max_abs = 1.0e-12
