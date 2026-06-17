@@ -247,6 +247,12 @@ statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"a
 verification = ["V-MULTIBODY-041"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-042"
+title = "Single-gimbal authority carries articulated internal forecast state"
+statement = "After a schema-v3 propagation_authority = \"articulated_gimbal_root\" scenario has applied its first authoritative root handoff, the rigid runner's next pre-step articulated gimbal mirror uses the prior same-time articulated RK4 forecast as the source of joint coordinates and rates, rebuilds the articulated seed with the current authoritative rigid root state and current parent mass properties, and then forecasts the next tick from that carried internal state. The regression captures a powered two-axis gimbal forecast, advances another authoritative tick, and proves the next seed carries the prior forecast's internal joint coordinates and rates while its root projection matches the prior authoritative root state. This remains limited to the existing single declared gimbal mode and makes no claim that multiple gimbals, actuator lag dynamics, or full rigid-kernel removal is complete."
+verification = ["V-MULTIBODY-042"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1750,6 +1756,26 @@ contains = [
   "REQ-MULTIBODY-041",
 ]
 requirements = ["REQ-MULTIBODY-041"]
+
+[[verification]]
+id = "V-MULTIBODY-042"
+kind = "test"
+command = "cargo test -p openbmp-runner articulated_gimbal_root_authority_carries_internal_forecast_state --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "articulated_gimbal_multibody_seed_from_authoritative_forecast",
+  "carry_authoritative_internal_state",
+  "articulated_gimbal_root_authority_carries_internal_forecast_state",
+  "authoritative articulated seed should carry prior forecast joint coordinates",
+  "authoritative articulated seed should carry prior forecast joint rates",
+  "REQ-MULTIBODY-042",
+]
+requirements = ["REQ-MULTIBODY-042"]
 
 [[verification]]
 id = "V-SIL-001"

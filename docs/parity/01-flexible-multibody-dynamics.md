@@ -266,17 +266,19 @@ out of that authority mode. The selector now also supports
 `propagation_authority = "articulated_gimbal_root"` for one declared one-axis
 or two-axis gimbal on the primary body, replacing the primary rigid state with
 the projected articulated root forecast after each fixed-step RK4 tick and
-recording the applied handoff while leaving internal gimbal coordinates
-non-authoritative.
+recording the applied handoff. After the first authoritative root handoff, the
+next pre-step articulated seed now carries the prior forecast's internal joint
+coordinates/rates forward while refreshing the root slots from the
+authoritative rigid state.
 Default authoritative propagation is still the rigid kernel.
 Replacing the rigid propagation path beyond that guarded primary-root handoff,
 broader variable-mass multibody propagation beyond the one-body root and
 separated root-free-flyer paths, broader authoritative articulated thrust
-propagation beyond the single-gimbal root handoff including authoritative
-two-axis propagation with internal coordinate authority, full orbital-ascent
-gimballed validation, full momentum-conserving welded-to-free release
-propagation, and the independent Spatial_v2 oracle matrix across at least
-three small random trees remain open.
+propagation beyond the single-gimbal root/internal-state handoff including
+multi-gimbal authoritative two-axis propagation, full orbital-ascent gimballed
+validation, full momentum-conserving welded-to-free release propagation, and
+the independent Spatial_v2 oracle matrix across at least three small random
+trees remain open.
 
 ---
 
@@ -920,15 +922,19 @@ justification first, reviewed before the implementation lands.
   (`REQ-MULTIBODY-040`). It now also exposes
   `propagation_authority = "articulated_gimbal_root"` for one primary-body
   one-axis or two-axis gimbal, rejects separated-lane and multi-gimbal shapes,
-  and records the post-step projected-root handoff (`REQ-MULTIBODY-041`).
+  and records the post-step projected-root handoff (`REQ-MULTIBODY-041`). After
+  the first authoritative handoff, subsequent pre-step mirrors carry the prior
+  articulated forecast's joint coordinates and rates into the next
+  authoritative seed while refreshing root slots from the rigid state
+  (`REQ-MULTIBODY-042`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path beyond
-  the guarded primary-root, separated-lane, and single-gimbal root handoffs, broader
+  the guarded primary-root, separated-lane, and single-gimbal root/internal-state handoffs, broader
   variable-mass multibody propagation beyond the root-free-flyer paths,
   runner-side momentum-conserving welded-to-free joint-release propagation,
   the independent Spatial_v2 oracle matrix across at least three small random
-  trees, full orbital-ascent gimballed validation, and broader authoritative
-  articulated thrust propagation including authoritative two-axis propagation
-  with internal coordinate authority.
+  trees, full orbital-ascent gimballed validation, and broader multi-gimbal
+  authoritative articulated thrust propagation including authoritative two-axis
+  propagation with actuator-coupled internal coordinate authority.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

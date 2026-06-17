@@ -787,7 +787,7 @@ impl RigidBodySession {
         }
         self.mirror_primary_multibody_root_step()?;
         self.mirror_separated_multibody_root_steps()?;
-        self.mirror_articulated_gimbal_steps()?;
+        self.mirror_articulated_gimbal_steps(articulated_gimbal_root_authority_enabled(document))?;
         // Feed the bending mode's reaction moment to the rigid-body torque for
         // this step (held across the RK4 stages). Zero when no flex mode.
         if !self.structural_rack.is_inactive() {
@@ -1204,7 +1204,10 @@ impl RigidBodySession {
         Ok(())
     }
 
-    fn mirror_articulated_gimbal_steps(&mut self) -> Result<(), RunnerError> {
+    fn mirror_articulated_gimbal_steps(
+        &mut self,
+        carry_authoritative_internal_state: bool,
+    ) -> Result<(), RunnerError> {
         if self.articulated_gimbal_shadows.is_empty() {
             return Ok(());
         }
@@ -1245,19 +1248,45 @@ impl RigidBodySession {
                 current_state.angular_velocity,
                 mass_properties,
             );
-            let joint_state = articulated_gimbal_joint_state_from_engine_thrust(
-                &shadow.seed,
-                engine_snapshot,
-                self.kernel_step_s,
-            )?;
-            let seed = articulated_gimbal_multibody_seed_from_config_with_joint_state(
-                body,
-                shadow.seed.engine,
-                &shadow.seed.joint,
-                &parent_state,
-                &joint_state.angles_rad,
-                &joint_state.rates_rad_s,
-            )?;
+            let seed = if carry_authoritative_internal_state
+                && shadow.last_authoritative_root_state.is_some()
+            {
+                let forecast =
+                    shadow
+                        .last_rk4_forecast
+                        .as_ref()
+                        .ok_or_else(|| RunnerError::UnsupportedScenario {
+                            what: "articulated_gimbal_root propagation authority requires an articulated forecast to carry internal state"
+                                .to_owned(),
+                        })?;
+                if (forecast.sim_state.state().time.as_seconds() - parent_state.time.as_seconds())
+                    .abs()
+                    > 1.0e-12
+                {
+                    return Err(RunnerError::UnsupportedScenario {
+                        what: "articulated_gimbal_root internal-state carry requires a same-time articulated forecast"
+                            .to_owned(),
+                    });
+                }
+                articulated_gimbal_multibody_seed_from_authoritative_forecast(
+                    forecast,
+                    &parent_state,
+                )?
+            } else {
+                let joint_state = articulated_gimbal_joint_state_from_engine_thrust(
+                    &shadow.seed,
+                    engine_snapshot,
+                    self.kernel_step_s,
+                )?;
+                articulated_gimbal_multibody_seed_from_config_with_joint_state(
+                    body,
+                    shadow.seed.engine,
+                    &shadow.seed.joint,
+                    &parent_state,
+                    &joint_state.angles_rad,
+                    &joint_state.rates_rad_s,
+                )?
+            };
             let derivative =
                 articulated_gimbal_multibody_derivative_from_engine_thrust(&seed, engine_snapshot)?;
             let forecast = articulated_gimbal_multibody_rk4_forecast_from_engine_thrust(
@@ -2795,6 +2824,48 @@ fn articulated_gimbal_multibody_rk4_forecast_from_engine_thrust(
         tree: seed.tree.clone(),
         sim_state: next_sim_state,
     })
+}
+
+fn articulated_gimbal_multibody_seed_from_authoritative_forecast(
+    forecast: &ArticulatedGimbalMultibodySeed,
+    parent_state: &RigidBodyState,
+) -> Result<ArticulatedGimbalMultibodySeed, RunnerError> {
+    let joint_dof = articulated_gimbal_joint_dof(&forecast.joint);
+    let joint_angles_rad =
+        forecast
+            .sim_state
+            .q()
+            .get(7..)
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "articulated gimbal authoritative forecast is missing joint coordinates"
+                    .to_owned(),
+            })?;
+    let joint_rates_rad_s =
+        forecast
+            .sim_state
+            .qd()
+            .get(6..)
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "articulated gimbal authoritative forecast is missing joint rates".to_owned(),
+            })?;
+    if joint_angles_rad.len() != joint_dof || joint_rates_rad_s.len() != joint_dof {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "articulated gimbal authoritative forecast for engine {} has {} q and {} qd joint entries (expected {joint_dof})",
+                forecast.engine.value(),
+                joint_angles_rad.len(),
+                joint_rates_rad_s.len()
+            ),
+        });
+    }
+    articulated_gimbal_multibody_seed_from_config_with_joint_state(
+        forecast.body,
+        forecast.engine,
+        &forecast.joint,
+        parent_state,
+        joint_angles_rad,
+        joint_rates_rad_s,
+    )
 }
 
 fn articulated_gimbal_root_rigid_state_from_seed(
@@ -6102,6 +6173,59 @@ mod tests {
             .expect("articulated gimbal root handoff recorded");
         assert_rigid_forecast_matches_state(root_forecast, session.state(), 0.2);
         assert_rigid_forecast_matches_state(authoritative, session.state(), 0.2);
+    }
+
+    #[test]
+    fn articulated_gimbal_root_authority_carries_internal_forecast_state() {
+        let toml = primary_multibody_two_axis_gimbal_shadow_scenario_toml().replace(
+            "[multi_body]\n",
+            "[multi_body]\npropagation_authority = \"articulated_gimbal_root\"\n",
+        );
+        let scenario = openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario parses");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step applies articulated gimbal root authority");
+
+        let engine = engine_id_from_scenario_text("main_engine");
+        let first_forecast = session
+            .articulated_gimbal_shadows
+            .get(&engine)
+            .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+            .expect("first authoritative articulated forecast recorded")
+            .clone();
+        let carried_q = first_forecast.sim_state.q()[7..].to_vec();
+        let carried_qd = first_forecast.sim_state.qd()[6..].to_vec();
+        let carried_root =
+            articulated_gimbal_root_rigid_state_from_seed(&first_forecast).expect("root projects");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("second step carries articulated internal state");
+
+        let shadow = session
+            .articulated_gimbal_shadows
+            .get(&engine)
+            .expect("articulated gimbal shadow present");
+        assert_eq!(
+            &shadow.seed.sim_state.q()[7..],
+            carried_q.as_slice(),
+            "authoritative articulated seed should carry prior forecast joint coordinates"
+        );
+        assert_eq!(
+            &shadow.seed.sim_state.qd()[6..],
+            carried_qd.as_slice(),
+            "authoritative articulated seed should carry prior forecast joint rates"
+        );
+        assert_rigid_forecast_matches_state(
+            &articulated_gimbal_root_rigid_state_from_seed(&shadow.seed)
+                .expect("carried root projects"),
+            &carried_root,
+            0.1,
+        );
     }
 
     #[test]

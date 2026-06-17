@@ -3039,8 +3039,11 @@ requires `primary_body_id` and exactly one `[[multi_body.gimbal_joint]]` whose
 `body_id` matches `primary_body_id`, rejects initial lanes, separation
 declarations, and landing controllers, and after each fixed-step RK4 tick
 replaces the primary rigid state with the projected root state from that
-articulated gimbal forecast. This mode does not make the internal gimbal
-coordinates authoritative and does not cover multiple declared gimbals.
+articulated gimbal forecast. Once the first authoritative root handoff has
+occurred, the next pre-step articulated seed carries the prior forecast's
+internal joint coordinates and rates forward while refreshing the root slots
+from the authoritative rigid state. This mode does not cover multiple declared
+gimbals.
 
 Each `[[multi_body.separation]]` entry binds to a mission event by id
 and declares the two `vehicle.assembly.bodies[*].id` values that
