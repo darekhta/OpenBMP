@@ -260,8 +260,8 @@ verification = ["V-MULTIBODY-043"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-044"
-title = "The rigid runner can install single-stage welded-release jettison states"
-statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"welded_release_jettison\" as an explicit guarded mode that requires primary_body_id and a separation declaration, rejects initial lanes and articulated gimbal joints, and routes single jettison_stage events through a runner-side identity welded upper/lower multibody pair. In that mode, the runner computes the departing lower-body free-flyer state with release_welded_subtree_as_free_flyer, projects both same-time continuing and departing rigid states, and installs them through jettison_rigid_body_with_states. The regressions prove successful release-state installation plus fail-closed rejection of manual separation delta-v/angular-rate impulses. This makes no claim that non-identity body-to-body separation geometry, batch jettison_bodies, departing attitude offsets, impulse/tip-off modeling, arbitrary subtree release, or full rigid-kernel removal is complete."
+title = "The rigid runner can install welded-release jettison states"
+statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"welded_release_jettison\" as an explicit guarded mode that requires primary_body_id and a separation declaration, rejects initial lanes and articulated gimbal joints, and routes jettison_stage plus batch jettison_bodies events through runner-side identity welded upper/lower multibody pairs. In that mode, the runner computes each departing lower-body free-flyer state with release_welded_subtree_as_free_flyer, projects same-time continuing and departing rigid states from the pre-install event state, and installs them through jettison_rigid_body_with_states. The regressions prove successful single and batch release-state installation plus fail-closed rejection of manual separation delta-v/angular-rate impulses. This makes no claim that non-identity body-to-body separation geometry, departing attitude offsets, impulse/tip-off modeling, arbitrary subtree release, or full rigid-kernel removal is complete."
 verification = ["V-MULTIBODY-044"]
 
 [[requirements]]
@@ -1828,6 +1828,7 @@ contains = [
   "release_welded_subtree_as_free_flyer",
   "jettison_rigid_body_with_states",
   "welded_release_jettison_authority_installs_release_states",
+  "welded_release_jettison_authority_installs_batch_release_states",
   "welded_release_jettison_authority_rejects_manual_impulses",
   "accepts_welded_release_jettison_propagation_authority",
   "REQ-MULTIBODY-044",

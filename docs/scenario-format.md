@@ -3034,14 +3034,15 @@ each fixed-step RK4 tick replaces already-active separated lanes with their
 same-tick root-free-flyer multibody forecasts. Lanes created by a jettison on
 the current tick are mirrored for the next tick; they are not retroactively
 rewritten before a pre-step forecast exists. Setting it to
-`"welded_release_jettison"` is a guarded single-stage jettison handoff mode: it
+`"welded_release_jettison"` is a guarded jettison handoff mode: it
 requires `primary_body_id` and at least one `[[multi_body.separation]]`, rejects
 `[[multi_body.initial_lane]]` and `[[multi_body.gimbal_joint]]`, computes the
-departing lower body by releasing an identity welded upper/lower multibody pair
-with `release_welded_subtree_as_free_flyer()`, and installs the continuing and
-departing same-time rigid states through the explicit separation-state kernel
-API. This mode rejects batch `jettison_bodies`, manual separation delta-v or
-angular-rate impulses, and departing-body attitude offsets. Setting it to
+departing lower body or bodies by releasing identity welded upper/lower
+multibody pairs with `release_welded_subtree_as_free_flyer()`, and installs the
+continuing and departing same-time rigid states through the explicit
+separation-state kernel API. This mode supports `jettison_stage` and
+`jettison_bodies`, but rejects manual separation delta-v or angular-rate
+impulses and departing-body attitude offsets. Setting it to
 `"articulated_gimbal_root"` is a single-gimbal root-state handoff mode: it
 requires `primary_body_id` and exactly one `[[multi_body.gimbal_joint]]` whose
 `body_id` matches `primary_body_id`, rejects initial lanes, separation

@@ -2233,38 +2233,80 @@ where
             }
             ScenarioScriptAction::JettisonBodies { bodies } => {
                 if use_welded_release_states {
-                    return Err(RunnerError::UnsupportedScenario {
-                        what: format!(
-                            "welded_release_jettison propagation authority does not support \
-                             batch jettison_bodies event {}",
-                            event.binding_id.value()
-                        ),
-                    });
-                }
-                // Remove every departing body from the stack FIRST so the
-                // continuing-inert set reflects the post-batch membership.
-                for body in bodies {
-                    stack_bodies.remove(body);
-                }
-                let mut batch = Vec::with_capacity(bodies.len());
-                for body in bodies {
-                    let separation = separation_specs.get(body).copied().ok_or_else(|| {
-                        RunnerError::UnsupportedScenario {
+                    // Remove every departing body from the stack FIRST so the
+                    // continuing-inert set reflects the post-batch membership.
+                    for body in bodies {
+                        stack_bodies.remove(body);
+                    }
+                    let mut batch = Vec::with_capacity(bodies.len());
+                    for body in bodies {
+                        let separation = separation_specs.get(body).copied().ok_or_else(|| {
+                            RunnerError::UnsupportedScenario {
+                                what: format!(
+                                    "jettison_bodies event {} fired for body id {} with no \
+                                         matching [multi_body] separation",
+                                    event.binding_id.value(),
+                                    body.value()
+                                ),
+                            }
+                        })?;
+                        let inert = continuing_inert_bodies(stack_bodies, separation.stack_body);
+                        batch.push(build_runtime_welded_release_separation_states(
+                            kernel, mass_model, separation, &inert,
+                        )?);
+                    }
+                    let Some(stack_body) = batch.first().map(|separation| separation.stack_body)
+                    else {
+                        return Err(RunnerError::UnsupportedScenario {
                             what: format!(
-                                "jettison_bodies event {} fired for body id {} with no \
-                                     matching [multi_body] separation",
-                                event.binding_id.value(),
-                                body.value()
+                                "welded_release_jettison batch event {} had no departing bodies",
+                                event.binding_id.value()
                             ),
-                        }
-                    })?;
-                    let inert = continuing_inert_bodies(stack_bodies, separation.stack_body);
-                    batch.push(build_runtime_rigid_body_separation(
-                        kernel, mass_model, separation, &inert,
-                    )?);
+                        });
+                    };
+                    if let Some(mismatched) = batch
+                        .iter()
+                        .find(|separation| separation.stack_body != stack_body)
+                    {
+                        return Err(RunnerError::UnsupportedScenario {
+                            what: format!(
+                                "welded_release_jettison batch event {} mixed stack body {} with {}",
+                                event.binding_id.value(),
+                                mismatched.stack_body.value(),
+                                stack_body.value()
+                            ),
+                        });
+                    }
+                    for runtime in batch {
+                        kernel.jettison_rigid_body_with_states(runtime)?;
+                    }
+                    applied = true;
+                } else {
+                    // Remove every departing body from the stack FIRST so the
+                    // continuing-inert set reflects the post-batch membership.
+                    for body in bodies {
+                        stack_bodies.remove(body);
+                    }
+                    let mut batch = Vec::with_capacity(bodies.len());
+                    for body in bodies {
+                        let separation = separation_specs.get(body).copied().ok_or_else(|| {
+                            RunnerError::UnsupportedScenario {
+                                what: format!(
+                                    "jettison_bodies event {} fired for body id {} with no \
+                                         matching [multi_body] separation",
+                                    event.binding_id.value(),
+                                    body.value()
+                                ),
+                            }
+                        })?;
+                        let inert = continuing_inert_bodies(stack_bodies, separation.stack_body);
+                        batch.push(build_runtime_rigid_body_separation(
+                            kernel, mass_model, separation, &inert,
+                        )?);
+                    }
+                    kernel.jettison_rigid_bodies(&batch)?;
+                    applied = true;
                 }
-                kernel.jettison_rigid_bodies(&batch)?;
-                applied = true;
             }
             _ => {}
         }
@@ -8639,6 +8681,49 @@ require_monotonic_time = true
             rv1_clear.iter().any(|value| *value),
             "relative-distance event should mark when rv1 clears the bus: {rv1_clear:?}"
         );
+    }
+
+    #[test]
+    fn welded_release_jettison_authority_installs_batch_release_states() {
+        let toml = BATCH_RV_DEPLOY_SCENARIO
+            .replace(
+                "[multi_body]\n",
+                "[multi_body]\nprimary_body_id = \"bus\"\npropagation_authority = \"welded_release_jettison\"\n",
+            )
+            .replace(
+                "lower_delta_v_body_m_s = [0.0, 1.0, 0.0]\nconserve_momentum = false\n",
+                "",
+            )
+            .replace(
+                "lower_delta_v_body_m_s = [0.0, -1.0, 0.0]\nconserve_momentum = false\n",
+                "",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("batch welded-release jettison step succeeds");
+
+        let rv1 = body_id_from_scenario_text("rv1");
+        let rv2 = body_id_from_scenario_text("rv2");
+        let rv1_state = separated_lane_state(&session, rv1);
+        let rv2_state = separated_lane_state(&session, rv2);
+        assert_eq!(rv1_state.time.as_seconds().to_bits(), 0.1_f64.to_bits());
+        assert_eq!(rv2_state.time.as_seconds().to_bits(), 0.1_f64.to_bits());
+        assert_eq!(
+            session.state().mass_props.mass_kg().to_bits(),
+            3.0_f64.to_bits()
+        );
+        assert_eq!(rv1_state.mass_props.mass_kg().to_bits(), 1.0_f64.to_bits());
+        assert_eq!(rv2_state.mass_props.mass_kg().to_bits(), 1.0_f64.to_bits());
+        assert!((rv1_state.position.vector - session.state().position.vector).norm() < 1.0e-12);
+        assert!((rv2_state.position.vector - session.state().position.vector).norm() < 1.0e-12);
+        assert!((rv1_state.velocity.vector - session.state().velocity.vector).norm() < 1.0e-12);
+        assert!((rv2_state.velocity.vector - session.state().velocity.vector).norm() < 1.0e-12);
     }
 
     #[test]
