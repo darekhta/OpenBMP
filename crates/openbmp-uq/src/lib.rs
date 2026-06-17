@@ -523,6 +523,135 @@ pub fn propulsion_c_star_efficiency_margin_source(
     .into_uncertainty_source()
 }
 
+/// Convert a structural bending-parameter band into UQ source form.
+///
+/// The source is epistemic because deck-level structural bands represent
+/// model-form or calibration uncertainty in the upstream structural data, not
+/// run-to-run variability.
+///
+/// # Errors
+///
+/// Returns [`UqError`] when the deck id, quantity id, evidence, band, or
+/// resulting source is malformed.
+pub fn structural_bending_margin_source(
+    deck_id: impl Into<String>,
+    quantity_id: impl Into<String>,
+    lower: f64,
+    nominal: f64,
+    upper: f64,
+    credibility_level: CredibilityLevel,
+    evidence: impl Into<String>,
+) -> Result<UncertaintySource, UqError> {
+    discipline_margin_source(
+        "02.structural",
+        "structural_bending.deck_id",
+        "structural_bending.quantity_id",
+        deck_id,
+        quantity_id,
+        lower,
+        nominal,
+        upper,
+        credibility_level,
+        evidence,
+    )
+}
+
+/// Convert an aerodynamic coefficient band into UQ source form.
+///
+/// # Errors
+///
+/// Returns [`UqError`] when the deck id, coefficient id, evidence, band, or
+/// resulting source is malformed.
+pub fn aero_coefficient_margin_source(
+    deck_id: impl Into<String>,
+    coefficient_id: impl Into<String>,
+    lower: f64,
+    nominal: f64,
+    upper: f64,
+    credibility_level: CredibilityLevel,
+    evidence: impl Into<String>,
+) -> Result<UncertaintySource, UqError> {
+    discipline_margin_source(
+        "03.aero",
+        "aero_coefficient.deck_id",
+        "aero_coefficient.coefficient_id",
+        deck_id,
+        coefficient_id,
+        lower,
+        nominal,
+        upper,
+        credibility_level,
+        evidence,
+    )
+}
+
+/// Convert an aerothermal model band into UQ source form.
+///
+/// # Errors
+///
+/// Returns [`UqError`] when the deck id, quantity id, evidence, band, or
+/// resulting source is malformed.
+pub fn aerothermal_model_margin_source(
+    deck_id: impl Into<String>,
+    quantity_id: impl Into<String>,
+    lower: f64,
+    nominal: f64,
+    upper: f64,
+    credibility_level: CredibilityLevel,
+    evidence: impl Into<String>,
+) -> Result<UncertaintySource, UqError> {
+    discipline_margin_source(
+        "04.aerothermal",
+        "aerothermal_model.deck_id",
+        "aerothermal_model.quantity_id",
+        deck_id,
+        quantity_id,
+        lower,
+        nominal,
+        upper,
+        credibility_level,
+        evidence,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn discipline_margin_source(
+    source_prefix: &str,
+    deck_field: &'static str,
+    quantity_field: &'static str,
+    deck_id: impl Into<String>,
+    quantity_id: impl Into<String>,
+    lower: f64,
+    nominal: f64,
+    upper: f64,
+    credibility_level: CredibilityLevel,
+    evidence: impl Into<String>,
+) -> Result<UncertaintySource, UqError> {
+    let deck_id = deck_id.into();
+    if deck_id.trim().is_empty() {
+        return Err(UqError::InvalidInput { field: deck_field });
+    }
+    let quantity_id = quantity_id.into();
+    if quantity_id.trim().is_empty() {
+        return Err(UqError::InvalidInput {
+            field: quantity_field,
+        });
+    }
+    let evidence = evidence.into();
+    let source_id = format!("{source_prefix}.{deck_id}.{quantity_id}");
+    UpstreamMargin {
+        source_id,
+        quantity_id,
+        nominal,
+        lower,
+        upper,
+        class: UncertaintyClass::Epistemic,
+        credibility: uniform_credibility_record(credibility_level, evidence.clone()),
+        justification: evidence,
+    }
+    .into_uncertainty_source()
+}
+
 /// Symmetric positive-semidefinite correlation matrix.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CorrelationMatrix {
@@ -653,6 +782,32 @@ pub struct CorrelatedErrorBudget {
 }
 
 impl CorrelatedErrorBudget {
+    /// Build a source-tagged budget from upstream discipline margin bands.
+    ///
+    /// `correlation` is interpreted in the same order as `margins`. `None`
+    /// means identity correlation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UqError`] when a margin is malformed, a produced source is
+    /// malformed, source ids are duplicated, or the correlation matrix shape
+    /// does not match the source count.
+    pub fn from_upstream_margins(
+        margins: Vec<UpstreamMargin>,
+        correlation: Option<CorrelationMatrix>,
+    ) -> Result<Self, UqError> {
+        let mut sources = Vec::with_capacity(margins.len());
+        for margin in margins {
+            sources.push(margin.into_uncertainty_source()?);
+        }
+        let budget = Self {
+            sources,
+            correlation,
+        };
+        budget.validate()?;
+        Ok(budget)
+    }
+
     /// Aggregate one-sigma value over every source.
     ///
     /// # Errors
@@ -1393,6 +1548,111 @@ mod tests {
                 .binding_level(),
             CredibilityLevel::L3
         );
+    }
+
+    #[test]
+    fn cross_discipline_deck_margin_helpers_emit_stable_source_tags() {
+        let structural = structural_bending_margin_source(
+            "first_mode.generic.v1",
+            "frequency_hz",
+            8.8,
+            9.0,
+            9.3,
+            CredibilityLevel::L2,
+            "docs/parity/02-structural-dynamics-loads-slosh-pogo.md",
+        )
+        .unwrap();
+        assert_eq!(
+            structural.source_id,
+            "02.structural.first_mode.generic.v1.frequency_hz"
+        );
+        assert_eq!(structural.class, UncertaintyClass::Epistemic);
+        assert!((structural.one_sigma - 0.3).abs() < 1.0e-15);
+
+        let aero = aero_coefficient_margin_source(
+            "synthetic_finned_cylinder.v1",
+            "cd",
+            0.48,
+            0.5,
+            0.55,
+            CredibilityLevel::L2,
+            "data/aero/synthetic-finned-cylinder.toml",
+        )
+        .unwrap();
+        assert_eq!(aero.source_id, "03.aero.synthetic_finned_cylinder.v1.cd");
+        assert!((aero.one_sigma - 0.05).abs() < 1.0e-15);
+
+        let aerothermal = aerothermal_model_margin_source(
+            "sutton_graves_earth.v1",
+            "q_conv_w_m2",
+            9.0e5,
+            1.0e6,
+            1.2e6,
+            CredibilityLevel::L2,
+            "docs/parity/04-aerothermal-realgas-and-tps.md",
+        )
+        .unwrap();
+        assert_eq!(
+            aerothermal.source_id,
+            "04.aerothermal.sutton_graves_earth.v1.q_conv_w_m2"
+        );
+        assert!((aerothermal.one_sigma - 2.0e5).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn upstream_margins_build_correlated_budget_in_margin_order() {
+        let margins = vec![
+            UpstreamMargin {
+                source_id: String::from("03.aero.synthetic.cd"),
+                quantity_id: String::from("cd"),
+                nominal: 0.5,
+                lower: 0.4,
+                upper: 0.55,
+                class: UncertaintyClass::Epistemic,
+                credibility: credibility(CredibilityLevel::L2),
+                justification: String::from("synthetic aero tolerance"),
+            },
+            UpstreamMargin {
+                source_id: String::from("05.propulsion.synthetic.c_star_efficiency"),
+                quantity_id: String::from("c_star_efficiency"),
+                nominal: 0.98,
+                lower: 0.96,
+                upper: 1.0,
+                class: UncertaintyClass::Epistemic,
+                credibility: credibility(CredibilityLevel::L2),
+                justification: String::from("synthetic propulsion tolerance"),
+            },
+        ];
+        let correlation = CorrelationMatrix::new(2, vec![1.0, 0.5, 0.5, 1.0]).unwrap();
+        let budget = CorrelatedErrorBudget::from_upstream_margins(margins, Some(correlation))
+            .expect("correlated upstream budget");
+
+        assert_eq!(budget.sources[0].source_id, "03.aero.synthetic.cd");
+        assert_eq!(
+            budget.sources[1].source_id,
+            "05.propulsion.synthetic.c_star_efficiency"
+        );
+        let aggregate = budget.aggregate_one_sigma().unwrap();
+        assert!((aggregate - 0.0124_f64.sqrt()).abs() < 1.0e-15);
+        assert!((budget.epistemic_one_sigma().unwrap() - aggregate).abs() < 1.0e-15);
+    }
+
+    #[test]
+    fn deck_margin_helpers_reject_empty_quantity() {
+        assert!(matches!(
+            aero_coefficient_margin_source(
+                "synthetic",
+                " ",
+                0.48,
+                0.5,
+                0.55,
+                CredibilityLevel::L2,
+                "evidence",
+            ),
+            Err(UqError::InvalidInput {
+                field: "aero_coefficient.coefficient_id"
+            })
+        ));
     }
 
     #[test]

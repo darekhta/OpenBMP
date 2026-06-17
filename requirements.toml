@@ -663,7 +663,7 @@ verification = ["V-UQ-003"]
 [[requirements]]
 id = "REQ-UQ-004"
 title = "Upstream deck margins can become source-tagged UQ sources"
-statement = "The UQ crate exposes a no-std-compatible UpstreamMargin adapter that validates source ids, quantity ids, finite ordered lower/nominal/upper bounds, uncertainty class, upstream evidence, and credibility records, converts the larger side of each bounded band into a conservative one-sigma source contribution, and provides a propulsion c_star_efficiency helper that maps thermochemistry deck efficiency bands into epistemic CorrelatedErrorBudget sources with evidence pointers and credibility scores."
+statement = "The UQ crate exposes a no-std-compatible UpstreamMargin adapter that validates source ids, quantity ids, finite ordered lower/nominal/upper bounds, uncertainty class, upstream evidence, and credibility records, converts the larger side of each bounded band into a conservative one-sigma source contribution, can build a CorrelatedErrorBudget from ordered upstream margins plus an optional correlation matrix, and provides structural bending, aerodynamic coefficient, aerothermal model, and propulsion c_star_efficiency helpers that map upstream deck bands into source-tagged epistemic budget sources with evidence pointers and credibility scores."
 verification = ["V-UQ-004"]
 
 [[requirements]]
@@ -3816,19 +3816,29 @@ requirements = ["REQ-UQ-003"]
 [[verification]]
 id = "V-UQ-004"
 kind = "test"
-command = "cargo test -p openbmp-uq upstream_margin --locked && cargo test -p openbmp-uq propulsion_c_star_efficiency_band_flows_into_epistemic_budget --locked"
+command = "cargo test -p openbmp-uq upstream_margin --locked && cargo test -p openbmp-uq cross_discipline_deck_margin_helpers_emit_stable_source_tags --locked && cargo test -p openbmp-uq propulsion_c_star_efficiency_band_flows_into_epistemic_budget --locked"
 paths = [
   "crates/openbmp-uq/src/lib.rs",
   "data/thermochem/lox-lch4-cantera-gri30-schema-1.toml",
+  "data/aero/synthetic-finned-cylinder.toml",
   "docs/parity/11-monte-carlo-uq-and-validation.md",
   "docs/parity/progress.md",
 ]
 contains = [
   "UpstreamMargin",
+  "from_upstream_margins",
+  "structural_bending_margin_source",
+  "aero_coefficient_margin_source",
+  "aerothermal_model_margin_source",
   "propulsion_c_star_efficiency_margin_source",
   "uniform_credibility_record",
   "conservative_one_sigma",
+  "02.structural.first_mode.generic.v1.frequency_hz",
+  "03.aero.synthetic_finned_cylinder.v1.cd",
+  "04.aerothermal.sutton_graves_earth.v1.q_conv_w_m2",
   "05.propulsion.lox_lch4_cantera_gri30.v1.c_star_efficiency",
+  "cross_discipline_deck_margin_helpers_emit_stable_source_tags",
+  "upstream_margins_build_correlated_budget_in_margin_order",
   "propulsion_c_star_efficiency_band_flows_into_epistemic_budget",
   "upstream_margin_rejects_unordered_or_missing_evidence",
 ]
