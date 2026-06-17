@@ -4175,6 +4175,119 @@ mod tests {
     }
 
     #[test]
+    fn articulated_gimbal_joint_inertia_couples_root_and_engine_axis() {
+        let airframe_properties = MassProperties::with_diagonal_inertia(
+            Mass::new::<kilogram>(1800.0),
+            Position3::<Body>::new(0.0, 0.0, 0.0),
+            900.0,
+            1300.0,
+            850.0,
+        );
+        let engine_properties = MassProperties::with_diagonal_inertia(
+            Mass::new::<kilogram>(115.0),
+            Position3::<Body>::new(0.18, 0.0, -0.42),
+            9.0,
+            17.0,
+            14.0,
+        );
+        let tree = MultibodyTree::new(vec![
+            TreeBodySpec {
+                id: BodyId::new(1),
+                parent: None,
+                joint: Joint::FreeFlyer,
+                inertia: SpatialInertia::from_mass_properties(&airframe_properties).unwrap(),
+                parent_to_body: PluckerTransform::identity(),
+            },
+            TreeBodySpec {
+                id: BodyId::new(2),
+                parent: Some(BodyIndex::new(0)),
+                joint: Joint::revolute(Vector3::new(0.0, 1.0, 0.0)).unwrap(),
+                inertia: SpatialInertia::from_mass_properties(&engine_properties).unwrap(),
+                parent_to_body: PluckerTransform::new(
+                    Matrix3::identity(),
+                    Vector3::new(0.72, 0.0, -3.4),
+                )
+                .unwrap(),
+            },
+        ])
+        .unwrap();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.18],
+            vec![0.0; tree.n_qd()],
+        );
+
+        let h = tree.joint_space_inertia_crba_at_state(&state).unwrap();
+        let gimbal_col = 6;
+        let root_rotational_coupling = (0..3)
+            .map(|row| h.at(row, gimbal_col).unwrap().abs())
+            .fold(0.0_f64, f64::max);
+        let root_translational_coupling = (3..6)
+            .map(|row| h.at(row, gimbal_col).unwrap().abs())
+            .fold(0.0_f64, f64::max);
+
+        assert!(
+            root_rotational_coupling > 1.0,
+            "gimbal inertia column should couple into root angular slots: {root_rotational_coupling:.17e}"
+        );
+        assert!(
+            root_translational_coupling > 1.0,
+            "offset gimbal inertia column should couple into root linear slots: {root_translational_coupling:.17e}"
+        );
+        for root_row in 0..6 {
+            assert_abs_diff_eq!(
+                h.at(root_row, gimbal_col).unwrap(),
+                h.at(gimbal_col, root_row).unwrap(),
+                epsilon = 1.0e-12
+            );
+        }
+
+        let mut generalized_forces = vec![0.0; tree.n_qd()];
+        generalized_forces[gimbal_col] = 240.0;
+        let external_forces = vec![SpatialForce::zero(); tree.bodies().len()];
+
+        let dense = tree
+            .forward_dynamics_dense_at_state(
+                &state,
+                &generalized_forces,
+                SpatialMotion::zero(),
+                &external_forces,
+            )
+            .unwrap();
+        let aba = tree
+            .forward_dynamics_aba_at_state(
+                &state,
+                &generalized_forces,
+                SpatialMotion::zero(),
+                &external_forces,
+            )
+            .unwrap();
+        let tau_round_trip = tree
+            .inverse_dynamics_rnea_at_state(&state, &aba, SpatialMotion::zero(), &external_forces)
+            .unwrap();
+        let root_reaction_qdd = aba[0..6]
+            .iter()
+            .map(|value| value.abs())
+            .fold(0.0_f64, f64::max);
+
+        assert!(
+            root_reaction_qdd > 1.0e-4,
+            "actuated gimbal should drive an equal-and-opposite root reaction: {root_reaction_qdd:.17e}"
+        );
+        assert!(
+            aba[gimbal_col].abs() > 1.0e-4,
+            "actuated gimbal axis should accelerate: {:.17e}",
+            aba[gimbal_col]
+        );
+        for (actual, expected) in aba.iter().zip(dense.iter()) {
+            assert_abs_diff_eq!(*actual, *expected, epsilon = 1.0e-10);
+        }
+        for (actual, expected) in tau_round_trip.iter().zip(generalized_forces.iter()) {
+            assert_abs_diff_eq!(*actual, *expected, epsilon = 1.0e-10);
+        }
+    }
+
+    #[test]
     fn free_flyer_derivative_matches_rigid_body_no_offset_equations() {
         let mass_properties = MassProperties::with_uniform_inertia(
             Mass::new::<kilogram>(2.0),

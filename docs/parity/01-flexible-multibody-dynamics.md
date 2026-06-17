@@ -231,13 +231,17 @@ solid-motor burn, including the next-step mass. It also avoids double-counting
 liquid-engine snapshot consumption when the single-body primary stack is already
 the kernel-authoritative lane, and matches a pitch-gimballed liquid-engine burn
 over one powered step and over two consecutive powered ticks in the same
-synthetic ascent. Authoritative propagation is still the rigid kernel.
-Replacing the rigid propagation path, broader variable-mass multibody
-propagation beyond the one-body root forecast, double-pendulum energy/momentum
-tolerance tables, full separated-lane multibody propagation beyond the one-step
-separated shadow forecast, vehicle-scale gimballed ascent validation,
-articulated gimbal-joint inertia coupling, and external Spatial_v2 oracle
-fixtures remain open.
+synthetic ascent. The vehicle-scale Phalcon-9 TVC probe now validates the
+primary-shadow forecast over both a clipped 150-tick ascent and the full 40 s
+run. The substrate also carries checked double-pendulum energy/momentum
+evidence and an articulated gimbal regression that proves a revolute inertial
+engine couples into the free-flyer root inertia and reaction acceleration.
+Authoritative propagation is still the rigid kernel. Replacing the rigid
+propagation path, broader variable-mass multibody propagation beyond the
+one-body root forecast, full separated-lane multibody propagation beyond the
+one-step separated shadow forecast, runner/scenario wiring for articulated
+gimbal joints, full orbital-ascent gimballed validation, and external
+Spatial_v2 oracle fixtures remain open.
 
 ---
 
@@ -836,14 +840,18 @@ justification first, reviewed before the implementation lands.
   lateral gimballed thrust; the same validation now also runs the full 40 s
   Phalcon-9 TVC probe to completion with the original pitch schedule and proves
   every recorded primary-shadow RK4 forecast matches the authoritative rigid
-  state.
+  state. The substrate now also validates a free-flyer airframe plus offset
+  inertial engine on a revolute gimbal, proving the state-dependent CRBA matrix
+  carries off-diagonal root/gimbal inertia terms and that a gimbal torque drives
+  equal-and-opposite root reaction acceleration while ABA, dense forward
+  dynamics, and biased RNEA agree (`REQ-MULTIBODY-031`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   broader variable-mass multibody propagation beyond the primary-root and
   powered separated-lane shadow forecasts, runner-side momentum-conserving
   welded-to-free joint-release propagation and full separated-body multibody
   propagation beyond the substrate handoff and first-post-release separated
   shadow forecasts, Spatial_v2 oracle fixtures, full orbital-ascent gimballed
-  validation, and articulated gimbal-joint inertia coupling.
+  validation, and runner/scenario wiring for articulated gimbal joints.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

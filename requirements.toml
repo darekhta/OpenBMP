@@ -181,6 +181,12 @@ statement = "The openbmp-runner primary root-free-flyer multibody shadow is cove
 verification = ["V-MULTIBODY-030"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-031"
+title = "The multibody substrate validates articulated gimbal inertia coupling"
+statement = "The openbmp-multibody crate is covered by a free-flyer airframe plus offset inertial engine on a revolute gimbal regression that proves the state-dependent CRBA matrix carries nonzero off-diagonal coupling between the gimbal axis and root angular/linear slots, applies a gimbal generalized torque that drives both root reaction acceleration and gimbal-axis acceleration, and cross-checks the result through ABA versus dense forward dynamics plus biased RNEA round-trip. This makes no claim that runner-side gimbal joints, scenario schema wiring, WP-01.2 two-axis gimbal acceptance, replacing rigid-kernel propagation, or Spatial_v2 oracle validation are complete."
+verification = ["V-MULTIBODY-031"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1430,6 +1436,25 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-030"]
+
+[[verification]]
+id = "V-MULTIBODY-031"
+kind = "test"
+command = "cargo test -p openbmp-multibody articulated_gimbal_joint_inertia_couples_root_and_engine_axis --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "articulated_gimbal_joint_inertia_couples_root_and_engine_axis",
+  "root_rotational_coupling",
+  "root_reaction_qdd",
+  "REQ-MULTIBODY-031",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-031"]
 
 [[verification]]
 id = "V-SIL-001"
