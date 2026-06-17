@@ -235,13 +235,16 @@ synthetic ascent. The vehicle-scale Phalcon-9 TVC probe now validates the
 primary-shadow forecast over both a clipped 150-tick ascent and the full 40 s
 run. The substrate also carries checked double-pendulum energy/momentum
 evidence and an articulated gimbal regression that proves a revolute inertial
-engine couples into the free-flyer root inertia and reaction acceleration.
-Authoritative propagation is still the rigid kernel. Replacing the rigid
-propagation path, broader variable-mass multibody propagation beyond the
-one-body root forecast, full separated-lane multibody propagation beyond the
-one-step separated shadow forecast, runner/scenario wiring for articulated
-gimbal joints, full orbital-ascent gimballed validation, and external
-Spatial_v2 oracle fixtures remain open.
+engine couples into the free-flyer root inertia and reaction acceleration. The
+scenario parser and rigid runner now also accept `[[multi_body.gimbal_joint]]`
+entries, validate engine/body ownership plus declared engine mass properties,
+and materialize a root free-flyer plus revolute engine tree during session
+preparation. Authoritative propagation is still the rigid kernel. Replacing
+the rigid propagation path, broader variable-mass multibody propagation beyond
+the one-body root forecast, full separated-lane multibody propagation beyond
+the one-step separated shadow forecast, runtime thrust/joint actuation through
+articulated gimbal joints, full orbital-ascent gimballed validation, and
+external Spatial_v2 oracle fixtures remain open.
 
 ---
 
@@ -844,14 +847,20 @@ justification first, reviewed before the implementation lands.
   inertial engine on a revolute gimbal, proving the state-dependent CRBA matrix
   carries off-diagonal root/gimbal inertia terms and that a gimbal torque drives
   equal-and-opposite root reaction acceleration while ABA, dense forward
-  dynamics, and biased RNEA agree (`REQ-MULTIBODY-031`).
+  dynamics, and biased RNEA agree (`REQ-MULTIBODY-031`). Schema-v3
+  `[[multi_body.gimbal_joint]]` entries now validate the parent body, owned
+  engine, finite nonzero revolute axis, pivot, declared engine inertia, and
+  initial joint state, and the rigid runner materializes each declaration into
+  the same root free-flyer plus revolute-engine tree during session preparation
+  (`REQ-MULTIBODY-032`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   broader variable-mass multibody propagation beyond the primary-root and
   powered separated-lane shadow forecasts, runner-side momentum-conserving
   welded-to-free joint-release propagation and full separated-body multibody
   propagation beyond the substrate handoff and first-post-release separated
   shadow forecasts, Spatial_v2 oracle fixtures, full orbital-ascent gimballed
-  validation, and runner/scenario wiring for articulated gimbal joints.
+  validation, and runtime thrust/joint actuation through articulated gimbal
+  joints.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

@@ -3117,6 +3117,33 @@ controller is a deterministic scenario-director aid for SIL evidence; it is
 not flight software and does not represent a fielded propulsive-landing
 algorithm.
 
+Scenarios may also declare articulated engine gimbal joints for the
+runner-side multibody tree materializer:
+
+```toml
+[[multi_body.gimbal_joint]]
+body_id                    = "core"
+engine_id                  = "center"
+axis_body                  = [0.0, 1.0, 0.0]
+pivot_body_m               = [0.0, 0.0, -16.0]
+engine_mass_kg             = 115.0
+engine_cg_body_m           = [0.0, 0.0, -0.4]
+engine_inertia_body_kg_m2  = [[9.0, 0.0, 0.0], [0.0, 17.0, 0.0], [0.0, 0.0, 14.0]]
+initial_angle_rad          = 0.0
+initial_rate_rad_s         = 0.0
+```
+
+`body_id` must name a declared assembly body, and `engine_id` must name an
+engine whose `vehicle.assembly.engines[*].mounted_to` owner is that body. The
+axis must be finite and non-zero; the pivot is expressed in the parent body
+frame; `engine_mass_kg`, `engine_cg_body_m`, and
+`engine_inertia_body_kg_m2` supply the inertial engine body because the
+existing thrust engine entry has no dry-mass contract. The runner materializes
+each declaration during rigid-body session preparation as a root free-flyer
+plus one revolute engine body and validates its CRBA inertia matrix. This is
+currently a non-authoritative multibody shadow: thrust still enters the
+existing rigid force/moment path until the WP-01.2 propagation handoff lands.
+
 ### v3-only `[fc]` sub-blocks
 
 #### `[fc.estimator_lanes]` — multi-instance estimator routing

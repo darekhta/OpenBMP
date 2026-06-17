@@ -187,6 +187,12 @@ statement = "The openbmp-multibody crate is covered by a free-flyer airframe plu
 verification = ["V-MULTIBODY-031"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-032"
+title = "The runner materializes scenario-declared articulated gimbal joints"
+statement = "Schema-v3 [multi_body] scenarios can declare [[multi_body.gimbal_joint]] entries that bind an owned liquid-engine id to its parent assembly body, a finite nonzero revolute axis, a parent-frame pivot, declared engine inertial mass properties, and initial joint state. The scenario parser validates finite/positive mass-property fields, rejects unknown body or engine references, rejects duplicate engine gimbal declarations, and rejects engine/body ownership mismatches; the rigid runner materializes each declaration during session preparation as a root free-flyer plus revolute engine MultibodyTree seeded from live parent body mass resources and validates its state-dependent CRBA inertia matrix. This makes no claim that the articulated gimbal tree has replaced the current rigid-kernel propagation path, that thrust loads are applied through the revolute joint actuator, that WP-01.2 two-axis gimbal acceptance is complete, or that Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-032"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1455,6 +1461,31 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-031"]
+
+[[verification]]
+id = "V-MULTIBODY-032"
+kind = "test"
+command = "cargo test -p openbmp-scenario multi_body_gimbal_joint --locked && cargo test -p openbmp-runner initial_articulated_gimbal_multibody_seed_builds_revolute_engine_tree --locked && cargo check -p openbmp-scenario -p openbmp-runner --locked && cargo clippy -p openbmp-scenario -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "MultiBodyGimbalJointConfig",
+  "validate_multi_body_gimbal_joint_references",
+  "build_initial_articulated_gimbal_multibody_seeds",
+  "initial_articulated_gimbal_multibody_seed_builds_revolute_engine_tree",
+  "multi_body.gimbal_joint",
+  "REQ-MULTIBODY-032",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-032"]
 
 [[verification]]
 id = "V-SIL-001"

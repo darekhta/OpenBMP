@@ -413,6 +413,7 @@ impl ScenarioDocument {
         self.validate_relative_distance_trigger_references()?;
         self.validate_multi_body_attitude_target_references()?;
         self.validate_multi_body_landing_controller_references()?;
+        self.validate_multi_body_gimbal_joint_references()?;
         self.validate_propulsion_unambiguous()?;
         self.validate_v3_blocks()?;
         self.validate_initial_multi_body_references()?;
@@ -2026,6 +2027,65 @@ impl ScenarioDocument {
                     value_a: controller.engine_id.clone(),
                     field_b: format!("vehicle.assembly.engines.{}.mounted_to", engine.id),
                     value_b: engine.mounted_to.clone().unwrap_or_default(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_multi_body_gimbal_joint_references(&self) -> Result<(), ScenarioError> {
+        let Some(multi_body) = &self.multi_body else {
+            return Ok(());
+        };
+        if multi_body.gimbal_joints.is_empty() {
+            return Ok(());
+        }
+        if self.vehicle.kind != "rigid_body" {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field: "multi_body.gimbal_joint".to_owned(),
+                reason: "multi-body gimbal joints require vehicle.kind = \"rigid_body\"".to_owned(),
+            });
+        }
+        let body_ids: BTreeSet<&str> = self
+            .vehicle
+            .assembly
+            .bodies
+            .iter()
+            .map(|body| body.id.as_str())
+            .collect();
+        let engines: BTreeMap<&str, &EngineConfig> = self
+            .vehicle
+            .assembly
+            .engines
+            .iter()
+            .map(|engine| (engine.id.as_str(), engine))
+            .collect();
+        let mut seen_engines = BTreeSet::new();
+        for (index, joint) in multi_body.gimbal_joints.iter().enumerate() {
+            if !body_ids.contains(joint.body_id.as_str()) {
+                return Err(ScenarioError::UnknownBodyReference {
+                    field: format!("multi_body.gimbal_joint[{index}].body_id"),
+                    value: joint.body_id.clone(),
+                });
+            }
+            let Some(engine) = engines.get(joint.engine_id.as_str()) else {
+                return Err(ScenarioError::UnknownEngineReference {
+                    field: format!("multi_body.gimbal_joint[{index}].engine_id"),
+                    id: joint.engine_id.clone(),
+                });
+            };
+            if engine.mounted_to.as_deref() != Some(joint.body_id.as_str()) {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!("multi_body.gimbal_joint[{index}].engine_id"),
+                    value_a: joint.engine_id.clone(),
+                    field_b: format!("vehicle.assembly.engines.{}.mounted_to", engine.id),
+                    value_b: engine.mounted_to.clone().unwrap_or_default(),
+                });
+            }
+            if !seen_engines.insert(joint.engine_id.as_str()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("multi_body.gimbal_joint[{index}].engine_id"),
+                    value: joint.engine_id.clone(),
                 });
             }
         }
@@ -13557,6 +13617,11 @@ pub struct MultiBodyConfig {
     /// `landing_controllers` in Rust.
     #[serde(default, rename = "landing_controller")]
     pub landing_controllers: Vec<MultiBodyLandingControllerConfig>,
+    /// Articulated engine-gimbal joints. Serde key is
+    /// `[[multi_body.gimbal_joint]]`; the field is exposed as
+    /// `gimbal_joints` in Rust.
+    #[serde(default, rename = "gimbal_joint")]
+    pub gimbal_joints: Vec<MultiBodyGimbalJointConfig>,
 }
 
 impl MultiBodyConfig {
@@ -13565,9 +13630,10 @@ impl MultiBodyConfig {
             && self.separations.is_empty()
             && self.attitude_targets.is_empty()
             && self.landing_controllers.is_empty()
+            && self.gimbal_joints.is_empty()
         {
             return Err(ScenarioError::EmptyList {
-                field: "multi_body.initial_lane, multi_body.separation, multi_body.attitude_target, or multi_body.landing_controller"
+                field: "multi_body.initial_lane, multi_body.separation, multi_body.attitude_target, multi_body.landing_controller, or multi_body.gimbal_joint"
                     .to_owned(),
             });
         }
@@ -13614,6 +13680,9 @@ impl MultiBodyConfig {
         }
         for (index, controller) in self.landing_controllers.iter().enumerate() {
             controller.validate(index)?;
+        }
+        for (index, joint) in self.gimbal_joints.iter().enumerate() {
+            joint.validate(index)?;
         }
         Ok(())
     }
@@ -14069,6 +14138,53 @@ impl MultiBodyLandingControllerConfig {
                 rule: "must be less than or equal to max_throttle_unit",
             });
         }
+        Ok(())
+    }
+}
+
+/// One entry under `[[multi_body.gimbal_joint]]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MultiBodyGimbalJointConfig {
+    /// Assembly body that owns the engine and acts as the parent root.
+    pub body_id: String,
+    /// Engine id whose inertial gimbal body is attached to `body_id`.
+    pub engine_id: String,
+    /// Revolute axis expressed in the parent body frame.
+    pub axis_body: [f64; 3],
+    /// Parent-body pivot position in metres.
+    pub pivot_body_m: [f64; 3],
+    /// Declared inertial mass of the articulated engine body.
+    pub engine_mass_kg: f64,
+    /// Engine-body centre of mass relative to the gimbal frame.
+    #[serde(default = "zero_vec3_meters")]
+    pub engine_cg_body_m: [f64; 3],
+    /// Engine-body inertia tensor about the gimbal frame.
+    pub engine_inertia_body_kg_m2: [[f64; 3]; 3],
+    /// Initial revolute coordinate.
+    #[serde(default)]
+    pub initial_angle_rad: f64,
+    /// Initial revolute rate.
+    #[serde(default)]
+    pub initial_rate_rad_s: f64,
+}
+
+impl MultiBodyGimbalJointConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("multi_body.gimbal_joint[{index}].{field}");
+        require_non_empty(&path("body_id"), &self.body_id)?;
+        require_non_empty(&path("engine_id"), &self.engine_id)?;
+        require_finite_array(&path("axis_body"), &self.axis_body)?;
+        require_nonzero_vector(&path("axis_body"), &self.axis_body)?;
+        require_finite_array(&path("pivot_body_m"), &self.pivot_body_m)?;
+        require_positive(&path("engine_mass_kg"), self.engine_mass_kg)?;
+        require_finite_array(&path("engine_cg_body_m"), &self.engine_cg_body_m)?;
+        validate_inertia_tensor(
+            &path("engine_inertia_body_kg_m2"),
+            &self.engine_inertia_body_kg_m2,
+        )?;
+        require_finite(&path("initial_angle_rad"), self.initial_angle_rad)?;
+        require_finite(&path("initial_rate_rad_s"), self.initial_rate_rad_s)?;
         Ok(())
     }
 }

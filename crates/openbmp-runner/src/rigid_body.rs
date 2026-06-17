@@ -289,6 +289,23 @@ impl RigidBodySession {
             &initial_tank_snapshot,
             &initial_state,
         )?;
+        let initial_articulated_gimbal_seeds = build_initial_articulated_gimbal_multibody_seeds(
+            document,
+            &loaded,
+            &mass_resources,
+            &initial_engine_snapshot,
+            &initial_tank_snapshot,
+            &initial_state,
+        )?;
+        for seed in &initial_articulated_gimbal_seeds {
+            let _body = seed.body;
+            let _engine = seed.engine;
+            seed.tree
+                .joint_space_inertia_crba_at_state(seed.sim_state.state())
+                .map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!("initial articulated gimbal inertia validation failed: {err}"),
+                })?;
+        }
         let kernel_vehicle = build_vehicle(
             document,
             &loaded,
@@ -2118,6 +2135,14 @@ struct RootFreeFlyerMultibodySeed {
     sim_state: MultibodySimState,
 }
 
+#[derive(Clone, Debug)]
+struct ArticulatedGimbalMultibodySeed {
+    body: BodyId,
+    engine: EngineId,
+    tree: MultibodyTree,
+    sim_state: MultibodySimState,
+}
+
 #[derive(Debug)]
 struct RootFreeFlyerMultibodyShadow {
     seed: RootFreeFlyerMultibodySeed,
@@ -2165,6 +2190,171 @@ fn build_initial_root_free_flyer_multibody_seed(
         primary_mass_properties,
     );
     root_free_flyer_multibody_seed_from_rigid_state(body, rigid_state).map(Some)
+}
+
+fn build_initial_articulated_gimbal_multibody_seeds(
+    document: &ScenarioDocument,
+    loaded: &LoadedModels,
+    mass_resources: &RigidMassResources,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    tank_snapshot: &BTreeMap<TankId, openbmp_sim::TankSnapshot>,
+    initial_state: &RigidBodyState,
+) -> Result<Vec<ArticulatedGimbalMultibodySeed>, RunnerError> {
+    let Some(multi_body) = document.multi_body.as_ref() else {
+        return Ok(Vec::new());
+    };
+    if multi_body.gimbal_joints.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mass_model = RigidMassResourceModel::new(
+        mass_resources.clone(),
+        loaded.motor.clone(),
+        None,
+        RIGID_BODY_MOTOR_MASS_MODEL_ID,
+    );
+    let mut seeds = Vec::with_capacity(multi_body.gimbal_joints.len());
+    for joint in &multi_body.gimbal_joints {
+        let body = body_id_from_scenario_text(&joint.body_id);
+        let parent_mass_properties = mass_model
+            .mass_properties_from_snapshots(
+                initial_state.time,
+                Some(body),
+                engine_snapshot,
+                tank_snapshot,
+            )
+            .map_err(|err| RunnerError::UnsupportedScenario {
+                what: format!(
+                    "initial articulated gimbal body `{}` mass properties failed: {err}",
+                    joint.body_id
+                ),
+            })?;
+        let parent_state = RigidBodyState::new(
+            initial_state.time,
+            initial_state.position,
+            initial_state.velocity,
+            initial_state.orientation,
+            initial_state.angular_velocity,
+            parent_mass_properties,
+        );
+        seeds.push(articulated_gimbal_multibody_seed_from_config(
+            body,
+            engine_id_from_scenario_text(&joint.engine_id),
+            joint,
+            &parent_state,
+        )?);
+    }
+    Ok(seeds)
+}
+
+fn articulated_gimbal_multibody_seed_from_config(
+    body: BodyId,
+    engine: EngineId,
+    joint: &openbmp_scenario::MultiBodyGimbalJointConfig,
+    parent_state: &RigidBodyState,
+) -> Result<ArticulatedGimbalMultibodySeed, RunnerError> {
+    let root_inertia =
+        SpatialInertia::from_mass_properties(&parent_state.mass_props).map_err(|err| {
+            RunnerError::UnsupportedScenario {
+                what: format!("articulated gimbal root spatial inertia failed: {err}"),
+            }
+        })?;
+    let engine_mass_properties = MassProperties::new(
+        Mass::new::<kilogram>(joint.engine_mass_kg),
+        Position3::<Body>::new(
+            joint.engine_cg_body_m[0],
+            joint.engine_cg_body_m[1],
+            joint.engine_cg_body_m[2],
+        ),
+        nalgebra::Matrix3::new(
+            joint.engine_inertia_body_kg_m2[0][0],
+            joint.engine_inertia_body_kg_m2[0][1],
+            joint.engine_inertia_body_kg_m2[0][2],
+            joint.engine_inertia_body_kg_m2[1][0],
+            joint.engine_inertia_body_kg_m2[1][1],
+            joint.engine_inertia_body_kg_m2[1][2],
+            joint.engine_inertia_body_kg_m2[2][0],
+            joint.engine_inertia_body_kg_m2[2][1],
+            joint.engine_inertia_body_kg_m2[2][2],
+        ),
+    );
+    let engine_inertia =
+        SpatialInertia::from_mass_properties(&engine_mass_properties).map_err(|err| {
+            RunnerError::UnsupportedScenario {
+                what: format!("articulated gimbal engine spatial inertia failed: {err}"),
+            }
+        })?;
+    let pivot = Vector3::new(
+        joint.pivot_body_m[0],
+        joint.pivot_body_m[1],
+        joint.pivot_body_m[2],
+    );
+    let tree = MultibodyTree::new(vec![
+        TreeBodySpec {
+            id: body,
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: root_inertia,
+            parent_to_body: PluckerTransform::identity(),
+        },
+        TreeBodySpec {
+            id: articulated_engine_body_id(engine),
+            parent: Some(openbmp_multibody::BodyIndex::new(0)),
+            joint: Joint::revolute(Vector3::new(
+                joint.axis_body[0],
+                joint.axis_body[1],
+                joint.axis_body[2],
+            ))
+            .map_err(|err| RunnerError::UnsupportedScenario {
+                what: format!("articulated gimbal joint axis failed: {err}"),
+            })?,
+            inertia: engine_inertia,
+            parent_to_body: PluckerTransform::new(nalgebra::Matrix3::identity(), pivot).map_err(
+                |err| RunnerError::UnsupportedScenario {
+                    what: format!("articulated gimbal pivot transform failed: {err}"),
+                },
+            )?,
+        },
+    ])
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("articulated gimbal multibody tree failed: {err}"),
+    })?;
+
+    let orientation = parent_state.orientation.q.into_inner();
+    let linear_velocity_body = parent_state
+        .orientation
+        .inverse()
+        .rotate_velocity(parent_state.velocity)
+        .vector;
+    let q = vec![
+        orientation.w,
+        orientation.i,
+        orientation.j,
+        orientation.k,
+        parent_state.position.vector.x,
+        parent_state.position.vector.y,
+        parent_state.position.vector.z,
+        joint.initial_angle_rad,
+    ];
+    let qd = vec![
+        parent_state.angular_velocity.vector.x,
+        parent_state.angular_velocity.vector.y,
+        parent_state.angular_velocity.vector.z,
+        linear_velocity_body.x,
+        linear_velocity_body.y,
+        linear_velocity_body.z,
+        joint.initial_rate_rad_s,
+    ];
+    tree.sim_state_from_state(MultibodyState::new(parent_state.time, q, qd))
+        .map(|sim_state| ArticulatedGimbalMultibodySeed {
+            body,
+            engine,
+            tree,
+            sim_state,
+        })
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("articulated gimbal multibody state failed: {err}"),
+        })
 }
 
 fn root_free_flyer_multibody_seed_from_rigid_state(
@@ -2676,6 +2866,14 @@ fn build_gravity_force_adapter_rigid_body(
 
 fn body_id_from_scenario_text(id: &str) -> BodyId {
     BodyId::from_path(&format!("vehicle.assembly.bodies.{id}"))
+}
+
+fn engine_id_from_scenario_text(id: &str) -> EngineId {
+    EngineId::from_path(&format!("vehicle.assembly.engines.{id}"))
+}
+
+fn articulated_engine_body_id(engine: EngineId) -> BodyId {
+    BodyId::from_path(&format!("multibody.articulated_engine.{}", engine.value()))
 }
 
 fn optional_body_owner(owner: Option<&str>) -> Option<BodyId> {
@@ -4917,6 +5115,78 @@ mod tests {
         );
         assert_eq!(seed.body, body_id_from_scenario_text("bus"));
         assert_eq!(seed.tree.bodies()[0].id, body_id_from_scenario_text("bus"));
+    }
+
+    #[test]
+    fn initial_articulated_gimbal_multibody_seed_builds_revolute_engine_tree() {
+        let toml = PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO.replace(
+            "[telemetry]\n",
+            "[[multi_body.gimbal_joint]]\n\
+             body_id = \"main\"\n\
+             engine_id = \"main_engine\"\n\
+             axis_body = [0.0, 1.0, 0.0]\n\
+             pivot_body_m = [0.0, 1.0, 0.0]\n\
+             engine_mass_kg = 1.5\n\
+             engine_cg_body_m = [0.2, 0.0, -0.4]\n\
+             engine_inertia_body_kg_m2 = [[0.08, 0.0, 0.0], [0.0, 0.12, 0.0], [0.0, 0.0, 0.1]]\n\
+             initial_angle_rad = 0.05\n\
+             initial_rate_rad_s = -0.2\n\
+             \n\
+             [telemetry]\n",
+        );
+        let scenario = openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario parses");
+        let document = &scenario.document;
+        let assembly = crate::assembly::synthesize_assembly(document).expect("assembly");
+        let loaded = LoadedModels::default();
+        let mass_resources = RigidMassResources::new(document, &assembly).expect("mass resources");
+        let engine_rack =
+            crate::engines::EngineRack::build(document, &BTreeMap::new()).expect("engine rack");
+        let engine_snapshot = engine_rack.snapshot_map();
+        let tank_snapshot = BTreeMap::new();
+        let initial_state = build_initial_state(
+            document,
+            &loaded,
+            &mass_resources,
+            &engine_snapshot,
+            &tank_snapshot,
+        )
+        .expect("initial state");
+
+        let seeds = build_initial_articulated_gimbal_multibody_seeds(
+            document,
+            &loaded,
+            &mass_resources,
+            &engine_snapshot,
+            &tank_snapshot,
+            &initial_state,
+        )
+        .expect("articulated gimbal seeds build");
+
+        assert_eq!(seeds.len(), 1);
+        let seed = &seeds[0];
+        assert_eq!(seed.body, body_id_from_scenario_text("main"));
+        assert_eq!(seed.engine, engine_id_from_scenario_text("main_engine"));
+        assert_eq!(seed.tree.n_q(), 8);
+        assert_eq!(seed.tree.n_qd(), 7);
+        assert_eq!(seed.sim_state.q()[7].to_bits(), 0.05_f64.to_bits());
+        assert_eq!(seed.sim_state.qd()[6].to_bits(), (-0.2_f64).to_bits());
+
+        let h = seed
+            .tree
+            .joint_space_inertia_crba_at_state(seed.sim_state.state())
+            .expect("gimbal inertia matrix");
+        let gimbal_col = 6;
+        let root_coupling = (0..6)
+            .map(|row| h.at(row, gimbal_col).unwrap().abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            root_coupling > 1.0e-3,
+            "scenario-declared gimbal should couple into root inertia: {root_coupling:.17e}"
+        );
+
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        RigidBodySession::prepare(&scenario, &resolved_files)
+            .expect("session prepare validates articulated gimbal seed");
     }
 
     #[test]
