@@ -145,6 +145,12 @@ statement = "The openbmp-runner separated-lane multibody shadow path is covered 
 verification = ["V-MULTIBODY-024"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-025"
+title = "Separated multibody shadows can forecast a variable-mass powered lane step"
+statement = "The openbmp-runner separated-lane multibody shadow path is covered for a powered variable-mass separated lane whose body-owned liquid engine is commanded by the multi_body landing controller. The runner test proves the RK4 separated-shadow forecast drains mass through the owner-filtered engine mass-rate adapter and matches the authoritative rigid separated-lane kernel's next mass, position, velocity, quaternion, and body angular rate over the powered tick while preserving rigid-kernel telemetry authority. This makes no claim that replacing separated-lane propagation, broad articulated variable-mass propagation, full momentum-conserving multibody joint-release propagation, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-025"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1275,6 +1281,24 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-024"]
+
+[[verification]]
+id = "V-MULTIBODY-025"
+kind = "test"
+command = "cargo test -p openbmp-runner separated_multibody_shadow_rk4_forecast_matches_variable_mass_engine_lane_step --locked && cargo test -p openbmp-runner separated_landing_controller_commands_owned_engine --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "separated_multibody_shadow_rk4_forecast_matches_variable_mass_engine_lane_step",
+  "SEPARATED_LANDING_CONTROLLER_SCENARIO",
+  "REQ-MULTIBODY-025",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-025"]
 
 [[verification]]
 id = "V-SIL-001"

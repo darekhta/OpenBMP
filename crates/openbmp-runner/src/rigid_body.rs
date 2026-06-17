@@ -5566,6 +5566,40 @@ once = true
         );
     }
 
+    #[test]
+    fn separated_multibody_shadow_rk4_forecast_matches_variable_mass_engine_lane_step() {
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(SEPARATED_LANDING_CONTROLLER_SCENARIO)
+                .expect("separated landing-controller scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        let booster = body_id_from_scenario_text("booster");
+        let initial_mass_kg = separated_lane_state(&session, booster).mass_props.mass_kg();
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("powered separated lane step records forecast");
+        let forecast = session
+            .separated_multibody_shadows
+            .get(&booster)
+            .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+            .expect("powered booster separated-lane RK4 forecast is recorded");
+        let predicted = &forecast.rigid_state;
+        assert!(
+            predicted.mass_props.mass_kg() < initial_mass_kg,
+            "powered separated forecast should drain mass: predicted={} initial={}",
+            predicted.mass_props.mass_kg(),
+            initial_mass_kg
+        );
+        assert_rigid_forecast_matches_state(
+            predicted,
+            separated_lane_state(&session, booster),
+            0.1,
+        );
+    }
+
     const PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO: &str = r#"
 openbmp.scenario = 3
 

@@ -811,18 +811,20 @@ justification first, reviewed before the implementation lands.
   no-rotation solid-motor regression proves the variable-mass root forecast
   matches the current rigid kernel over one step. Separated-lane shadows now
   record the same one-step RK4 forecast; an initial separated direct-torque lane
-  regression and a follow-on scenario-script jettison regression prove the
-  forecast matches the lane's next rigid state over both an initial separated
-  tick and the first post-release tick without changing separated-lane telemetry
-  authority. The primary shadow also seeds single-body active stacks from the
-  kernel's authoritative mass state and proves a pitch-gimballed liquid-engine
-  burn forecasts the same next rigid state over one powered step and over two
-  consecutive powered ticks in the same synthetic ascent.
+  regression, a follow-on scenario-script jettison regression, and a powered
+  landing-controller liquid-engine lane regression prove the forecast matches
+  the lane's next rigid state over an initial separated tick, the first
+  post-release tick, and a variable-mass powered tick without changing
+  separated-lane telemetry authority. The primary shadow also seeds single-body
+  active stacks from the kernel's authoritative mass state and proves a
+  pitch-gimballed liquid-engine burn forecasts the same next rigid state over
+  one powered step and over two consecutive powered ticks in the same synthetic
+  ascent.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
-  broader variable-mass multibody propagation beyond the one-body root
-  forecast, full momentum-conserving welded-to-free joint-release propagation
-  and full separated-body multibody propagation beyond first-post-release
-  separated shadow forecasts,
+  broader variable-mass multibody propagation beyond the primary-root and
+  powered separated-lane shadow forecasts, full momentum-conserving
+  welded-to-free joint-release propagation and full separated-body multibody
+  propagation beyond first-post-release separated shadow forecasts,
   double-pendulum tolerance table, Spatial_v2 oracle fixtures, vehicle-scale
   gimballed ascent validation, and articulated gimbal-joint inertia coupling.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
