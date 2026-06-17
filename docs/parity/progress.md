@@ -152,9 +152,15 @@ session-stepped synthetic scenario fires a real `scenario_script`
 `engine_command`, publishes the resulting gimballed liquid-engine snapshot
 through the runner/kernel adapter views, and proves the primary shadow
 derivative sees signed engine-cluster force and moment contributions
-(`REQ-MULTIBODY-017`). Missing for full WP-01.1: replacing the rigid-kernel
-propagation path, separated-body multibody propagation, full gimballed ascent
-validation, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
+(`REQ-MULTIBODY-017`). The session now also mirrors currently propagating
+initial separated lanes as root free-flyer multibody shadows, sampling the
+separated lane state and evaluating the same per-body runner force/moment
+adapter stacks; a booster-owned direct-torque regression proves the separated
+shadow derivative sees the signed pitch-torque load without changing rigid
+separated-lane authority (`REQ-MULTIBODY-018`). Missing for full WP-01.1:
+replacing the rigid-kernel propagation path, jettisoned-body joint-release and
+full separated-body multibody propagation, full gimballed ascent validation,
+and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 

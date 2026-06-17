@@ -2295,6 +2295,28 @@ where
         Ok(env)
     }
 
+    /// Environment sample for a rigid-body lane state, including the
+    /// current held wind override. This mirrors the query shape used by
+    /// the rigid derivative closures for primary and separated lanes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::ModelEval`] if the environment model
+    /// rejects the state/time query.
+    pub fn environment_sample_for_rigid_state(
+        &self,
+        state: &openbmp_state::RigidBodyState,
+    ) -> Result<EnvironmentSample, SimulationError> {
+        let mut env = self.environment.sample(EnvironmentQuery {
+            time: state.time,
+            position_eci: state.position,
+        })?;
+        if let Some(wind) = self.wind_sample_override {
+            env.set_wind_ned_m_s(wind);
+        }
+        Ok(env)
+    }
+
     /// Configured time step.
     #[must_use]
     pub const fn dt(&self) -> Duration {

@@ -183,6 +183,8 @@ pub(crate) struct RigidBodySession {
     breakdown_atmosphere: Option<RuntimeAtmosphere>,
     breakdown_vehicle: KernelVehicle<RigidBodyState>,
     primary_multibody_shadow: Option<RootFreeFlyerMultibodyShadow>,
+    separated_multibody_shadows: BTreeMap<BodyId, RootFreeFlyerMultibodyShadow>,
+    multibody_moment_model: Option<KernelVehicle<RigidBodyState>>,
     table: TelemetryTable,
     deck_bindings: Vec<crate::aero_effector_match::DeckAxisBinding>,
     direct_torque_present: bool,
@@ -366,12 +368,17 @@ impl RigidBodySession {
                     },
                 )?;
         }
-        let primary_multibody_shadow = if let Some(seed) = initial_multibody_root {
-            Some(RootFreeFlyerMultibodyShadow {
+        let primary_multibody_shadow =
+            initial_multibody_root.map(|seed| RootFreeFlyerMultibodyShadow {
                 seed,
-                moment_model: build_moment_model(document, &loaded, landing_gear_runtime.clone())?,
                 last_derivative: None,
-            })
+            });
+        let multibody_moment_model = if document.multi_body.is_some() {
+            Some(build_moment_model(
+                document,
+                &loaded,
+                landing_gear_runtime.clone(),
+            )?)
         } else {
             None
         };
@@ -547,6 +554,8 @@ impl RigidBodySession {
             breakdown_atmosphere,
             breakdown_vehicle,
             primary_multibody_shadow,
+            separated_multibody_shadows: BTreeMap::new(),
+            multibody_moment_model,
             table,
             deck_bindings,
             direct_torque_present,
@@ -731,6 +740,7 @@ impl RigidBodySession {
             self.kernel.set_wind_sample(wind);
         }
         self.mirror_primary_multibody_root_step()?;
+        self.mirror_separated_multibody_root_steps()?;
         // Feed the bending mode's reaction moment to the rigid-body torque for
         // this step (held across the RK4 stages). Zero when no flex mode.
         if !self.structural_rack.is_inactive() {
@@ -888,15 +898,15 @@ impl RigidBodySession {
         })?;
         let phase_id = self.kernel.current_phase().map(openbmp_sim::PhaseId::value);
         let derivative = {
-            let shadow = self.primary_multibody_shadow.as_ref().ok_or_else(|| {
+            let moment_model = self.multibody_moment_model.as_ref().ok_or_else(|| {
                 RunnerError::UnsupportedScenario {
-                    what: "internal invariant: primary multibody shadow missing".to_owned(),
+                    what: "internal invariant: primary multibody moment model missing".to_owned(),
                 }
             })?;
             root_free_flyer_multibody_derivative_from_runner_models(
                 &seed,
                 &self.breakdown_vehicle,
-                &shadow.moment_model,
+                moment_model,
                 RootFreeFlyerLoadViews {
                     phase_id,
                     environment: &environment,
@@ -921,6 +931,58 @@ impl RigidBodySession {
                 .map(|derivative| derivative.qd_dot().len()),
             Some(shadow.seed.sim_state.qd().len())
         );
+        Ok(())
+    }
+
+    fn mirror_separated_multibody_root_steps(&mut self) -> Result<(), RunnerError> {
+        let Some(moment_model) = self.multibody_moment_model.as_ref() else {
+            return Ok(());
+        };
+        let phase_id = self.kernel.current_phase().map(openbmp_sim::PhaseId::value);
+        let mut active_bodies = BTreeSet::new();
+        let mut updates = Vec::new();
+        for separated in self.kernel.separated_rigid_bodies() {
+            if !separated.propagating {
+                continue;
+            }
+            active_bodies.insert(separated.body);
+            let seed =
+                root_free_flyer_multibody_seed_from_rigid_state(separated.body, separated.state)?;
+            let environment = self
+                .kernel
+                .environment_sample_for_rigid_state(&separated.state)
+                .map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "per-step separated root multibody environment sample failed: {err}"
+                    ),
+                })?;
+            let derivative = root_free_flyer_multibody_derivative_from_runner_models(
+                &seed,
+                &self.breakdown_vehicle,
+                moment_model,
+                RootFreeFlyerLoadViews {
+                    phase_id,
+                    environment: &environment,
+                    effector_actuals: self.kernel.effector_actuals(),
+                    engine_snapshot: self.kernel.engine_snapshot(),
+                    tank_snapshot: self.kernel.tank_snapshot(),
+                    recovery_snapshot: self.kernel.recovery_snapshot(),
+                },
+            )?;
+            updates.push((separated.body, seed, derivative));
+        }
+
+        self.separated_multibody_shadows
+            .retain(|body, _| active_bodies.contains(body));
+        for (body, seed, derivative) in updates {
+            self.separated_multibody_shadows.insert(
+                body,
+                RootFreeFlyerMultibodyShadow {
+                    seed,
+                    last_derivative: Some(derivative),
+                },
+            );
+        }
         Ok(())
     }
 
@@ -1999,7 +2061,6 @@ struct RootFreeFlyerMultibodySeed {
 #[derive(Debug)]
 struct RootFreeFlyerMultibodyShadow {
     seed: RootFreeFlyerMultibodySeed,
-    moment_model: KernelVehicle<RigidBodyState>,
     last_derivative: Option<MultibodyDerivative>,
 }
 
@@ -4734,6 +4795,46 @@ mod tests {
             derivative.qd_dot()[5] > 0.0,
             "engine thrust should create positive axial acceleration: {:?}",
             derivative.qd_dot()
+        );
+    }
+
+    #[test]
+    fn separated_multibody_shadow_mirrors_initial_lane_loads() {
+        let scenario = openbmp_scenario::Scenario::from_toml_str(SEPARATED_DIRECT_TORQUE_SCENARIO)
+            .expect("separated direct-torque scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+        assert!(
+            session.separated_multibody_shadows.is_empty(),
+            "separated shadows should be populated by the first pre-step mirror"
+        );
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("session step succeeds");
+        let booster = body_id_from_scenario_text("booster");
+        let shadow = session
+            .separated_multibody_shadows
+            .get(&booster)
+            .expect("booster separated-lane shadow is recorded");
+        assert_eq!(shadow.seed.body, booster);
+        assert_eq!(
+            shadow.seed.rigid_state.time.as_seconds().to_bits(),
+            0.0_f64.to_bits()
+        );
+        let derivative = shadow
+            .last_derivative
+            .as_ref()
+            .expect("separated shadow derivative is recorded");
+        let qd_dot = derivative.qd_dot();
+        assert!(
+            qd_dot[1] > 0.0,
+            "booster-owned pitch torque should reach the separated multibody shadow: {qd_dot:?}"
+        );
+        assert!(
+            qd_dot[3].abs() < 1.0e-12 && qd_dot[4].abs() < 1.0e-12 && qd_dot[5].abs() < 1.0e-12,
+            "direct torque scenario should not add separated translational acceleration: {qd_dot:?}"
         );
     }
 

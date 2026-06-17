@@ -218,9 +218,11 @@ into deterministic `q_dot`/`qd_dot` derivatives before kernel wiring. The
 the generic integrators and aggregate vehicle model forwarding now clone reused
 values explicitly, and `MultibodySimState` carries tree-derived quaternion
 projection offsets so the existing `SimState`/`Integratable` surface can
-advance vector-backed multibody states. Runner/kernel force wiring, scenario opt-in,
-double-pendulum tolerance tables, and external Spatial_v2 oracle fixtures
-remain open.
+advance vector-backed multibody states. Runner/kernel force wiring is now
+present for primary root-free-flyer and initial separated-lane shadows, but
+authoritative propagation is still the rigid kernel. Double-pendulum tolerance
+tables, full separated-lane multibody propagation, and external Spatial_v2
+oracle fixtures remain open.
 
 ---
 
@@ -776,10 +778,16 @@ justification first, reviewed before the implementation lands.
   second session-stepped synthetic scenario fires a real `scenario_script`
   `engine_command`, publishes the resulting gimballed liquid-engine snapshot
   through the runner/kernel adapter views, and proves the primary shadow
-  derivative sees signed engine-cluster force and moment contributions.
+  derivative sees signed engine-cluster force and moment contributions. The
+  session now also mirrors currently propagating initial separated lanes as
+  root free-flyer multibody shadows, using the separated lane state and the
+  same per-body runner force/moment adapter stacks; a booster-owned
+  direct-torque regression proves the separated shadow derivative sees the
+  signed pitch-torque load without changing rigid separated-lane authority.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
-  separated-body multibody propagation, double-pendulum tolerance table,
-  Spatial_v2 oracle fixtures, and full gimballed ascent validation.
+  jettisoned-body joint-release and full separated-body multibody propagation,
+  double-pendulum tolerance table, Spatial_v2 oracle fixtures, and full
+  gimballed ascent validation.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics
