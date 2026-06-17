@@ -742,8 +742,13 @@ justification first, reviewed before the implementation lands.
   `MultibodyDerivative`; tests prove the identity-orientation, zero-CG-offset,
   zero-translational-velocity single-free-flyer derivative is byte-identical to
   the current `RigidBodyDerivative` equations for translational velocity,
-  acceleration, quaternion rate, and angular acceleration.
-  Remaining WP-01.1 work: actual kernel/runner force adapter wiring,
+  acceleration, quaternion rate, and angular acceleration. The root free-flyer
+  load adapter now exposes `root_free_flyer_generalized_forces_from_loads()` and
+  `derivative_from_root_free_flyer_loads()`, mapping body-frame moment plus
+  parent-frame force into the locked moment-then-force free-flyer slots, rotating
+  force through the root quaternion, zero-filling non-root slots, and feeding the
+  result through the ABA derivative bridge.
+  Remaining WP-01.1 work: full kernel/runner force adapter wiring,
   runner-level no-joint byte-equivalence against the current `RigidBodyState`
   kernel, simulator/environment force wiring, double-pendulum tolerance table,
   Spatial_v2 oracle fixtures, and scenario exercise.

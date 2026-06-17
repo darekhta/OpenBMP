@@ -119,7 +119,10 @@ load-to-derivative bridge now runs ABA and lifts the result into
 `MultibodyDerivative`, with a byte-identical identity-orientation,
 zero-CG-offset, zero-translational-velocity single-free-flyer comparison
 against the existing `RigidBodyDerivative` equations (`REQ-MULTIBODY-010`).
-Missing for full WP-01.1: actual kernel/runner force adapter wiring,
+The root free-flyer load adapter maps body-frame moment plus parent-frame force
+into locked moment-then-force generalized slots, rotates force through the root
+quaternion, zero-fills non-root slots, and feeds the ABA derivative bridge
+(`REQ-MULTIBODY-011`). Missing for full WP-01.1: full kernel/runner force adapter wiring,
 runner-level single-free-flyer byte-equivalence against the current kernel,
 simulator/environment force wiring, scenario wiring, gimballed ascent
 exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.

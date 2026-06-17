@@ -61,6 +61,12 @@ statement = "The openbmp-multibody crate exposes derivative_from_forward_dynamic
 verification = ["V-MULTIBODY-010"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-011"
+title = "The multibody substrate maps root free-flyer loads into generalized forces"
+statement = "The openbmp-multibody crate exposes root_free_flyer_generalized_forces_from_loads and derivative_from_root_free_flyer_loads as runner-facing helpers that map a body-frame root moment plus parent-frame root force into the free-flyer generalized-force slots in locked moment-then-force order, rotate parent-frame force through the root quaternion, leave non-root joint force slots at zero, and feed the result through the ABA derivative bridge. The openbmp-multibody tests prove force rotation, root slot order, non-root zero fill, and the single-free-flyer rigid-derivative equivalence through the load-adapter path while making no claim that full runner integration, scenario opt-in, double-pendulum tolerance tables, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-011"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -918,6 +924,26 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-010"]
+
+[[verification]]
+id = "V-MULTIBODY-011"
+kind = "test"
+command = "cargo test -p openbmp-multibody root_free_flyer_load_adapter_rotates_parent_force_and_zeros_other_joints --locked && cargo test -p openbmp-multibody free_flyer_derivative_matches_rigid_body_no_offset_equations --locked && cargo test -p openbmp-multibody --locked && cargo check -p openbmp-multibody --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "root_free_flyer_generalized_forces_from_loads",
+  "derivative_from_root_free_flyer_loads",
+  "root_free_flyer_load_adapter_rotates_parent_force_and_zeros_other_joints",
+  "free_flyer_derivative_matches_rigid_body_no_offset_equations",
+  "REQ-MULTIBODY-011",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-011"]
 
 [[verification]]
 id = "V-SIL-001"

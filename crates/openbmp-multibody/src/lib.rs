@@ -1103,6 +1103,83 @@ impl MultibodyTree {
         self.derivative_from_state_and_acceleration(state, &qdd)
     }
 
+    /// Map root free-flyer body loads into locked-order generalized forces.
+    ///
+    /// The root free-flyer generalized-force order follows
+    /// [`Joint::motion_subspace`]: body-frame moment `(x, y, z)` followed by
+    /// body-frame force `(x, y, z)`. This helper accepts the force in the root's
+    /// virtual-parent frame so a runner can pass an inertial force from the
+    /// existing force-model surface, then rotates it through the root
+    /// quaternion. Non-root generalized-force entries are filled with zero; later
+    /// joint actuators can add to the returned vector in the same locked order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the state is invalid, either load vector is
+    /// non-finite, or the root quaternion is invalid.
+    pub fn root_free_flyer_generalized_forces_from_loads(
+        &self,
+        state: &MultibodyState,
+        moment_body_n_m: Vector3<f64>,
+        force_parent_n: Vector3<f64>,
+    ) -> Result<Vec<f64>, MultibodyError> {
+        self.validate_state(state)?;
+        if !moment_body_n_m.iter().all(|value| value.is_finite())
+            || !force_parent_n.iter().all(|value| value.is_finite())
+        {
+            return Err(MultibodyError::NonFinite {
+                reason: "root free-flyer loads contain non-finite components",
+            });
+        }
+
+        let root = &self.bodies[0];
+        debug_assert!(matches!(root.joint, Joint::FreeFlyer));
+        let q_start = root.q_offset;
+        let rot_body_from_parent =
+            rotation_from_quaternion_child_from_parent(&state.q[q_start..q_start + 4])?;
+        let force_body_n = rot_body_from_parent * force_parent_n;
+        let mut generalized_forces = vec![0.0; self.n_qd];
+        generalized_forces[root.qd_offset] = moment_body_n_m.x;
+        generalized_forces[root.qd_offset + 1] = moment_body_n_m.y;
+        generalized_forces[root.qd_offset + 2] = moment_body_n_m.z;
+        generalized_forces[root.qd_offset + 3] = force_body_n.x;
+        generalized_forces[root.qd_offset + 4] = force_body_n.y;
+        generalized_forces[root.qd_offset + 5] = force_body_n.z;
+        Ok(generalized_forces)
+    }
+
+    /// Build a complete derivative from root free-flyer force/moment loads.
+    ///
+    /// This combines [`Self::root_free_flyer_generalized_forces_from_loads`] and
+    /// [`Self::derivative_from_forward_dynamics`] for the single-body bridge the
+    /// runner will use first, while still accepting the root parent acceleration
+    /// and per-body external spatial-force inputs used by the full ABA path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if load mapping, ABA forward dynamics, or
+    /// derivative lifting rejects the supplied inputs.
+    pub fn derivative_from_root_free_flyer_loads(
+        &self,
+        state: &MultibodyState,
+        moment_body_n_m: Vector3<f64>,
+        force_parent_n: Vector3<f64>,
+        root_parent_acceleration: SpatialMotion,
+        external_forces_body: &[SpatialForce],
+    ) -> Result<MultibodyDerivative, MultibodyError> {
+        let generalized_forces = self.root_free_flyer_generalized_forces_from_loads(
+            state,
+            moment_body_n_m,
+            force_parent_n,
+        )?;
+        self.derivative_from_forward_dynamics(
+            state,
+            &generalized_forces,
+            root_parent_acceleration,
+            external_forces_body,
+        )
+    }
+
     /// Deterministic componentwise state advance followed by quaternion
     /// projection.
     ///
@@ -3540,11 +3617,11 @@ mod tests {
             vec![1.0, 0.0, 0.0, 0.0, 100.0, -200.0, 300.0],
             vec![2.0, 4.0, 6.0, 0.0, 0.0, 0.0],
         );
-        let generalized_forces = vec![4.0, 8.0, 12.0, 14.0, 16.0, 18.0];
         let derivative = tree
-            .derivative_from_forward_dynamics(
+            .derivative_from_root_free_flyer_loads(
                 &state,
-                &generalized_forces,
+                Vector3::new(4.0, 8.0, 12.0),
+                Vector3::new(14.0, 16.0, 18.0),
                 SpatialMotion::zero(),
                 &[SpatialForce::zero()],
             )
@@ -3589,6 +3666,50 @@ mod tests {
                 expected_rigid.acceleration_m_s2_eci[axis].to_bits()
             );
         }
+    }
+
+    #[test]
+    fn root_free_flyer_load_adapter_rotates_parent_force_and_zeros_other_joints() {
+        let spherical = TreeBodySpec {
+            id: BodyId::new(2),
+            parent: Some(BodyIndex::new(0)),
+            joint: Joint::Spherical,
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let tree = MultibodyTree::new(vec![
+            TreeBodySpec {
+                id: BodyId::new(1),
+                parent: None,
+                joint: Joint::FreeFlyer,
+                inertia: inertia(),
+                parent_to_body: PluckerTransform::identity(),
+            },
+            spherical,
+        ])
+        .unwrap();
+        let inv_sqrt_2 = 1.0 / <f64 as nalgebra::ComplexField>::sqrt(2.0);
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![
+                inv_sqrt_2, 0.0, 0.0, inv_sqrt_2, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+            ],
+            vec![0.0; tree.n_qd()],
+        );
+
+        let generalized_forces = tree
+            .root_free_flyer_generalized_forces_from_loads(
+                &state,
+                Vector3::new(1.0, 2.0, 3.0),
+                Vector3::new(4.0, 5.0, 6.0),
+            )
+            .unwrap();
+
+        assert_eq!(&generalized_forces[0..3], &[1.0, 2.0, 3.0]);
+        assert_abs_diff_eq!(generalized_forces[3], -5.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(generalized_forces[4], 4.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(generalized_forces[5], 6.0, epsilon = 1.0e-14);
+        assert_eq!(&generalized_forces[6..], &[0.0, 0.0, 0.0]);
     }
 
     #[test]
