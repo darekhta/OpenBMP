@@ -114,9 +114,13 @@ relaxes the generic state/derivative trait bounds from `Copy` to `Clone`,
 updates RK4/DOPRI and aggregate vehicle model forwarding ownership paths for
 cloneable states/contexts, and adds `MultibodySimState` with tree-derived
 quaternion offsets so vector-backed multibody states can satisfy
-`openbmp-models::SimState` (`REQ-MULTIBODY-009`).
+`openbmp-models::SimState` (`REQ-MULTIBODY-009`). The first kernel-facing
+load-to-derivative bridge now runs ABA and lifts the result into
+`MultibodyDerivative`, with a byte-identical identity-orientation,
+zero-CG-offset, zero-translational-velocity single-free-flyer comparison
+against the existing `RigidBodyDerivative` equations (`REQ-MULTIBODY-010`).
 Missing for full WP-01.1: actual kernel/runner force adapter wiring,
-single-free-flyer byte-equivalence against the current kernel,
+runner-level single-free-flyer byte-equivalence against the current kernel,
 simulator/environment force wiring, scenario wiring, gimballed ascent
 exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
 

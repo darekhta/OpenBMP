@@ -737,10 +737,15 @@ justification first, reviewed before the implementation lands.
   `MultibodySimState` with tree-derived quaternion offsets;
   tests prove trait implementation, q/qd advance, weighted-error evaluation,
   free-flyer/spherical projection, retiming, and bad projection metadata
-  rejection.
+  rejection. The first kernel-facing derivative bridge now exposes
+  `derivative_from_forward_dynamics()`, which runs ABA and lifts `qdd` into
+  `MultibodyDerivative`; tests prove the identity-orientation, zero-CG-offset,
+  zero-translational-velocity single-free-flyer derivative is byte-identical to
+  the current `RigidBodyDerivative` equations for translational velocity,
+  acceleration, quaternion rate, and angular acceleration.
   Remaining WP-01.1 work: actual kernel/runner force adapter wiring,
-  no-joint byte-equivalence against the current `RigidBodyState` kernel,
-  simulator/environment force wiring, double-pendulum tolerance table,
+  runner-level no-joint byte-equivalence against the current `RigidBodyState`
+  kernel, simulator/environment force wiring, double-pendulum tolerance table,
   Spatial_v2 oracle fixtures, and scenario exercise.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the

@@ -33,26 +33,32 @@ verification = ["V-MULTIBODY-005"]
 [[requirements]]
 id = "REQ-MULTIBODY-006"
 title = "The multibody substrate advances generalized state vectors deterministically"
-statement = "The openbmp-multibody crate exposes MultibodyDerivative and tree-owned generalized-state integration helpers that validate derivative dimensions and finiteness fail-closed, scale and add derivative vectors without panic-prone dynamic-vector arithmetic, advance q/qd in locked component order, project free-flyer and spherical quaternion coordinate slices using tree topology, compute scalar state size and weighted adaptive-error norms in the same locked order, and prove derivative arithmetic, state advance/projection, spherical projection, scalar norm, weighted error norm, and invalid tolerance handling while making no claim that kernel/runner force adapter wiring, byte-equivalence, or Spatial_v2 oracle validation is complete."
+statement = "The openbmp-multibody crate exposes MultibodyDerivative and tree-owned generalized-state integration helpers that validate derivative dimensions and finiteness fail-closed, scale and add derivative vectors without panic-prone dynamic-vector arithmetic, advance q/qd in locked component order, project free-flyer and spherical quaternion coordinate slices using tree topology, compute scalar state size and weighted adaptive-error norms in the same locked order, and prove derivative arithmetic, state advance/projection, spherical projection, scalar norm, weighted error norm, and invalid tolerance handling while making no claim that kernel/runner force adapter wiring, runner-level byte-equivalence, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-006"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-007"
 title = "The multibody substrate evaluates articulated-body forward dynamics"
-statement = "The openbmp-multibody crate exposes forward_dynamics_aba_at_state as an O(n) articulated-body forward-dynamics substrate over q-dependent transforms, generalized velocity-bias terms, a virtual-root parent acceleration seed, and per-body external spatial forces, solves each local articulated joint block including the free-flyer root with a fixed-order symmetric LDLT factorization, validates generalized-force, root-acceleration, and external-force inputs fail-closed, rejects singular local articulated inertia blocks fail-closed, and proves agreement with the dense forward-dynamics bridge plus biased RNEA round-trip on a moving nontrivial tree while making no claim that kernel/runner force adapter wiring, byte-equivalence, scenario wiring, double-pendulum tolerance tables, or Spatial_v2 oracle validation is complete."
+statement = "The openbmp-multibody crate exposes forward_dynamics_aba_at_state as an O(n) articulated-body forward-dynamics substrate over q-dependent transforms, generalized velocity-bias terms, a virtual-root parent acceleration seed, and per-body external spatial forces, solves each local articulated joint block including the free-flyer root with a fixed-order symmetric LDLT factorization, validates generalized-force, root-acceleration, and external-force inputs fail-closed, rejects singular local articulated inertia blocks fail-closed, and proves agreement with the dense forward-dynamics bridge plus biased RNEA round-trip on a moving nontrivial tree while making no claim that kernel/runner force adapter wiring, runner-level byte-equivalence, scenario wiring, double-pendulum tolerance tables, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-007"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-008"
 title = "The multibody substrate lifts velocities into state derivatives"
-statement = "The openbmp-multibody crate exposes coordinate_derivative_from_velocity and derivative_from_state_and_acceleration as adapter-facing kinematic lift helpers that validate generalized state and acceleration dimensions fail-closed, map scalar joint velocities directly, lift free-flyer and spherical body-frame angular rates into quaternion coordinate derivatives with the existing rigid-body quaternion convention, convert free-flyer body-frame linear velocity into parent-frame translation derivatives, and prove scalar-joint, free-flyer, spherical, qdd-pairing, and bad-acceleration handling while making no claim that kernel/runner force adapter wiring, byte-equivalence, scenario wiring, or Spatial_v2 oracle validation is complete."
+statement = "The openbmp-multibody crate exposes coordinate_derivative_from_velocity and derivative_from_state_and_acceleration as adapter-facing kinematic lift helpers that validate generalized state and acceleration dimensions fail-closed, map scalar joint velocities directly, lift free-flyer and spherical body-frame angular rates into quaternion coordinate derivatives with the existing rigid-body quaternion convention, convert free-flyer body-frame linear velocity into parent-frame translation derivatives, and prove scalar-joint, free-flyer, spherical, qdd-pairing, and bad-acceleration handling while making no claim that kernel/runner force adapter wiring, runner-level byte-equivalence, scenario wiring, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-008"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-009"
 title = "The multibody substrate adapts vector-backed states to the generic integrator traits"
-statement = "The workspace relaxes openbmp-models VehicleState and SimStateDerivative bounds from Copy to Clone, updates the RK4, DOPRI5, and DOPRI8 generic integrator ownership paths and vehicle aggregate model context forwarding to clone reused states, derivatives, and borrowed contexts explicitly without changing locked evaluation order, and exposes MultibodySimState as a topology-aware openbmp-models SimState adapter carrying tree-derived quaternion projection offsets for vector-backed multibody states. The openbmp-multibody tests prove trait implementation, q/qd advance, weighted-error evaluation, free-flyer and spherical quaternion projection, retiming, and bad projection metadata rejection while making no claim that kernel/runner force adapter wiring, single-free-flyer byte-equivalence, scenario wiring, or Spatial_v2 oracle validation is complete."
+statement = "The workspace relaxes openbmp-models VehicleState and SimStateDerivative bounds from Copy to Clone, updates the RK4, DOPRI5, and DOPRI8 generic integrator ownership paths and vehicle aggregate model context forwarding to clone reused states, derivatives, and borrowed contexts explicitly without changing locked evaluation order, and exposes MultibodySimState as a topology-aware openbmp-models SimState adapter carrying tree-derived quaternion projection offsets for vector-backed multibody states. The openbmp-multibody tests prove trait implementation, q/qd advance, weighted-error evaluation, free-flyer and spherical quaternion projection, retiming, and bad projection metadata rejection while making no claim that kernel/runner force adapter wiring, runner-level byte-equivalence, scenario wiring, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-009"]
+
+[[requirements]]
+id = "REQ-MULTIBODY-010"
+title = "The multibody substrate turns ABA loads into simulator derivatives"
+statement = "The openbmp-multibody crate exposes derivative_from_forward_dynamics as a kernel-facing bridge that evaluates ABA forward dynamics from locked-order generalized loads, root-parent acceleration, and per-body external spatial forces, then lifts the resulting generalized accelerations into MultibodyDerivative with the same state-dependent q_dot convention used by the generic integrators. The openbmp-multibody tests prove the one-body free-flyer, zero-CG-offset, identity-orientation, zero-translational-velocity derivative is byte-identical to the existing rigid-body derivative equations for translational velocity, acceleration, quaternion rate, and angular acceleration while making no claim that runner-level force adapter wiring, runner-level byte-equivalence, scenario wiring, double-pendulum tolerance tables, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-010"]
 
 [[requirements]]
 id = "REQ-SIL-001"
@@ -893,6 +899,25 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-009"]
+
+[[verification]]
+id = "V-MULTIBODY-010"
+kind = "test"
+command = "cargo test -p openbmp-multibody free_flyer_derivative_matches_rigid_body_no_offset_equations --locked && cargo test -p openbmp-multibody --locked && cargo check -p openbmp-multibody --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "derivative_from_forward_dynamics",
+  "free_flyer_derivative_matches_rigid_body_no_offset_equations",
+  "RigidBodyDerivative",
+  "REQ-MULTIBODY-010",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-010"]
 
 [[verification]]
 id = "V-SIL-001"

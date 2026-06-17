@@ -21,7 +21,7 @@ use core::ops::{Add, Mul};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use nalgebra::{Matrix3, SMatrix, SVector, Vector3};
+use nalgebra::{Matrix3, Quaternion as NalgebraQuaternion, SMatrix, SVector, Vector3};
 use openbmp_core::{BodyId, SimTime};
 use openbmp_models::{Integratable, SimStateDerivative, VehicleState};
 use openbmp_state::MassProperties;
@@ -1073,12 +1073,42 @@ impl MultibodyTree {
         Ok(derivative)
     }
 
+    /// Build a complete simulator derivative by evaluating ABA forward
+    /// dynamics and lifting the resulting generalized accelerations.
+    ///
+    /// This is the kernel-facing bridge from generalized loads to the
+    /// `openbmp-models` derivative shape. The inputs are the same locked-order
+    /// force inputs accepted by [`Self::forward_dynamics_aba_at_state`], and the
+    /// returned derivative pairs the ABA `qdd` with the state-dependent
+    /// kinematic lift from [`Self::coordinate_derivative_from_velocity`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if forward dynamics or derivative lifting
+    /// rejects dimensions, non-finite inputs, singular articulated blocks, or
+    /// invalid quaternion coordinates.
+    pub fn derivative_from_forward_dynamics(
+        &self,
+        state: &MultibodyState,
+        generalized_forces: &[f64],
+        root_parent_acceleration: SpatialMotion,
+        external_forces_body: &[SpatialForce],
+    ) -> Result<MultibodyDerivative, MultibodyError> {
+        let qdd = self.forward_dynamics_aba_at_state(
+            state,
+            generalized_forces,
+            root_parent_acceleration,
+            external_forces_body,
+        )?;
+        self.derivative_from_state_and_acceleration(state, &qdd)
+    }
+
     /// Deterministic componentwise state advance followed by quaternion
     /// projection.
     ///
-    /// This mirrors the integrator-side `advance_by` shape without requiring
-    /// `MultibodyState` itself to implement the current `Copy`-bound
-    /// `SimState` trait. The tree owns projection because it knows which
+    /// This mirrors the integrator-side `advance_by` shape while preserving a
+    /// tree-owned projection path for callers that keep raw [`MultibodyState`]
+    /// values instead of the [`MultibodySimState`] adapter. The tree knows which
     /// coordinate slices are free-flyer or spherical quaternions.
     ///
     /// # Errors
@@ -2161,15 +2191,15 @@ fn quaternion_derivative_from_body_rate(
     let x = q[1] * inv_norm;
     let y = q[2] * inv_norm;
     let z = q[3] * inv_norm;
-    let omega_x = omega_body_rad_s.x;
-    let omega_y = omega_body_rad_s.y;
-    let omega_z = omega_body_rad_s.z;
-    Ok([
-        -0.5 * (x * omega_x + y * omega_y + z * omega_z),
-        0.5 * (w * omega_x + y * omega_z - z * omega_y),
-        0.5 * (w * omega_y + z * omega_x - x * omega_z),
-        0.5 * (w * omega_z + x * omega_y - y * omega_x),
-    ])
+    let q_dot = NalgebraQuaternion::new(w, x, y, z)
+        * NalgebraQuaternion::new(
+            0.0,
+            omega_body_rad_s.x,
+            omega_body_rad_s.y,
+            omega_body_rad_s.z,
+        )
+        * 0.5;
+    Ok([q_dot.w, q_dot.i, q_dot.j, q_dot.k])
 }
 
 fn normalize_quaternion_slice(q: &mut [f64]) -> Result<(), MultibodyError> {
@@ -2502,7 +2532,7 @@ mod tests {
     use approx::assert_abs_diff_eq;
     use nalgebra::UnitQuaternion;
     use openbmp_core::{Body, Position3};
-    use openbmp_models::SimState;
+    use openbmp_models::{RigidBodyDerivative, SimState};
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
 
@@ -3487,6 +3517,77 @@ mod tests {
         }
         for (actual, expected) in tau_round_trip.iter().zip(generalized_forces.iter()) {
             assert_abs_diff_eq!(*actual, *expected, epsilon = 1.0e-10);
+        }
+    }
+
+    #[test]
+    fn free_flyer_derivative_matches_rigid_body_no_offset_equations() {
+        let mass_properties = MassProperties::with_uniform_inertia(
+            Mass::new::<kilogram>(2.0),
+            Position3::<Body>::new(0.0, 0.0, 0.0),
+            2.0,
+        );
+        let tree = MultibodyTree::new(vec![TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: SpatialInertia::from_mass_properties(&mass_properties).unwrap(),
+            parent_to_body: PluckerTransform::identity(),
+        }])
+        .unwrap();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 100.0, -200.0, 300.0],
+            vec![2.0, 4.0, 6.0, 0.0, 0.0, 0.0],
+        );
+        let generalized_forces = vec![4.0, 8.0, 12.0, 14.0, 16.0, 18.0];
+        let derivative = tree
+            .derivative_from_forward_dynamics(
+                &state,
+                &generalized_forces,
+                SpatialMotion::zero(),
+                &[SpatialForce::zero()],
+            )
+            .unwrap();
+        let expected_rigid = RigidBodyDerivative::new(
+            Vector3::zeros(),
+            Vector3::new(7.0, 8.0, 9.0),
+            NalgebraQuaternion::new(0.0, 1.0, 2.0, 3.0),
+            Vector3::new(2.0, 4.0, 6.0),
+            0.0,
+            Vector3::zeros(),
+            Matrix3::zeros(),
+        );
+
+        assert_eq!(
+            derivative.q_dot()[0].to_bits(),
+            expected_rigid.quaternion_rate.w.to_bits()
+        );
+        assert_eq!(
+            derivative.q_dot()[1].to_bits(),
+            expected_rigid.quaternion_rate.i.to_bits()
+        );
+        assert_eq!(
+            derivative.q_dot()[2].to_bits(),
+            expected_rigid.quaternion_rate.j.to_bits()
+        );
+        assert_eq!(
+            derivative.q_dot()[3].to_bits(),
+            expected_rigid.quaternion_rate.k.to_bits()
+        );
+        for axis in 0..3 {
+            assert_eq!(
+                derivative.q_dot()[4 + axis].to_bits(),
+                expected_rigid.velocity_m_s_eci[axis].to_bits()
+            );
+            assert_eq!(
+                derivative.qd_dot()[axis].to_bits(),
+                expected_rigid.angular_acceleration_rad_s2_body[axis].to_bits()
+            );
+            assert_eq!(
+                derivative.qd_dot()[3 + axis].to_bits(),
+                expected_rigid.acceleration_m_s2_eci[axis].to_bits()
+            );
         }
     }
 
