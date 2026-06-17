@@ -737,6 +737,12 @@ justification first, reviewed before the implementation lands.
   tree, a checked TOML tolerance fixture now backs the same ABA-vs-dense and
   RNEA round-trip case, and tests cover fail-closed generalized-force,
   external-force, and singular-block handling.
+  The welded-release substrate now exposes
+  `release_welded_subtree_as_free_flyer()`, which converts an unreleased
+  non-root welded subtree into a new deterministic free-flyer tree while
+  preserving the released body's parent-frame pose, body-frame spatial velocity,
+  and descendant joint coordinates/velocities; tests cover the handoff and
+  fail-closed root/non-welded rejection.
   The state-integration substrate now exposes `MultibodyDerivative`,
   `advance_state_by()`, `project_state()`, `scalar_state_size()`, and
   `weighted_error_norm()`; tests prove derivative arithmetic, locked-order
@@ -823,9 +829,10 @@ justification first, reviewed before the implementation lands.
   ascent.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   broader variable-mass multibody propagation beyond the primary-root and
-  powered separated-lane shadow forecasts, full momentum-conserving
+  powered separated-lane shadow forecasts, runner-side momentum-conserving
   welded-to-free joint-release propagation and full separated-body multibody
-  propagation beyond first-post-release separated shadow forecasts,
+  propagation beyond the substrate handoff and first-post-release separated
+  shadow forecasts,
   double-pendulum energy/momentum tolerance table, Spatial_v2 oracle fixtures,
   vehicle-scale gimballed ascent validation, and articulated gimbal-joint
   inertia coupling.

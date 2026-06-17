@@ -1364,6 +1364,126 @@ impl MultibodyTree {
         body.parent_to_body.then(&joint_transform)
     }
 
+    /// Release a welded subtree into an independent free-flyer tree.
+    ///
+    /// The selected body must be a non-root `Welded { released: false }` body.
+    /// The returned tree preserves the selected subtree's deterministic order,
+    /// converts the selected body into a free-flyer root, and copies descendant
+    /// joint coordinates/velocities unchanged. The returned state seeds the new
+    /// free-flyer root from the selected body's parent-frame pose and body-frame
+    /// spatial velocity at the release instant.
+    ///
+    /// This is the state handoff substrate for momentum-continuing separation.
+    /// Runner-side propagation replacement remains a separate integration step.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MultibodyError`] if the state is invalid, the body index is out
+    /// of range, the selected body is the root, the selected joint is not an
+    /// unreleased welded joint, or the remapped subtree/state fails validation.
+    pub fn release_welded_subtree_as_free_flyer(
+        &self,
+        state: &MultibodyState,
+        release_body: BodyIndex,
+    ) -> Result<(Self, MultibodyState), MultibodyError> {
+        self.validate_state(state)?;
+        let release_index = release_body.index();
+        let release = self
+            .bodies
+            .get(release_index)
+            .ok_or(MultibodyError::InvalidBodyIndex {
+                index: release_index,
+                body_count: self.bodies.len(),
+            })?;
+        if release.parent.is_none() {
+            return Err(MultibodyError::InvalidTopology {
+                reason: "released welded subtree root must not be the existing root",
+            });
+        }
+        match release.joint {
+            Joint::Welded { released: false } => {}
+            Joint::Welded { released: true } => {
+                return Err(MultibodyError::InvalidParameter {
+                    reason: "welded joint is already marked released",
+                });
+            }
+            _ => {
+                return Err(MultibodyError::InvalidParameter {
+                    reason: "released subtree root must use an unreleased welded joint",
+                });
+            }
+        }
+
+        let transforms = self.body_transforms_parent_to_child_at_state(state)?;
+        let root_transforms = self.body_transforms_root_parent_to_child(&transforms)?;
+        let velocities = self.body_spatial_velocities_with_transforms(state, &transforms);
+
+        let mut index_map = vec![None; self.bodies.len()];
+        let mut specs = Vec::new();
+        for old_index in release_index..self.bodies.len() {
+            if !self.is_descendant_or_self(old_index, release_index) {
+                continue;
+            }
+            let old = &self.bodies[old_index];
+            let new_index = BodyIndex::new(specs.len());
+            index_map[old_index] = Some(new_index);
+            let (parent, joint, parent_to_body) = if old_index == release_index {
+                (None, Joint::FreeFlyer, PluckerTransform::identity())
+            } else {
+                let old_parent = old.parent.ok_or(MultibodyError::InvalidTopology {
+                    reason: "released subtree descendant unexpectedly missing parent",
+                })?;
+                let new_parent =
+                    index_map[old_parent.index()].ok_or(MultibodyError::InvalidTopology {
+                        reason: "released subtree descendant parent was not remapped",
+                    })?;
+                (Some(new_parent), old.joint.clone(), old.parent_to_body)
+            };
+            specs.push(TreeBodySpec {
+                id: old.id,
+                parent,
+                joint,
+                inertia: old.inertia,
+                parent_to_body,
+            });
+        }
+
+        let released_tree = Self::new(specs)?;
+        let released_transform = root_transforms[release_index];
+        let rot_parent_from_child = released_transform.rot_child_from_parent.transpose();
+        let quaternion_parent_from_child =
+            nalgebra::UnitQuaternion::from_matrix(&rot_parent_from_child).into_inner();
+        let translation_parent_m = released_transform.translation_parent_m;
+        let mut q = vec![
+            quaternion_parent_from_child.w,
+            quaternion_parent_from_child.i,
+            quaternion_parent_from_child.j,
+            quaternion_parent_from_child.k,
+            translation_parent_m.x,
+            translation_parent_m.y,
+            translation_parent_m.z,
+        ];
+        let mut qd = velocities[release_index].as_slice().to_vec();
+
+        for (old_index, remapped) in index_map
+            .iter()
+            .enumerate()
+            .skip(release_index + 1)
+            .take(self.bodies.len() - release_index - 1)
+        {
+            if remapped.is_none() {
+                continue;
+            }
+            let old = &self.bodies[old_index];
+            q.extend_from_slice(&state.q[old.q_offset..old.q_offset + old.joint.n_q()]);
+            qd.extend_from_slice(&state.qd[old.qd_offset..old.qd_offset + old.joint.n_qd()]);
+        }
+
+        let released_state = MultibodyState::new(state.time, q, qd);
+        released_tree.validate_state(&released_state)?;
+        Ok((released_tree, released_state))
+    }
+
     /// Composite-rigid-body joint-space inertia at a generalized state.
     ///
     /// This applies q-dependent joint transforms but still omits velocity bias,
@@ -1861,6 +1981,57 @@ impl MultibodyTree {
             return Err(MultibodyError::NonFinite { reason: vector });
         }
         Ok(())
+    }
+
+    fn body_transforms_root_parent_to_child(
+        &self,
+        transforms_parent_to_child: &[PluckerTransform],
+    ) -> Result<Vec<PluckerTransform>, MultibodyError> {
+        let mut root_transforms = vec![PluckerTransform::identity(); self.bodies.len()];
+        for body_index in 0..self.bodies.len() {
+            root_transforms[body_index] = if let Some(parent) = self.bodies[body_index].parent {
+                root_transforms[parent.index()].then(&transforms_parent_to_child[body_index])?
+            } else {
+                transforms_parent_to_child[body_index]
+            };
+        }
+        Ok(root_transforms)
+    }
+
+    fn body_spatial_velocities_with_transforms(
+        &self,
+        state: &MultibodyState,
+        transforms_parent_to_child: &[PluckerTransform],
+    ) -> Vec<SpatialVector> {
+        let subspaces: Vec<Vec<SpatialMotion>> = self
+            .bodies
+            .iter()
+            .map(|body| body.joint.motion_subspace())
+            .collect();
+        let mut velocities = vec![SpatialVector::zeros(); self.bodies.len()];
+        for body_index in 0..self.bodies.len() {
+            let body = &self.bodies[body_index];
+            let x = transforms_parent_to_child[body_index].motion_matrix_parent_to_child();
+            let parent_velocity = if let Some(parent) = body.parent {
+                x * velocities[parent.index()]
+            } else {
+                SpatialVector::zeros()
+            };
+            velocities[body_index] =
+                parent_velocity + joint_motion(&subspaces[body_index], &state.qd[body.qd_offset..]);
+        }
+        velocities
+    }
+
+    fn is_descendant_or_self(&self, body_index: usize, ancestor_index: usize) -> bool {
+        let mut cursor = Some(BodyIndex::new(body_index));
+        while let Some(index) = cursor {
+            if index.index() == ancestor_index {
+                return true;
+            }
+            cursor = self.bodies[index.index()].parent;
+        }
+        false
     }
 
     fn body_transforms_parent_to_child_at_state(
@@ -2938,6 +3109,95 @@ mod tests {
         assert!(matches!(
             tree.validate_state(&bad_state),
             Err(MultibodyError::DimensionMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn release_welded_subtree_as_free_flyer_preserves_pose_velocity_and_descendants() {
+        let root = TreeBodySpec {
+            id: BodyId::new(1),
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let booster = TreeBodySpec {
+            id: BodyId::new(2),
+            parent: Some(BodyIndex::new(0)),
+            joint: Joint::Welded { released: false },
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::new(Matrix3::identity(), Vector3::new(1.0, 0.0, 0.0))
+                .unwrap(),
+        };
+        let hinge = TreeBodySpec {
+            id: BodyId::new(3),
+            parent: Some(BodyIndex::new(1)),
+            joint: Joint::revolute(Vector3::new(0.0, 1.0, 0.0)).unwrap(),
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let sibling = TreeBodySpec {
+            id: BodyId::new(4),
+            parent: Some(BodyIndex::new(0)),
+            joint: Joint::prismatic(Vector3::new(0.0, 0.0, 1.0)).unwrap(),
+            inertia: inertia(),
+            parent_to_body: PluckerTransform::identity(),
+        };
+        let tree = MultibodyTree::new(vec![root, booster, hinge, sibling]).unwrap();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 10.0, 20.0, 30.0, 0.4, -2.0],
+            vec![0.1, 0.2, 0.3, 1.0, 2.0, 3.0, 0.7, -0.5],
+        );
+
+        let (released_tree, released_state) = tree
+            .release_welded_subtree_as_free_flyer(&state, BodyIndex::new(1))
+            .unwrap();
+
+        assert_eq!(released_tree.bodies().len(), 2);
+        assert_eq!(released_tree.bodies()[0].id, BodyId::new(2));
+        assert_eq!(released_tree.bodies()[1].id, BodyId::new(3));
+        assert!(matches!(released_tree.bodies()[0].joint, Joint::FreeFlyer));
+        assert_eq!(released_tree.bodies()[1].parent, Some(BodyIndex::new(0)));
+        assert_eq!(released_tree.n_q(), 8);
+        assert_eq!(released_tree.n_qd(), 7);
+        assert_abs_diff_eq!(released_state.q[0], 1.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.q[1], 0.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.q[2], 0.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.q[3], 0.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.q[4], 11.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.q[5], 20.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.q[6], 30.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.q[7], 0.4, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.qd[0], 0.1, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.qd[1], 0.2, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.qd[2], 0.3, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.qd[3], 1.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.qd[4], 2.3, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.qd[5], 2.8, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(released_state.qd[6], 0.7, epsilon = 1.0e-14);
+    }
+
+    #[test]
+    fn release_welded_subtree_as_free_flyer_rejects_root_and_non_welded_body() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![1.0, 0.0, 0.0, 0.0, 0.2, -0.1, 0.3, 0.4, 0.15],
+            vec![0.0; tree.n_qd()],
+        );
+
+        let root_err = tree
+            .release_welded_subtree_as_free_flyer(&state, BodyIndex::new(0))
+            .unwrap_err();
+        let non_welded_err = tree
+            .release_welded_subtree_as_free_flyer(&state, BodyIndex::new(1))
+            .unwrap_err();
+
+        assert!(matches!(root_err, MultibodyError::InvalidTopology { .. }));
+        assert!(matches!(
+            non_welded_err,
+            MultibodyError::InvalidParameter { .. }
         ));
     }
 

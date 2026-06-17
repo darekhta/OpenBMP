@@ -157,6 +157,12 @@ statement = "The openbmp-multibody crate ships a checked TOML tolerance fixture 
 verification = ["V-MULTIBODY-026"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-027"
+title = "The multibody substrate can hand off an unreleased welded subtree as a free flyer"
+statement = "The openbmp-multibody crate exposes release_welded_subtree_as_free_flyer for an unreleased non-root welded body, remapping the selected subtree into a new deterministic MultibodyTree whose released body is a free-flyer root, whose descendants keep their original joint coordinates and velocities, and whose released root state preserves the selected body's parent-frame pose plus body-frame spatial velocity at the release instant. The crate tests prove pose, velocity, descendant state, and fail-closed root/non-welded rejection on a synthetic welded stack with a descendant revolute joint. This makes no claim that runner-side jettison has been replaced, full momentum-conserving separated-lane multibody propagation is complete, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-027"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1326,6 +1332,25 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-026"]
+
+[[verification]]
+id = "V-MULTIBODY-027"
+kind = "test"
+command = "cargo test -p openbmp-multibody release_welded_subtree_as_free_flyer --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-multibody/src/lib.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "release_welded_subtree_as_free_flyer",
+  "release_welded_subtree_as_free_flyer_preserves_pose_velocity_and_descendants",
+  "release_welded_subtree_as_free_flyer_rejects_root_and_non_welded_body",
+  "REQ-MULTIBODY-027",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-027"]
 
 [[verification]]
 id = "V-SIL-001"

@@ -108,7 +108,11 @@ The state-integration substrate adds `MultibodyDerivative`,
 `advance_state_by()`, `project_state()`, `scalar_state_size()`, and
 `weighted_error_norm()` with derivative arithmetic, quaternion projection,
 scalar norm, and adaptive-error checks (`REQ-MULTIBODY-006`). The
-adapter-facing kinematic lift adds `coordinate_derivative_from_velocity()` and
+unreleased welded-subtree handoff now exposes
+`release_welded_subtree_as_free_flyer()`, remapping a selected welded subtree
+into a deterministic free-flyer tree while preserving the released body's pose,
+body-frame spatial velocity, and descendant joint state (`REQ-MULTIBODY-027`).
+The adapter-facing kinematic lift adds `coordinate_derivative_from_velocity()` and
 `derivative_from_state_and_acceleration()`, mapping scalar-joint velocities,
 free-flyer and spherical quaternion rates, and free-flyer translation rates
 into deterministic `q_dot`/`qd_dot` derivatives with bad-acceleration
@@ -193,9 +197,9 @@ WP-01.1: replacing the rigid-kernel propagation path, broader variable-mass
 multibody propagation beyond the primary-root and powered separated-lane shadow
 forecasts, full momentum-conserving welded-to-free joint-release propagation and
 full separated-body multibody propagation beyond first-post-release separated
-shadow forecasts, double-pendulum energy/momentum tolerance tables,
-vehicle-scale gimballed ascent validation, articulated gimbal-joint inertia
-coupling, and Spatial_v2 oracle checks.
+shadow forecasts and the substrate handoff, double-pendulum energy/momentum
+tolerance tables, vehicle-scale gimballed ascent validation, articulated
+gimbal-joint inertia coupling, and Spatial_v2 oracle checks.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
