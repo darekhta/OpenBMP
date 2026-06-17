@@ -283,6 +283,7 @@ impl RigidBodySession {
             &initial_engine_snapshot,
             &initial_tank_snapshot,
         )?;
+        let kernel_step_s = crate::contact::kernel_step_s(document);
         let initial_multibody_root = build_initial_root_free_flyer_multibody_seed(
             document,
             &loaded,
@@ -310,11 +311,17 @@ impl RigidBodySession {
                 &seed,
                 &initial_engine_snapshot,
             )?;
+            let forecast = articulated_gimbal_multibody_rk4_forecast_from_engine_thrust(
+                &seed,
+                &initial_engine_snapshot,
+                kernel_step_s,
+            )?;
             articulated_gimbal_shadows.insert(
                 seed.engine,
                 ArticulatedGimbalMultibodyShadow {
                     seed,
                     last_derivative: Some(derivative),
+                    last_rk4_forecast: Some(forecast),
                 },
             );
         }
@@ -437,7 +444,6 @@ impl RigidBodySession {
         // rigid-body kernel; the old reject gate that refused non-RK4
         // selections has been removed.
         let runtime_integrator = build_runtime_integrator(document)?;
-        let kernel_step_s = crate::contact::kernel_step_s(document);
         let separated_ground_radius_m = infer_near_surface_geocentric_radius_m(&initial_state);
 
         let config = SimulationConfig {
@@ -1130,12 +1136,18 @@ impl RigidBodySession {
             )?;
             let derivative =
                 articulated_gimbal_multibody_derivative_from_engine_thrust(&seed, engine_snapshot)?;
-            updates.push((seed.engine, seed, derivative));
+            let forecast = articulated_gimbal_multibody_rk4_forecast_from_engine_thrust(
+                &seed,
+                engine_snapshot,
+                self.kernel_step_s,
+            )?;
+            updates.push((seed.engine, seed, derivative, forecast));
         }
-        for (engine, seed, derivative) in updates {
+        for (engine, seed, derivative, forecast) in updates {
             if let Some(shadow) = self.articulated_gimbal_shadows.get_mut(&engine) {
                 shadow.seed = seed;
                 shadow.last_derivative = Some(derivative);
+                shadow.last_rk4_forecast = Some(forecast);
             }
         }
         Ok(())
@@ -2235,6 +2247,7 @@ struct ArticulatedGimbalJointState {
 struct ArticulatedGimbalMultibodyShadow {
     seed: ArticulatedGimbalMultibodySeed,
     last_derivative: Option<MultibodyDerivative>,
+    last_rk4_forecast: Option<ArticulatedGimbalMultibodySeed>,
 }
 
 #[derive(Debug)]
@@ -2533,55 +2546,101 @@ fn articulated_gimbal_multibody_derivative_from_engine_thrust(
     seed: &ArticulatedGimbalMultibodySeed,
     engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
 ) -> Result<MultibodyDerivative, RunnerError> {
-    let body_count = seed.tree.bodies().len();
+    articulated_gimbal_multibody_derivative_from_engine_thrust_at_state(
+        &seed.tree,
+        seed.engine,
+        &seed.joint,
+        &seed.sim_state,
+        engine_snapshot,
+    )
+}
+
+fn articulated_gimbal_multibody_derivative_from_engine_thrust_at_state(
+    tree: &MultibodyTree,
+    engine: EngineId,
+    joint: &MultiBodyGimbalJointConfig,
+    sim_state: &MultibodySimState,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+) -> Result<MultibodyDerivative, RunnerError> {
+    let body_count = tree.bodies().len();
     if !(2..=3).contains(&body_count) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
                 "articulated gimbal tree for engine {} has {} bodies (expected 2 or 3)",
-                seed.engine.value(),
+                engine.value(),
                 body_count
             ),
         });
     }
     let snapshot =
         engine_snapshot
-            .get(&seed.engine)
+            .get(&engine)
             .ok_or_else(|| RunnerError::UnsupportedScenario {
                 what: format!(
                     "articulated gimbal engine {} snapshot is missing",
-                    seed.engine.value()
+                    engine.value()
                 ),
             })?;
-    let child_transform = seed
-        .tree
+    let child_transform = tree
         .body_transform_parent_to_child_at_state(
             openbmp_multibody::BodyIndex::new(body_count - 1),
-            seed.sim_state.state(),
+            sim_state.state(),
         )
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("articulated gimbal child transform failed: {err}"),
         })?;
     let thrust_child_n = child_transform.rot_child_from_parent() * snapshot.thrust_body;
     let thrust_application_child_m = Vector3::new(
-        seed.joint.thrust_application_body_m[0],
-        seed.joint.thrust_application_body_m[1],
-        seed.joint.thrust_application_body_m[2],
+        joint.thrust_application_body_m[0],
+        joint.thrust_application_body_m[1],
+        joint.thrust_application_body_m[2],
     );
     let thrust_moment_child_n_m = thrust_application_child_m.cross(&thrust_child_n);
     let mut external_forces_body = vec![SpatialForce::zero(); body_count];
     external_forces_body[body_count - 1] =
         SpatialForce::new(thrust_moment_child_n_m, thrust_child_n);
-    let generalized_forces = vec![0.0; seed.tree.n_qd()];
-    seed.tree
-        .derivative_from_forward_dynamics(
-            seed.sim_state.state(),
-            &generalized_forces,
-            SpatialMotion::zero(),
-            &external_forces_body,
+    let generalized_forces = vec![0.0; tree.n_qd()];
+    tree.derivative_from_forward_dynamics(
+        sim_state.state(),
+        &generalized_forces,
+        SpatialMotion::zero(),
+        &external_forces_body,
+    )
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("articulated gimbal thrust derivative failed: {err}"),
+    })
+}
+
+fn articulated_gimbal_multibody_rk4_forecast_from_engine_thrust(
+    seed: &ArticulatedGimbalMultibodySeed,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    dt_s: f64,
+) -> Result<ArticulatedGimbalMultibodySeed, RunnerError> {
+    let next_sim_state = Rk4FixedStep
+        .advance(
+            &seed.sim_state,
+            |sim_state, _time| {
+                articulated_gimbal_multibody_derivative_from_engine_thrust_at_state(
+                    &seed.tree,
+                    seed.engine,
+                    &seed.joint,
+                    sim_state,
+                    engine_snapshot,
+                )
+                .map_err(multibody_shadow_model_eval_error)
+            },
+            Duration::from_seconds(dt_s),
         )
         .map_err(|err| RunnerError::UnsupportedScenario {
-            what: format!("articulated gimbal thrust derivative failed: {err}"),
-        })
+            what: format!("articulated gimbal multibody RK4 forecast failed: {err}"),
+        })?;
+    Ok(ArticulatedGimbalMultibodySeed {
+        body: seed.body,
+        engine: seed.engine,
+        joint: seed.joint.clone(),
+        tree: seed.tree.clone(),
+        sim_state: next_sim_state,
+    })
 }
 
 fn articulated_gimbal_joint_state_from_engine_thrust(
@@ -5618,9 +5677,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn articulated_gimbal_shadow_derivative_uses_two_axis_live_engine_thrust() {
-        let toml = PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO
+    fn primary_multibody_two_axis_gimbal_shadow_scenario_toml() -> String {
+        PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO
             .replace(
                 "gimbal_pitch_rad = 0.1, gimbal_yaw_rad = 0.0",
                 "gimbal_pitch_rad = 0.1, gimbal_yaw_rad = 0.05",
@@ -5642,7 +5700,12 @@ mod tests {
                  initial_rate_rad_s = 0.0\n\
                  \n\
                  [[multi_body.attitude_target]]\n",
-            );
+            )
+    }
+
+    #[test]
+    fn articulated_gimbal_shadow_derivative_uses_two_axis_live_engine_thrust() {
+        let toml = primary_multibody_two_axis_gimbal_shadow_scenario_toml();
         let scenario = openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario parses");
         let resolved_files = scenario.resolved_files().expect("resolved files");
         let mut session =
@@ -5723,6 +5786,68 @@ mod tests {
             derivative.qd_dot()[7].abs() > 1.0e-6,
             "offset thrust should drive primary gimbal acceleration: {:?}",
             derivative.qd_dot()
+        );
+    }
+
+    #[test]
+    fn articulated_gimbal_shadow_rk4_forecast_advances_two_axis_tree() {
+        let toml = primary_multibody_two_axis_gimbal_shadow_scenario_toml();
+        let scenario = openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario parses");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step fires engine command");
+        session
+            .step_once(&scenario.document, None)
+            .expect("second step records two-axis articulated forecast");
+
+        let engine = engine_id_from_scenario_text("main_engine");
+        let shadow = session
+            .articulated_gimbal_shadows
+            .get(&engine)
+            .expect("articulated gimbal shadow present");
+        let forecast = shadow
+            .last_rk4_forecast
+            .as_ref()
+            .expect("articulated gimbal RK4 forecast recorded");
+        assert_eq!(forecast.tree.bodies().len(), 3);
+        assert_eq!(forecast.tree.n_q(), shadow.seed.tree.n_q());
+        assert_eq!(forecast.tree.n_qd(), shadow.seed.tree.n_qd());
+        assert!(
+            (forecast.sim_state.state().time.as_seconds()
+                - shadow.seed.sim_state.state().time.as_seconds()
+                - session.kernel_step_s)
+                .abs()
+                < 1.0e-12,
+            "forecast should advance exactly one session step: seed={} forecast={} dt={}",
+            shadow.seed.sim_state.state().time.as_seconds(),
+            forecast.sim_state.state().time.as_seconds(),
+            session.kernel_step_s
+        );
+        let max_joint_q_delta = forecast.sim_state.q()[7..]
+            .iter()
+            .zip(&shadow.seed.sim_state.q()[7..])
+            .map(|(forecast_q, seed_q)| (forecast_q - seed_q).abs())
+            .fold(0.0_f64, f64::max);
+        let max_joint_qd_delta = forecast.sim_state.qd()[6..]
+            .iter()
+            .zip(&shadow.seed.sim_state.qd()[6..])
+            .map(|(forecast_qd, seed_qd)| (forecast_qd - seed_qd).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_joint_q_delta > 1.0e-6,
+            "held live thrust should advance two-axis gimbal coordinates: seed={:?} forecast={:?}",
+            shadow.seed.sim_state.q(),
+            forecast.sim_state.q()
+        );
+        assert!(
+            max_joint_qd_delta > 1.0e-6,
+            "held live thrust should advance two-axis gimbal rates: seed={:?} forecast={:?}",
+            shadow.seed.sim_state.qd(),
+            forecast.sim_state.qd()
         );
     }
 

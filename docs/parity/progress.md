@@ -221,6 +221,10 @@ also accept a right-handed `secondary_axis_body`, build a massless intermediate
 gimbal frame, decompose live pitch/yaw thrust into secondary and primary
 child-from-parent coordinates/rates, and prove the two-axis articulated shadow
 derivative carries powered root and gimbal accelerations (`REQ-MULTIBODY-035`).
+Articulated gimbal shadows now also store a non-authoritative one-step RK4
+forecast over the articulated tree under held live thrust, with the two-axis
+regression proving the forecast advances one session step and changes gimbal
+coordinates/rates (`REQ-MULTIBODY-036`).
 Missing for full WP-01.1:
 replacing the rigid-kernel propagation path, broader variable-mass multibody
 propagation beyond the primary-root and powered separated-lane shadow forecasts,

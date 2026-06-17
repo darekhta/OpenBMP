@@ -211,6 +211,12 @@ statement = "Scenario-declared [[multi_body.gimbal_joint]] entries can include a
 verification = ["V-MULTIBODY-035"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-036"
+title = "Articulated gimbal shadows record an RK4 forecast"
+statement = "Prepared rigid-body sessions record a non-authoritative one-step RK4 forecast for each scenario-declared articulated gimbal shadow by advancing the articulated MultibodySimState with held EngineSnapshot thrust and the same stage child-frame thrust mapping used by the recorded ABA derivative. The regression uses a two-axis pitch/yaw gimbal scenario and proves the forecast preserves tree q/qd dimensions, advances exactly one session step, and changes the articulated gimbal coordinates and rates under powered held thrust. This makes no claim that the articulated forecast is authoritative, that two-axis propagation has replaced the rigid kernel, or that Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-036"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1575,6 +1581,26 @@ contains = [
   "REQ-MULTIBODY-035",
 ]
 requirements = ["REQ-MULTIBODY-035"]
+
+[[verification]]
+id = "V-MULTIBODY-036"
+kind = "test"
+command = "cargo test -p openbmp-runner articulated_gimbal_shadow_rk4_forecast_advances_two_axis_tree --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "last_rk4_forecast",
+  "articulated_gimbal_multibody_rk4_forecast_from_engine_thrust",
+  "articulated_gimbal_shadow_rk4_forecast_advances_two_axis_tree",
+  "held live thrust should advance two-axis gimbal coordinates",
+  "one-step RK4 forecast",
+  "REQ-MULTIBODY-036",
+]
+requirements = ["REQ-MULTIBODY-036"]
 
 [[verification]]
 id = "V-SIL-001"
