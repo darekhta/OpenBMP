@@ -216,14 +216,19 @@ mass properties and engine thrust snapshots, applying thrust at
 `thrust_application_body_m` through ABA and proving powered root/gimbal
 acceleration (`REQ-MULTIBODY-033`), and derives the one-axis child-from-parent
 joint coordinate plus finite-difference rate from the live thrust direction and
-`neutral_thrust_body` (`REQ-MULTIBODY-034`). Missing for full WP-01.1:
+`neutral_thrust_body` (`REQ-MULTIBODY-034`). The schema and rigid runner now
+also accept a right-handed `secondary_axis_body`, build a massless intermediate
+gimbal frame, decompose live pitch/yaw thrust into secondary and primary
+child-from-parent coordinates/rates, and prove the two-axis articulated shadow
+derivative carries powered root and gimbal accelerations (`REQ-MULTIBODY-035`).
+Missing for full WP-01.1:
 replacing the rigid-kernel propagation path, broader variable-mass multibody
 propagation beyond the primary-root and powered separated-lane shadow forecasts,
 full momentum-conserving welded-to-free joint-release propagation and full
 separated-body multibody propagation beyond first-post-release separated shadow
 forecasts and the substrate handoff, full orbital-ascent gimballed validation,
-authoritative articulated thrust propagation, two-axis gimbal acceptance, and
-Spatial_v2 oracle checks.
+authoritative articulated thrust propagation including authoritative two-axis
+propagation, and Spatial_v2 oracle checks.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO

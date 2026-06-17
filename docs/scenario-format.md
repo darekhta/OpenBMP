@@ -3125,6 +3125,7 @@ runner-side multibody tree materializer:
 body_id                    = "core"
 engine_id                  = "center"
 axis_body                  = [0.0, 1.0, 0.0]
+secondary_axis_body        = [1.0, 0.0, 0.0] # optional two-axis gimbal frame
 pivot_body_m               = [0.0, 0.0, -16.0]
 engine_mass_kg             = 115.0
 engine_cg_body_m           = [0.0, 0.0, -0.4]
@@ -3150,11 +3151,19 @@ one-axis revolute coordinate from a nonzero live thrust vector. The stored
 coordinate follows the multibody child-from-parent sign convention, so it may
 have the opposite sign of a propulsion pitch/yaw command depending on the
 chosen axis.
+`secondary_axis_body` is optional. When present, the parser treats the
+declaration as a two-axis articulated gimbal shadow: `axis_body`,
+`secondary_axis_body`, and `neutral_thrust_body` must be mutually orthogonal,
+and `secondary_axis_body` must align with
+`axis_body x neutral_thrust_body`. The runner materializes a massless
+intermediate gimbal frame for the secondary axis and stores joint coordinates
+in secondary-axis then primary-axis order.
 The runner materializes each declaration during rigid-body session preparation
-as a root free-flyer plus one revolute engine body, validates its CRBA inertia
-matrix, and refreshes a non-authoritative ABA derivative from the live engine
-snapshot before each rigid-body tick. The current rigid force/moment path
-remains authoritative until the WP-01.2 propagation handoff lands.
+as a root free-flyer plus one or two revolute articulated bodies, validates its
+CRBA inertia matrix, and refreshes a non-authoritative ABA derivative from the
+live engine snapshot before each rigid-body tick. The current rigid
+force/moment path remains authoritative until the WP-01.2 propagation handoff
+lands.
 
 ### v3-only `[fc]` sub-blocks
 

@@ -14156,6 +14156,9 @@ pub struct MultiBodyGimbalJointConfig {
     pub engine_id: String,
     /// Revolute axis expressed in the parent body frame.
     pub axis_body: [f64; 3],
+    /// Optional second revolute axis for two-axis gimbal shadows.
+    #[serde(default)]
+    pub secondary_axis_body: Option<[f64; 3]>,
     /// Parent-body pivot position in metres.
     pub pivot_body_m: [f64; 3],
     /// Declared inertial mass of the articulated engine body.
@@ -14186,6 +14189,10 @@ impl MultiBodyGimbalJointConfig {
         require_non_empty(&path("engine_id"), &self.engine_id)?;
         require_finite_array(&path("axis_body"), &self.axis_body)?;
         require_nonzero_vector(&path("axis_body"), &self.axis_body)?;
+        if let Some(secondary_axis_body) = self.secondary_axis_body {
+            require_finite_array(&path("secondary_axis_body"), &secondary_axis_body)?;
+            require_nonzero_vector(&path("secondary_axis_body"), &secondary_axis_body)?;
+        }
         require_finite_array(&path("pivot_body_m"), &self.pivot_body_m)?;
         require_positive(&path("engine_mass_kg"), self.engine_mass_kg)?;
         require_finite_array(&path("engine_cg_body_m"), &self.engine_cg_body_m)?;
@@ -14208,10 +14215,90 @@ impl MultiBodyGimbalJointConfig {
                 - self.axis_body[1] * self.neutral_thrust_body[0],
         ];
         require_nonzero_vector(&path("axis_body_cross_neutral_thrust_body"), &cross)?;
+        if let Some(secondary_axis_body) = self.secondary_axis_body {
+            validate_two_axis_gimbal_geometry(
+                &path,
+                &self.axis_body,
+                &secondary_axis_body,
+                &self.neutral_thrust_body,
+            )?;
+        }
         require_finite(&path("initial_angle_rad"), self.initial_angle_rad)?;
         require_finite(&path("initial_rate_rad_s"), self.initial_rate_rad_s)?;
         Ok(())
     }
+}
+
+fn validate_two_axis_gimbal_geometry(
+    path: &impl Fn(&str) -> String,
+    primary_axis: &[f64; 3],
+    secondary_axis: &[f64; 3],
+    neutral_thrust: &[f64; 3],
+) -> Result<(), ScenarioError> {
+    const TWO_AXIS_ORTHOGONAL_TOL: f64 = 1.0e-9;
+    let primary = normalise_array3(primary_axis);
+    let secondary = normalise_array3(secondary_axis);
+    let neutral = normalise_array3(neutral_thrust);
+    require_abs_le(
+        &path("axis_body_dot_neutral_thrust_body"),
+        dot_array3(primary, neutral),
+        TWO_AXIS_ORTHOGONAL_TOL,
+        "must be orthogonal for two-axis gimbal decomposition",
+    )?;
+    require_abs_le(
+        &path("secondary_axis_body_dot_axis_body"),
+        dot_array3(secondary, primary),
+        TWO_AXIS_ORTHOGONAL_TOL,
+        "must be orthogonal for two-axis gimbal decomposition",
+    )?;
+    require_abs_le(
+        &path("secondary_axis_body_dot_neutral_thrust_body"),
+        dot_array3(secondary, neutral),
+        TWO_AXIS_ORTHOGONAL_TOL,
+        "must be orthogonal for two-axis gimbal decomposition",
+    )?;
+    let expected_secondary = cross_array3(primary, neutral);
+    if dot_array3(secondary, expected_secondary) < 1.0 - TWO_AXIS_ORTHOGONAL_TOL {
+        return Err(ScenarioError::InvalidNumber {
+            field: path("secondary_axis_body"),
+            value: dot_array3(secondary, expected_secondary),
+            rule: "must align with axis_body x neutral_thrust_body for two-axis gimbal decomposition",
+        });
+    }
+    Ok(())
+}
+
+fn normalise_array3(value: &[f64; 3]) -> [f64; 3] {
+    let norm = (value[0] * value[0] + value[1] * value[1] + value[2] * value[2]).sqrt();
+    [value[0] / norm, value[1] / norm, value[2] / norm]
+}
+
+fn dot_array3(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn cross_array3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn require_abs_le(
+    field: &str,
+    value: f64,
+    limit: f64,
+    rule: &'static str,
+) -> Result<(), ScenarioError> {
+    if value.abs() > limit {
+        return Err(ScenarioError::InvalidNumber {
+            field: field.to_owned(),
+            value,
+            rule,
+        });
+    }
+    Ok(())
 }
 
 fn default_standard_gravity() -> f64 {

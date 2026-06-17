@@ -243,13 +243,16 @@ preparation, and refresh a non-authoritative per-tick articulated shadow that
 applies live engine thrust at the declared child-frame application point through
 ABA. The shadow now derives the one-axis child-from-parent revolute coordinate
 and finite-difference rate from the live thrust direction and the declared
-neutral thrust axis. Authoritative propagation is still the rigid kernel.
+neutral thrust axis, and accepts an optional right-handed
+`secondary_axis_body` to materialize a massless two-axis gimbal frame whose
+live pitch/yaw thrust direction drives secondary and primary joint coordinates.
+Authoritative propagation is still the rigid kernel.
 Replacing the rigid propagation path, broader variable-mass multibody
 propagation beyond the one-body root forecast, full separated-lane multibody
 propagation beyond the one-step separated shadow forecast, authoritative
-articulated thrust propagation, two-axis gimbal acceptance, full
-orbital-ascent gimballed validation, and external Spatial_v2 oracle fixtures
-remain open.
+articulated thrust propagation including authoritative two-axis propagation,
+full orbital-ascent gimballed validation, and external Spatial_v2 oracle
+fixtures remain open.
 
 ---
 
@@ -866,15 +869,20 @@ justification first, reviewed before the implementation lands.
   child-from-parent revolute coordinate and finite-difference rate from the
   live thrust direction plus `neutral_thrust_body`, proving a scenario-scripted
   engine gimbal command updates the articulated joint state before the ABA
-  derivative is recorded (`REQ-MULTIBODY-034`).
+  derivative is recorded (`REQ-MULTIBODY-034`). The scenario schema and rigid
+  runner now also accept a right-handed `secondary_axis_body`, materialize a
+  massless intermediate gimbal frame, decompose live pitch/yaw thrust into
+  secondary and primary child-from-parent coordinates/rates, and prove the
+  two-axis shadow derivative carries powered root and gimbal accelerations
+  (`REQ-MULTIBODY-035`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   broader variable-mass multibody propagation beyond the primary-root and
   powered separated-lane shadow forecasts, runner-side momentum-conserving
   welded-to-free joint-release propagation and full separated-body multibody
   propagation beyond the substrate handoff and first-post-release separated
   shadow forecasts, Spatial_v2 oracle fixtures, full orbital-ascent gimballed
-  validation, authoritative articulated thrust propagation, and two-axis gimbal
-  acceptance.
+  validation, and authoritative articulated thrust propagation including
+  authoritative two-axis propagation.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

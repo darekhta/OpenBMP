@@ -42,7 +42,7 @@ use openbmp_core::{
 };
 use openbmp_multibody::{
     Joint, MultibodyDerivative, MultibodySimState, MultibodyState, MultibodyTree, PluckerTransform,
-    SpatialForce, SpatialInertia, SpatialMotion, TreeBodySpec,
+    SpatialForce, SpatialInertia, SpatialMatrix, SpatialMotion, TreeBodySpec,
 };
 use openbmp_physics::{
     AtmosphereModel, ConstantGravity, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
@@ -1115,19 +1115,18 @@ impl RigidBodySession {
                 current_state.angular_velocity,
                 mass_properties,
             );
-            let (joint_angle_rad, joint_rate_rad_s) =
-                articulated_gimbal_joint_state_from_engine_thrust(
-                    &shadow.seed,
-                    engine_snapshot,
-                    self.kernel_step_s,
-                )?;
+            let joint_state = articulated_gimbal_joint_state_from_engine_thrust(
+                &shadow.seed,
+                engine_snapshot,
+                self.kernel_step_s,
+            )?;
             let seed = articulated_gimbal_multibody_seed_from_config_with_joint_state(
                 body,
                 shadow.seed.engine,
                 &shadow.seed.joint,
                 &parent_state,
-                joint_angle_rad,
-                joint_rate_rad_s,
+                &joint_state.angles_rad,
+                &joint_state.rates_rad_s,
             )?;
             let derivative =
                 articulated_gimbal_multibody_derivative_from_engine_thrust(&seed, engine_snapshot)?;
@@ -2227,6 +2226,12 @@ struct ArticulatedGimbalMultibodySeed {
 }
 
 #[derive(Clone, Debug)]
+struct ArticulatedGimbalJointState {
+    angles_rad: Vec<f64>,
+    rates_rad_s: Vec<f64>,
+}
+
+#[derive(Clone, Debug)]
 struct ArticulatedGimbalMultibodyShadow {
     seed: ArticulatedGimbalMultibodySeed,
     last_derivative: Option<MultibodyDerivative>,
@@ -2342,13 +2347,24 @@ fn articulated_gimbal_multibody_seed_from_config(
     joint: &MultiBodyGimbalJointConfig,
     parent_state: &RigidBodyState,
 ) -> Result<ArticulatedGimbalMultibodySeed, RunnerError> {
+    let (joint_angles_rad, joint_rates_rad_s) = if joint.secondary_axis_body.is_some() {
+        (
+            vec![0.0, joint.initial_angle_rad],
+            vec![0.0, joint.initial_rate_rad_s],
+        )
+    } else {
+        (
+            vec![joint.initial_angle_rad],
+            vec![joint.initial_rate_rad_s],
+        )
+    };
     articulated_gimbal_multibody_seed_from_config_with_joint_state(
         body,
         engine,
         joint,
         parent_state,
-        joint.initial_angle_rad,
-        joint.initial_rate_rad_s,
+        &joint_angles_rad,
+        &joint_rates_rad_s,
     )
 }
 
@@ -2357,9 +2373,20 @@ fn articulated_gimbal_multibody_seed_from_config_with_joint_state(
     engine: EngineId,
     joint: &MultiBodyGimbalJointConfig,
     parent_state: &RigidBodyState,
-    joint_angle_rad: f64,
-    joint_rate_rad_s: f64,
+    joint_angles_rad: &[f64],
+    joint_rates_rad_s: &[f64],
 ) -> Result<ArticulatedGimbalMultibodySeed, RunnerError> {
+    let joint_dof = articulated_gimbal_joint_dof(joint);
+    if joint_angles_rad.len() != joint_dof || joint_rates_rad_s.len() != joint_dof {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "articulated gimbal joint state for engine {} has {} q and {} qd entries (expected {joint_dof})",
+                engine.value(),
+                joint_angles_rad.len(),
+                joint_rates_rad_s.len()
+            ),
+        });
+    }
     let root_inertia =
         SpatialInertia::from_mass_properties(&parent_state.mass_props).map_err(|err| {
             RunnerError::UnsupportedScenario {
@@ -2396,34 +2423,71 @@ fn articulated_gimbal_multibody_seed_from_config_with_joint_state(
         joint.pivot_body_m[1],
         joint.pivot_body_m[2],
     );
-    let tree = MultibodyTree::new(vec![
-        TreeBodySpec {
-            id: body,
-            parent: None,
-            joint: Joint::FreeFlyer,
-            inertia: root_inertia,
-            parent_to_body: PluckerTransform::identity(),
-        },
-        TreeBodySpec {
-            id: articulated_engine_body_id(engine),
-            parent: Some(openbmp_multibody::BodyIndex::new(0)),
-            joint: Joint::revolute(Vector3::new(
-                joint.axis_body[0],
-                joint.axis_body[1],
-                joint.axis_body[2],
-            ))
-            .map_err(|err| RunnerError::UnsupportedScenario {
-                what: format!("articulated gimbal joint axis failed: {err}"),
-            })?,
-            inertia: engine_inertia,
-            parent_to_body: PluckerTransform::new(nalgebra::Matrix3::identity(), pivot).map_err(
-                |err| RunnerError::UnsupportedScenario {
-                    what: format!("articulated gimbal pivot transform failed: {err}"),
-                },
-            )?,
-        },
-    ])
+    let root_spec = TreeBodySpec {
+        id: body,
+        parent: None,
+        joint: Joint::FreeFlyer,
+        inertia: root_inertia,
+        parent_to_body: PluckerTransform::identity(),
+    };
+    let primary_joint = Joint::revolute(Vector3::new(
+        joint.axis_body[0],
+        joint.axis_body[1],
+        joint.axis_body[2],
+    ))
     .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("articulated gimbal joint axis failed: {err}"),
+    })?;
+    let pivot_transform =
+        PluckerTransform::new(nalgebra::Matrix3::identity(), pivot).map_err(|err| {
+            RunnerError::UnsupportedScenario {
+                what: format!("articulated gimbal pivot transform failed: {err}"),
+            }
+        })?;
+    let tree_specs = if let Some(secondary_axis_body) = joint.secondary_axis_body {
+        let frame_inertia = SpatialInertia::from_matrix(SpatialMatrix::zeros()).map_err(|err| {
+            RunnerError::UnsupportedScenario {
+                what: format!("articulated gimbal frame spatial inertia failed: {err}"),
+            }
+        })?;
+        let secondary_joint = Joint::revolute(Vector3::new(
+            secondary_axis_body[0],
+            secondary_axis_body[1],
+            secondary_axis_body[2],
+        ))
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("articulated gimbal secondary joint axis failed: {err}"),
+        })?;
+        vec![
+            root_spec,
+            TreeBodySpec {
+                id: articulated_gimbal_frame_body_id(engine),
+                parent: Some(openbmp_multibody::BodyIndex::new(0)),
+                joint: secondary_joint,
+                inertia: frame_inertia,
+                parent_to_body: pivot_transform,
+            },
+            TreeBodySpec {
+                id: articulated_engine_body_id(engine),
+                parent: Some(openbmp_multibody::BodyIndex::new(1)),
+                joint: primary_joint,
+                inertia: engine_inertia,
+                parent_to_body: PluckerTransform::identity(),
+            },
+        ]
+    } else {
+        vec![
+            root_spec,
+            TreeBodySpec {
+                id: articulated_engine_body_id(engine),
+                parent: Some(openbmp_multibody::BodyIndex::new(0)),
+                joint: primary_joint,
+                inertia: engine_inertia,
+                parent_to_body: pivot_transform,
+            },
+        ]
+    };
+    let tree = MultibodyTree::new(tree_specs).map_err(|err| RunnerError::UnsupportedScenario {
         what: format!("articulated gimbal multibody tree failed: {err}"),
     })?;
 
@@ -2433,7 +2497,7 @@ fn articulated_gimbal_multibody_seed_from_config_with_joint_state(
         .inverse()
         .rotate_velocity(parent_state.velocity)
         .vector;
-    let q = vec![
+    let mut q = vec![
         orientation.w,
         orientation.i,
         orientation.j,
@@ -2441,17 +2505,17 @@ fn articulated_gimbal_multibody_seed_from_config_with_joint_state(
         parent_state.position.vector.x,
         parent_state.position.vector.y,
         parent_state.position.vector.z,
-        joint_angle_rad,
     ];
-    let qd = vec![
+    q.extend_from_slice(joint_angles_rad);
+    let mut qd = vec![
         parent_state.angular_velocity.vector.x,
         parent_state.angular_velocity.vector.y,
         parent_state.angular_velocity.vector.z,
         linear_velocity_body.x,
         linear_velocity_body.y,
         linear_velocity_body.z,
-        joint_rate_rad_s,
     ];
+    qd.extend_from_slice(joint_rates_rad_s);
     tree.sim_state_from_state(MultibodyState::new(parent_state.time, q, qd))
         .map(|sim_state| ArticulatedGimbalMultibodySeed {
             body,
@@ -2469,12 +2533,13 @@ fn articulated_gimbal_multibody_derivative_from_engine_thrust(
     seed: &ArticulatedGimbalMultibodySeed,
     engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
 ) -> Result<MultibodyDerivative, RunnerError> {
-    if seed.tree.bodies().len() != 2 {
+    let body_count = seed.tree.bodies().len();
+    if !(2..=3).contains(&body_count) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
-                "articulated gimbal tree for engine {} has {} bodies (expected 2)",
+                "articulated gimbal tree for engine {} has {} bodies (expected 2 or 3)",
                 seed.engine.value(),
-                seed.tree.bodies().len()
+                body_count
             ),
         });
     }
@@ -2490,7 +2555,7 @@ fn articulated_gimbal_multibody_derivative_from_engine_thrust(
     let child_transform = seed
         .tree
         .body_transform_parent_to_child_at_state(
-            openbmp_multibody::BodyIndex::new(1),
+            openbmp_multibody::BodyIndex::new(body_count - 1),
             seed.sim_state.state(),
         )
         .map_err(|err| RunnerError::UnsupportedScenario {
@@ -2503,8 +2568,9 @@ fn articulated_gimbal_multibody_derivative_from_engine_thrust(
         seed.joint.thrust_application_body_m[2],
     );
     let thrust_moment_child_n_m = thrust_application_child_m.cross(&thrust_child_n);
-    let mut external_forces_body = vec![SpatialForce::zero(); seed.tree.bodies().len()];
-    external_forces_body[1] = SpatialForce::new(thrust_moment_child_n_m, thrust_child_n);
+    let mut external_forces_body = vec![SpatialForce::zero(); body_count];
+    external_forces_body[body_count - 1] =
+        SpatialForce::new(thrust_moment_child_n_m, thrust_child_n);
     let generalized_forces = vec![0.0; seed.tree.n_qd()];
     seed.tree
         .derivative_from_forward_dynamics(
@@ -2522,8 +2588,24 @@ fn articulated_gimbal_joint_state_from_engine_thrust(
     seed: &ArticulatedGimbalMultibodySeed,
     engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
     dt_s: f64,
-) -> Result<(f64, f64), RunnerError> {
-    let previous_angle = seed.sim_state.q()[7];
+) -> Result<ArticulatedGimbalJointState, RunnerError> {
+    let joint_dof = articulated_gimbal_joint_dof(&seed.joint);
+    let previous_angles =
+        seed.sim_state
+            .q()
+            .get(7..)
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "articulated gimbal state is missing joint coordinates".to_owned(),
+            })?;
+    if previous_angles.len() != joint_dof {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "articulated gimbal state for engine {} has {} joint coordinates (expected {joint_dof})",
+                seed.engine.value(),
+                previous_angles.len()
+            ),
+        });
+    }
     let snapshot =
         engine_snapshot
             .get(&seed.engine)
@@ -2535,7 +2617,10 @@ fn articulated_gimbal_joint_state_from_engine_thrust(
             })?;
     let thrust_norm = snapshot.thrust_body.norm();
     if thrust_norm <= ARTICULATED_GIMBAL_THRUST_DIRECTION_EPS {
-        return Ok((previous_angle, 0.0));
+        return Ok(ArticulatedGimbalJointState {
+            angles_rad: previous_angles.to_vec(),
+            rates_rad_s: vec![0.0; joint_dof],
+        });
     }
     if !dt_s.is_finite() || dt_s <= 0.0 {
         return Err(RunnerError::UnsupportedScenario {
@@ -2551,6 +2636,24 @@ fn articulated_gimbal_joint_state_from_engine_thrust(
         "articulated gimbal neutral_thrust_body is invalid",
     )?;
     let thrust_parent = snapshot.thrust_body / thrust_norm;
+    if let Some(secondary_axis_body) = seed.joint.secondary_axis_body {
+        let secondary = normalized_vec3(
+            secondary_axis_body,
+            "articulated gimbal secondary_axis_body is invalid",
+        )?;
+        let pitch_command = thrust_parent.dot(&secondary).clamp(-1.0, 1.0).asin();
+        let yaw_command = (-thrust_parent.dot(&axis)).atan2(thrust_parent.dot(&neutral));
+        let angles_rad = vec![-yaw_command, -pitch_command];
+        let rates_rad_s = angles_rad
+            .iter()
+            .zip(previous_angles)
+            .map(|(angle, previous_angle)| (angle - previous_angle) / dt_s)
+            .collect();
+        return Ok(ArticulatedGimbalJointState {
+            angles_rad,
+            rates_rad_s,
+        });
+    }
     let neutral_perp = vector_reject_axis(neutral, axis);
     let thrust_perp = vector_reject_axis(thrust_parent, axis);
     let neutral_perp_norm = neutral_perp.norm();
@@ -2561,15 +2664,29 @@ fn articulated_gimbal_joint_state_from_engine_thrust(
         });
     }
     if thrust_perp_norm <= ARTICULATED_GIMBAL_THRUST_DIRECTION_EPS {
-        return Ok((previous_angle, 0.0));
+        return Ok(ArticulatedGimbalJointState {
+            angles_rad: previous_angles.to_vec(),
+            rates_rad_s: vec![0.0],
+        });
     }
     let neutral_perp = neutral_perp / neutral_perp_norm;
     let thrust_perp = thrust_perp / thrust_perp_norm;
     let sin_angle = axis.dot(&thrust_perp.cross(&neutral_perp));
     let cos_angle = thrust_perp.dot(&neutral_perp);
     let angle = sin_angle.atan2(cos_angle);
-    let rate = (angle - previous_angle) / dt_s;
-    Ok((angle, rate))
+    let rate = (angle - previous_angles[0]) / dt_s;
+    Ok(ArticulatedGimbalJointState {
+        angles_rad: vec![angle],
+        rates_rad_s: vec![rate],
+    })
+}
+
+fn articulated_gimbal_joint_dof(joint: &MultiBodyGimbalJointConfig) -> usize {
+    if joint.secondary_axis_body.is_some() {
+        2
+    } else {
+        1
+    }
 }
 
 fn normalized_vec3(value: [f64; 3], reason: &'static str) -> Result<Vector3<f64>, RunnerError> {
@@ -3104,6 +3221,13 @@ fn engine_id_from_scenario_text(id: &str) -> EngineId {
 
 fn articulated_engine_body_id(engine: EngineId) -> BodyId {
     BodyId::from_path(&format!("multibody.articulated_engine.{}", engine.value()))
+}
+
+fn articulated_gimbal_frame_body_id(engine: EngineId) -> BodyId {
+    BodyId::from_path(&format!(
+        "multibody.articulated_gimbal_frame.{}",
+        engine.value()
+    ))
 }
 
 fn optional_body_owner(owner: Option<&str>) -> Option<BodyId> {
@@ -5490,6 +5614,114 @@ mod tests {
         assert!(
             derivative.qd_dot()[6].abs() > 1.0e-6,
             "offset thrust should drive revolute gimbal acceleration: {:?}",
+            derivative.qd_dot()
+        );
+    }
+
+    #[test]
+    fn articulated_gimbal_shadow_derivative_uses_two_axis_live_engine_thrust() {
+        let toml = PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO
+            .replace(
+                "gimbal_pitch_rad = 0.1, gimbal_yaw_rad = 0.0",
+                "gimbal_pitch_rad = 0.1, gimbal_yaw_rad = 0.05",
+            )
+            .replace(
+                "[[multi_body.attitude_target]]\n",
+                "[[multi_body.gimbal_joint]]\n\
+                 body_id = \"main\"\n\
+                 engine_id = \"main_engine\"\n\
+                 axis_body = [0.0, 1.0, 0.0]\n\
+                 secondary_axis_body = [1.0, 0.0, 0.0]\n\
+                 neutral_thrust_body = [0.0, 0.0, 1.0]\n\
+                 pivot_body_m = [0.0, 1.0, 0.0]\n\
+                 engine_mass_kg = 1.5\n\
+                 engine_cg_body_m = [0.2, 0.0, -0.4]\n\
+                 engine_inertia_body_kg_m2 = [[0.08, 0.0, 0.0], [0.0, 0.12, 0.0], [0.0, 0.0, 0.1]]\n\
+                 thrust_application_body_m = [0.2, 0.3, 0.0]\n\
+                 initial_angle_rad = 0.0\n\
+                 initial_rate_rad_s = 0.0\n\
+                 \n\
+                 [[multi_body.attitude_target]]\n",
+            );
+        let scenario = openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario parses");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step fires engine command");
+        session
+            .step_once(&scenario.document, None)
+            .expect("second step mirrors two-axis articulated gimbal thrust");
+
+        let engine = engine_id_from_scenario_text("main_engine");
+        let powered_snapshot = session
+            .engine_snapshots()
+            .get(&engine)
+            .copied()
+            .expect("engine snapshot present");
+        assert!(
+            powered_snapshot.thrust_body.norm() > 1.0,
+            "scenario command should produce powered thrust: {:?}",
+            powered_snapshot.thrust_body
+        );
+        let shadow = session
+            .articulated_gimbal_shadows
+            .get(&engine)
+            .expect("articulated gimbal shadow present");
+        assert_eq!(shadow.seed.tree.bodies().len(), 3);
+        assert_eq!(shadow.seed.tree.n_q(), 9);
+        assert_eq!(shadow.seed.tree.n_qd(), 8);
+        assert_eq!(
+            shadow.seed.tree.bodies()[1].id,
+            articulated_gimbal_frame_body_id(engine)
+        );
+        assert_eq!(
+            shadow.seed.tree.bodies()[2].id,
+            articulated_engine_body_id(engine)
+        );
+        assert!(
+            (shadow.seed.sim_state.q()[7] + 0.05).abs() < 1.0e-12,
+            "positive propulsion yaw should map to child-from-parent secondary angle: {:?}",
+            shadow.seed.sim_state.q()
+        );
+        assert!(
+            (shadow.seed.sim_state.q()[8] + 0.1).abs() < 1.0e-12,
+            "positive propulsion pitch should map to child-from-parent primary angle: {:?}",
+            shadow.seed.sim_state.q()
+        );
+        assert!(
+            (shadow.seed.sim_state.qd()[6] + 0.5).abs() < 1.0e-12,
+            "secondary gimbal rate should finite-difference live yaw handoff: {:?}",
+            shadow.seed.sim_state.qd()
+        );
+        assert!(
+            (shadow.seed.sim_state.qd()[7] + 1.0).abs() < 1.0e-12,
+            "primary gimbal rate should finite-difference live pitch handoff: {:?}",
+            shadow.seed.sim_state.qd()
+        );
+        let derivative = shadow
+            .last_derivative
+            .as_ref()
+            .expect("articulated gimbal derivative recorded");
+        assert_eq!(derivative.qd_dot().len(), 8);
+        let root_accel = (0..6)
+            .map(|index| derivative.qd_dot()[index].abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            root_accel > 1.0e-6,
+            "engine thrust should drive root acceleration through articulated children: {:?}",
+            derivative.qd_dot()
+        );
+        assert!(
+            derivative.qd_dot()[6].abs() > 1.0e-6,
+            "offset thrust should drive secondary gimbal acceleration: {:?}",
+            derivative.qd_dot()
+        );
+        assert!(
+            derivative.qd_dot()[7].abs() > 1.0e-6,
+            "offset thrust should drive primary gimbal acceleration: {:?}",
             derivative.qd_dot()
         );
     }

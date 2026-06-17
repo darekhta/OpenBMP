@@ -183,26 +183,32 @@ verification = ["V-MULTIBODY-030"]
 [[requirements]]
 id = "REQ-MULTIBODY-031"
 title = "The multibody substrate validates articulated gimbal inertia coupling"
-statement = "The openbmp-multibody crate is covered by a free-flyer airframe plus offset inertial engine on a revolute gimbal regression that proves the state-dependent CRBA matrix carries nonzero off-diagonal coupling between the gimbal axis and root angular/linear slots, applies a gimbal generalized torque that drives both root reaction acceleration and gimbal-axis acceleration, and cross-checks the result through ABA versus dense forward dynamics plus biased RNEA round-trip. This makes no claim that runner-side gimbal joints, scenario schema wiring, WP-01.2 two-axis gimbal acceptance, replacing rigid-kernel propagation, or Spatial_v2 oracle validation are complete."
+statement = "The openbmp-multibody crate is covered by a free-flyer airframe plus offset inertial engine on a revolute gimbal regression that proves the state-dependent CRBA matrix carries nonzero off-diagonal coupling between the gimbal axis and root angular/linear slots, applies a gimbal generalized torque that drives both root reaction acceleration and gimbal-axis acceleration, and cross-checks the result through ABA versus dense forward dynamics plus biased RNEA round-trip. This makes no claim that runner-side gimbal shadows are authoritative, that the rigid-kernel propagation path has been replaced, or that Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-031"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-032"
 title = "The runner materializes scenario-declared articulated gimbal joints"
-statement = "Schema-v3 [multi_body] scenarios can declare [[multi_body.gimbal_joint]] entries that bind an owned liquid-engine id to its parent assembly body, a finite nonzero revolute axis, a parent-frame pivot, declared engine inertial mass properties, a finite child-frame thrust application point, a finite nonzero neutral thrust direction not parallel to the revolute axis, and initial joint state. The scenario parser validates finite/positive mass-property fields, rejects unknown body or engine references, rejects duplicate engine gimbal declarations, and rejects engine/body ownership mismatches; the rigid runner materializes each declaration during session preparation as a root free-flyer plus revolute engine MultibodyTree seeded from live parent body mass resources and validates its state-dependent CRBA inertia matrix. This makes no claim that the articulated gimbal tree has replaced the current rigid-kernel propagation path, that commanded gimbal joint-state handoff is authoritative, that WP-01.2 two-axis gimbal acceptance is complete, or that Spatial_v2 oracle validation is complete."
+statement = "Schema-v3 [multi_body] scenarios can declare [[multi_body.gimbal_joint]] entries that bind an owned liquid-engine id to its parent assembly body, a finite nonzero revolute axis, a parent-frame pivot, declared engine inertial mass properties, a finite child-frame thrust application point, a finite nonzero neutral thrust direction not parallel to the revolute axis, and initial joint state. The scenario parser validates finite/positive mass-property fields, rejects unknown body or engine references, rejects duplicate engine gimbal declarations, and rejects engine/body ownership mismatches; the rigid runner materializes each declaration during session preparation as a root free-flyer plus revolute engine MultibodyTree seeded from live parent body mass resources and validates its state-dependent CRBA inertia matrix. This makes no claim that the articulated gimbal tree has replaced the current rigid-kernel propagation path, that commanded gimbal joint-state handoff is authoritative, or that Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-032"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-033"
 title = "Articulated gimbal shadows consume live engine thrust snapshots"
-statement = "For each scenario-declared [[multi_body.gimbal_joint]], the prepared rigid-body session keeps a non-authoritative articulated gimbal shadow, refreshes the parent root state from the current rigid state and parent-body mass resources before each rigid tick, maps the live EngineSnapshot::thrust_body vector into the revolute child frame, applies it as a child-body external spatial force and moment at the finite thrust_application_body_m point, and records the ABA derivative. The regression fires a real scenario_script engine_command through EngineRack and proves the powered engine snapshot drives both root acceleration and revolute gimbal-axis acceleration through the articulated tree. This makes no claim that the rigid kernel has been replaced by articulated propagation, that the joint coordinate is commanded by the flight-control gimbal command, that two-axis gimbals are accepted, or that Spatial_v2 oracle validation is complete."
+statement = "For each scenario-declared [[multi_body.gimbal_joint]], the prepared rigid-body session keeps a non-authoritative articulated gimbal shadow, refreshes the parent root state from the current rigid state and parent-body mass resources before each rigid tick, maps the live EngineSnapshot::thrust_body vector into the revolute child frame, applies it as a child-body external spatial force and moment at the finite thrust_application_body_m point, and records the ABA derivative. The regression fires a real scenario_script engine_command through EngineRack and proves the powered engine snapshot drives both root acceleration and revolute gimbal-axis acceleration through the articulated tree. This makes no claim that the rigid kernel has been replaced by articulated propagation, that the joint coordinate is commanded by the flight-control gimbal command, or that Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-033"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-034"
 title = "Articulated gimbal shadows derive live one-axis joint state"
-statement = "For each powered scenario-declared [[multi_body.gimbal_joint]], the rigid runner derives the non-authoritative revolute coordinate from the live EngineSnapshot::thrust_body direction by projecting the declared neutral_thrust_body and thrust direction into the plane normal to axis_body, using the multibody child-from-parent sign convention, and carries a finite-difference revolute rate into the shadow seed before evaluating ABA. The regression fires a real scenario_script engine_command with a one-axis pitch command and proves the powered articulated shadow state q and qd slots update from the live thrust direction before the derivative is recorded. This makes no claim that the articulated shadow is authoritative, that two-axis pitch/yaw gimbal acceptance is complete, or that the rigid propagation path has been replaced."
+statement = "For each powered scenario-declared [[multi_body.gimbal_joint]], the rigid runner derives the non-authoritative revolute coordinate from the live EngineSnapshot::thrust_body direction by projecting the declared neutral_thrust_body and thrust direction into the plane normal to axis_body, using the multibody child-from-parent sign convention, and carries a finite-difference revolute rate into the shadow seed before evaluating ABA. The regression fires a real scenario_script engine_command with a one-axis pitch command and proves the powered articulated shadow state q and qd slots update from the live thrust direction before the derivative is recorded. This makes no claim that the articulated shadow is authoritative or that the rigid propagation path has been replaced."
 verification = ["V-MULTIBODY-034"]
+
+[[requirements]]
+id = "REQ-MULTIBODY-035"
+title = "Articulated gimbal shadows accept two-axis pitch/yaw state"
+statement = "Scenario-declared [[multi_body.gimbal_joint]] entries can include an optional secondary_axis_body for non-authoritative two-axis articulated gimbal shadows. The parser validates finite nonzero secondary axes, requires axis_body, secondary_axis_body, and neutral_thrust_body to be mutually orthogonal, and requires secondary_axis_body to align with axis_body x neutral_thrust_body; the rigid runner materializes a massless intermediate secondary-axis gimbal frame plus a primary-axis engine body, derives secondary and primary child-from-parent coordinates/rates from the live EngineSnapshot::thrust_body pitch/yaw direction, and records an ABA derivative over the two-axis tree. The regression fires a real scenario_script engine_command with nonzero pitch and yaw and proves the shadow tree q/qd dimensions, body ordering, joint coordinate/rate handoff, and powered root plus two-axis gimbal accelerations. This makes no claim that the articulated shadow is authoritative, that two-axis propagation has replaced the rigid kernel, or that Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-035"]
 
 [[requirements]]
 id = "REQ-SIL-001"
@@ -1542,9 +1548,33 @@ contains = [
   "positive propulsion pitch should map to child-from-parent gimbal angle",
   "finite-difference the live handoff",
   "REQ-MULTIBODY-034",
-  "two-axis gimbal acceptance",
+  "authoritative articulated thrust propagation",
 ]
 requirements = ["REQ-MULTIBODY-034"]
+
+[[verification]]
+id = "V-MULTIBODY-035"
+kind = "test"
+command = "cargo test -p openbmp-scenario gimbal_joint --locked && cargo test -p openbmp-runner articulated_gimbal_shadow_derivative_uses_two_axis_live_engine_thrust --locked && cargo check -p openbmp-scenario -p openbmp-runner --locked && cargo clippy -p openbmp-scenario -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "secondary_axis_body",
+  "validate_two_axis_gimbal_geometry",
+  "accepts_multi_body_two_axis_gimbal_joint",
+  "articulated_gimbal_frame_body_id",
+  "articulated_gimbal_shadow_derivative_uses_two_axis_live_engine_thrust",
+  "positive propulsion yaw should map to child-from-parent secondary angle",
+  "authoritative two-axis propagation",
+  "REQ-MULTIBODY-035",
+]
+requirements = ["REQ-MULTIBODY-035"]
 
 [[verification]]
 id = "V-SIL-001"
