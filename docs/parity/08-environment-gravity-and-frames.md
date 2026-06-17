@@ -107,11 +107,13 @@ Verified by reading the actual files (paths absolute under the repo root).
   acceleration, converts fully-normalized degree-2 coefficient blocks into the
   current unnormalized evaluator, stores reusable normalized `Cbar/Sbar` fields
   in deterministic packed `(n, m)` order, exposes a checked
-  `fully_normalized_to_unnormalized_scale` helper, a bounded `cos(mλ)` /
-  `sin(mλ)` recurrence table, a direction-cosine `(s + i t)^m` Pines
-  longitude-polynomial table that remains finite at the pole, a reusable
-  truncation envelope validator, a bounded Holmes-Featherstone/Pines `A_nm(u)`
-  recurrence table, a body-fixed synthesis-point validator, a normalized
+  `fully_normalized_to_unnormalized_scale` helper, a std-gated fail-closed
+  `from_normalized_toml_str` parser for OpenBMP normalized harmonic TOML
+  fixtures, a bounded `cos(mλ)` / `sin(mλ)` recurrence table, a
+  direction-cosine `(s + i t)^m` Pines longitude-polynomial table that remains
+  finite at the pole, a reusable truncation envelope validator, a bounded
+  Holmes-Featherstone/Pines `A_nm(u)` recurrence table, a body-fixed
+  synthesis-point validator, a normalized
   Pines scalar-potential correction sum over deterministic coefficient slots,
   a normalized Gottlieb-style scalar-potential recomposition oracle that
   cross-checks the Pines sum through ordinary longitude trigonometry and an
@@ -669,16 +671,18 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   `PinesLegendreTable`, `PinesLongitudePolynomials`, `PinesSynthesisPoint`,
   `PinesPotentialSum`, `GottliebPotentialSum`, and `TideSystem` as the first
   non-zonal static harmonic force surface plus reusable normalized `Cbar/Sbar`
-  coefficient-field, longitude-trigonometry, direction-cosine-longitude,
-  truncation-validation, Pines-Legendre, scalar-potential summation,
+  coefficient-field, std-gated normalized-harmonic TOML ingestion,
+  longitude-trigonometry, direction-cosine-longitude, truncation-validation,
+  Pines-Legendre, scalar-potential summation,
   Gottlieb-style scalar recomposition, and Pines/Gottlieb-style
   finite-difference acceleration-oracle substrate plus a static `GravityModel`
   wrapper.
   `TesseralGravity::wgs84_j2()` is byte-identical to `J2Gravity`, the degree-2
   evaluator includes C21/S21 tesseral and C22/S22 sectoral terms through
-  Cartesian solid-harmonic polynomials, the low-degree ingestion bridge converts
-  fully-normalized degree-2 blocks and extracts them from a normalized harmonic
-  field parsed from `data/gravity/wgs84-degree2-normalized-v1.toml`, and the
+  Cartesian solid-harmonic polynomials, the low-degree ingestion bridge parses
+  normalized-harmonic TOML, converts fully-normalized degree-2 blocks, and
+  extracts them from a normalized harmonic field parsed from
+  `data/gravity/wgs84-degree2-normalized-v1.toml`, and the
   existing `Egm2008ZonalGravity` J2-J6 truncation can be rebuilt from the
   provenance-pinned
   `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
@@ -688,7 +692,9 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   direction-cosine longitude polynomials, checked truncation-envelope
   validation, low-degree closed-form Pines Legendre recurrence, normalized
   Pines scalar-potential summation matching the existing degree-2 Cartesian
-  polynomial, Gottlieb-style scalar-potential recomposition matching Pines at
+  polynomial, fail-closed normalized-harmonic TOML parsing for the WGS84
+  degree-2 and EGM2008 zonal fixtures plus malformed metadata, Gottlieb-style
+  scalar-potential recomposition matching Pines at
   generic/equatorial/near-pole points, Pines and Gottlieb-style
   finite-difference acceleration plus `FiniteDifferencePinesGravity` model
   output matching existing analytic degree-2 tesseral terms, default-zero

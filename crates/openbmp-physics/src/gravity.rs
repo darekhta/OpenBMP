@@ -2059,6 +2059,59 @@ impl NormalizedHarmonicField {
         })
     }
 
+    /// Construct a fully-normalized coefficient field from an OpenBMP TOML
+    /// fixture.
+    ///
+    /// This parser is available only with the `std` feature so the HAL/no-std
+    /// physics core does not carry a TOML dependency. It accepts the current
+    /// provenance-pinned fixture schemas:
+    ///
+    /// * `openbmp.gravity.normalized-degree2.v1`
+    /// * `openbmp.gravity.normalized-zonal.v1`
+    /// * `openbmp.gravity.normalized-field.v1`
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when the TOML cannot be
+    /// parsed, required metadata is missing, the normalization is not
+    /// `fully_normalized`, the schema is unsupported, or any coefficient fails
+    /// the same validation as [`Self::new`].
+    #[cfg(feature = "std")]
+    pub fn from_normalized_toml_str(input: &str) -> Result<Self, PhysicsError> {
+        let value =
+            toml::from_str::<toml::Value>(input).map_err(|_| PhysicsError::InvalidParameter {
+                reason: "normalized harmonic TOML must parse",
+            })?;
+        let table = value.as_table().ok_or(PhysicsError::InvalidParameter {
+            reason: "normalized harmonic TOML root must be a table",
+        })?;
+        let _dataset_id = normalized_harmonic_toml_str(table, "dataset_id")?;
+        let schema_version = normalized_harmonic_toml_str(table, "schema_version")?;
+        let normalization = normalized_harmonic_toml_str(table, "normalization")?;
+        if normalization != "fully_normalized" {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "normalized harmonic TOML normalization must be fully_normalized",
+            });
+        }
+        let tide_system =
+            TideSystem::from_tag(normalized_harmonic_toml_str(table, "tide_system")?)?;
+
+        match schema_version {
+            "openbmp.gravity.normalized-degree2.v1" => {
+                Self::from_normalized_degree2_toml_table(table, tide_system)
+            }
+            "openbmp.gravity.normalized-zonal.v1" => {
+                Self::from_normalized_general_toml_table(table, tide_system, true)
+            }
+            "openbmp.gravity.normalized-field.v1" => {
+                Self::from_normalized_general_toml_table(table, tide_system, false)
+            }
+            _ => Err(PhysicsError::InvalidParameter {
+                reason: "unsupported normalized harmonic TOML schema_version",
+            }),
+        }
+    }
+
     /// Declared maximum harmonic degree.
     #[must_use]
     pub const fn max_degree(&self) -> usize {
@@ -2504,6 +2557,136 @@ impl NormalizedHarmonicField {
         }
         Ok(potential)
     }
+
+    #[cfg(feature = "std")]
+    fn from_normalized_degree2_toml_table(
+        table: &toml::value::Table,
+        tide_system: TideSystem,
+    ) -> Result<Self, PhysicsError> {
+        let degree_2 = table
+            .get("degree_2")
+            .and_then(toml::Value::as_table)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "normalized degree-2 TOML must contain a degree_2 table",
+            })?;
+        Self::new(
+            2,
+            2,
+            tide_system,
+            [
+                NormalizedHarmonicCoefficient::new(
+                    2,
+                    0,
+                    normalized_harmonic_toml_f64(degree_2, "cbar20")?,
+                    0.0,
+                )?,
+                NormalizedHarmonicCoefficient::new(
+                    2,
+                    1,
+                    normalized_harmonic_toml_f64(degree_2, "cbar21")?,
+                    normalized_harmonic_toml_f64(degree_2, "sbar21")?,
+                )?,
+                NormalizedHarmonicCoefficient::new(
+                    2,
+                    2,
+                    normalized_harmonic_toml_f64(degree_2, "cbar22")?,
+                    normalized_harmonic_toml_f64(degree_2, "sbar22")?,
+                )?,
+            ],
+        )
+    }
+
+    #[cfg(feature = "std")]
+    fn from_normalized_general_toml_table(
+        table: &toml::value::Table,
+        tide_system: TideSystem,
+        require_zonal: bool,
+    ) -> Result<Self, PhysicsError> {
+        let max_degree = normalized_harmonic_toml_usize(table, "max_degree")?;
+        let max_order = normalized_harmonic_toml_usize(table, "max_order")?;
+        if require_zonal && max_order != 0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "normalized zonal TOML max_order must be zero",
+            });
+        }
+        let coefficients = table
+            .get("coefficient")
+            .and_then(toml::Value::as_array)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "normalized harmonic TOML must contain coefficient entries",
+            })?
+            .iter()
+            .map(|entry| {
+                let entry = entry.as_table().ok_or(PhysicsError::InvalidParameter {
+                    reason: "normalized harmonic coefficient entry must be a table",
+                })?;
+                let degree = normalized_harmonic_toml_usize(entry, "degree")?;
+                let order = normalized_harmonic_toml_usize(entry, "order")?;
+                if require_zonal && order != 0 {
+                    return Err(PhysicsError::InvalidParameter {
+                        reason: "normalized zonal TOML coefficient order must be zero",
+                    });
+                }
+                NormalizedHarmonicCoefficient::new(
+                    degree,
+                    order,
+                    normalized_harmonic_toml_f64(entry, "cbar")?,
+                    normalized_harmonic_toml_f64(entry, "sbar")?,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(max_degree, max_order, tide_system, coefficients)
+    }
+}
+
+#[cfg(feature = "std")]
+fn normalized_harmonic_toml_str<'a>(
+    table: &'a toml::value::Table,
+    key: &'static str,
+) -> Result<&'a str, PhysicsError> {
+    table
+        .get(key)
+        .and_then(toml::Value::as_str)
+        .ok_or(PhysicsError::InvalidParameter {
+            reason: "normalized harmonic TOML string field is missing or invalid",
+        })
+}
+
+#[cfg(feature = "std")]
+fn normalized_harmonic_toml_usize(
+    table: &toml::value::Table,
+    key: &'static str,
+) -> Result<usize, PhysicsError> {
+    let value =
+        table
+            .get(key)
+            .and_then(toml::Value::as_integer)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "normalized harmonic TOML integer field is missing or invalid",
+            })?;
+    usize::try_from(value).map_err(|_| PhysicsError::InvalidParameter {
+        reason: "normalized harmonic TOML integer field must be non-negative",
+    })
+}
+
+#[cfg(feature = "std")]
+fn normalized_harmonic_toml_f64(
+    table: &toml::value::Table,
+    key: &'static str,
+) -> Result<f64, PhysicsError> {
+    let value =
+        table
+            .get(key)
+            .and_then(toml::Value::as_float)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "normalized harmonic TOML float field is missing or invalid",
+            })?;
+    if !value.is_finite() {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "normalized harmonic TOML float field must be finite",
+        });
+    }
+    Ok(value)
 }
 
 fn normalized_harmonic_storage_len(max_degree: usize, max_order: usize) -> Option<usize> {
@@ -3534,20 +3717,12 @@ mod tests {
     }
 
     fn load_wgs84_normalized_harmonic_field_fixture() -> NormalizedHarmonicField {
-        let normalized = load_wgs84_normalized_degree_two_fixture();
-        NormalizedHarmonicField::new(
-            2,
-            2,
-            normalized.tide_system(),
-            [
-                NormalizedHarmonicCoefficient::new(2, 0, normalized.cbar20(), 0.0).unwrap(),
-                NormalizedHarmonicCoefficient::new(2, 1, normalized.cbar21(), normalized.sbar21())
-                    .unwrap(),
-                NormalizedHarmonicCoefficient::new(2, 2, normalized.cbar22(), normalized.sbar22())
-                    .unwrap(),
-            ],
-        )
-        .expect("finite normalized harmonic field")
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/gravity/wgs84-degree2-normalized-v1.toml"
+        ));
+        NormalizedHarmonicField::from_normalized_toml_str(fixture)
+            .expect("finite normalized harmonic field")
     }
 
     fn normalized_field_from_degree_two(
@@ -3589,68 +3764,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../data/gravity/egm2008-zonal-degree6-normalized-v1.toml"
         ));
-        let value: toml::Value = toml::from_str(fixture).expect("EGM2008 zonal TOML parses");
-        let table = value.as_table().expect("EGM2008 zonal TOML table");
-        assert_eq!(
-            table
-                .get("dataset_id")
-                .and_then(toml::Value::as_str)
-                .expect("dataset_id"),
-            "openbmp.egm2008.gravity.zonal-degree6-normalized.v1"
-        );
-        assert_eq!(
-            table
-                .get("schema_version")
-                .and_then(toml::Value::as_str)
-                .expect("schema_version"),
-            "openbmp.gravity.normalized-zonal.v1"
-        );
-        assert_eq!(
-            table
-                .get("normalization")
-                .and_then(toml::Value::as_str)
-                .expect("normalization"),
-            "fully_normalized"
-        );
-        let tide_system = TideSystem::from_tag(
-            table
-                .get("tide_system")
-                .and_then(toml::Value::as_str)
-                .expect("tide_system"),
-        )
-        .expect("known tide system");
-        let unsigned = |key: &str| -> usize {
-            let value = table.get(key).and_then(toml::Value::as_integer).expect(key);
-            assert!(value >= 0, "{key} must be non-negative");
-            value as usize
-        };
-        let max_degree = unsigned("max_degree");
-        let max_order = unsigned("max_order");
-        let coefficients = table
-            .get("coefficient")
-            .and_then(toml::Value::as_array)
-            .expect("coefficient array")
-            .iter()
-            .map(|entry| {
-                let entry = entry.as_table().expect("coefficient table");
-                let unsigned = |key: &str| -> usize {
-                    let value = entry.get(key).and_then(toml::Value::as_integer).expect(key);
-                    assert!(value >= 0, "{key} must be non-negative");
-                    value as usize
-                };
-                let scalar = |key: &str| -> f64 {
-                    entry.get(key).and_then(toml::Value::as_float).expect(key)
-                };
-                NormalizedHarmonicCoefficient::new(
-                    unsigned("degree"),
-                    unsigned("order"),
-                    scalar("cbar"),
-                    scalar("sbar"),
-                )
-                .expect("finite normalized zonal coefficient")
-            })
-            .collect::<Vec<_>>();
-        NormalizedHarmonicField::new(max_degree, max_order, tide_system, coefficients)
+        NormalizedHarmonicField::from_normalized_toml_str(fixture)
             .expect("finite normalized EGM2008 zonal field")
     }
 
@@ -4093,6 +4207,61 @@ mod tests {
         for axis in 0..3 {
             assert_abs_diff_eq!(from_field[axis], direct_j2[axis], epsilon = 1.0e-17);
         }
+    }
+
+    #[test]
+    fn tesseral_normalized_harmonic_field_parses_egm2008_zonal_toml_pin() {
+        let field = load_egm2008_normalized_zonal_degree6_fixture();
+
+        assert_eq!(field.max_degree(), 6);
+        assert_eq!(field.max_order(), 0);
+        assert_eq!(field.tide_system(), TideSystem::TideFree);
+        assert_eq!(field.coefficient_count(), 5);
+        assert_eq!(field.storage_len(), 7);
+        assert_abs_diff_eq!(
+            field.coefficient(2, 0).unwrap().0,
+            -WGS84_J2 / 5.0_f64.sqrt(),
+            epsilon = 1.0e-20
+        );
+        assert_eq!(
+            field.coefficient(2, 0).unwrap().1.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(field.coefficient(1, 0).unwrap(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn tesseral_normalized_harmonic_field_toml_parser_rejects_bad_metadata() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/gravity/egm2008-zonal-degree6-normalized-v1.toml"
+        ));
+
+        assert!(matches!(
+            NormalizedHarmonicField::from_normalized_toml_str("not valid = ["),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let bad_normalization = fixture.replace("fully_normalized", "unnormalized");
+        assert!(matches!(
+            NormalizedHarmonicField::from_normalized_toml_str(&bad_normalization),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let bad_schema = fixture.replace(
+            "openbmp.gravity.normalized-zonal.v1",
+            "openbmp.gravity.unknown.v1",
+        );
+        assert!(matches!(
+            NormalizedHarmonicField::from_normalized_toml_str(&bad_schema),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let bad_zonal_order = fixture.replace("max_order      = 0", "max_order      = 1");
+        assert!(matches!(
+            NormalizedHarmonicField::from_normalized_toml_str(&bad_zonal_order),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]

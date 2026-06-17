@@ -20,6 +20,7 @@ std       = [
     "dep:sgp4",
     "sgp4/std",
     "thiserror/std",
+    "dep:toml",
 ]
 synthetic = ["std"]
 
@@ -31,6 +32,7 @@ openbmp-uq        = { version = "0.0.1", path = "../openbmp-uq", default-feature
 sgp4              = { version = "2.4.0", default-features = false, optional = true }
 static_assertions = { workspace = true }
 thiserror         = { version = "2.0.18", default-features = false }
+toml              = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx              = { workspace = true }
