@@ -18,6 +18,8 @@
 //! * [`FiniteDifferencePinesGravity`] — a transitional normalized Pines
 //!   model that composes point mass with the bounded finite-difference
 //!   harmonic-correction oracle.
+//! * [`HarmonicSynthesisPlan`] / [`HarmonicSynthesisTier`] — checked
+//!   runtime high-degree truncation requests for future EGM2008 tiers.
 //! * [`GottliebPotentialSum`] — a scalar-potential recomposition oracle
 //!   for cross-checking the Pines coefficient sum.
 //!
@@ -1099,6 +1101,15 @@ pub const HARMONIC_LONGITUDE_MAX_ORDER: usize = 4096;
 /// keeping scratch allocation bounded before full synthesis lands.
 pub const PINES_LEGENDRE_MAX_DEGREE: usize = 720;
 
+/// First runtime-selectable high-degree EGM2008 tier planned for WP-08.1.
+pub const HARMONIC_SYNTHESIS_EGM2008_DEGREE_70: usize = 70;
+
+/// Intermediate runtime-selectable high-degree EGM2008 tier planned for WP-08.1.
+pub const HARMONIC_SYNTHESIS_EGM2008_DEGREE_120: usize = 120;
+
+/// Full in-repo runtime-selectable EGM2008 tier planned for WP-08.1.
+pub const HARMONIC_SYNTHESIS_EGM2008_DEGREE_360: usize = 360;
+
 /// Scale a real fully-normalized harmonic coefficient into the unnormalized
 /// associated-Legendre convention used by the current low-degree evaluators.
 ///
@@ -1606,6 +1617,121 @@ impl HarmonicTruncation {
     #[must_use]
     pub const fn order(&self) -> usize {
         self.order
+    }
+}
+
+/// Runtime-selectable high-degree harmonic synthesis tier.
+///
+/// These named tiers mirror the WP-08.1 EGM2008 rollout plan. Selecting a tier
+/// does not imply that EGM2008 coefficients are present; callers must resolve a
+/// tier against a concrete [`NormalizedHarmonicField`] through
+/// [`HarmonicSynthesisPlan`] so missing data envelopes fail closed.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum HarmonicSynthesisTier {
+    /// EGM2008 degree/order 70 truncation tier.
+    Egm2008Degree70,
+    /// EGM2008 degree/order 120 truncation tier.
+    Egm2008Degree120,
+    /// EGM2008 degree/order 360 truncation tier.
+    Egm2008Degree360,
+}
+
+impl HarmonicSynthesisTier {
+    /// Inclusive maximum harmonic degree for this tier.
+    #[must_use]
+    pub const fn degree(&self) -> usize {
+        match self {
+            Self::Egm2008Degree70 => HARMONIC_SYNTHESIS_EGM2008_DEGREE_70,
+            Self::Egm2008Degree120 => HARMONIC_SYNTHESIS_EGM2008_DEGREE_120,
+            Self::Egm2008Degree360 => HARMONIC_SYNTHESIS_EGM2008_DEGREE_360,
+        }
+    }
+
+    /// Inclusive maximum harmonic order for this tier.
+    #[must_use]
+    pub const fn order(&self) -> usize {
+        self.degree()
+    }
+
+    /// Degree/order truncation requested by this tier.
+    pub fn truncation(&self) -> Result<HarmonicTruncation, PhysicsError> {
+        HarmonicTruncation::new(self.degree(), self.order())
+    }
+}
+
+/// Checked harmonic synthesis plan resolved against a coefficient field.
+///
+/// The plan is a small guardrail before the full analytic high-degree Pines /
+/// Gottlieb kernels land: it proves that a runtime request fits the loaded
+/// coefficient envelope and the bounded scratch tables used by the current
+/// Pines scalar and finite-difference paths.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct HarmonicSynthesisPlan {
+    truncation: HarmonicTruncation,
+    tier: Option<HarmonicSynthesisTier>,
+}
+
+impl HarmonicSynthesisPlan {
+    /// Resolve a custom degree/order truncation against a normalized field and
+    /// the bounded Pines synthesis scratch envelopes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if the truncation exceeds
+    /// the field envelope, the Pines Legendre degree cap, or the longitude
+    /// recurrence order cap.
+    pub fn for_normalized_field(
+        field: &NormalizedHarmonicField,
+        truncation: HarmonicTruncation,
+    ) -> Result<Self, PhysicsError> {
+        let truncation = checked_pines_synthesis_truncation(field, truncation)?;
+        Ok(Self {
+            truncation,
+            tier: None,
+        })
+    }
+
+    /// Resolve a named EGM2008 tier against a normalized field and the bounded
+    /// Pines synthesis scratch envelopes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if the loaded field does not
+    /// cover the requested tier or if the tier exceeds the checked scratch
+    /// limits.
+    pub fn egm2008_tier_for_normalized_field(
+        field: &NormalizedHarmonicField,
+        tier: HarmonicSynthesisTier,
+    ) -> Result<Self, PhysicsError> {
+        let truncation = checked_pines_synthesis_truncation(field, tier.truncation()?)?;
+        Ok(Self {
+            truncation,
+            tier: Some(tier),
+        })
+    }
+
+    /// Resolved truncation.
+    #[must_use]
+    pub const fn truncation(&self) -> HarmonicTruncation {
+        self.truncation
+    }
+
+    /// Named tier, if this plan was resolved from one.
+    #[must_use]
+    pub const fn tier(&self) -> Option<HarmonicSynthesisTier> {
+        self.tier
+    }
+
+    /// Inclusive maximum harmonic degree.
+    #[must_use]
+    pub const fn degree(&self) -> usize {
+        self.truncation.degree()
+    }
+
+    /// Inclusive maximum harmonic order.
+    #[must_use]
+    pub const fn order(&self) -> usize {
+        self.truncation.order()
     }
 }
 
@@ -2223,12 +2349,7 @@ impl NormalizedHarmonicField {
         reference_radius_m: f64,
         truncation: HarmonicTruncation,
     ) -> Result<PinesPotentialSum, PhysicsError> {
-        let truncation = HarmonicTruncation::within_envelope(
-            truncation.degree(),
-            truncation.order(),
-            self.max_degree,
-            self.max_order,
-        )?;
+        let truncation = checked_pines_synthesis_truncation(self, truncation)?;
         let point = PinesSynthesisPoint::new(position_body_fixed_m, reference_radius_m)?;
         let legendre = PinesLegendreTable::new(point.u(), truncation.degree(), truncation.order())?;
         let longitude = PinesLongitudePolynomials::new(point.s(), point.t(), truncation.order())?;
@@ -2285,12 +2406,7 @@ impl NormalizedHarmonicField {
         reference_radius_m: f64,
         truncation: HarmonicTruncation,
     ) -> Result<GottliebPotentialSum, PhysicsError> {
-        let truncation = HarmonicTruncation::within_envelope(
-            truncation.degree(),
-            truncation.order(),
-            self.max_degree,
-            self.max_order,
-        )?;
+        let truncation = checked_pines_synthesis_truncation(self, truncation)?;
         let point = PinesSynthesisPoint::new(position_body_fixed_m, reference_radius_m)?;
         let legendre = PinesLegendreTable::new(point.u(), truncation.degree(), truncation.order())?;
         let longitude_rad = point.t().atan2(point.s());
@@ -2721,6 +2837,25 @@ fn checked_triangular_count(row_count: usize) -> Option<usize> {
         .checked_div(2)
 }
 
+fn checked_pines_synthesis_truncation(
+    field: &NormalizedHarmonicField,
+    truncation: HarmonicTruncation,
+) -> Result<HarmonicTruncation, PhysicsError> {
+    let truncation =
+        HarmonicTruncation::for_normalized_field(field, truncation.degree(), truncation.order())?;
+    if truncation.degree() > PINES_LEGENDRE_MAX_DEGREE {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "Pines synthesis truncation degree exceeds checked Legendre envelope",
+        });
+    }
+    if truncation.order() > HARMONIC_LONGITUDE_MAX_ORDER {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "Pines synthesis truncation order exceeds checked longitude envelope",
+        });
+    }
+    Ok(truncation)
+}
+
 // ---------------------------------------------------------------------
 // FiniteDifferencePinesGravity
 // ---------------------------------------------------------------------
@@ -2781,21 +2916,8 @@ impl FiniteDifferencePinesGravity {
                 reason: "Pines gravity finite-difference step must be strictly positive and finite",
             });
         }
-        let truncation = HarmonicTruncation::for_normalized_field(
-            &field,
-            truncation.degree(),
-            truncation.order(),
-        )?;
-        if truncation.degree() > PINES_LEGENDRE_MAX_DEGREE {
-            return Err(PhysicsError::InvalidParameter {
-                reason: "Pines gravity truncation degree exceeds checked Legendre envelope",
-            });
-        }
-        if truncation.order() > HARMONIC_LONGITUDE_MAX_ORDER {
-            return Err(PhysicsError::InvalidParameter {
-                reason: "Pines gravity truncation order exceeds checked longitude envelope",
-            });
-        }
+        let truncation =
+            HarmonicSynthesisPlan::for_normalized_field(&field, truncation)?.truncation();
         let (cbar00, sbar00) = field.coefficient(0, 0)?;
         if cbar00 != 0.0 || sbar00 != 0.0 {
             return Err(PhysicsError::InvalidParameter {
@@ -2809,6 +2931,57 @@ impl FiniteDifferencePinesGravity {
             truncation,
             finite_difference_step_m,
         })
+    }
+
+    /// Construct from a pre-resolved harmonic synthesis plan.
+    ///
+    /// The plan is revalidated against `field` so callers cannot accidentally
+    /// reuse a plan resolved for a different coefficient envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::new`].
+    pub fn new_with_synthesis_plan(
+        mu_m3_s2: f64,
+        reference_radius_m: f64,
+        field: NormalizedHarmonicField,
+        plan: HarmonicSynthesisPlan,
+        finite_difference_step_m: f64,
+    ) -> Result<Self, PhysicsError> {
+        Self::new(
+            mu_m3_s2,
+            reference_radius_m,
+            field,
+            plan.truncation(),
+            finite_difference_step_m,
+        )
+    }
+
+    /// Construct from a named EGM2008 high-degree runtime tier.
+    ///
+    /// This validates the requested tier against the supplied field envelope.
+    /// It still uses the finite-difference Pines transition path; it does not
+    /// claim the final analytic EGM2008 kernel is complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::new`] plus an error when `field`
+    /// does not cover `tier`.
+    pub fn new_with_synthesis_tier(
+        mu_m3_s2: f64,
+        reference_radius_m: f64,
+        field: NormalizedHarmonicField,
+        tier: HarmonicSynthesisTier,
+        finite_difference_step_m: f64,
+    ) -> Result<Self, PhysicsError> {
+        let plan = HarmonicSynthesisPlan::egm2008_tier_for_normalized_field(&field, tier)?;
+        Self::new_with_synthesis_plan(
+            mu_m3_s2,
+            reference_radius_m,
+            field,
+            plan,
+            finite_difference_step_m,
+        )
     }
 
     /// Configured gravitational parameter in m^3/s^2.
@@ -4528,6 +4701,86 @@ mod tests {
     }
 
     #[test]
+    fn tesseral_harmonic_synthesis_plan_validates_runtime_tiers() {
+        let tier = HarmonicSynthesisTier::Egm2008Degree70;
+        assert_eq!(tier.degree(), HARMONIC_SYNTHESIS_EGM2008_DEGREE_70);
+        assert_eq!(tier.order(), HARMONIC_SYNTHESIS_EGM2008_DEGREE_70);
+        assert_eq!(
+            tier.truncation().unwrap(),
+            HarmonicTruncation::new(
+                HARMONIC_SYNTHESIS_EGM2008_DEGREE_70,
+                HARMONIC_SYNTHESIS_EGM2008_DEGREE_70
+            )
+            .unwrap()
+        );
+
+        let field_70 = NormalizedHarmonicField::new(
+            HARMONIC_SYNTHESIS_EGM2008_DEGREE_70,
+            HARMONIC_SYNTHESIS_EGM2008_DEGREE_70,
+            TideSystem::TideFree,
+            [],
+        )
+        .unwrap();
+        let plan =
+            HarmonicSynthesisPlan::egm2008_tier_for_normalized_field(&field_70, tier).unwrap();
+        assert_eq!(plan.tier(), Some(tier));
+        assert_eq!(plan.degree(), HARMONIC_SYNTHESIS_EGM2008_DEGREE_70);
+        assert_eq!(plan.order(), HARMONIC_SYNTHESIS_EGM2008_DEGREE_70);
+
+        let custom = HarmonicSynthesisPlan::for_normalized_field(
+            &field_70,
+            HarmonicTruncation::new(12, 4).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(custom.tier(), None);
+        assert_eq!(custom.truncation(), HarmonicTruncation::new(12, 4).unwrap());
+
+        assert!(matches!(
+            HarmonicSynthesisPlan::egm2008_tier_for_normalized_field(
+                &field_70,
+                HarmonicSynthesisTier::Egm2008Degree120
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let field_360 = NormalizedHarmonicField::new(
+            HARMONIC_SYNTHESIS_EGM2008_DEGREE_360,
+            HARMONIC_SYNTHESIS_EGM2008_DEGREE_360,
+            TideSystem::TideFree,
+            [],
+        )
+        .unwrap();
+        let plan_360 = HarmonicSynthesisPlan::egm2008_tier_for_normalized_field(
+            &field_360,
+            HarmonicSynthesisTier::Egm2008Degree360,
+        )
+        .unwrap();
+        assert_eq!(
+            plan_360.truncation(),
+            HarmonicTruncation::new(
+                HARMONIC_SYNTHESIS_EGM2008_DEGREE_360,
+                HARMONIC_SYNTHESIS_EGM2008_DEGREE_360
+            )
+            .unwrap()
+        );
+
+        let over_degree_field = NormalizedHarmonicField::new(
+            PINES_LEGENDRE_MAX_DEGREE + 1,
+            0,
+            TideSystem::TideFree,
+            [],
+        )
+        .unwrap();
+        assert!(matches!(
+            HarmonicSynthesisPlan::for_normalized_field(
+                &over_degree_field,
+                HarmonicTruncation::new(PINES_LEGENDRE_MAX_DEGREE + 1, 0).unwrap()
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
     fn tesseral_pines_legendre_table_matches_low_degree_closed_form() {
         let u = 0.37_f64;
         let table = PinesLegendreTable::new(u, 4, 4).unwrap();
@@ -5044,6 +5297,59 @@ mod tests {
                 point_mass_acceleration[axis].to_bits()
             );
         }
+    }
+
+    #[test]
+    fn finite_difference_pines_gravity_accepts_resolved_runtime_tier() {
+        let field_70 = NormalizedHarmonicField::new(
+            HARMONIC_SYNTHESIS_EGM2008_DEGREE_70,
+            HARMONIC_SYNTHESIS_EGM2008_DEGREE_70,
+            TideSystem::TideFree,
+            [],
+        )
+        .unwrap();
+        let tier_model = FiniteDifferencePinesGravity::new_with_synthesis_tier(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            field_70.clone(),
+            HarmonicSynthesisTier::Egm2008Degree70,
+            10.0,
+        )
+        .unwrap();
+        assert_eq!(
+            tier_model.truncation(),
+            HarmonicTruncation::new(
+                HARMONIC_SYNTHESIS_EGM2008_DEGREE_70,
+                HARMONIC_SYNTHESIS_EGM2008_DEGREE_70
+            )
+            .unwrap()
+        );
+
+        let custom_plan = HarmonicSynthesisPlan::for_normalized_field(
+            &field_70,
+            HarmonicTruncation::new(12, 4).unwrap(),
+        )
+        .unwrap();
+        let custom_model = FiniteDifferencePinesGravity::new_with_synthesis_plan(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            field_70.clone(),
+            custom_plan,
+            10.0,
+        )
+        .unwrap();
+        assert_eq!(custom_model.truncation(), custom_plan.truncation());
+
+        assert!(matches!(
+            FiniteDifferencePinesGravity::new_with_synthesis_tier(
+                WGS84_MU_M3_S2,
+                WGS84_A_M,
+                field_70,
+                HarmonicSynthesisTier::Egm2008Degree120,
+                10.0
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]

@@ -361,7 +361,8 @@ degree 6 (`gravity.rs`), and WP-08.1 is now **partial** through
 `DegreeTwoTesseralCoefficients`,
 `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
 `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
-`HarmonicLongitudeTrigonometry`, `HarmonicTruncation`, `PinesLegendreTable`,
+`HarmonicLongitudeTrigonometry`, `HarmonicTruncation`,
+`HarmonicSynthesisPlan`, `HarmonicSynthesisTier`, `PinesLegendreTable`,
 `PinesLongitudePolynomials`, `PinesSynthesisPoint`, `PinesPotentialSum`,
 `GottliebPotentialSum`, and
 `TideSystem`: the first degree-2/order-2 static harmonic surface supports C20,
@@ -369,9 +370,11 @@ C21/S21, and C22/S22 terms, converts fully-normalized degree-2 blocks, stores
 normalized `Cbar/Sbar` fields in deterministic packed `(n, m)` order, exposes
 checked fully-normalized scale factors, a std-gated fail-closed
 `from_normalized_toml_str` parser for the OpenBMP normalized harmonic TOML
-schemas, a bounded `cos(mλ)`/`sin(mλ)` recurrence table, a singularity-free
-Pines direction-cosine longitude-polynomial table, a reusable
-truncation-envelope validator, a bounded Holmes-Featherstone/Pines `A_nm(u)`
+schemas, checked runtime high-degree EGM2008 tier requests for the planned
+70/120/360 truncations that must resolve against a concrete field envelope and
+the bounded Pines scratch tables, a bounded `cos(mλ)`/`sin(mλ)` recurrence
+table, a singularity-free Pines direction-cosine longitude-polynomial table, a
+reusable truncation-envelope validator, a bounded Holmes-Featherstone/Pines `A_nm(u)`
 recurrence table, a body-fixed synthesis-point validator, a normalized Pines
 scalar-potential correction sum,
 a normalized Gottlieb-style scalar-potential recomposition oracle cross-checked
@@ -387,9 +390,10 @@ path, keeps the degree-2/order-0 WGS84 J2 path byte-identical to `J2Gravity`,
 stays finite near the pole, and rejects unsupported
 degree/order/duplicate/out-of-envelope coefficient requests fail-closed
 (`REQ-ENV-001`). Missing for full WP-08.1:
-high-degree Pines/Gottlieb
-synthesis, high-degree EGM2008 coefficient ingestion/provenance/tripwire, and
-NGA HARMONIC_SYNTH benchmark tables. IAU 1976/1980 equinox frames remain
+full runtime high-degree Pines synthesis over real EGM2008 coefficient blocks,
+full normalized Gottlieb acceleration-gradient oracle, high-degree EGM2008
+coefficient ingestion/provenance/tripwire, and NGA HARMONIC_SYNTH benchmark
+tables. IAU 1976/1980 equinox frames remain
 the frame path (no CIO); NRLMSISE-00/HWM14 means only (no perturbed-atmosphere
 decorator); WMM2025 remains the magnetic path (no IGRF-14, no gradient); SPK
 DAF parser present. WP-08.2 is now **partial**: `ThirdBodyGravity` keeps its

@@ -100,19 +100,23 @@ Verified by reading the actual files (paths absolute under the repo root).
   `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
   `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
   `HarmonicLongitudeTrigonometry`, `HarmonicTruncation`,
-  `PinesLegendreTable`, `PinesLongitudePolynomials`, `PinesSynthesisPoint`,
-  `PinesPotentialSum`, `GottliebPotentialSum`, `TideSystem`, and fail-closed
-  degree/order validation.
+  `HarmonicSynthesisPlan`, `HarmonicSynthesisTier`, `PinesLegendreTable`,
+  `PinesLongitudePolynomials`, `PinesSynthesisPoint`, `PinesPotentialSum`,
+  `GottliebPotentialSum`, `TideSystem`, and fail-closed degree/order
+  validation.
   It supports `C20`, `C21/S21`, and `C22/S22` Cartesian solid-harmonic
   acceleration, converts fully-normalized degree-2 coefficient blocks into the
   current unnormalized evaluator, stores reusable normalized `Cbar/Sbar` fields
   in deterministic packed `(n, m)` order, exposes a checked
   `fully_normalized_to_unnormalized_scale` helper, a std-gated fail-closed
   `from_normalized_toml_str` parser for OpenBMP normalized harmonic TOML
-  fixtures, a bounded `cos(mλ)` / `sin(mλ)` recurrence table, a
-  direction-cosine `(s + i t)^m` Pines longitude-polynomial table that remains
-  finite at the pole, a reusable truncation envelope validator, a bounded
-  Holmes-Featherstone/Pines `A_nm(u)` recurrence table, a body-fixed
+  fixtures, checked runtime high-degree EGM2008 tier requests for the planned
+  70/120/360 truncations that must resolve against a concrete field envelope
+  and the bounded Pines scratch tables, a bounded `cos(mλ)` / `sin(mλ)`
+  recurrence table, a direction-cosine `(s + i t)^m` Pines
+  longitude-polynomial table that remains finite at the pole, a reusable
+  truncation envelope validator, a bounded Holmes-Featherstone/Pines `A_nm(u)`
+  recurrence table, a body-fixed
   synthesis-point validator, a normalized
   Pines scalar-potential correction sum over deterministic coefficient slots,
   a normalized Gottlieb-style scalar-potential recomposition oracle that
@@ -122,8 +126,8 @@ Verified by reading the actual files (paths absolute under the repo root).
   oracles derived from those scalar potentials, and a public static
   `GravityModel` wrapper for the Pines oracle
   whose ECI axes are currently treated as body-fixed until frame-rotating force
-  wiring lands,
-  and complete default-zero coefficient-slot iterator for future synthesis kernels, rejects duplicate or
+  wiring lands, and a complete default-zero coefficient-slot iterator for
+  future synthesis kernels, rejects duplicate or
   out-of-envelope coefficient entries, parses a provenance-pinned WGS84
   normalized degree-2 fixture, proves its degree-2/order-0 path is
   byte-identical to `J2Gravity`, and stays finite near the pole. This is **not
@@ -668,12 +672,14 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   `NormalizedHarmonicCoefficient`, `NormalizedHarmonicField`,
   `NormalizedHarmonicFieldIter`, `HarmonicLongitudeTrigonometry`,
   `HarmonicTruncation`,
-  `PinesLegendreTable`, `PinesLongitudePolynomials`, `PinesSynthesisPoint`,
-  `PinesPotentialSum`, `GottliebPotentialSum`, and `TideSystem` as the first
-  non-zonal static harmonic force surface plus reusable normalized `Cbar/Sbar`
+  `HarmonicSynthesisPlan`, `HarmonicSynthesisTier`, `PinesLegendreTable`,
+  `PinesLongitudePolynomials`, `PinesSynthesisPoint`, `PinesPotentialSum`,
+  `GottliebPotentialSum`, and `TideSystem` as the first non-zonal static
+  harmonic force surface plus reusable normalized `Cbar/Sbar`
   coefficient-field, std-gated normalized-harmonic TOML ingestion,
   longitude-trigonometry, direction-cosine-longitude, truncation-validation,
-  Pines-Legendre, scalar-potential summation,
+  runtime high-degree tier validation for the planned 70/120/360 EGM2008
+  requests, Pines-Legendre, scalar-potential summation,
   Gottlieb-style scalar recomposition, and Pines/Gottlieb-style
   finite-difference acceleration-oracle substrate plus a static `GravityModel`
   wrapper.
@@ -690,7 +696,9 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   point-mass degeneration, shared fully-normalized scale factors, bounded
   longitude `cos(mλ)`/`sin(mλ)` recurrence, singularity-free Pines
   direction-cosine longitude polynomials, checked truncation-envelope
-  validation, low-degree closed-form Pines Legendre recurrence, normalized
+  validation, checked runtime-tier resolution against 70/120/360-style field
+  envelopes and the bounded Pines scratch caps, low-degree closed-form Pines
+  Legendre recurrence, normalized
   Pines scalar-potential summation matching the existing degree-2 Cartesian
   polynomial, fail-closed normalized-harmonic TOML parsing for the WGS84
   degree-2 and EGM2008 zonal fixtures plus malformed metadata, Gottlieb-style
@@ -702,10 +710,10 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   normalized-field zonal fixture equivalence, and fail-closed unsupported
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:
-  runtime-selectable high-degree Pines synthesis, full normalized Gottlieb
-  acceleration-gradient oracle, high-degree EGM2008 coefficient
-  ingestion/provenance/tripwire, and NGA HARMONIC_SYNTH benchmark tolerance
-  tables.
+  full runtime high-degree Pines synthesis over real EGM2008 coefficient
+  blocks, full normalized Gottlieb acceleration-gradient oracle, high-degree
+  EGM2008 coefficient ingestion/provenance/tripwire, and NGA HARMONIC_SYNTH
+  benchmark tolerance tables.
 - **goal:** Replace the deg-6 zonal cap with full tesseral gravity. Build the shared `HarmonicSynthesis` kernel (Pines + normalized Gottlieb oracle + Holmes–Featherstone scaled recursion) and `TesseralGravity`; load EGM2008 to a runtime-selectable degree. The central gap-closer for this dimension and a "pure win that improves all propagation" (`00` §5).
 - **fidelity_tier:** T1
 - **depends_on:** []
