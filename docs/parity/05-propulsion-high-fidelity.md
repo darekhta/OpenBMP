@@ -817,7 +817,10 @@ Effort sizes are from the research ladder.
   Scenario parsing and runner-side chamber-state advancement for that transient
   network are implemented and traced by `REQ-PROP-014` / `V-PROP-014`.
   Scenario-facing pressure/MR controller wiring for transient feed networks is
-  implemented and traced by `REQ-PROP-015` / `V-PROP-015`. GFSSP worked-case
+  implemented and traced by `REQ-PROP-015` / `V-PROP-015`. A synthetic
+  provenance-backed steady feed-network tolerance table now covers the reduced
+  tank-valve-chamber balance and the two-valve node/branch ladder through
+  `data/feed_system/generic-steady-feed-network-v1.toml`; GFSSP worked-case
   evidence remains future work before this WP is complete.
 - **goal:** GFSSP-style finite-volume network (tanks → valves → injector →
   chamber) producing transient `pc(t)`, `ṁ_ox/ṁ_fuel`, MR excursions, and

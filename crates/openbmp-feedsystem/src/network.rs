@@ -246,6 +246,7 @@ impl FeedNetwork for TankValveChamberNetwork {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use toml::value::Table;
 
     use super::*;
 
@@ -339,5 +340,92 @@ mod tests {
             }),
             Err(FeedSystemError::InvalidParameter { .. })
         ));
+    }
+
+    #[test]
+    fn steady_feed_network_matches_provenance_tolerance_table() {
+        let data: toml::Value = toml::from_str(include_str!(
+            "../../../data/feed_system/generic-steady-feed-network-v1.toml"
+        ))
+        .unwrap();
+        assert_eq!(
+            table("openbmp", &data)["feed_network_steady"]
+                .as_integer()
+                .unwrap(),
+            1
+        );
+        let network = TankValveChamberNetwork::new(TankValveChamberConfig {
+            tank_pressure_pa: float(table("reduced_config", &data), "tank_pressure_pa"),
+            propellant_density_kg_m3: float(
+                table("reduced_config", &data),
+                "propellant_density_kg_m3",
+            ),
+            valve_area_m2: float(table("reduced_config", &data), "valve_area_m2"),
+            valve_discharge_coefficient: float(
+                table("reduced_config", &data),
+                "valve_discharge_coefficient",
+            ),
+            throat_area_m2: float(table("reduced_config", &data), "throat_area_m2"),
+            c_star_m_s: float(table("reduced_config", &data), "c_star_m_s"),
+        })
+        .unwrap();
+        let tolerances = table("tolerances", &data);
+
+        for case in data
+            .get("reduced_case")
+            .and_then(toml::Value::as_array)
+            .expect("reduced_case array")
+        {
+            let case = case.as_table().unwrap();
+            let snapshot = network
+                .solve(FeedCommand {
+                    valve_open_fraction: float(case, "valve_open_fraction"),
+                })
+                .unwrap();
+            let name = string(case, "name");
+
+            assert_abs_diff_eq!(
+                snapshot.chamber_pressure_pa,
+                float(case, "expected_chamber_pressure_pa"),
+                epsilon = float(tolerances, "absolute_pressure_pa")
+            );
+            assert_abs_diff_eq!(
+                snapshot.mass_flow_kg_per_s,
+                float(case, "expected_mass_flow_kg_per_s"),
+                epsilon = float(tolerances, "absolute_mass_flow_kg_per_s")
+            );
+            assert_abs_diff_eq!(
+                snapshot.residual_kg_per_s,
+                float(case, "expected_residual_kg_per_s"),
+                epsilon = float(tolerances, "absolute_residual_kg_per_s")
+            );
+            assert_eq!(
+                string(case, "expected_validation"),
+                "validated-toy",
+                "case {name}"
+            );
+            assert_eq!(snapshot.validation, ValidationStatus::ValidatedToy);
+        }
+    }
+
+    fn table<'a>(key: &str, value: &'a toml::Value) -> &'a Table {
+        value
+            .get(key)
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("missing table {key}"))
+    }
+
+    fn float(table: &Table, key: &str) -> f64 {
+        table
+            .get(key)
+            .and_then(toml::Value::as_float)
+            .unwrap_or_else(|| panic!("missing float {key}"))
+    }
+
+    fn string<'a>(table: &'a Table, key: &str) -> &'a str {
+        table
+            .get(key)
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("missing string {key}"))
     }
 }

@@ -1,6 +1,31 @@
 # Feed-System Data Provenance
 
 ```yaml
+dataset_id: openbmp.feed_system.generic_steady_feed_network.v1
+files:
+  - data/feed_system/generic-steady-feed-network-v1.toml
+source_class: synthetic-openbmp
+source_title: "Synthetic steady feed-network mass-balance tolerance table"
+source_authors: "OpenBMP contributors"
+source_url: "repository-local analytic fixture"
+license_or_terms: "OpenBMP project synthetic data"
+retrieved_utc: "2026-06-17"
+source_hash_sha256: "not applicable: repository-local synthetic derivation"
+transformation:
+  method: "closed-form evaluation of the reduced tank-valve-chamber balance and two-valve node/branch mass-balance equations used by openbmp-feedsystem"
+  script: "manual arithmetic recorded in crates/openbmp-feedsystem/src/network.rs and crates/openbmp-feedsystem/src/graph.rs regression tests"
+verification:
+  method: "parse the TOML table and compare expected chamber pressure, node pressures, branch flows, throat flow, and mass residuals against TankValveChamberNetwork and SteadyFeedGraph"
+  test: "cargo test -p openbmp-feedsystem steady_feed_network_matches_provenance_tolerance_table --locked && cargo test -p openbmp-feedsystem graph_matches_provenance_tolerance_table --locked"
+  tolerance: "absolute tolerances recorded in [tolerances]"
+validation_status: validated-toy
+safety_review:
+  reviewer: "OpenBMP maintainers"
+  decision: accepted
+  notes: "Synthetic reduced feed-network fixture; no real vehicle, feed system, propellant-system, or operational data."
+```
+
+```yaml
 dataset_id: openbmp.feed_system.generic_turbopump_map.v1
 files:
   - data/feed_system/generic-turbopump-map-v1.toml

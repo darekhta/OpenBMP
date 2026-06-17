@@ -585,6 +585,7 @@ fn require_nonnegative_finite(value: f64, reason: &'static str) -> Result<(), Fe
 #[allow(clippy::unwrap_used)]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use toml::value::Table;
 
     use crate::network::{
         FeedCommand, FeedNetwork, TankValveChamberConfig, TankValveChamberNetwork,
@@ -705,5 +706,159 @@ mod tests {
             SteadyFeedGraph::new(config),
             Err(FeedSystemError::InvalidParameter { .. })
         ));
+    }
+
+    #[test]
+    fn graph_matches_provenance_tolerance_table() {
+        let data: toml::Value = toml::from_str(include_str!(
+            "../../../data/feed_system/generic-steady-feed-network-v1.toml"
+        ))
+        .unwrap();
+        assert_eq!(
+            table("openbmp", &data)["feed_network_steady"]
+                .as_integer()
+                .unwrap(),
+            1
+        );
+        let graph_config = table("graph_config", &data);
+        let graph = SteadyFeedGraph::new(SteadyFeedGraphConfig::new(
+            vec![
+                FeedGraphNode {
+                    kind: FeedGraphNodeKind::PressureBoundary {
+                        pressure_pa: float(graph_config, "boundary_pressure_pa"),
+                    },
+                },
+                FeedGraphNode {
+                    kind: FeedGraphNodeKind::Junction {
+                        initial_pressure_pa: float(graph_config, "junction_initial_pressure_pa"),
+                    },
+                },
+                FeedGraphNode {
+                    kind: FeedGraphNodeKind::Chamber {
+                        initial_pressure_pa: float(graph_config, "chamber_initial_pressure_pa"),
+                        throat_area_m2: float(graph_config, "throat_area_m2"),
+                        c_star_m_s: float(graph_config, "c_star_m_s"),
+                    },
+                },
+            ],
+            vec![
+                ValveBranch {
+                    from: 0,
+                    to: 1,
+                    area_m2: float(graph_config, "upstream_valve_area_m2"),
+                    discharge_coefficient: float(graph_config, "valve_discharge_coefficient"),
+                    density_kg_m3: float(graph_config, "density_kg_m3"),
+                    open_fraction: float(graph_config, "open_fraction"),
+                },
+                ValveBranch {
+                    from: 1,
+                    to: 2,
+                    area_m2: float(graph_config, "downstream_valve_area_m2"),
+                    discharge_coefficient: float(graph_config, "valve_discharge_coefficient"),
+                    density_kg_m3: float(graph_config, "density_kg_m3"),
+                    open_fraction: float(graph_config, "open_fraction"),
+                },
+            ],
+        ))
+        .unwrap();
+        let tolerances = table("tolerances", &data);
+
+        for case in data
+            .get("graph_case")
+            .and_then(toml::Value::as_array)
+            .expect("graph_case array")
+        {
+            let case = case.as_table().unwrap();
+            let snapshot = graph.solve().unwrap();
+            let expected_node_pressures = float_array(case, "expected_node_pressures_pa");
+            let expected_branch_flows =
+                float_array(case, "expected_valve_branch_mass_flow_kg_per_s");
+            let name = string(case, "name");
+
+            assert_eq!(
+                snapshot.node_pressures_pa.len(),
+                expected_node_pressures.len()
+            );
+            for (actual, expected) in snapshot
+                .node_pressures_pa
+                .iter()
+                .zip(expected_node_pressures.iter())
+            {
+                assert_abs_diff_eq!(
+                    actual,
+                    expected,
+                    epsilon = float(tolerances, "absolute_pressure_pa")
+                );
+            }
+            assert_eq!(
+                snapshot.valve_branch_mass_flow_kg_per_s.len(),
+                expected_branch_flows.len()
+            );
+            for (actual, expected) in snapshot
+                .valve_branch_mass_flow_kg_per_s
+                .iter()
+                .zip(expected_branch_flows.iter())
+            {
+                assert_abs_diff_eq!(
+                    actual,
+                    expected,
+                    epsilon = float(tolerances, "absolute_mass_flow_kg_per_s")
+                );
+            }
+            let chamber_flow = snapshot.node_pressures_pa[2]
+                * float(graph_config, "throat_area_m2")
+                / float(graph_config, "c_star_m_s");
+            assert_abs_diff_eq!(
+                chamber_flow,
+                float(case, "expected_chamber_throat_mass_flow_kg_per_s"),
+                epsilon = float(tolerances, "absolute_mass_flow_kg_per_s")
+            );
+            assert_abs_diff_eq!(
+                snapshot.max_residual_kg_per_s,
+                float(case, "expected_max_residual_kg_per_s"),
+                epsilon = float(tolerances, "absolute_residual_kg_per_s")
+            );
+            assert_eq!(
+                string(case, "expected_validation"),
+                "validated-toy",
+                "case {name}"
+            );
+            assert_eq!(snapshot.validation, ValidationStatus::ValidatedToy);
+        }
+    }
+
+    fn table<'a>(key: &str, value: &'a toml::Value) -> &'a Table {
+        value
+            .get(key)
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("missing table {key}"))
+    }
+
+    fn float(table: &Table, key: &str) -> f64 {
+        table
+            .get(key)
+            .and_then(toml::Value::as_float)
+            .unwrap_or_else(|| panic!("missing float {key}"))
+    }
+
+    fn float_array(table: &Table, key: &str) -> Vec<f64> {
+        table
+            .get(key)
+            .and_then(toml::Value::as_array)
+            .unwrap_or_else(|| panic!("missing array {key}"))
+            .iter()
+            .map(|value| {
+                value
+                    .as_float()
+                    .unwrap_or_else(|| panic!("array {key} contains a non-float"))
+            })
+            .collect()
+    }
+
+    fn string<'a>(table: &'a Table, key: &str) -> &'a str {
+        table
+            .get(key)
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("missing string {key}"))
     }
 }

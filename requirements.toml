@@ -693,7 +693,7 @@ verification = ["V-PROP-005"]
 [[requirements]]
 id = "REQ-PROP-006"
 title = "Feed-system crate exposes a deterministic tank-valve-chamber solve"
-statement = "The L2 feed-system crate provides an off-runner FeedNetwork boundary and a validated tank-valve-chamber equilibrium solve that balances incompressible valve inflow against choked throat outflow with fixed deterministic iteration, finite/positive parameter validation, fail-closed non-convergence handling, and zero-flow closed-valve behavior."
+statement = "The L2 feed-system crate provides an off-runner FeedNetwork boundary and a validated tank-valve-chamber equilibrium solve that balances incompressible valve inflow against choked throat outflow with fixed deterministic iteration, finite/positive parameter validation, fail-closed non-convergence handling, zero-flow closed-valve behavior, and a provenance-backed steady feed-network tolerance table."
 verification = ["V-PROP-006"]
 
 [[requirements]]
@@ -705,7 +705,7 @@ verification = ["V-PROP-007"]
 [[requirements]]
 id = "REQ-PROP-008"
 title = "Feed-system graphs solve deterministic node-branch mass balance"
-statement = "The feed-system crate exposes a steady node/branch graph with fixed-pressure, junction, and chamber nodes, signed incompressible valve branches, choked chamber-throat outflow, fixed-cap deterministic Newton iteration, dense linear solve fail-closed handling, and node-pressure/branch-flow snapshots with bounded mass residuals."
+statement = "The feed-system crate exposes a steady node/branch graph with fixed-pressure, junction, and chamber nodes, signed incompressible valve branches, choked chamber-throat outflow, fixed-cap deterministic Newton iteration, dense linear solve fail-closed handling, node-pressure/branch-flow snapshots with bounded mass residuals, and a provenance-backed two-valve ladder tolerance table."
 verification = ["V-PROP-008"]
 
 [[requirements]]
@@ -3959,6 +3959,8 @@ paths = [
   "crates/openbmp-feedsystem/src/lib.rs",
   "crates/openbmp-feedsystem/src/error.rs",
   "crates/openbmp-feedsystem/src/network.rs",
+  "data/feed_system/generic-steady-feed-network-v1.toml",
+  "data/feed_system/provenance.md",
   "docs/software-architecture.md",
   "docs/parity/05-propulsion-high-fidelity.md",
 ]
@@ -3968,6 +3970,8 @@ contains = [
   "TankValveChamberNetwork",
   "TankValveChamberConfig",
   "FeedNetworkSnapshot",
+  "generic-steady-feed-network-v1.toml",
+  "steady_feed_network_matches_provenance_tolerance_table",
   "tank_valve_chamber_balances_valve_and_choked_throat",
   "closed_valve_returns_zero_flow",
   "invalid_command_fails_closed",
@@ -4013,6 +4017,8 @@ paths = [
   "crates/openbmp-feedsystem/src/lib.rs",
   "crates/openbmp-feedsystem/src/error.rs",
   "crates/openbmp-feedsystem/src/graph.rs",
+  "data/feed_system/generic-steady-feed-network-v1.toml",
+  "data/feed_system/provenance.md",
   "docs/parity/05-propulsion-high-fidelity.md",
 ]
 contains = [
@@ -4023,6 +4029,8 @@ contains = [
   "FeedGraphNodeKind::Chamber",
   "ValveBranch",
   "solve_dense_linear",
+  "generic-steady-feed-network-v1.toml",
+  "graph_matches_provenance_tolerance_table",
   "graph_matches_reduced_tank_valve_chamber_solution",
   "graph_solves_two_valve_junction_chamber_ladder",
 ]

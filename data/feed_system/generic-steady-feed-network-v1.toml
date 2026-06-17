@@ -1,0 +1,74 @@
+openbmp.feed_network_steady = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.generic_steady_feed_network.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic steady feed-network mass-balance tolerance table"
+provenance = "OpenBMP synthetic analytic fixture derived from incompressible valve flow, choked chamber throat flow, and the reduced two-valve node/branch mass-balance equations; not a real feed-network benchmark."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[reduced_config]
+tank_pressure_pa = 4.0e6
+propellant_density_kg_m3 = 810.0
+valve_area_m2 = 8.0e-5
+valve_discharge_coefficient = 0.72
+throat_area_m2 = 1.2e-4
+c_star_m_s = 1600.0
+
+[graph_config]
+boundary_pressure_pa = 4.0e6
+junction_initial_pressure_pa = 3.5e6
+chamber_initial_pressure_pa = 3.0e6
+upstream_valve_area_m2 = 1.2e-4
+downstream_valve_area_m2 = 1.0e-4
+valve_discharge_coefficient = 0.72
+density_kg_m3 = 810.0
+open_fraction = 1.0
+throat_area_m2 = 1.2e-4
+c_star_m_s = 1600.0
+
+[tolerances]
+absolute_pressure_pa = 1.0e-3
+absolute_mass_flow_kg_per_s = 1.0e-8
+absolute_residual_kg_per_s = 1.0e-8
+
+[[reduced_case]]
+name = "full_open"
+valve_open_fraction = 1.0
+expected_chamber_pressure_pa = 3983393.8467413122
+expected_mass_flow_kg_per_s = 0.298754538505505
+expected_residual_kg_per_s = 0.0
+expected_validation = "validated-toy"
+
+[[reduced_case]]
+name = "half_open"
+valve_open_fraction = 0.5
+expected_chamber_pressure_pa = 3935173.8277296145
+expected_mass_flow_kg_per_s = 0.2951380370797261
+expected_residual_kg_per_s = 0.0
+expected_validation = "validated-toy"
+
+[[reduced_case]]
+name = "quarter_open"
+valve_open_fraction = 0.25
+expected_chamber_pressure_pa = 3762901.780312919
+expected_mass_flow_kg_per_s = 0.2822176335234691
+expected_residual_kg_per_s = 0.0
+expected_validation = "validated-toy"
+
+[[reduced_case]]
+name = "closed_valve"
+valve_open_fraction = 0.0
+expected_chamber_pressure_pa = 0.0
+expected_mass_flow_kg_per_s = 0.0
+expected_residual_kg_per_s = 0.0
+expected_validation = "validated-toy"
+
+[[graph_case]]
+name = "two_valve_junction_chamber_ladder"
+expected_node_pressures_pa = [4000000.0, 3992624.6363964016, 3982004.1128072506]
+expected_valve_branch_mass_flow_kg_per_s = [0.298650308460975, 0.2986503084605423]
+expected_chamber_throat_mass_flow_kg_per_s = 0.2986503084605438
+expected_max_residual_kg_per_s = 0.0
+expected_validation = "validated-toy"
