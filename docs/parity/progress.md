@@ -173,18 +173,22 @@ no-rotation solid-motor burn forecasts the same variable-mass next rigid state
 as the current kernel (`REQ-MULTIBODY-020`). Separated-lane shadows now record
 the same one-step RK4 forecast, and an initial separated direct-torque lane
 proves the forecast matches that lane's next rigid state without changing
-separated-lane telemetry authority (`REQ-MULTIBODY-021`). The primary shadow
-now also seeds single-body active stacks from the kernel's authoritative mass
-state, avoiding liquid-engine snapshot double-drain, and proves a pitch-gimballed
-liquid-engine burn forecasts the same next rigid state over one powered step
-(`REQ-MULTIBODY-022`). The same synthetic gimballed ascent now validates two
-consecutive powered forecast ticks against the current rigid kernel
-(`REQ-MULTIBODY-023`). Missing for full WP-01.1: replacing the rigid-kernel
-propagation path, broader variable-mass multibody propagation beyond the
-one-body root forecast, welded-to-free joint-release propagation and full
-separated-body multibody propagation beyond the one-step separated shadow
-forecast, vehicle-scale gimballed ascent validation, articulated gimbal-joint
-inertia coupling, and Spatial_v2 oracle checks.
+separated-lane telemetry authority (`REQ-MULTIBODY-021`). A scenario-script
+jettison regression now also copies the forecast recorded immediately after the
+jettison-created booster lane is mirrored and proves it matches the next
+separated-lane state over the first post-release tick (`REQ-MULTIBODY-024`).
+The primary shadow now also seeds single-body active stacks from the kernel's
+authoritative mass state, avoiding liquid-engine snapshot double-drain, and
+proves a pitch-gimballed liquid-engine burn forecasts the same next rigid state
+over one powered step (`REQ-MULTIBODY-022`). The same synthetic gimballed ascent
+now validates two consecutive powered forecast ticks against the current rigid
+kernel (`REQ-MULTIBODY-023`). Missing for full WP-01.1: replacing the
+rigid-kernel propagation path, broader variable-mass multibody propagation
+beyond the one-body root forecast, full momentum-conserving welded-to-free
+joint-release propagation and full separated-body multibody propagation beyond
+first-post-release separated shadow forecasts, vehicle-scale gimballed ascent
+validation, articulated gimbal-joint inertia coupling, and Spatial_v2 oracle
+checks.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO

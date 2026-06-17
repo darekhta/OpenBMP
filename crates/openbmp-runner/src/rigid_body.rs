@@ -4598,6 +4598,15 @@ mod tests {
         );
     }
 
+    fn separated_lane_state(session: &RigidBodySession, body: BodyId) -> &RigidBodyState {
+        &session
+            .separated_bodies()
+            .iter()
+            .find(|lane| lane.body == body)
+            .expect("separated lane exists")
+            .state
+    }
+
     #[test]
     fn combine_dry_body_adds_mass_weights_cg_and_sums_inertia() {
         let base = MassProperties::new(
@@ -5448,49 +5457,8 @@ mod tests {
             .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
             .expect("booster separated-lane RK4 forecast is recorded");
         let predicted = &forecast.rigid_state;
-        let actual = &session
-            .separated_bodies()
-            .iter()
-            .find(|lane| lane.body == booster)
-            .expect("booster separated lane exists after step")
-            .state;
-        assert_eq!(predicted.time.as_seconds().to_bits(), 0.1_f64.to_bits());
-        assert!(
-            (predicted.mass_props.mass_kg() - actual.mass_props.mass_kg()).abs() < 1.0e-12,
-            "mass predicted={} actual={}",
-            predicted.mass_props.mass_kg(),
-            actual.mass_props.mass_kg()
-        );
-        assert!(
-            (predicted.position.vector - actual.position.vector).norm() < 1.0e-12,
-            "position predicted={:?} actual={:?} diff={:?}",
-            predicted.position.vector,
-            actual.position.vector,
-            predicted.position.vector - actual.position.vector
-        );
-        assert!(
-            (predicted.velocity.vector - actual.velocity.vector).norm() < 1.0e-12,
-            "velocity predicted={:?} actual={:?} diff={:?}",
-            predicted.velocity.vector,
-            actual.velocity.vector,
-            predicted.velocity.vector - actual.velocity.vector
-        );
-        assert!(
-            (predicted.angular_velocity.vector - actual.angular_velocity.vector).norm() < 1.0e-12,
-            "omega predicted={:?} actual={:?} diff={:?}",
-            predicted.angular_velocity.vector,
-            actual.angular_velocity.vector,
-            predicted.angular_velocity.vector - actual.angular_velocity.vector
-        );
-        let predicted_q = predicted.orientation.q.into_inner();
-        let actual_q = actual.orientation.q.into_inner();
-        assert!(
-            (predicted_q.coords - actual_q.coords).norm() < 1.0e-12,
-            "q predicted={:?} actual={:?} diff={:?}",
-            predicted_q.coords,
-            actual_q.coords,
-            predicted_q.coords - actual_q.coords
-        );
+        let actual = separated_lane_state(&session, booster);
+        assert_rigid_forecast_matches_state(predicted, actual, 0.1);
     }
 
     #[test]
@@ -5543,6 +5511,58 @@ once = true
             derivative.qd_dot()[1] > 0.0,
             "booster-owned pitch torque should reach jettisoned shadow: {:?}",
             derivative.qd_dot()
+        );
+    }
+
+    #[test]
+    fn separated_multibody_shadow_rk4_forecast_matches_jettisoned_lane_rigid_step() {
+        let initial_lane = r#"
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [0.0, 0.0, 10.0]
+velocity_eci_m_s = [0.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+"#;
+        let jettison = r#"
+[[multi_body.separation]]
+event_id = "drop_booster"
+upper_body_id = "bus"
+lower_body_id = "booster"
+
+[scenario_script]
+[[scenario_script.events]]
+id = "drop_booster"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "jettison_stage", body = "booster" }
+once = true
+"#;
+        let toml = SEPARATED_DIRECT_TORQUE_SCENARIO.replace(initial_lane, jettison);
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("jettison step records forecast");
+        let booster = body_id_from_scenario_text("booster");
+        let predicted = session
+            .separated_multibody_shadows
+            .get(&booster)
+            .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+            .expect("jettisoned booster RK4 forecast is recorded")
+            .rigid_state;
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("jettisoned lane rigid step succeeds");
+
+        assert_rigid_forecast_matches_state(
+            &predicted,
+            separated_lane_state(&session, booster),
+            0.2,
         );
     }
 

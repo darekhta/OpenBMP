@@ -139,6 +139,12 @@ statement = "The openbmp-runner primary root-free-flyer shadow is covered by a s
 verification = ["V-MULTIBODY-023"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-024"
+title = "Separated multibody shadows can forecast a jettison-created lane step"
+statement = "The openbmp-runner separated-lane multibody shadow path is covered after a scenario_script jettison event creates a new propagating separated rigid-body lane. The runner test copies the RK4 separated-shadow forecast recorded immediately after the jettison-created booster lane is mirrored, advances the authoritative rigid separated-lane kernel one tick, and proves the forecasted next mass, position, velocity, quaternion, and body angular rate match the current separated-lane state while preserving rigid-kernel telemetry authority. This makes no claim that replacing separated-lane propagation, full momentum-conserving multibody joint-release propagation, broad articulated separated-body propagation, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-024"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1251,6 +1257,24 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-023"]
+
+[[verification]]
+id = "V-MULTIBODY-024"
+kind = "test"
+command = "cargo test -p openbmp-runner separated_multibody_shadow_rk4_forecast_matches_jettisoned_lane_rigid_step --locked && cargo test -p openbmp-runner separated_multibody_shadow_rk4_forecast_matches_initial_lane_rigid_step --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "separated_multibody_shadow_rk4_forecast_matches_jettisoned_lane_rigid_step",
+  "separated_lane_state",
+  "REQ-MULTIBODY-024",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-024"]
 
 [[verification]]
 id = "V-SIL-001"
