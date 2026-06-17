@@ -116,8 +116,9 @@ Verified by reading the actual files (paths absolute under the repo root).
   a normalized Gottlieb-style scalar-potential recomposition oracle that
   cross-checks the Pines sum through ordinary longitude trigonometry and an
   explicit horizontal-power term,
-  a bounded symmetric-finite-difference acceleration oracle derived from that
-  scalar potential, and a public static `GravityModel` wrapper for that oracle
+  bounded Pines and Gottlieb-style symmetric-finite-difference acceleration
+  oracles derived from those scalar potentials, and a public static
+  `GravityModel` wrapper for the Pines oracle
   whose ECI axes are currently treated as body-fixed until frame-rotating force
   wiring lands,
   and complete default-zero coefficient-slot iterator for future synthesis kernels, rejects duplicate or
@@ -670,8 +671,9 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   non-zonal static harmonic force surface plus reusable normalized `Cbar/Sbar`
   coefficient-field, longitude-trigonometry, direction-cosine-longitude,
   truncation-validation, Pines-Legendre, scalar-potential summation,
-  Gottlieb-style scalar recomposition, and finite-difference
-  acceleration-oracle substrate plus a static `GravityModel` wrapper.
+  Gottlieb-style scalar recomposition, and Pines/Gottlieb-style
+  finite-difference acceleration-oracle substrate plus a static `GravityModel`
+  wrapper.
   `TesseralGravity::wgs84_j2()` is byte-identical to `J2Gravity`, the degree-2
   evaluator includes C21/S21 tesseral and C22/S22 sectoral terms through
   Cartesian solid-harmonic polynomials, the low-degree ingestion bridge converts
@@ -687,9 +689,10 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   validation, low-degree closed-form Pines Legendre recurrence, normalized
   Pines scalar-potential summation matching the existing degree-2 Cartesian
   polynomial, Gottlieb-style scalar-potential recomposition matching Pines at
-  generic/equatorial/near-pole points, finite-difference acceleration and
-  `FiniteDifferencePinesGravity` model output matching existing analytic
-  degree-2 tesseral terms, default-zero missing coefficients and iteration slots,
+  generic/equatorial/near-pole points, Pines and Gottlieb-style
+  finite-difference acceleration plus `FiniteDifferencePinesGravity` model
+  output matching existing analytic degree-2 tesseral terms, default-zero
+  missing coefficients and iteration slots,
   normalized-field zonal fixture equivalence, and fail-closed unsupported
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:

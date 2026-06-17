@@ -2289,6 +2289,90 @@ impl NormalizedHarmonicField {
         })
     }
 
+    /// Evaluate harmonic-correction acceleration from the normalized
+    /// Gottlieb-style scalar-potential sum by deterministic symmetric finite
+    /// differences.
+    ///
+    /// This mirrors
+    /// [`Self::pines_potential_correction_acceleration_finite_difference_m_s2`]
+    /// but differentiates
+    /// [`Self::gottlieb_dimensionless_potential_sum`]. It is an acceleration
+    /// cross-check path, not the final analytic normalized Gottlieb gradient
+    /// kernel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `µ` or `step_m` is not
+    /// strictly positive and finite, or if the wrapped scalar-potential
+    /// evaluation rejects the geometry/truncation. Returns
+    /// [`PhysicsError::NonFinite`] if the finite-difference result is
+    /// non-finite.
+    pub fn gottlieb_potential_correction_acceleration_finite_difference_m_s2(
+        &self,
+        mu_m3_s2: f64,
+        position_body_fixed_m: Vector3<f64>,
+        reference_radius_m: f64,
+        truncation: HarmonicTruncation,
+        step_m: f64,
+    ) -> Result<Vector3<f64>, PhysicsError> {
+        if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Gottlieb finite-difference µ must be strictly positive and finite",
+            });
+        }
+        if !step_m.is_finite() || step_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Gottlieb finite-difference step must be strictly positive and finite",
+            });
+        }
+        PinesSynthesisPoint::new(position_body_fixed_m, reference_radius_m)?;
+
+        let offset_x = Vector3::new(step_m, 0.0, 0.0);
+        let offset_y = Vector3::new(0.0, step_m, 0.0);
+        let offset_z = Vector3::new(0.0, 0.0, step_m);
+        let acceleration = Vector3::new(
+            (self.gottlieb_potential_correction_m2_s2(
+                mu_m3_s2,
+                position_body_fixed_m + offset_x,
+                reference_radius_m,
+                truncation,
+            )? - self.gottlieb_potential_correction_m2_s2(
+                mu_m3_s2,
+                position_body_fixed_m - offset_x,
+                reference_radius_m,
+                truncation,
+            )?) / (2.0 * step_m),
+            (self.gottlieb_potential_correction_m2_s2(
+                mu_m3_s2,
+                position_body_fixed_m + offset_y,
+                reference_radius_m,
+                truncation,
+            )? - self.gottlieb_potential_correction_m2_s2(
+                mu_m3_s2,
+                position_body_fixed_m - offset_y,
+                reference_radius_m,
+                truncation,
+            )?) / (2.0 * step_m),
+            (self.gottlieb_potential_correction_m2_s2(
+                mu_m3_s2,
+                position_body_fixed_m + offset_z,
+                reference_radius_m,
+                truncation,
+            )? - self.gottlieb_potential_correction_m2_s2(
+                mu_m3_s2,
+                position_body_fixed_m - offset_z,
+                reference_radius_m,
+                truncation,
+            )?) / (2.0 * step_m),
+        );
+        if !acceleration.iter().all(|value| value.is_finite()) {
+            return Err(PhysicsError::NonFinite {
+                reason: "Gottlieb finite-difference acceleration produced non-finite output",
+            });
+        }
+        Ok(acceleration)
+    }
+
     /// Evaluate harmonic-correction acceleration from the normalized Pines
     /// scalar-potential sum by deterministic symmetric finite differences.
     ///
@@ -2394,6 +2478,28 @@ impl NormalizedHarmonicField {
         if !potential.is_finite() {
             return Err(PhysicsError::NonFinite {
                 reason: "Pines scalar-potential correction produced non-finite output",
+            });
+        }
+        Ok(potential)
+    }
+
+    fn gottlieb_potential_correction_m2_s2(
+        &self,
+        mu_m3_s2: f64,
+        position_body_fixed_m: Vector3<f64>,
+        reference_radius_m: f64,
+        truncation: HarmonicTruncation,
+    ) -> Result<f64, PhysicsError> {
+        let point = PinesSynthesisPoint::new(position_body_fixed_m, reference_radius_m)?;
+        let sum = self.gottlieb_dimensionless_potential_sum(
+            position_body_fixed_m,
+            reference_radius_m,
+            truncation,
+        )?;
+        let potential = mu_m3_s2 / point.radius_m() * sum.dimensionless_correction();
+        if !potential.is_finite() {
+            return Err(PhysicsError::NonFinite {
+                reason: "Gottlieb scalar-potential correction produced non-finite output",
             });
         }
         Ok(potential)
@@ -4496,6 +4602,96 @@ mod tests {
                 Vector3::new(7_000_000.0, 0.0, 0.0),
                 WGS84_A_M,
                 HarmonicTruncation::new(2, 1).unwrap()
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tesseral_gottlieb_finite_difference_acceleration_matches_degree_two_analytic_terms() {
+        let coefficients = DegreeTwoTesseralCoefficients::new(
+            -1.2e-3,
+            2.0e-6,
+            -3.0e-6,
+            4.0e-6,
+            -5.0e-6,
+            TideSystem::TideFree,
+        )
+        .unwrap();
+        let field = normalized_field_from_degree_two(coefficients);
+        let position: Vector3<f64> = Vector3::new(7_100_000.0, -800_000.0, 1_200_000.0);
+        let r2 = position.dot(&position);
+        let r_norm = r2.sqrt();
+        let expected = degree_two_tesseral_perturbation_eci(
+            position,
+            r2,
+            r_norm,
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            coefficients,
+            2,
+        );
+
+        let acceleration = field
+            .gottlieb_potential_correction_acceleration_finite_difference_m_s2(
+                WGS84_MU_M3_S2,
+                position,
+                WGS84_A_M,
+                HarmonicTruncation::new(2, 2).unwrap(),
+                10.0,
+            )
+            .unwrap();
+
+        for axis in 0..3 {
+            assert_abs_diff_eq!(acceleration[axis], expected[axis], epsilon = 5.0e-9);
+        }
+    }
+
+    #[test]
+    fn tesseral_gottlieb_finite_difference_acceleration_rejects_invalid_inputs() {
+        let field = NormalizedHarmonicField::new(
+            2,
+            0,
+            TideSystem::TideFree,
+            [NormalizedHarmonicCoefficient::new(2, 0, -WGS84_J2 / 5.0_f64.sqrt(), 0.0).unwrap()],
+        )
+        .unwrap();
+        let position = Vector3::new(7_000_000.0, 0.0, 0.0);
+        let truncation = HarmonicTruncation::new(2, 0).unwrap();
+
+        assert!(matches!(
+            field.gottlieb_potential_correction_acceleration_finite_difference_m_s2(
+                0.0, position, WGS84_A_M, truncation, 10.0
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            field.gottlieb_potential_correction_acceleration_finite_difference_m_s2(
+                WGS84_MU_M3_S2,
+                position,
+                WGS84_A_M,
+                truncation,
+                0.0
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            field.gottlieb_potential_correction_acceleration_finite_difference_m_s2(
+                WGS84_MU_M3_S2,
+                Vector3::new(0.0, 0.0, 0.0),
+                WGS84_A_M,
+                truncation,
+                10.0
+            ),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
+        assert!(matches!(
+            field.gottlieb_potential_correction_acceleration_finite_difference_m_s2(
+                WGS84_MU_M3_S2,
+                position,
+                WGS84_A_M,
+                HarmonicTruncation::new(2, 1).unwrap(),
+                10.0
             ),
             Err(PhysicsError::InvalidParameter { .. })
         ));

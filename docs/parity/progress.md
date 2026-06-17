@@ -373,9 +373,10 @@ polynomial table, a reusable truncation-envelope validator, a bounded
 Holmes-Featherstone/Pines `A_nm(u)` recurrence table, a body-fixed
 synthesis-point validator, a normalized Pines scalar-potential correction sum,
 a normalized Gottlieb-style scalar-potential recomposition oracle cross-checked
-against the Pines sum, a symmetric finite-difference acceleration oracle plus a
-public static `GravityModel` wrapper matched against the existing analytic
-degree-2 tesseral terms, and default-zero coefficient-slot iteration, rebuilds the current
+against the Pines sum, Pines and Gottlieb-style symmetric finite-difference
+acceleration oracles plus a public static `GravityModel` wrapper matched
+against the existing analytic degree-2 tesseral terms, and default-zero
+coefficient-slot iteration, rebuilds the current
 `Egm2008ZonalGravity` J2-J6 truncation from the
 `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
 fixture, parses the `data/gravity/wgs84-degree2-normalized-v1.toml` provenance
