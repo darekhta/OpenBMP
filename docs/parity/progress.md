@@ -173,12 +173,16 @@ no-rotation solid-motor burn forecasts the same variable-mass next rigid state
 as the current kernel (`REQ-MULTIBODY-020`). Separated-lane shadows now record
 the same one-step RK4 forecast, and an initial separated direct-torque lane
 proves the forecast matches that lane's next rigid state without changing
-separated-lane telemetry authority (`REQ-MULTIBODY-021`). Missing for full
-WP-01.1: replacing the rigid-kernel propagation path, broader variable-mass
-multibody propagation beyond the one-body root forecast, welded-to-free
-joint-release propagation and full separated-body multibody propagation beyond
-the one-step separated shadow forecast, full gimballed ascent validation, and
-Spatial_v2 oracle checks.
+separated-lane telemetry authority (`REQ-MULTIBODY-021`). The primary shadow
+now also seeds single-body active stacks from the kernel's authoritative mass
+state, avoiding liquid-engine snapshot double-drain, and proves a pitch-gimballed
+liquid-engine burn forecasts the same next rigid state over one powered step
+(`REQ-MULTIBODY-022`). Missing for full WP-01.1: replacing the rigid-kernel
+propagation path, broader variable-mass multibody propagation beyond the
+one-body root forecast, welded-to-free joint-release propagation and full
+separated-body multibody propagation beyond the one-step separated shadow
+forecast, full multi-step gimballed ascent validation, and Spatial_v2 oracle
+checks.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO

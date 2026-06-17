@@ -877,17 +877,20 @@ impl RigidBodySession {
             .primary_rigid_body()
             .unwrap_or(existing_shadow.seed.body);
         let current_state = *self.kernel.current_state();
-        let mass_properties = self
-            .mass_model
-            .mass_properties_at(MassContext {
-                time: current_state.time,
-                active_body: Some(body),
-                engine_snapshot: EngineSnapshotView::new(self.kernel.engine_snapshot()),
-                tank_snapshot: TankSnapshotView::new(self.kernel.tank_snapshot()),
-            })
-            .map_err(|err| RunnerError::UnsupportedScenario {
-                what: format!("per-step primary root multibody mass properties failed: {err}"),
-            })?;
+        let mass_properties = if self.stack_bodies.len() == 1 && self.stack_bodies.contains(&body) {
+            current_state.mass_props
+        } else {
+            self.mass_model
+                .mass_properties_at(MassContext {
+                    time: current_state.time,
+                    active_body: Some(body),
+                    engine_snapshot: EngineSnapshotView::new(self.kernel.engine_snapshot()),
+                    tank_snapshot: TankSnapshotView::new(self.kernel.tank_snapshot()),
+                })
+                .map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!("per-step primary root multibody mass properties failed: {err}"),
+                })?
+        };
         let rigid_state = RigidBodyState::new(
             current_state.time,
             current_state.position,
@@ -5277,6 +5280,68 @@ mod tests {
             derivative.qd_dot()[5] > 0.0,
             "engine thrust should create positive axial acceleration: {:?}",
             derivative.qd_dot()
+        );
+    }
+
+    #[test]
+    fn primary_multibody_shadow_rk4_forecast_matches_gimballed_liquid_engine_step() {
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO)
+                .expect("gimballed primary multibody scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step fires engine command");
+        session
+            .step_once(&scenario.document, None)
+            .expect("second step forecasts gimballed engine load");
+
+        let forecast = session
+            .primary_multibody_shadow
+            .as_ref()
+            .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+            .expect("gimballed primary RK4 forecast recorded");
+        let predicted = &forecast.rigid_state;
+        let actual = session.state();
+        assert_eq!(predicted.time.as_seconds().to_bits(), 0.2_f64.to_bits());
+        assert!(
+            (predicted.mass_props.mass_kg() - actual.mass_props.mass_kg()).abs() < 1.0e-12,
+            "mass predicted={} actual={}",
+            predicted.mass_props.mass_kg(),
+            actual.mass_props.mass_kg()
+        );
+        assert!(
+            (predicted.position.vector - actual.position.vector).norm() < 1.0e-12,
+            "position predicted={:?} actual={:?} diff={:?}",
+            predicted.position.vector,
+            actual.position.vector,
+            predicted.position.vector - actual.position.vector
+        );
+        assert!(
+            (predicted.velocity.vector - actual.velocity.vector).norm() < 1.0e-12,
+            "velocity predicted={:?} actual={:?} diff={:?}",
+            predicted.velocity.vector,
+            actual.velocity.vector,
+            predicted.velocity.vector - actual.velocity.vector
+        );
+        assert!(
+            (predicted.angular_velocity.vector - actual.angular_velocity.vector).norm() < 1.0e-12,
+            "omega predicted={:?} actual={:?} diff={:?}",
+            predicted.angular_velocity.vector,
+            actual.angular_velocity.vector,
+            predicted.angular_velocity.vector - actual.angular_velocity.vector
+        );
+        let predicted_q = predicted.orientation.q.into_inner();
+        let actual_q = actual.orientation.q.into_inner();
+        assert!(
+            (predicted_q.coords - actual_q.coords).norm() < 1.0e-12,
+            "q predicted={:?} actual={:?} diff={:?}",
+            predicted_q.coords,
+            actual_q.coords,
+            predicted_q.coords - actual_q.coords
         );
     }
 

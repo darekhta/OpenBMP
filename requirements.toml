@@ -127,6 +127,12 @@ statement = "The openbmp-runner separated-lane multibody shadow path records an 
 verification = ["V-MULTIBODY-021"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-022"
+title = "The primary multibody shadow can forecast a gimballed liquid-engine step"
+statement = "The openbmp-runner primary root-free-flyer shadow seeds single-body active stacks from the kernel's authoritative current mass properties before forecasting, avoiding double-counting liquid-engine snapshots whose consumed mass has already been advanced by the runner rack for the current tick. The runner test fires a real scenario_script engine_command, publishes a pitch-gimballed liquid-engine snapshot through the runner/kernel adapter views, and proves the RK4 primary-shadow forecast matches the current rigid kernel's next mass, position, velocity, quaternion, and body angular rate over one powered gimballed step while leaving telemetry authority with the rigid kernel. This makes no claim that replacing the rigid-kernel propagation path, full multi-step gimballed ascent propagation, articulated gimbal-joint inertia coupling, welded-to-free joint-release propagation, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-022"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1203,6 +1209,24 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-021"]
+
+[[verification]]
+id = "V-MULTIBODY-022"
+kind = "test"
+command = "cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_matches_gimballed_liquid_engine_step --locked && cargo test -p openbmp-runner primary_multibody_shadow_mirrors_gimballed_engine_loads --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "self.stack_bodies.len() == 1",
+  "primary_multibody_shadow_rk4_forecast_matches_gimballed_liquid_engine_step",
+  "REQ-MULTIBODY-022",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-022"]
 
 [[verification]]
 id = "V-SIL-001"
