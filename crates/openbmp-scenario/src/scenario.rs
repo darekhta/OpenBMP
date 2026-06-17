@@ -5226,6 +5226,106 @@ engine_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
         );
     }
 
+    fn articulated_gimbal_root_authority_toml(gimbal_joints: &str) -> String {
+        let prefix = VALID_STAGE_SEPARATION_SCENARIO
+            .split("\n[environment]\n")
+            .next()
+            .expect("fixture contains environment block");
+        let environment_suffix = VALID_STAGE_SEPARATION_SCENARIO
+            .split_once("\n[environment]\n")
+            .expect("fixture contains environment block")
+            .1
+            .split("\n[mission]\n")
+            .next()
+            .expect("fixture contains mission block")
+            .replace(
+                r#"models = ["gravity"]"#,
+                r#"models = ["gravity", "thrust"]"#,
+            );
+        format!(
+            r#"{prefix}
+[[vehicle.assembly.engines]]
+id = "upper-gimbal"
+mounted_to = "upper"
+kind = {{ kind = "liquid_engine" }}
+mount_point_body_m = [0.0, 0.0, 0.0]
+limits = {{ max_thrust_n = 10.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.2 }}
+
+[environment]
+{environment_suffix}
+[multi_body]
+primary_body_id = "upper"
+propagation_authority = "articulated_gimbal_root"
+
+{gimbal_joints}
+"#
+        )
+    }
+
+    const UPPER_GIMBAL_JOINT: &str = r#"
+[[multi_body.gimbal_joint]]
+body_id = "upper"
+engine_id = "upper-gimbal"
+axis_body = [0.0, 1.0, 0.0]
+pivot_body_m = [0.0, 0.0, 0.0]
+neutral_thrust_body = [0.0, 0.0, 1.0]
+thrust_application_body_m = [0.0, 0.0, 0.0]
+engine_mass_kg = 1.0
+engine_cg_body_m = [0.0, 0.0, 0.0]
+engine_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+"#;
+
+    #[test]
+    fn accepts_articulated_gimbal_root_propagation_authority() {
+        let toml = articulated_gimbal_root_authority_toml(UPPER_GIMBAL_JOINT);
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
+        let multi_body = scenario
+            .document
+            .multi_body
+            .as_ref()
+            .expect("multi_body present");
+        assert_eq!(multi_body.primary_body_id.as_deref(), Some("upper"));
+        assert_eq!(
+            multi_body.propagation_authority,
+            crate::document::MultiBodyPropagationAuthorityConfig::ArticulatedGimbalRoot
+        );
+        assert_eq!(multi_body.gimbal_joints.len(), 1);
+        assert_eq!(multi_body.gimbal_joints[0].body_id, "upper");
+    }
+
+    #[test]
+    fn rejects_articulated_gimbal_root_authority_with_multiple_gimbal_joints() {
+        let toml = articulated_gimbal_root_authority_toml(&format!(
+            "{UPPER_GIMBAL_JOINT}{UPPER_GIMBAL_JOINT}"
+        ));
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                    if field_a == "multi_body.propagation_authority"
+                        && field_b == "multi_body.gimbal_joint"
+            ),
+            "expected articulated authority/multiple gimbal conflict, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_articulated_gimbal_root_authority_with_nonprimary_gimbal_body() {
+        let joint = UPPER_GIMBAL_JOINT.replace("body_id = \"upper\"", "body_id = \"lower\"");
+        let toml = articulated_gimbal_root_authority_toml(&joint);
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                    if field_a == "multi_body.gimbal_joint[0].body_id"
+                        && field_b == "multi_body.primary_body_id"
+            ),
+            "expected articulated authority/non-primary gimbal conflict, got {err:?}",
+        );
+    }
+
     #[test]
     fn accepts_multi_body_attitude_target_with_direct_torque_effector() {
         let prefix = VALID_STAGE_SEPARATION_SCENARIO

@@ -241,6 +241,12 @@ statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"s
 verification = ["V-MULTIBODY-040"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-041"
+title = "The rigid runner can hand single-gimbal root authority to an articulated forecast"
+statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"articulated_gimbal_root\" as an explicit single-gimbal root-state handoff mode that requires primary_body_id and exactly one articulated gimbal joint whose body_id matches the primary body, while rejecting initial lanes, separation declarations, landing controllers, and multiple gimbal joints. In that mode, the rigid runner records the existing one-axis or two-axis articulated gimbal RK4 forecast, advances the existing rigid kernel tick to preserve event and stop machinery, replaces the current primary RigidBodyState with the projected root state from the same-tick articulated forecast through the validity-checked kernel handoff API, and records the applied root handoff on the articulated shadow. This makes no claim that internal gimbal coordinates are authoritative, that multiple gimbals are supported, or that full rigid-kernel removal is complete."
+verification = ["V-MULTIBODY-041"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1721,6 +1727,29 @@ contains = [
   "REQ-MULTIBODY-040",
 ]
 requirements = ["REQ-MULTIBODY-040"]
+
+[[verification]]
+id = "V-MULTIBODY-041"
+kind = "test"
+command = "cargo test -p openbmp-scenario articulated_gimbal_root --locked && cargo test -p openbmp-runner articulated_gimbal_root_authority_records_handoff --locked && cargo check -p openbmp-scenario -p openbmp-runner --locked && cargo clippy -p openbmp-scenario -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "ArticulatedGimbalRoot",
+  "articulated_gimbal_root",
+  "apply_articulated_gimbal_root_authority",
+  "last_authoritative_root_state",
+  "articulated_gimbal_root_authority_records_handoff",
+  "accepts_articulated_gimbal_root_propagation_authority",
+  "REQ-MULTIBODY-041",
+]
+requirements = ["REQ-MULTIBODY-041"]
 
 [[verification]]
 id = "V-SIL-001"

@@ -262,15 +262,21 @@ authority selector now also supports
 `propagation_authority = "separated_root_free_flyer"` for active separated
 root-free-flyer lanes, replacing initially separated lanes and jettison-created
 lanes once a pre-step forecast exists while keeping articulated gimbal joints
-out of that authority mode.
+out of that authority mode. The selector now also supports
+`propagation_authority = "articulated_gimbal_root"` for one declared one-axis
+or two-axis gimbal on the primary body, replacing the primary rigid state with
+the projected articulated root forecast after each fixed-step RK4 tick and
+recording the applied handoff while leaving internal gimbal coordinates
+non-authoritative.
 Default authoritative propagation is still the rigid kernel.
 Replacing the rigid propagation path beyond that guarded primary-root handoff,
 broader variable-mass multibody propagation beyond the one-body root and
-separated root-free-flyer paths, authoritative articulated thrust propagation
-including authoritative two-axis propagation, full orbital-ascent gimballed
-validation, full momentum-conserving welded-to-free release propagation, and
-the independent Spatial_v2 oracle matrix across at least three small random
-trees remain open.
+separated root-free-flyer paths, broader authoritative articulated thrust
+propagation beyond the single-gimbal root handoff including authoritative
+two-axis propagation with internal coordinate authority, full orbital-ascent
+gimballed validation, full momentum-conserving welded-to-free release
+propagation, and the independent Spatial_v2 oracle matrix across at least
+three small random trees remain open.
 
 ---
 
@@ -911,14 +917,18 @@ justification first, reviewed before the implementation lands.
   mode for active separated root-free-flyer lanes, rejects articulated gimbal
   combinations for that mode, and records handoffs for both initially separated
   lanes and jettison-created lanes after a pre-step forecast exists
-  (`REQ-MULTIBODY-040`).
+  (`REQ-MULTIBODY-040`). It now also exposes
+  `propagation_authority = "articulated_gimbal_root"` for one primary-body
+  one-axis or two-axis gimbal, rejects separated-lane and multi-gimbal shapes,
+  and records the post-step projected-root handoff (`REQ-MULTIBODY-041`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path beyond
-  the guarded primary-root and separated-lane root handoffs, broader
+  the guarded primary-root, separated-lane, and single-gimbal root handoffs, broader
   variable-mass multibody propagation beyond the root-free-flyer paths,
   runner-side momentum-conserving welded-to-free joint-release propagation,
   the independent Spatial_v2 oracle matrix across at least three small random
-  trees, full orbital-ascent gimballed validation, and authoritative
-  articulated thrust propagation including authoritative two-axis propagation.
+  trees, full orbital-ascent gimballed validation, and broader authoritative
+  articulated thrust propagation including authoritative two-axis propagation
+  with internal coordinate authority.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

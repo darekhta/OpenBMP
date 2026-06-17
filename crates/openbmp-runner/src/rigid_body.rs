@@ -327,6 +327,7 @@ impl RigidBodySession {
                     last_derivative: Some(derivative),
                     last_rk4_forecast: Some(forecast),
                     last_root_rk4_forecast: Some(root_forecast),
+                    last_authoritative_root_state: None,
                 },
             );
         }
@@ -798,6 +799,7 @@ impl RigidBodySession {
         self.kernel.step()?;
         self.apply_primary_root_free_flyer_authority(document)?;
         self.apply_separated_root_free_flyer_authority(document)?;
+        self.apply_articulated_gimbal_root_authority(document)?;
         // Refresh tank-rack drivers from the post-step
         // rigid-body state. `accel_body_m_s2` is finite-differenced
         // from the velocity change rotated into the prior-step body
@@ -1157,6 +1159,51 @@ impl RigidBodySession {
         Ok(())
     }
 
+    fn apply_articulated_gimbal_root_authority(
+        &mut self,
+        document: &ScenarioDocument,
+    ) -> Result<(), RunnerError> {
+        if !articulated_gimbal_root_authority_enabled(document) {
+            return Ok(());
+        }
+        if !self.kernel.separated_rigid_bodies().is_empty() {
+            return Err(RunnerError::UnsupportedScenario {
+                what:
+                    "articulated_gimbal_root propagation authority does not support separated lanes"
+                        .to_owned(),
+            });
+        }
+        if self.articulated_gimbal_shadows.len() != 1 {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "articulated_gimbal_root propagation authority requires exactly one articulated gimbal shadow"
+                    .to_owned(),
+            });
+        }
+        let engine = self
+            .articulated_gimbal_shadows
+            .keys()
+            .next()
+            .copied()
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "articulated_gimbal_root propagation authority requires exactly one articulated gimbal shadow"
+                    .to_owned(),
+            })?;
+        let replacement = self
+            .articulated_gimbal_shadows
+            .get(&engine)
+            .and_then(|shadow| shadow.last_root_rk4_forecast.as_ref())
+            .copied()
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "articulated_gimbal_root propagation authority requires a recorded articulated gimbal root forecast"
+                    .to_owned(),
+            })?;
+        self.kernel.replace_current_rigid_state(replacement)?;
+        if let Some(shadow) = self.articulated_gimbal_shadows.get_mut(&engine) {
+            shadow.last_authoritative_root_state = Some(replacement);
+        }
+        Ok(())
+    }
+
     fn mirror_articulated_gimbal_steps(&mut self) -> Result<(), RunnerError> {
         if self.articulated_gimbal_shadows.is_empty() {
             return Ok(());
@@ -1227,6 +1274,7 @@ impl RigidBodySession {
                 shadow.last_derivative = Some(derivative);
                 shadow.last_rk4_forecast = Some(forecast);
                 shadow.last_root_rk4_forecast = Some(root_forecast);
+                shadow.last_authoritative_root_state = None;
             }
         }
         Ok(())
@@ -1593,6 +1641,13 @@ fn separated_root_free_flyer_authority_enabled(document: &ScenarioDocument) -> b
     document.multi_body.as_ref().is_some_and(|multi_body| {
         multi_body.propagation_authority
             == MultiBodyPropagationAuthorityConfig::SeparatedRootFreeFlyer
+    })
+}
+
+fn articulated_gimbal_root_authority_enabled(document: &ScenarioDocument) -> bool {
+    document.multi_body.as_ref().is_some_and(|multi_body| {
+        multi_body.propagation_authority
+            == MultiBodyPropagationAuthorityConfig::ArticulatedGimbalRoot
     })
 }
 
@@ -2343,6 +2398,7 @@ struct ArticulatedGimbalMultibodyShadow {
     last_derivative: Option<MultibodyDerivative>,
     last_rk4_forecast: Option<ArticulatedGimbalMultibodySeed>,
     last_root_rk4_forecast: Option<RigidBodyState>,
+    last_authoritative_root_state: Option<RigidBodyState>,
 }
 
 #[derive(Debug)]
@@ -5933,6 +5989,10 @@ mod tests {
             .articulated_gimbal_shadows
             .get(&engine)
             .expect("articulated gimbal shadow present");
+        assert!(
+            shadow.last_authoritative_root_state.is_none(),
+            "default articulated gimbal shadow must not record an authoritative handoff"
+        );
         let forecast = shadow
             .last_rk4_forecast
             .as_ref()
@@ -6007,6 +6067,41 @@ mod tests {
             seed_root.angular_velocity.vector,
             root_forecast.angular_velocity.vector
         );
+    }
+
+    #[test]
+    fn articulated_gimbal_root_authority_records_handoff() {
+        let toml = primary_multibody_two_axis_gimbal_shadow_scenario_toml().replace(
+            "[multi_body]\n",
+            "[multi_body]\npropagation_authority = \"articulated_gimbal_root\"\n",
+        );
+        let scenario = openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario parses");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step fires engine command");
+        session
+            .step_once(&scenario.document, None)
+            .expect("second step applies articulated gimbal root authority");
+
+        let engine = engine_id_from_scenario_text("main_engine");
+        let shadow = session
+            .articulated_gimbal_shadows
+            .get(&engine)
+            .expect("articulated gimbal shadow present");
+        let root_forecast = shadow
+            .last_root_rk4_forecast
+            .as_ref()
+            .expect("articulated gimbal root RK4 forecast recorded");
+        let authoritative = shadow
+            .last_authoritative_root_state
+            .as_ref()
+            .expect("articulated gimbal root handoff recorded");
+        assert_rigid_forecast_matches_state(root_forecast, session.state(), 0.2);
+        assert_rigid_forecast_matches_state(authoritative, session.state(), 0.2);
     }
 
     #[test]

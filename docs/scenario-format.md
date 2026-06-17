@@ -3033,7 +3033,14 @@ handoff mode: it requires at least one `[[multi_body.initial_lane]]` or
 each fixed-step RK4 tick replaces already-active separated lanes with their
 same-tick root-free-flyer multibody forecasts. Lanes created by a jettison on
 the current tick are mirrored for the next tick; they are not retroactively
-rewritten before a pre-step forecast exists.
+rewritten before a pre-step forecast exists. Setting it to
+`"articulated_gimbal_root"` is a single-gimbal root-state handoff mode: it
+requires `primary_body_id` and exactly one `[[multi_body.gimbal_joint]]` whose
+`body_id` matches `primary_body_id`, rejects initial lanes, separation
+declarations, and landing controllers, and after each fixed-step RK4 tick
+replaces the primary rigid state with the projected root state from that
+articulated gimbal forecast. This mode does not make the internal gimbal
+coordinates authoritative and does not cover multiple declared gimbals.
 
 Each `[[multi_body.separation]]` entry binds to a mission event by id
 and declares the two `vehicle.assembly.bodies[*].id` values that
