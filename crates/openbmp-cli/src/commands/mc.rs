@@ -200,6 +200,13 @@ pub struct McCredibilityOptions<'a> {
     pub report_md: Option<&'a Path>,
 }
 
+#[derive(Clone, Debug)]
+struct ResolvedMcCredibilityOptions {
+    budget: CorrelatedErrorBudget,
+    floor: CredibilityLevel,
+    report_md: Option<PathBuf>,
+}
+
 impl McResumeScalarReport {
     /// Whether the checkpoint has all required samples.
     #[must_use]
@@ -747,10 +754,31 @@ pub fn parse_credibility_floor(value: &str) -> Result<CredibilityLevel, CliError
 pub(crate) fn evaluate_credibility_options(
     options: McCredibilityOptions<'_>,
 ) -> Result<(CampaignCredibilityReport, Option<PathBuf>), CliError> {
-    let budget = read_uq_budget(options.uq_toml)?;
-    let report =
-        evaluate_campaign_credibility(&budget, options.floor).map_err(monte_carlo_error)?;
-    let report_path = options.report_md.map(Path::to_path_buf);
+    let resolved = resolve_credibility_options(options)?;
+    evaluate_credibility_budget(
+        &resolved.budget,
+        resolved.floor,
+        resolved.report_md.as_deref(),
+    )
+}
+
+fn resolve_credibility_options(
+    options: McCredibilityOptions<'_>,
+) -> Result<ResolvedMcCredibilityOptions, CliError> {
+    Ok(ResolvedMcCredibilityOptions {
+        budget: read_uq_budget(options.uq_toml)?,
+        floor: options.floor,
+        report_md: options.report_md.map(Path::to_path_buf),
+    })
+}
+
+fn evaluate_credibility_budget(
+    budget: &CorrelatedErrorBudget,
+    floor: CredibilityLevel,
+    report_md: Option<&Path>,
+) -> Result<(CampaignCredibilityReport, Option<PathBuf>), CliError> {
+    let report = evaluate_campaign_credibility(budget, floor).map_err(monte_carlo_error)?;
+    let report_path = report_md.map(Path::to_path_buf);
     if let Some(path) = &report_path {
         write_markdown_report(path, &report.markdown)?;
     }
@@ -807,22 +835,20 @@ pub fn run_propulsion_fault_campaign(
     let credibility = options
         .credibility
         .or(manifest_credibility)
-        .map(evaluate_credibility_options)
+        .map(resolve_credibility_options)
         .transpose()?;
-    let (credibility, credibility_report_md) = match credibility {
-        Some((report, report_path)) => (Some(report), report_path),
-        None => (None, None),
-    };
     let library = PropulsionFaultLibrary::new(document.faults).map_err(monte_carlo_error)?;
     let source_dir = options.scenario_path.parent().map(Path::to_path_buf);
 
     let mut rows = Vec::new();
+    let mut gathered_upstream_uq = CorrelatedErrorBudget::default();
     for sample_index in 0..options.samples {
         let overlay =
             library.materialize(options.campaign_seed, sample_index, options.dimension_id);
         let scenario_text = append_propulsion_fault_overlay(&base_scenario, &overlay);
         let scenario = Scenario::from_toml_str_with_source_dir(&scenario_text, source_dir.clone())?;
         let outcome = openbmp_runner::run(&scenario)?;
+        append_independent_uq_sources(&mut gathered_upstream_uq, &outcome.upstream_uq.sources)?;
         let value = final_f64_channel(&outcome.table, options.metric_channel)?;
         let success = terminal_metric_success(value, options.success_min, options.success_max);
         let fault_ids = overlay
@@ -844,6 +870,33 @@ pub fn run_propulsion_fault_campaign(
         Welford::from_indexed_samples(rows.iter().map(|row| (row.sample_index, row.value)))
             .map_err(monte_carlo_error)?;
     let success = success_summary(rows.iter().map(|row| row.success), options.confidence)?;
+    let credibility = if gathered_upstream_uq.sources.is_empty() {
+        credibility.map(|resolved| {
+            evaluate_credibility_budget(
+                &resolved.budget,
+                resolved.floor,
+                resolved.report_md.as_deref(),
+            )
+        })
+    } else if let Some(mut resolved) = credibility {
+        append_independent_uq_sources(&mut resolved.budget, &gathered_upstream_uq.sources)?;
+        Some(evaluate_credibility_budget(
+            &resolved.budget,
+            resolved.floor,
+            resolved.report_md.as_deref(),
+        ))
+    } else {
+        Some(evaluate_credibility_budget(
+            &gathered_upstream_uq,
+            CredibilityLevel::L0,
+            None,
+        ))
+    }
+    .transpose()?;
+    let (credibility, credibility_report_md) = match credibility {
+        Some((report, report_path)) => (Some(report), report_path),
+        None => (None, None),
+    };
     write_propulsion_fault_campaign_csv(options.output_csv, &rows)?;
 
     Ok(McPropulsionFaultCampaignReport {
@@ -1086,6 +1139,69 @@ fn read_uq_budget(path: &Path) -> Result<CorrelatedErrorBudget, CliError> {
         sources,
         correlation,
     })
+}
+
+fn append_independent_uq_sources(
+    budget: &mut CorrelatedErrorBudget,
+    incoming: &[UncertaintySource],
+) -> Result<(), CliError> {
+    let mut added = Vec::new();
+    for source in incoming {
+        if let Some(existing) = budget
+            .sources
+            .iter()
+            .find(|existing| existing.source_id == source.source_id)
+        {
+            if existing != source {
+                return Err(CliError::MonteCarlo {
+                    summary: format!(
+                        "conflicting UQ source `{}` gathered from runner",
+                        source.source_id
+                    ),
+                });
+            }
+            continue;
+        }
+        added.push(source.clone());
+    }
+    if added.is_empty() {
+        return Ok(());
+    }
+    expand_correlation_for_independent_sources(budget, added.len())?;
+    budget.sources.extend(added);
+    Ok(())
+}
+
+fn expand_correlation_for_independent_sources(
+    budget: &mut CorrelatedErrorBudget,
+    added_count: usize,
+) -> Result<(), CliError> {
+    let Some(correlation) = budget.correlation.take() else {
+        return Ok(());
+    };
+    let old_count = budget.sources.len();
+    let new_count = old_count + added_count;
+    let mut values = vec![0.0; new_count * new_count];
+    for row in 0..old_count {
+        for column in 0..old_count {
+            values[row * new_count + column] =
+                correlation
+                    .get(row, column)
+                    .ok_or_else(|| CliError::MonteCarlo {
+                        summary: "UQ correlation matrix dimension mismatch".to_owned(),
+                    })?;
+        }
+    }
+    for index in 0..new_count {
+        values[index * new_count + index] = 1.0;
+    }
+    budget.correlation =
+        Some(
+            UqCorrelationMatrix::new(new_count, values).map_err(|err| CliError::MonteCarlo {
+                summary: err.to_string(),
+            })?,
+        );
+    Ok(())
 }
 
 fn uq_source_from_document(document: UqSourceDocument) -> Result<UncertaintySource, CliError> {

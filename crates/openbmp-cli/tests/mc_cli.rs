@@ -9,6 +9,8 @@ use openbmp_uq::CredibilityLevel;
 use tempfile::Builder;
 
 const MC_ENGINE_SCENARIO: &str = include_str!("fixtures/mc-scheduled-engine-fault.toml");
+const THERMOCHEM_ENGINE_DECK: &str =
+    include_str!("../../openbmp-runner/tests/fixtures/thermochem/synthetic-grain.toml");
 
 #[test]
 fn mc_summarize_reads_scalar_samples_and_success_interval() {
@@ -97,6 +99,62 @@ fault = { kind = "hard_off" }
     assert!(csv.contains("0,mc-hardoff,1,"));
     assert!(csv.contains("1,mc-hardoff,1,"));
     assert!(csv.lines().skip(1).all(|line| line.ends_with(",true")));
+}
+
+#[test]
+fn mc_propulsion_fault_campaign_consumes_runner_upstream_uq() {
+    let temp = Builder::new()
+        .prefix("openbmp_mc_runner_uq")
+        .tempdir()
+        .expect("tempdir");
+    let scenario = temp.path().join("scenario.toml");
+    let thermochem = temp.path().join("thermochem.toml");
+    let library = temp.path().join("fault-library.toml");
+    let output = temp.path().join("samples").join("propulsion-faults.csv");
+    fs::write(&thermochem, THERMOCHEM_ENGINE_DECK).expect("write thermochem");
+    fs::write(&scenario, thermochemical_mc_scenario()).expect("write scenario");
+    fs::write(
+        &library,
+        r#"
+[[faults]]
+id = "mc-hardoff"
+engine_id = "main"
+start_step = 4
+probability = 1.0
+fault = { kind = "hard_off" }
+"#,
+    )
+    .expect("write library");
+
+    let report = mc::run_propulsion_fault_campaign(mc::McPropulsionFaultCampaignOptions {
+        scenario_path: &scenario,
+        library_toml: &library,
+        samples: 1,
+        campaign_seed: 0xF00D,
+        dimension_id: 0,
+        metric_channel: "engine.main.thrust_n",
+        success_min: None,
+        success_max: Some(1.0),
+        output_csv: &output,
+        confidence: 0.95,
+        credibility: None,
+    })
+    .expect("run campaign");
+
+    let credibility = report
+        .credibility
+        .expect("runner upstream UQ should attach credibility");
+    assert!(credibility.accepted);
+    assert_eq!(credibility.binding_level, CredibilityLevel::L1);
+    assert!((credibility.aggregate_one_sigma - 0.02).abs() < 1.0e-15);
+    assert_eq!(credibility.aleatory_one_sigma.to_bits(), 0.0_f64.to_bits());
+    assert!((credibility.epistemic_one_sigma - 0.02).abs() < 1.0e-15);
+    assert!(
+        credibility
+            .markdown
+            .contains("05.propulsion.thermochem.fa3ff43bc91d.c_star_efficiency")
+    );
+    assert!(output.exists());
 }
 
 #[test]
@@ -727,6 +785,29 @@ fn uq_budget_toml(level: u8) -> String {
         text.push('\n');
     }
     text
+}
+
+fn thermochemical_mc_scenario() -> String {
+    MC_ENGINE_SCENARIO
+        .replace(
+            "limits = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }\n",
+            "limits = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }\n\
+             \n\
+             [vehicle.assembly.engines.thermochemical_performance]\n\
+             throat_area_m2 = 0.02\n\
+             exit_area_m2 = 0.24\n\
+             ambient_pressure_pa = 101325.0\n\
+             separation = \"off\"\n",
+        )
+        .replace(
+            "[environment]\n",
+            "[propulsion.thermochem]\n\
+             file = \"thermochem.toml\"\n\
+             chamber_pressure_pa = 2000000.0\n\
+             mixture_ratio = 2.5\n\
+             \n\
+             [environment]\n",
+        )
 }
 
 fn read_design_columns(path: &std::path::Path) -> (Vec<String>, Vec<Vec<f64>>) {
