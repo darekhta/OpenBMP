@@ -13732,6 +13732,38 @@ impl MultiBodyConfig {
                 });
             }
         }
+        if self.propagation_authority == MultiBodyPropagationAuthorityConfig::WeldedReleaseJettison
+        {
+            let primary_body_id = self.primary_body_id.as_ref().ok_or_else(|| {
+                ScenarioError::MissingRequiredField {
+                    field: "multi_body.primary_body_id".to_owned(),
+                    role: ModelRole::Vehicle,
+                    name: "multi_body.propagation_authority".to_owned(),
+                }
+            })?;
+            require_non_empty("multi_body.primary_body_id", primary_body_id)?;
+            if self.separations.is_empty() {
+                return Err(ScenarioError::EmptyList {
+                    field: "multi_body.separation".to_owned(),
+                });
+            }
+            if !self.initial_lanes.is_empty() {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "multi_body.propagation_authority".to_owned(),
+                    value_a: "welded_release_jettison".to_owned(),
+                    field_b: "multi_body.initial_lane".to_owned(),
+                    value_b: "present".to_owned(),
+                });
+            }
+            if !self.gimbal_joints.is_empty() {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "multi_body.propagation_authority".to_owned(),
+                    value_a: "welded_release_jettison".to_owned(),
+                    field_b: "multi_body.gimbal_joint".to_owned(),
+                    value_b: "present".to_owned(),
+                });
+            }
+        }
         if self.propagation_authority == MultiBodyPropagationAuthorityConfig::ArticulatedGimbalRoot
         {
             let primary_body_id = self.primary_body_id.as_ref().ok_or_else(|| {
@@ -13853,6 +13885,9 @@ pub enum MultiBodyPropagationAuthorityConfig {
     /// Replace active separated rigid-body lane states with their
     /// root-free-flyer multibody forecasts after each fixed-step RK4 tick.
     SeparatedRootFreeFlyer,
+    /// Install single-stage jettison states computed through an identity
+    /// welded-pair release into explicit continuing/departing rigid lanes.
+    WeldedReleaseJettison,
     /// Replace the primary rigid-body state with the projected root of a
     /// single articulated gimbal multibody forecast after each fixed-step
     /// RK4 tick.

@@ -274,15 +274,21 @@ post-separation state installation seam for future welded-release runners:
 `RigidBodySeparationStates` plus `jettison_rigid_body_with_states()` validate
 same-time externally computed continuing-stack and departing-lane states,
 install them exactly, and refresh relative-state event caches. This gives the
-runner an exact explicit-state installation target for a later
-`release_welded_subtree_as_free_flyer()` integration.
+runner an exact explicit-state installation target. The rigid runner now also
+exposes `propagation_authority = "welded_release_jettison"` as a guarded
+single-stage jettison mode: it builds an identity welded upper/lower pair at the
+event time, calls `release_welded_subtree_as_free_flyer()` for the lower body,
+projects the continuing and departing roots back into same-time rigid states,
+and installs them through `jettison_rigid_body_with_states()`. This mode rejects
+initial lanes, gimbal joints, batch `jettison_bodies`, manual separation
+delta-v/angular-rate impulses, and departing-body attitude offsets.
 Default authoritative propagation is still the rigid kernel.
 Replacing the rigid propagation path beyond that guarded primary-root handoff,
 broader variable-mass multibody propagation beyond the one-body root and
 separated root-free-flyer paths, broader authoritative articulated thrust
 propagation beyond the single-gimbal root/internal-state handoff including
-multi-gimbal authoritative two-axis propagation, full orbital-ascent gimballed
-validation, runner-side computation and use of welded-release states, and the
+multi-gimbal authoritative two-axis propagation, arbitrary welded-subtree
+geometry/batch/impulse release, full orbital-ascent gimballed validation, and the
 independent Spatial_v2 oracle matrix across at least three small random trees
 remain open.
 
@@ -936,11 +942,17 @@ justification first, reviewed before the implementation lands.
   `RigidBodySeparationStates` and `jettison_rigid_body_with_states()` as the
   explicit-state installation seam for externally computed welded-release
   handoffs, with fail-closed current-time validation and exact state
-  installation (`REQ-MULTIBODY-043`).
+  installation (`REQ-MULTIBODY-043`). The rigid runner now exposes
+  `propagation_authority = "welded_release_jettison"` for guarded single-stage
+  identity welded-pair jettison, computes the lower-body free-flyer state through
+  `release_welded_subtree_as_free_flyer()`, installs both same-time release
+  states through `jettison_rigid_body_with_states()`, and rejects initial lanes,
+  gimbal joints, batch jettison, manual impulses, and departing attitude offsets
+  (`REQ-MULTIBODY-044`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path beyond
   the guarded primary-root, separated-lane, and single-gimbal root/internal-state handoffs, broader
   variable-mass multibody propagation beyond the root-free-flyer paths,
-  runner-side computation and use of momentum-conserving welded-to-free states,
+  arbitrary welded-subtree geometry/batch/impulse release,
   the independent Spatial_v2 oracle matrix across at least three small random
   trees, full orbital-ascent gimballed validation, and broader multi-gimbal
   authoritative articulated thrust propagation including authoritative two-axis

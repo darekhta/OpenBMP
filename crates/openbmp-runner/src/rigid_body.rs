@@ -56,8 +56,8 @@ use openbmp_sim::{
     AnyStop, ConstantMass, EffectorActualsView, EndTime, EngineSnapshotView, EnvironmentModel,
     EnvironmentQuery, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane, Integrator,
     MassContext, MomentContext, RecoverySnapshotView, RigidBodyDerivative, RigidBodySeparation,
-    RigidMassModel, RigidModels, Rk4FixedStep, ScenarioScriptAction, SimulationConfig,
-    SimulationKernel, StopReason, TankSnapshotView,
+    RigidBodySeparationStates, RigidMassModel, RigidModels, Rk4FixedStep, ScenarioScriptAction,
+    SimulationConfig, SimulationKernel, StopReason, TankSnapshotView,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -847,6 +847,7 @@ impl RigidBodySession {
             &self.separation_specs,
             &self.mass_model,
             &mut self.stack_bodies,
+            welded_release_jettison_authority_enabled(document),
         )?;
         if jettison_applied {
             self.mirror_separated_multibody_root_steps()?;
@@ -1673,6 +1674,13 @@ fn separated_root_free_flyer_authority_enabled(document: &ScenarioDocument) -> b
     })
 }
 
+fn welded_release_jettison_authority_enabled(document: &ScenarioDocument) -> bool {
+    document.multi_body.as_ref().is_some_and(|multi_body| {
+        multi_body.propagation_authority
+            == MultiBodyPropagationAuthorityConfig::WeldedReleaseJettison
+    })
+}
+
 fn articulated_gimbal_root_authority_enabled(document: &ScenarioDocument) -> bool {
     document.multi_body.as_ref().is_some_and(|multi_body| {
         multi_body.propagation_authority
@@ -2181,6 +2189,7 @@ fn apply_jettison_events<I, F, MOM, MM, E, SC>(
     separation_specs: &BTreeMap<BodyId, RigidBodySeparationSpec>,
     mass_model: &RigidMassEither,
     stack_bodies: &mut BTreeSet<BodyId>,
+    use_welded_release_states: bool,
 ) -> Result<bool, RunnerError>
 where
     I: openbmp_sim::Integrator<RigidBodyState>,
@@ -2209,12 +2218,29 @@ where
                 // dry mass is folded into the continuing-stack mass.
                 stack_bodies.remove(body);
                 let inert = continuing_inert_bodies(stack_bodies, separation.stack_body);
-                let runtime =
-                    build_runtime_rigid_body_separation(kernel, mass_model, separation, &inert)?;
-                kernel.jettison_rigid_body(runtime)?;
+                if use_welded_release_states {
+                    let runtime = build_runtime_welded_release_separation_states(
+                        kernel, mass_model, separation, &inert,
+                    )?;
+                    kernel.jettison_rigid_body_with_states(runtime)?;
+                } else {
+                    let runtime = build_runtime_rigid_body_separation(
+                        kernel, mass_model, separation, &inert,
+                    )?;
+                    kernel.jettison_rigid_body(runtime)?;
+                }
                 applied = true;
             }
             ScenarioScriptAction::JettisonBodies { bodies } => {
+                if use_welded_release_states {
+                    return Err(RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "welded_release_jettison propagation authority does not support \
+                             batch jettison_bodies event {}",
+                            event.binding_id.value()
+                        ),
+                    });
+                }
                 // Remove every departing body from the stack FIRST so the
                 // continuing-inert set reflects the post-batch membership.
                 for body in bodies {
@@ -2315,6 +2341,145 @@ where
         stage_delta_omega_body_rad_s: separation.stage_delta_omega_body_rad_s,
         stage_attitude_offset_body_xyzw: separation.stage_attitude_offset_body_xyzw,
     })
+}
+
+fn build_runtime_welded_release_separation_states<I, F, MOM, MM, E, SC>(
+    kernel: &openbmp_sim::RigidBodyKernel<I, F, MOM, MM, E, SC>,
+    mass_model: &RigidMassEither,
+    separation: RigidBodySeparationSpec,
+    continuing_inert: &[BodyId],
+) -> Result<RigidBodySeparationStates, RunnerError>
+where
+    I: openbmp_sim::Integrator<RigidBodyState>,
+    F: ForceModel<RigidBodyState>,
+    MOM: openbmp_sim::MomentModel<RigidBodyState>,
+    MM: openbmp_sim::RigidMassModel,
+    E: openbmp_sim::EnvironmentModel,
+    SC: openbmp_sim::StopCondition<RigidBodyState>,
+{
+    let runtime =
+        build_runtime_rigid_body_separation(kernel, mass_model, separation, continuing_inert)?;
+    require_zero_welded_release_impulses(&runtime)?;
+    let current = *kernel.current_state();
+    let stack_inertia = SpatialInertia::from_mass_properties(&runtime.stack_mass_properties)
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("welded-release stack spatial inertia failed: {err}"),
+        })?;
+    let stage_inertia = SpatialInertia::from_mass_properties(&runtime.stage_mass_properties)
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("welded-release stage spatial inertia failed: {err}"),
+        })?;
+    let tree = MultibodyTree::new(vec![
+        TreeBodySpec {
+            id: runtime.stack_body,
+            parent: None,
+            joint: Joint::FreeFlyer,
+            inertia: stack_inertia,
+            parent_to_body: PluckerTransform::identity(),
+        },
+        TreeBodySpec {
+            id: runtime.body,
+            parent: Some(openbmp_multibody::BodyIndex::new(0)),
+            joint: Joint::Welded { released: false },
+            inertia: stage_inertia,
+            parent_to_body: PluckerTransform::identity(),
+        },
+    ])
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("welded-release multibody tree failed: {err}"),
+    })?;
+    let orientation = current.orientation.q.into_inner();
+    let linear_velocity_body = current
+        .orientation
+        .inverse()
+        .rotate_velocity(current.velocity)
+        .vector;
+    let q = vec![
+        orientation.w,
+        orientation.i,
+        orientation.j,
+        orientation.k,
+        current.position.vector.x,
+        current.position.vector.y,
+        current.position.vector.z,
+    ];
+    let qd = vec![
+        current.angular_velocity.vector.x,
+        current.angular_velocity.vector.y,
+        current.angular_velocity.vector.z,
+        linear_velocity_body.x,
+        linear_velocity_body.y,
+        linear_velocity_body.z,
+    ];
+    let stack_sim_state = tree
+        .sim_state_from_state(MultibodyState::new(current.time, q, qd))
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("welded-release multibody state failed: {err}"),
+        })?;
+    let (released_tree, released_state) = tree
+        .release_welded_subtree_as_free_flyer(
+            stack_sim_state.state(),
+            openbmp_multibody::BodyIndex::new(1),
+        )
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("welded-release subtree handoff failed: {err}"),
+        })?;
+    let released_sim_state = released_tree
+        .sim_state_from_state(released_state)
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("welded-release free-flyer state failed: {err}"),
+        })?;
+    let stage_state = root_free_flyer_rigid_state_from_multibody_state(
+        runtime.body,
+        &released_sim_state,
+        runtime.stage_mass_properties,
+    )?;
+    let stack_state = RigidBodyState::new(
+        current.time,
+        current.position,
+        current.velocity,
+        current.orientation,
+        current.angular_velocity,
+        runtime.stack_mass_properties,
+    );
+    Ok(RigidBodySeparationStates {
+        stack_body: runtime.stack_body,
+        body: runtime.body,
+        stack_state,
+        stage_state,
+    })
+}
+
+fn require_zero_welded_release_impulses(
+    separation: &RigidBodySeparation,
+) -> Result<(), RunnerError> {
+    if !separation
+        .stack_delta_v_body_m_s
+        .iter()
+        .chain(separation.stage_delta_v_body_m_s.iter())
+        .chain(separation.stack_delta_omega_body_rad_s.iter())
+        .chain(separation.stage_delta_omega_body_rad_s.iter())
+        .all(|value| value.abs() <= 1.0e-15)
+    {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "welded_release_jettison propagation authority does not support manual \
+                   separation delta-v or angular-rate impulses"
+                .to_owned(),
+        });
+    }
+    let offset = separation.stage_attitude_offset_body_xyzw;
+    let identity_offset = offset[0].abs() <= 1.0e-15
+        && offset[1].abs() <= 1.0e-15
+        && offset[2].abs() <= 1.0e-15
+        && (offset[3] - 1.0).abs() <= 1.0e-15;
+    if !identity_offset {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "welded_release_jettison propagation authority does not support departing-body \
+                   attitude offsets"
+                .to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn load_models(
@@ -7015,6 +7180,123 @@ once = true
             derivative.qd_dot()[1] > 0.0,
             "booster-owned pitch torque should reach jettisoned shadow: {:?}",
             derivative.qd_dot()
+        );
+    }
+
+    #[test]
+    fn welded_release_jettison_authority_installs_release_states() {
+        let initial_lane = r#"
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [0.0, 0.0, 10.0]
+velocity_eci_m_s = [0.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+"#;
+        let jettison = r#"
+[[multi_body.separation]]
+event_id = "drop_booster"
+upper_body_id = "bus"
+lower_body_id = "booster"
+
+[scenario_script]
+[[scenario_script.events]]
+id = "drop_booster"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "jettison_stage", body = "booster" }
+once = true
+"#;
+        let toml = SEPARATED_DIRECT_TORQUE_SCENARIO
+            .replace(initial_lane, jettison)
+            .replace(
+                "[multi_body]\n",
+                "[multi_body]\npropagation_authority = \"welded_release_jettison\"\n",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("welded-release jettison step succeeds");
+
+        let booster = body_id_from_scenario_text("booster");
+        let lane = separated_lane_state(&session, booster);
+        assert_eq!(lane.time.as_seconds().to_bits(), 0.1_f64.to_bits());
+        assert_eq!(
+            lane.mass_props.mass_kg().to_bits(),
+            1.0_f64.to_bits(),
+            "departing lane should carry lower-body mass"
+        );
+        assert_eq!(
+            session.state().mass_props.mass_kg().to_bits(),
+            3.0_f64.to_bits(),
+            "continuing stack should carry upper-body mass"
+        );
+        assert!(
+            (lane.position.vector - session.state().position.vector).norm() < 1.0e-12,
+            "identity welded release should preserve same release position"
+        );
+        assert!(
+            (lane.velocity.vector - session.state().velocity.vector).norm() < 1.0e-12,
+            "identity welded release should preserve same release velocity"
+        );
+        assert!(
+            (lane.angular_velocity.vector - session.state().angular_velocity.vector).norm()
+                < 1.0e-12,
+            "identity welded release should preserve same angular velocity"
+        );
+    }
+
+    #[test]
+    fn welded_release_jettison_authority_rejects_manual_impulses() {
+        let initial_lane = r#"
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [0.0, 0.0, 10.0]
+velocity_eci_m_s = [0.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+"#;
+        let jettison = r#"
+[[multi_body.separation]]
+event_id = "drop_booster"
+upper_body_id = "bus"
+lower_body_id = "booster"
+lower_delta_v_body_m_s = [0.0, 0.0, 0.1]
+conserve_momentum = false
+
+[scenario_script]
+[[scenario_script.events]]
+id = "drop_booster"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "jettison_stage", body = "booster" }
+once = true
+"#;
+        let toml = SEPARATED_DIRECT_TORQUE_SCENARIO
+            .replace(initial_lane, jettison)
+            .replace(
+                "[multi_body]\n",
+                "[multi_body]\npropagation_authority = \"welded_release_jettison\"\n",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        let err = session
+            .step_once(&scenario.document, None)
+            .expect_err("welded-release jettison should reject manual impulses");
+        assert!(
+            err.to_string().contains("manual separation delta-v"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            session.separated_bodies().is_empty(),
+            "failed welded-release jettison must not install a separated lane"
         );
     }
 

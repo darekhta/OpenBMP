@@ -254,12 +254,19 @@ The simulation kernel now exposes `RigidBodySeparationStates` and
 `jettison_rigid_body_with_states()` as the explicit-state installation seam for
 externally computed welded-release handoffs, validating same-time continuing
 and departing states before exact installation (`REQ-MULTIBODY-043`).
+The rigid runner now also exposes
+`propagation_authority = "welded_release_jettison"` for guarded single-stage
+identity welded-pair jettison, computes the departing lower-body free-flyer
+state through `release_welded_subtree_as_free_flyer()`, installs both same-time
+release states through `jettison_rigid_body_with_states()`, and rejects initial
+lanes, gimbal joints, batch jettison, manual separation impulses, and departing
+attitude offsets (`REQ-MULTIBODY-044`).
 Missing for full WP-01.1:
 replacing the rigid-kernel propagation path beyond the guarded primary-root
 handoff, separated-lane root handoff, and single-gimbal articulated
 root/internal-state handoff, broader variable-mass multibody propagation beyond
-the primary-root and powered separated-lane root-free-flyer paths, full
-runner-side computation and use of momentum-conserving welded-to-free states, full
+the primary-root and powered separated-lane root-free-flyer paths, arbitrary
+welded-subtree geometry/batch/impulse release, full
 orbital-ascent gimballed validation, broader multi-gimbal authoritative
 articulated thrust propagation including authoritative two-axis propagation
 with actuator-coupled internal coordinate authority, and the independent

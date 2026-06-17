@@ -259,6 +259,12 @@ statement = "The openbmp-sim rigid-body kernel exposes RigidBodySeparationStates
 verification = ["V-MULTIBODY-043"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-044"
+title = "The rigid runner can install single-stage welded-release jettison states"
+statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"welded_release_jettison\" as an explicit guarded mode that requires primary_body_id and a separation declaration, rejects initial lanes and articulated gimbal joints, and routes single jettison_stage events through a runner-side identity welded upper/lower multibody pair. In that mode, the runner computes the departing lower-body free-flyer state with release_welded_subtree_as_free_flyer, projects both same-time continuing and departing rigid states, and installs them through jettison_rigid_body_with_states. The regressions prove successful release-state installation plus fail-closed rejection of manual separation delta-v/angular-rate impulses. This makes no claim that non-identity body-to-body separation geometry, batch jettison_bodies, departing attitude offsets, impulse/tip-off modeling, arbitrary subtree release, or full rigid-kernel removal is complete."
+verification = ["V-MULTIBODY-044"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1801,6 +1807,32 @@ contains = [
   "REQ-MULTIBODY-043",
 ]
 requirements = ["REQ-MULTIBODY-043"]
+
+[[verification]]
+id = "V-MULTIBODY-044"
+kind = "test"
+command = "cargo test -p openbmp-scenario welded_release_jettison --locked && cargo test -p openbmp-runner welded_release_jettison_authority --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-sim/src/lib.rs",
+  "docs/scenario-format.md",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "WeldedReleaseJettison",
+  "welded_release_jettison",
+  "build_runtime_welded_release_separation_states",
+  "release_welded_subtree_as_free_flyer",
+  "jettison_rigid_body_with_states",
+  "welded_release_jettison_authority_installs_release_states",
+  "welded_release_jettison_authority_rejects_manual_impulses",
+  "accepts_welded_release_jettison_propagation_authority",
+  "REQ-MULTIBODY-044",
+]
+requirements = ["REQ-MULTIBODY-044"]
 
 [[verification]]
 id = "V-SIL-001"

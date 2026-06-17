@@ -5170,6 +5170,63 @@ angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
     }
 
     #[test]
+    fn accepts_welded_release_jettison_propagation_authority() {
+        let toml = VALID_STAGE_SEPARATION_SCENARIO.replace(
+            "\n[multi_body]\n",
+            "\n[multi_body]\nprimary_body_id = \"upper\"\npropagation_authority = \"welded_release_jettison\"\n",
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
+        let multi_body = scenario
+            .document
+            .multi_body
+            .as_ref()
+            .expect("multi_body present");
+        assert_eq!(multi_body.primary_body_id.as_deref(), Some("upper"));
+        assert_eq!(
+            multi_body.propagation_authority,
+            crate::document::MultiBodyPropagationAuthorityConfig::WeldedReleaseJettison
+        );
+        assert_eq!(multi_body.separations.len(), 1);
+    }
+
+    #[test]
+    fn rejects_welded_release_jettison_authority_with_initial_lanes() {
+        let prefix = VALID_STAGE_SEPARATION_SCENARIO
+            .split("\n[mission]\n")
+            .next()
+            .expect("fixture contains mission block");
+        let toml = format!(
+            r#"{prefix}
+[multi_body]
+primary_body_id = "upper"
+propagation_authority = "welded_release_jettison"
+
+[[multi_body.separation]]
+event_id = "sep"
+upper_body_id = "upper"
+lower_body_id = "lower"
+
+[[multi_body.initial_lane]]
+body_id                         = "lower"
+position_eci_m                  = [10.0, 0.0, 100.0]
+velocity_eci_m_s                = [0.0, 1.0, 10.0]
+quaternion_body_to_eci_xyzw     = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
+"#
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                    if field_a == "multi_body.propagation_authority"
+                        && field_b == "multi_body.initial_lane"
+            ),
+            "expected welded release authority/initial lane conflict, got {err:?}",
+        );
+    }
+
+    #[test]
     fn rejects_separated_root_free_flyer_authority_with_gimbal_joints() {
         let prefix = VALID_STAGE_SEPARATION_SCENARIO
             .split("\n[environment]\n")

@@ -75,8 +75,8 @@ pub use integrator::{
 };
 pub use kernel::{
     InitialRigidBodyLane, PointMassKernel, ProfiledPointMassKernel, ProfiledRigidBodyKernel,
-    RigidBodyKernel, RigidBodySeparation, RigidModels, SeparatedRigidBody, SimulationConfig,
-    SimulationKernel, TrajectoryProfileConfig,
+    RigidBodyKernel, RigidBodySeparation, RigidBodySeparationStates, RigidModels,
+    SeparatedRigidBody, SimulationConfig, SimulationKernel, TrajectoryProfileConfig,
 };
 pub use models::{
     ConstantGravityForce, ConstantMass, ConstantMassRigid, EffectorActualsView, EngineSnapshot,
