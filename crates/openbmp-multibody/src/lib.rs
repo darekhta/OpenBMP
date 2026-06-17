@@ -994,7 +994,9 @@ impl MultibodyTree {
     /// Scalar revolute/prismatic joints map `qd` directly into `q_dot`.
     /// Free-flyer and spherical quaternion coordinates use the same
     /// body-frame quaternion convention as the rigid-body state model,
-    /// `q_dot = 0.5 * q ⊗ [0, omega_body]`. Free-flyer quaternions store the
+    /// `q_dot = 0.5 * q ⊗ [0, omega_body]`. The quaternion-rate lift uses the
+    /// raw finite, nonzero RK substep quaternion and leaves normalization to
+    /// projection after the weighted sum. Free-flyer quaternions store the
     /// parent-from-child rotation, so translation rates are converted from
     /// body-frame linear velocity to parent-frame position derivatives with the
     /// current normalized quaternion.
@@ -2265,12 +2267,7 @@ fn quaternion_derivative_from_body_rate(
             reason: "quaternion norm must be non-zero",
         });
     }
-    let inv_norm = 1.0 / <f64 as nalgebra::ComplexField>::sqrt(norm2);
-    let w = q[0] * inv_norm;
-    let x = q[1] * inv_norm;
-    let y = q[2] * inv_norm;
-    let z = q[3] * inv_norm;
-    let q_dot = NalgebraQuaternion::new(w, x, y, z)
+    let q_dot = NalgebraQuaternion::new(q[0], q[1], q[2], q[3])
         * NalgebraQuaternion::new(
             0.0,
             omega_body_rad_s.x,
@@ -3084,6 +3081,23 @@ mod tests {
         assert_abs_diff_eq!(q_dot[6], 3.0, epsilon = 1.0e-15);
         assert_abs_diff_eq!(q_dot[7], 4.0, epsilon = 1.0e-15);
         assert_abs_diff_eq!(q_dot[8], -5.0, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn coordinate_derivative_uses_raw_free_flyer_quaternion_for_rate() {
+        let tree = sample_tree();
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![2.0, 0.0, 0.0, 0.0, 10.0, 20.0, 30.0, 0.25, 0.5],
+            vec![0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 4.0, -5.0],
+        );
+
+        let q_dot = tree.coordinate_derivative_from_velocity(&state).unwrap();
+
+        assert_abs_diff_eq!(q_dot[0], 0.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[1], 0.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[2], 0.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[3], 2.0, epsilon = 1.0e-15);
     }
 
     #[test]

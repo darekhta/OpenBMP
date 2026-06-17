@@ -111,7 +111,7 @@ verification = ["V-MULTIBODY-018"]
 [[requirements]]
 id = "REQ-MULTIBODY-019"
 title = "The primary multibody shadow can forecast a constant-mass root step"
-statement = "The openbmp-runner root-free-flyer bridge can project a one-body MultibodySimState back into the existing RigidBodyState shape and records an RK4 primary-shadow forecast by evaluating the runner's force and moment adapters at multibody RK stages before the authoritative rigid-kernel step. The multibody free-flyer quaternion convention is parent-from-child for the stored quaternion while Plucker transforms still receive child-from-parent matrices, free-flyer body velocity lifts into parent-frame position rate, parent-frame root forces rotate into the body generalized-force slots, and the runner bridge uses the rigid ECI acceleration kinematic derivative for the body-frame root linear velocity. The tests prove projection round-trips position, velocity, quaternion, and body angular rate, prove a constant-mass no-rotation gravity-only primary multi_body scenario forecasts the same next rigid state as the current RK4 rigid kernel, and bound a constant-mass direct-torque/changing-attitude forecast against the current rigid kernel without changing telemetry authority. This makes no claim that replacing the rigid-kernel propagation path, eliminating the remaining nonlinear-coordinate RK4 residual under changing attitude, variable-mass propagation, gimballed ascent propagation, welded-to-free joint-release propagation, or Spatial_v2 oracle validation is complete."
+statement = "The openbmp-runner root-free-flyer bridge can project a one-body MultibodySimState back into the existing RigidBodyState shape and records an RK4 primary-shadow forecast by evaluating the runner's force and moment adapters at multibody RK stages before the authoritative rigid-kernel step. The multibody free-flyer quaternion convention is parent-from-child for the stored quaternion while Plucker transforms still receive child-from-parent matrices, quaternion-rate lifting uses raw finite nonzero RK substep quaternions before projection, free-flyer body velocity lifts into parent-frame position rate, parent-frame root forces rotate into the body generalized-force slots, and the runner bridge integrates root translation in the rigid kernel's ECI velocity coordinates while using multibody stage derivatives for attitude. The tests prove projection round-trips position, velocity, quaternion, and body angular rate, prove a constant-mass no-rotation gravity-only primary multi_body scenario forecasts the same next rigid state as the current RK4 rigid kernel, and prove a constant-mass direct-torque/changing-attitude scenario forecasts the same next rigid state as the current rigid kernel without changing telemetry authority. This makes no claim that replacing the rigid-kernel propagation path, variable-mass propagation, gimballed ascent propagation, welded-to-free joint-release propagation, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-019"]
 
 [[requirements]]
@@ -1135,7 +1135,7 @@ requirements = ["REQ-MULTIBODY-018"]
 [[verification]]
 id = "V-MULTIBODY-019"
 kind = "test"
-command = "cargo test -p openbmp-multibody --locked && cargo test -p openbmp-runner root_free_flyer_multibody_projection_round_trips_rigid_state --locked && cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_matches_constant_mass_no_rotation_rigid_step --locked && cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_bounds_constant_mass_direct_torque_rigid_step --locked && cargo test -p openbmp-runner primary_multibody_shadow_mirrors_pre_step_runner_loads --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+command = "cargo test -p openbmp-multibody --locked && cargo test -p openbmp-runner root_free_flyer_multibody_projection_round_trips_rigid_state --locked && cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_matches_constant_mass_no_rotation_rigid_step --locked && cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_matches_constant_mass_direct_torque_rigid_step --locked && cargo test -p openbmp-runner primary_multibody_shadow_mirrors_pre_step_runner_loads --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
 paths = [
   "crates/openbmp-multibody/src/lib.rs",
   "crates/openbmp-runner/src/rigid_body.rs",
@@ -1144,11 +1144,12 @@ paths = [
 ]
 contains = [
   "rotation_parent_from_child_from_quaternion",
+  "coordinate_derivative_uses_raw_free_flyer_quaternion_for_rate",
   "coordinate_derivative_rotates_free_flyer_body_velocity_to_parent",
   "root_free_flyer_rigid_state_from_multibody_state",
   "root_free_flyer_multibody_rk4_forecast_from_runner_models",
   "primary_multibody_shadow_rk4_forecast_matches_constant_mass_no_rotation_rigid_step",
-  "primary_multibody_shadow_rk4_forecast_bounds_constant_mass_direct_torque_rigid_step",
+  "primary_multibody_shadow_rk4_forecast_matches_constant_mass_direct_torque_rigid_step",
   "REQ-MULTIBODY-019",
   "WP-01.1 is now **partial**",
   "**implementation_status:** partial",

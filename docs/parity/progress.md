@@ -165,13 +165,13 @@ at multibody RK stages, and prove a no-rotation gravity-only primary shadow
 forecasts the same next rigid state as the current rigid kernel. The
 multibody free-flyer quaternion convention is now explicit, body velocity lifts
 into parent-frame position rate, parent forces rotate into body generalized
-force slots, and a constant-mass direct-torque/changing-attitude forecast is
-bounded against the current rigid kernel (`REQ-MULTIBODY-019`). Missing for
-full WP-01.1: replacing the rigid-kernel propagation path, eliminating the
-remaining nonlinear-coordinate RK4 residual under changing attitude,
-variable-mass multibody propagation, welded-to-free joint-release propagation
-and full separated-body multibody propagation, full gimballed ascent
-validation, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
+force slots, raw RK substep quaternions drive `q_dot` until projection, and a
+constant-mass direct-torque/changing-attitude forecast matches the current
+rigid kernel (`REQ-MULTIBODY-019`). Missing for full WP-01.1: replacing the
+rigid-kernel propagation path, variable-mass multibody propagation,
+welded-to-free joint-release propagation and full separated-body multibody
+propagation, full gimballed ascent validation, and Spatial_v2 oracle checks.
+WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 

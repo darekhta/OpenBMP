@@ -222,14 +222,13 @@ advance vector-backed multibody states. Runner/kernel force wiring is now
 present for primary root-free-flyer and separated-lane shadows, including lanes
 created by jettison events. A first primary-shadow RK4 forecast path projects a
 root free-flyer `MultibodySimState` back into `RigidBodyState`; it is exact for
-the constant-mass, no-rotation gravity case and now has a bounded
-direct-torque/changing-attitude regression after making the free-flyer
-quaternion and parent/body force conventions explicit. Authoritative
-propagation is still the rigid kernel. Replacing the rigid propagation path,
-eliminating the remaining nonlinear-coordinate RK4 residual under changing
-attitude, variable-mass multibody propagation, double-pendulum tolerance
-tables, full separated-lane multibody propagation, and external Spatial_v2
-oracle fixtures remain open.
+the constant-mass, no-rotation gravity case and for a constant-mass
+direct-torque/changing-attitude case after making the free-flyer quaternion,
+raw RK substep quaternion-rate, parent/body force, and ECI-translation
+conventions explicit. Authoritative propagation is still the rigid kernel.
+Replacing the rigid propagation path, variable-mass multibody propagation,
+double-pendulum tolerance tables, full separated-lane multibody propagation,
+and external Spatial_v2 oracle fixtures remain open.
 
 ---
 
@@ -796,14 +795,13 @@ justification first, reviewed before the implementation lands.
   adapters at multibody RK stages; projection round-trip and gravity-only
   no-rotation regressions prove the forecast can match the current rigid
   kernel over one step in that limited envelope, and a direct-torque regression
-  bounds the changing-attitude forecast after fixing the root free-flyer
-  parent/body quaternion and force conventions.
+  proves the changing-attitude forecast can also match after fixing the root
+  free-flyer parent/body quaternion, raw RK substep quaternion-rate, force, and
+  ECI-translation conventions.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
-  eliminating the remaining nonlinear-coordinate RK4 residual under changing
-  attitude, variable-mass multibody propagation, welded-to-free joint-release
-  propagation and full separated-body multibody propagation, double-pendulum
-  tolerance table, Spatial_v2 oracle fixtures, and full gimballed ascent
-  validation.
+  variable-mass multibody propagation, welded-to-free joint-release propagation
+  and full separated-body multibody propagation, double-pendulum tolerance
+  table, Spatial_v2 oracle fixtures, and full gimballed ascent validation.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

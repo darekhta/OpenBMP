@@ -52,9 +52,9 @@ use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
     AnyStop, ConstantMass, EffectorActualsView, EndTime, EngineSnapshotView, EnvironmentModel,
     EnvironmentQuery, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane, Integrator,
-    MassContext, MomentContext, RecoverySnapshotView, RigidBodySeparation, RigidMassModel,
-    RigidModels, Rk4FixedStep, ScenarioScriptAction, SimulationConfig, SimulationKernel,
-    StopReason, TankSnapshotView,
+    MassContext, MomentContext, RecoverySnapshotView, RigidBodyDerivative, RigidBodySeparation,
+    RigidMassModel, RigidModels, Rk4FixedStep, ScenarioScriptAction, SimulationConfig,
+    SimulationKernel, StopReason, TankSnapshotView,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -2260,6 +2260,31 @@ where
     F: ForceModel<RigidBodyState>,
     M: openbmp_sim::MomentModel<RigidBodyState>,
 {
+    root_free_flyer_multibody_stage_derivative_from_runner_models(
+        seed,
+        force_model,
+        moment_model,
+        views,
+    )
+    .map(|stage| stage.multibody)
+}
+
+#[derive(Clone, Debug)]
+struct RootFreeFlyerStageDerivative {
+    multibody: MultibodyDerivative,
+    force_eci_n: Vector3<f64>,
+}
+
+fn root_free_flyer_multibody_stage_derivative_from_runner_models<F, M>(
+    seed: &RootFreeFlyerMultibodySeed,
+    force_model: &F,
+    moment_model: &M,
+    views: RootFreeFlyerLoadViews<'_>,
+) -> Result<RootFreeFlyerStageDerivative, RunnerError>
+where
+    F: ForceModel<RigidBodyState>,
+    M: openbmp_sim::MomentModel<RigidBodyState>,
+{
     let mass_kg = seed.rigid_state.mass_props.mass_kg();
     let force_eci_n = force_model
         .force_n_eci(ForceContext {
@@ -2291,13 +2316,17 @@ where
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("root free-flyer moment adapter evaluation failed: {err}"),
         })?;
-    root_free_flyer_multibody_derivative_from_rigid_loads(
+    let multibody = root_free_flyer_multibody_derivative_from_rigid_loads(
         &seed.tree,
         &seed.sim_state,
         seed.rigid_state.mass_props,
         moment_body_n_m,
         force_eci_n,
-    )
+    )?;
+    Ok(RootFreeFlyerStageDerivative {
+        multibody,
+        force_eci_n,
+    })
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -2322,25 +2351,16 @@ where
     M: openbmp_sim::MomentModel<RigidBodyState>,
     ENV: Fn(&RigidBodyState) -> Result<openbmp_sim::EnvironmentSample, RunnerError>,
 {
-    let next_sim_state = Rk4FixedStep
+    let next_rigid_state = Rk4FixedStep
         .advance(
-            &seed.sim_state,
-            |sim_state, _time| {
-                let rigid_state = root_free_flyer_rigid_state_from_multibody_state(
-                    seed.body,
-                    sim_state,
-                    seed.rigid_state.mass_props,
-                )
-                .map_err(multibody_shadow_model_eval_error)?;
-                let environment = environment_for_state(&rigid_state)
+            &seed.rigid_state,
+            |rigid_state, _time| {
+                let environment = environment_for_state(rigid_state)
                     .map_err(multibody_shadow_model_eval_error)?;
-                let stage_seed = RootFreeFlyerMultibodySeed {
-                    body: seed.body,
-                    rigid_state,
-                    tree: seed.tree.clone(),
-                    sim_state: sim_state.clone(),
-                };
-                root_free_flyer_multibody_derivative_from_runner_models(
+                let stage_seed =
+                    root_free_flyer_multibody_seed_from_rigid_state(seed.body, *rigid_state)
+                        .map_err(multibody_shadow_model_eval_error)?;
+                let stage = root_free_flyer_multibody_stage_derivative_from_runner_models(
                     &stage_seed,
                     force_model,
                     moment_model,
@@ -2353,24 +2373,25 @@ where
                         recovery_snapshot: held_views.recovery_snapshot,
                     },
                 )
-                .map_err(multibody_shadow_model_eval_error)
+                .map_err(multibody_shadow_model_eval_error)?;
+                let q_dot = stage.multibody.q_dot();
+                let qd_dot = stage.multibody.qd_dot();
+                Ok(RigidBodyDerivative::new(
+                    rigid_state.velocity.vector,
+                    stage.force_eci_n / rigid_state.mass_props.mass_kg(),
+                    nalgebra::Quaternion::new(q_dot[0], q_dot[1], q_dot[2], q_dot[3]),
+                    Vector3::new(qd_dot[0], qd_dot[1], qd_dot[2]),
+                    0.0,
+                    Vector3::zeros(),
+                    nalgebra::Matrix3::zeros(),
+                ))
             },
             Duration::from_seconds(dt_s),
         )
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("root free-flyer multibody RK4 forecast failed: {err}"),
         })?;
-    let rigid_state = root_free_flyer_rigid_state_from_multibody_state(
-        seed.body,
-        &next_sim_state,
-        seed.rigid_state.mass_props,
-    )?;
-    Ok(RootFreeFlyerMultibodySeed {
-        body: seed.body,
-        rigid_state,
-        tree: seed.tree.clone(),
-        sim_state: next_sim_state,
-    })
+    root_free_flyer_multibody_seed_from_rigid_state(seed.body, next_rigid_state)
 }
 
 fn multibody_shadow_model_eval_error(error: RunnerError) -> openbmp_sim::ModelEvalError {
@@ -5027,7 +5048,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_multibody_shadow_rk4_forecast_bounds_constant_mass_direct_torque_rigid_step() {
+    fn primary_multibody_shadow_rk4_forecast_matches_constant_mass_direct_torque_rigid_step() {
         let toml = PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO
             .replace("gravity_m_s2 = 0.0", "gravity_m_s2 = 2.0")
             .replace(
@@ -5056,17 +5077,15 @@ mod tests {
         let predicted = &forecast.rigid_state;
         let actual = session.state();
         assert_eq!(predicted.time.as_seconds().to_bits(), 0.1_f64.to_bits());
-        let position_error_m = (predicted.position.vector - actual.position.vector).norm();
         assert!(
-            position_error_m < 3.0e-6,
+            (predicted.position.vector - actual.position.vector).norm() < 1.0e-12,
             "position predicted={:?} actual={:?} diff={:?}",
             predicted.position.vector,
             actual.position.vector,
             predicted.position.vector - actual.position.vector
         );
-        let velocity_error_m_s = (predicted.velocity.vector - actual.velocity.vector).norm();
         assert!(
-            velocity_error_m_s < 2.0e-6,
+            (predicted.velocity.vector - actual.velocity.vector).norm() < 1.0e-12,
             "velocity predicted={:?} actual={:?} diff={:?}",
             predicted.velocity.vector,
             actual.velocity.vector,
@@ -5081,9 +5100,8 @@ mod tests {
         );
         let predicted_q = predicted.orientation.q.into_inner();
         let actual_q = actual.orientation.q.into_inner();
-        let quaternion_error = (predicted_q.coords - actual_q.coords).norm();
         assert!(
-            quaternion_error < 2.0e-8,
+            (predicted_q.coords - actual_q.coords).norm() < 1.0e-12,
             "q predicted={:?} actual={:?} diff={:?}",
             predicted_q.coords,
             actual_q.coords,
