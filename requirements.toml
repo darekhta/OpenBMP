@@ -253,6 +253,12 @@ statement = "After a schema-v3 propagation_authority = \"articulated_gimbal_root
 verification = ["V-MULTIBODY-042"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-043"
+title = "The sim kernel can install externally computed separation states"
+statement = "The openbmp-sim rigid-body kernel exposes RigidBodySeparationStates and jettison_rigid_body_with_states as an explicit post-separation state installation seam for future momentum-continuing welded-to-free release runners. The API validates separated-body force, moment, and mass model support, rejects same-body splits, active-primary mismatches, duplicate departed bodies, invalid states, and continuing/departing states whose times do not match the current kernel time; then it installs the continuing-stack state exactly, appends the departing lane state exactly, marks the separation step/time, and refreshes relative distance/speed event caches. The tests prove exact explicit-state installation and fail-closed wrong-time rejection. This makes no claim that the runner already computes those states from release_welded_subtree_as_free_flyer, that batch explicit-state release is complete, or that full welded-release propagation is complete."
+verification = ["V-MULTIBODY-043"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1776,6 +1782,25 @@ contains = [
   "REQ-MULTIBODY-042",
 ]
 requirements = ["REQ-MULTIBODY-042"]
+
+[[verification]]
+id = "V-MULTIBODY-043"
+kind = "test"
+command = "cargo test -p openbmp-sim jettison_rigid_body_with_states --locked && cargo check -p openbmp-sim --locked && cargo clippy -p openbmp-sim --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-sim/src/kernel.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "RigidBodySeparationStates",
+  "jettison_rigid_body_with_states",
+  "jettison_rigid_body_with_states_installs_explicit_release_states",
+  "jettison_rigid_body_with_states_requires_current_time_states",
+  "exact explicit-state installation",
+  "REQ-MULTIBODY-043",
+]
+requirements = ["REQ-MULTIBODY-043"]
 
 [[verification]]
 id = "V-SIL-001"

@@ -208,6 +208,19 @@ pub struct RigidBodySeparation {
     pub stage_attitude_offset_body_xyzw: [f64; 4],
 }
 
+/// Explicit post-separation rigid states computed by an external splitter.
+#[derive(Clone, Copy, Debug)]
+pub struct RigidBodySeparationStates {
+    /// Continuing stack body id after the split.
+    pub stack_body: BodyId,
+    /// Departing body id.
+    pub body: BodyId,
+    /// Continuing stack state after separation.
+    pub stack_state: openbmp_state::RigidBodyState,
+    /// Departing body state after separation.
+    pub stage_state: openbmp_state::RigidBodyState,
+}
+
 /// One rigid body detached from the primary stack.
 #[derive(Clone, Copy, Debug)]
 pub struct SeparatedRigidBody {
@@ -2209,6 +2222,143 @@ where
         self.jettison_rigid_bodies(&[separation])
     }
 
+    /// Apply one rigid-body separation using already computed post-split
+    /// states.
+    ///
+    /// This is the installation seam for multibody welded-to-free release
+    /// paths: the caller computes the momentum-continuing continuing-stack
+    /// and departing-lane states, while the kernel owns validation, lane
+    /// registration, and event-cache refresh.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::InvalidRigidBodySeparation`] when the
+    /// force/moment/mass models cannot propagate separated lanes, the body is
+    /// already detached, the active primary body disagrees with `stack_body`,
+    /// either state is invalid, or either state is not at the current kernel
+    /// time.
+    pub fn jettison_rigid_body_with_states(
+        &mut self,
+        separation: RigidBodySeparationStates,
+    ) -> Result<(), SimulationError> {
+        if !self.force_model.supports_separated_body_propagation() {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "force model does not declare separated-body propagation support; \
+                         per-body force-stack ownership is required for aero, thrust, tanks, \
+                         recovery, or other vehicle-owned forces"
+                    .to_owned(),
+            });
+        }
+        if !self
+            .mass_model
+            .moment_model
+            .supports_separated_body_propagation()
+        {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "moment model does not declare separated-body propagation support; \
+                         per-body moment-stack ownership is required for engine, tank, aero, \
+                         effector, or other vehicle-owned moments"
+                    .to_owned(),
+            });
+        }
+        if !self
+            .mass_model
+            .mass_model
+            .supports_separated_body_propagation()
+        {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: "rigid mass model does not declare separated-body propagation support; \
+                         per-body mass-property ownership is required for variable-mass \
+                         propulsion, tanks, or other time-varying mass models"
+                    .to_owned(),
+            });
+        }
+        if separation.body == separation.stack_body {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: format!(
+                    "departing body {} must differ from stack body",
+                    separation.body.value()
+                ),
+            });
+        }
+        if let Some(primary_body) = self.primary_rigid_body
+            && primary_body != separation.stack_body
+        {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: format!(
+                    "separation stack body {} does not match active primary body {}",
+                    separation.stack_body.value(),
+                    primary_body.value()
+                ),
+            });
+        }
+        if self
+            .separated_rigid_bodies
+            .iter()
+            .any(|body| body.body == separation.body)
+        {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: format!(
+                    "body id {} has already been jettisoned",
+                    separation.body.value()
+                ),
+            });
+        }
+        if separation.stack_state.time != self.state.time {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: format!(
+                    "continuing-stack state time {} does not match current kernel time {}",
+                    separation.stack_state.time.as_seconds(),
+                    self.state.time.as_seconds()
+                ),
+            });
+        }
+        if separation.stage_state.time != self.state.time {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: format!(
+                    "departing-stage state time {} does not match current kernel time {}",
+                    separation.stage_state.time.as_seconds(),
+                    self.state.time.as_seconds()
+                ),
+            });
+        }
+        separation
+            .stack_state
+            .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
+            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                reason: format!("continuing-stack state is invalid: {source}"),
+            })?;
+        separation
+            .stage_state
+            .require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
+            .map_err(|source| SimulationError::InvalidRigidBodySeparation {
+                reason: format!("departing-stage state is invalid: {source}"),
+            })?;
+
+        let separated_at_step = self.step_index;
+        let separated_at_time = self.state.time;
+        self.state = separation.stack_state;
+        self.primary_rigid_body = Some(separation.stack_body);
+        self.separated_rigid_bodies.push(SeparatedRigidBody {
+            body: separation.body,
+            state: separation.stage_state,
+            propagating: true,
+            separated_at_step,
+            separated_at_time,
+        });
+        self.previous_event_relative_distances_m = Some(rigid_body_relative_distances_m(
+            self.primary_rigid_body,
+            &self.state,
+            &self.separated_rigid_bodies,
+        ));
+        self.previous_event_relative_speeds_m_s = Some(rigid_body_relative_speeds_m_s(
+            self.primary_rigid_body,
+            &self.state,
+            &self.separated_rigid_bodies,
+        ));
+        Ok(())
+    }
+
     /// Apply multiple rigid-body stage separations at the current
     /// state.
     ///
@@ -3019,6 +3169,86 @@ mod tests {
             matches!(err, SimulationError::InvalidRigidBodySeparation { ref reason } if reason.contains("is not active")),
             "expected missing separated body error, got {err:?}",
         );
+    }
+
+    #[test]
+    fn jettison_rigid_body_with_states_installs_explicit_release_states() {
+        let mut kernel = zero_force_rigid_kernel(0.1);
+        let mass_props = unit_rigid_mass_properties();
+        let stack_body = BodyId::new(10);
+        let stage_body = BodyId::new(20);
+        let stack_state = RigidBodyState::new(
+            SimTime::ZERO,
+            Position3::new(1.0, 2.0, 3.0),
+            Velocity3::new(0.0, 1.0, 0.0),
+            Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+            AngularVelocity3::new(0.1, 0.2, 0.3),
+            mass_props,
+        );
+        let stage_state = RigidBodyState::new(
+            SimTime::ZERO,
+            Position3::new(4.0, 5.0, 6.0),
+            Velocity3::new(0.0, 2.0, 0.0),
+            Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+            AngularVelocity3::new(0.4, 0.5, 0.6),
+            mass_props,
+        );
+
+        kernel
+            .jettison_rigid_body_with_states(RigidBodySeparationStates {
+                stack_body,
+                body: stage_body,
+                stack_state,
+                stage_state,
+            })
+            .expect("explicit release states install");
+
+        assert_eq!(kernel.primary_rigid_body, Some(stack_body));
+        assert_eq!(kernel.current_state().position, stack_state.position);
+        assert_eq!(kernel.current_state().velocity, stack_state.velocity);
+        assert_eq!(kernel.separated_rigid_bodies().len(), 1);
+        let separated = kernel.separated_rigid_bodies()[0];
+        assert_eq!(separated.body, stage_body);
+        assert_eq!(separated.state.position, stage_state.position);
+        assert_eq!(separated.state.velocity, stage_state.velocity);
+        assert_eq!(separated.separated_at_time, SimTime::ZERO);
+        assert_eq!(separated.separated_at_step, StepIndex::ZERO);
+    }
+
+    #[test]
+    fn jettison_rigid_body_with_states_requires_current_time_states() {
+        let mut kernel = zero_force_rigid_kernel(0.1);
+        let mass_props = unit_rigid_mass_properties();
+        let stack_state = RigidBodyState::new(
+            SimTime::from_seconds(0.1),
+            Position3::origin(),
+            Velocity3::zero(),
+            Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+            AngularVelocity3::zero(),
+            mass_props,
+        );
+        let stage_state = RigidBodyState::new(
+            SimTime::ZERO,
+            Position3::new(1.0, 0.0, 0.0),
+            Velocity3::zero(),
+            Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+            AngularVelocity3::zero(),
+            mass_props,
+        );
+
+        let err = kernel
+            .jettison_rigid_body_with_states(RigidBodySeparationStates {
+                stack_body: BodyId::new(10),
+                body: BodyId::new(20),
+                stack_state,
+                stage_state,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, SimulationError::InvalidRigidBodySeparation { ref reason } if reason.contains("continuing-stack state time")),
+            "expected explicit release time mismatch, got {err:?}",
+        );
+        assert!(kernel.separated_rigid_bodies().is_empty());
     }
 
     #[test]

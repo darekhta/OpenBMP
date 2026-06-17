@@ -269,16 +269,22 @@ the projected articulated root forecast after each fixed-step RK4 tick and
 recording the applied handoff. After the first authoritative root handoff, the
 next pre-step articulated seed now carries the prior forecast's internal joint
 coordinates/rates forward while refreshing the root slots from the
-authoritative rigid state.
+authoritative rigid state. The simulation kernel now also exposes an explicit
+post-separation state installation seam for future welded-release runners:
+`RigidBodySeparationStates` plus `jettison_rigid_body_with_states()` validate
+same-time externally computed continuing-stack and departing-lane states,
+install them exactly, and refresh relative-state event caches. This gives the
+runner an exact explicit-state installation target for a later
+`release_welded_subtree_as_free_flyer()` integration.
 Default authoritative propagation is still the rigid kernel.
 Replacing the rigid propagation path beyond that guarded primary-root handoff,
 broader variable-mass multibody propagation beyond the one-body root and
 separated root-free-flyer paths, broader authoritative articulated thrust
 propagation beyond the single-gimbal root/internal-state handoff including
 multi-gimbal authoritative two-axis propagation, full orbital-ascent gimballed
-validation, full momentum-conserving welded-to-free release propagation, and
-the independent Spatial_v2 oracle matrix across at least three small random
-trees remain open.
+validation, runner-side computation and use of welded-release states, and the
+independent Spatial_v2 oracle matrix across at least three small random trees
+remain open.
 
 ---
 
@@ -926,11 +932,15 @@ justification first, reviewed before the implementation lands.
   the first authoritative handoff, subsequent pre-step mirrors carry the prior
   articulated forecast's joint coordinates and rates into the next
   authoritative seed while refreshing root slots from the rigid state
-  (`REQ-MULTIBODY-042`).
+  (`REQ-MULTIBODY-042`). The sim kernel now also exposes
+  `RigidBodySeparationStates` and `jettison_rigid_body_with_states()` as the
+  explicit-state installation seam for externally computed welded-release
+  handoffs, with fail-closed current-time validation and exact state
+  installation (`REQ-MULTIBODY-043`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path beyond
   the guarded primary-root, separated-lane, and single-gimbal root/internal-state handoffs, broader
   variable-mass multibody propagation beyond the root-free-flyer paths,
-  runner-side momentum-conserving welded-to-free joint-release propagation,
+  runner-side computation and use of momentum-conserving welded-to-free states,
   the independent Spatial_v2 oracle matrix across at least three small random
   trees, full orbital-ascent gimballed validation, and broader multi-gimbal
   authoritative articulated thrust propagation including authoritative two-axis
