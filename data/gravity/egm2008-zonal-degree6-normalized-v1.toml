@@ -1,0 +1,45 @@
+# EGM2008-compatible zonal gravity coefficients through degree 6 in
+# fully-normalized form.
+#
+# This file is a low-degree ingestion fixture for the normalized harmonic field
+# substrate. It derives Cbar_n0 = -J_n / sqrt(2n + 1) from the existing
+# unnormalised WGS84/EGM2008 zonal constants pinned in `gravity.rs`, and sets
+# every Sbar_n0 term to zero. It is not the full high-degree EGM2008 coefficient
+# block required for WP-08.1 completion.
+
+dataset_id     = "openbmp.egm2008.gravity.zonal-degree6-normalized.v1"
+schema_version = "openbmp.gravity.normalized-zonal.v1"
+normalization  = "fully_normalized"
+tide_system    = "tide_free"
+max_degree     = 6
+max_order      = 0
+
+[[coefficient]]
+degree = 2
+order  = 0
+cbar   = -4.84165371488623172e-4
+sbar   = 0.0
+
+[[coefficient]]
+degree = 3
+order  = 0
+cbar   = 9.57248434275904104e-7
+sbar   = 0.0
+
+[[coefficient]]
+degree = 4
+order  = 0
+cbar   = 5.39966133333333390e-7
+sbar   = 0.0
+
+[[coefficient]]
+degree = 5
+order  = 0
+cbar   = 6.86649513874002269e-8
+sbar   = 0.0
+
+[[coefficient]]
+degree = 6
+order  = 0
+cbar   = -1.49993215650609419e-7
+sbar   = 0.0

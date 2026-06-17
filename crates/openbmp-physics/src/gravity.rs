@@ -2217,6 +2217,76 @@ mod tests {
         .expect("finite normalized harmonic field")
     }
 
+    fn load_egm2008_normalized_zonal_degree6_fixture() -> NormalizedHarmonicField {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/gravity/egm2008-zonal-degree6-normalized-v1.toml"
+        ));
+        let value: toml::Value = toml::from_str(fixture).expect("EGM2008 zonal TOML parses");
+        let table = value.as_table().expect("EGM2008 zonal TOML table");
+        assert_eq!(
+            table
+                .get("dataset_id")
+                .and_then(toml::Value::as_str)
+                .expect("dataset_id"),
+            "openbmp.egm2008.gravity.zonal-degree6-normalized.v1"
+        );
+        assert_eq!(
+            table
+                .get("schema_version")
+                .and_then(toml::Value::as_str)
+                .expect("schema_version"),
+            "openbmp.gravity.normalized-zonal.v1"
+        );
+        assert_eq!(
+            table
+                .get("normalization")
+                .and_then(toml::Value::as_str)
+                .expect("normalization"),
+            "fully_normalized"
+        );
+        let tide_system = TideSystem::from_tag(
+            table
+                .get("tide_system")
+                .and_then(toml::Value::as_str)
+                .expect("tide_system"),
+        )
+        .expect("known tide system");
+        let unsigned = |key: &str| -> usize {
+            let value = table.get(key).and_then(toml::Value::as_integer).expect(key);
+            assert!(value >= 0, "{key} must be non-negative");
+            value as usize
+        };
+        let max_degree = unsigned("max_degree");
+        let max_order = unsigned("max_order");
+        let coefficients = table
+            .get("coefficient")
+            .and_then(toml::Value::as_array)
+            .expect("coefficient array")
+            .iter()
+            .map(|entry| {
+                let entry = entry.as_table().expect("coefficient table");
+                let unsigned = |key: &str| -> usize {
+                    let value = entry.get(key).and_then(toml::Value::as_integer).expect(key);
+                    assert!(value >= 0, "{key} must be non-negative");
+                    value as usize
+                };
+                let scalar = |key: &str| -> f64 {
+                    entry.get(key).and_then(toml::Value::as_float).expect(key)
+                };
+                NormalizedHarmonicCoefficient::new(
+                    unsigned("degree"),
+                    unsigned("order"),
+                    scalar("cbar"),
+                    scalar("sbar"),
+                )
+                .expect("finite normalized zonal coefficient")
+            })
+            .collect::<Vec<_>>();
+        NormalizedHarmonicField::new(max_degree, max_order, tide_system, coefficients)
+            .expect("finite normalized EGM2008 zonal field")
+    }
+
     #[derive(Copy, Clone, Debug)]
     struct FixedEphemeris {
         position: Vector3<f64>,
@@ -2919,15 +2989,13 @@ mod tests {
     }
 
     #[test]
-    fn egm2008_zonal_from_normalized_field_matches_builtin_zonals() {
-        let normalized = [
-            NormalizedHarmonicCoefficient::new(2, 0, -WGS84_J2 / 5.0_f64.sqrt(), 0.0).unwrap(),
-            NormalizedHarmonicCoefficient::new(3, 0, -EGM2008_J3 / 7.0_f64.sqrt(), 0.0).unwrap(),
-            NormalizedHarmonicCoefficient::new(4, 0, -EGM2008_J4 / 3.0, 0.0).unwrap(),
-            NormalizedHarmonicCoefficient::new(5, 0, -EGM2008_J5 / 11.0_f64.sqrt(), 0.0).unwrap(),
-            NormalizedHarmonicCoefficient::new(6, 0, -EGM2008_J6 / 13.0_f64.sqrt(), 0.0).unwrap(),
-        ];
-        let field = NormalizedHarmonicField::new(6, 0, TideSystem::TideFree, normalized).unwrap();
+    fn egm2008_zonal_loads_normalized_degree6_pin() {
+        let field = load_egm2008_normalized_zonal_degree6_fixture();
+        assert_eq!(field.max_degree(), 6);
+        assert_eq!(field.max_order(), 0);
+        assert_eq!(field.tide_system(), TideSystem::TideFree);
+        assert_eq!(field.coefficient_count(), 5);
+
         let from_field =
             Egm2008ZonalGravity::from_normalized_field(WGS84_MU_M3_S2, WGS84_A_M, &field, 6)
                 .unwrap();

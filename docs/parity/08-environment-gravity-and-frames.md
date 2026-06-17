@@ -652,10 +652,12 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   Cartesian solid-harmonic polynomials, the low-degree ingestion bridge converts
   fully-normalized degree-2 blocks and extracts them from a normalized harmonic
   field parsed from `data/gravity/wgs84-degree2-normalized-v1.toml`, and the
-  existing `Egm2008ZonalGravity` J2-J6 truncation can be rebuilt from normalized
-  zonal field coefficients. Tests prove non-zonal acceleration, near-pole finite
-  evaluation, point-mass degeneration, default-zero missing coefficients,
-  normalized-field zonal equivalence, and fail-closed unsupported
+  existing `Egm2008ZonalGravity` J2-J6 truncation can be rebuilt from the
+  provenance-pinned
+  `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
+  fixture. Tests prove non-zonal acceleration, near-pole finite evaluation,
+  point-mass degeneration, default-zero missing coefficients,
+  normalized-field zonal fixture equivalence, and fail-closed unsupported
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:
   runtime-selectable high-degree Pines synthesis, independent normalized
