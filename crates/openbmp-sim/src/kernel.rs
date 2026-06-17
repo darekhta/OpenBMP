@@ -1944,6 +1944,102 @@ where
             });
         }
         self.state = state;
+        self.refresh_rigid_event_caches_after_state_replacement()?;
+        Ok(())
+    }
+
+    /// Replace one active separated rigid-body lane after an externally
+    /// computed fixed-step propagation has advanced to the same kernel time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError`] if the replacement is invalid, its timestamp
+    /// differs from the current kernel time, the body id is unknown, or the
+    /// matching separated lane is no longer propagating.
+    pub fn replace_separated_rigid_body_state(
+        &mut self,
+        body: BodyId,
+        state: openbmp_state::RigidBodyState,
+    ) -> Result<(), SimulationError> {
+        state.require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)?;
+        if state.time.as_seconds().to_bits() != self.state.time.as_seconds().to_bits() {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: format!(
+                    "replacement separated body {} state time {} s does not match current kernel time {} s",
+                    body.value(),
+                    state.time.as_seconds(),
+                    self.state.time.as_seconds()
+                ),
+            });
+        }
+        let Some(separated) = self
+            .separated_rigid_bodies
+            .iter_mut()
+            .find(|separated| separated.body == body)
+        else {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: format!("separated body {} is not active", body.value()),
+            });
+        };
+        if !separated.propagating {
+            return Err(SimulationError::InvalidRigidBodySeparation {
+                reason: format!("separated body {} is not propagating", body.value()),
+            });
+        }
+        separated.state = state;
+        separated.propagating = !separated_rigid_body_has_impacted_ground(
+            &state,
+            self.separated_geocentric_ground_radius_m,
+        );
+        self.refresh_rigid_event_caches_after_state_replacement()?;
+        Ok(())
+    }
+
+    fn refresh_rigid_event_caches_after_state_replacement(
+        &mut self,
+    ) -> Result<(), SimulationError> {
+        if self.previous_event_relative_distances_m.is_some() {
+            self.previous_event_relative_distances_m = Some(rigid_body_relative_distances_m(
+                self.primary_rigid_body,
+                &self.state,
+                &self.separated_rigid_bodies,
+            ));
+        }
+        if self.previous_event_relative_speeds_m_s.is_some() {
+            self.previous_event_relative_speeds_m_s = Some(rigid_body_relative_speeds_m_s(
+                self.primary_rigid_body,
+                &self.state,
+                &self.separated_rigid_bodies,
+            ));
+        }
+        if self.previous_event_body_altitudes_m.is_some() {
+            self.previous_event_body_altitudes_m = Some(rigid_body_altitudes_m(
+                self.primary_rigid_body,
+                &self.state,
+                &self.separated_rigid_bodies,
+            ));
+        }
+        if self.previous_event_scalars.is_some() {
+            let event_env = self.environment.sample(EnvironmentQuery {
+                time: self.state.time,
+                position_eci: self.state.position,
+            })?;
+            self.previous_event_scalars = Some(crate::events::EventScalars {
+                time_s: self.state.time.as_seconds(),
+                altitude_m: geometric_altitude_m(&self.state.position.vector),
+                vertical_velocity_m_s: vertical_climb_rate(
+                    &self.state.position.vector,
+                    &self.state.velocity.vector,
+                ),
+                velocity_m_s: self.state.velocity.vector.norm(),
+                mass_fraction: self.state.mass_props.mass.get::<kilogram>() / self.initial_mass_kg,
+                dynamic_pressure_pa: dynamic_pressure_pa_from_density_velocity(
+                    event_env.atmosphere_density_kg_m3,
+                    event_env.air_relative_velocity_eci_m_s(self.state.velocity.vector),
+                )?,
+                guidance_time_to_go_s: f64::INFINITY,
+            });
+        }
         Ok(())
     }
 
@@ -2868,6 +2964,61 @@ mod tests {
         nonfinite.position = Position3::new(f64::NAN, 0.0, 0.0);
         let err = kernel.replace_current_rigid_state(nonfinite).unwrap_err();
         assert!(matches!(err, SimulationError::State(_)));
+    }
+
+    #[test]
+    fn replace_separated_rigid_body_state_requires_active_same_time_lane() {
+        let mut kernel = zero_force_rigid_kernel(0.1);
+        let mass_props = unit_rigid_mass_properties();
+        let primary = BodyId::new(10);
+        let separated = BodyId::new(20);
+        let lane_state = RigidBodyState::new(
+            SimTime::ZERO,
+            Position3::new(0.0, 0.0, 1.0),
+            Velocity3::zero(),
+            Quaternion::<Body, Eci>::from_unit_quaternion(UnitQuaternion::identity()),
+            AngularVelocity3::zero(),
+            mass_props,
+        );
+        kernel
+            .seed_rigid_body_lanes(
+                primary,
+                mass_props,
+                &[InitialRigidBodyLane {
+                    body: separated,
+                    state: lane_state,
+                }],
+            )
+            .expect("seed separated lane");
+        kernel.step().expect("advance separated lane");
+
+        let mut replacement = kernel.separated_rigid_bodies()[0].state;
+        replacement.position = Position3::new(1.0, 2.0, 3.0);
+        kernel
+            .replace_separated_rigid_body_state(separated, replacement)
+            .expect("active same-time separated replacement is accepted");
+        assert_eq!(
+            kernel.separated_rigid_bodies()[0].state.position,
+            replacement.position
+        );
+
+        let mut wrong_time = replacement;
+        wrong_time.time = SimTime::from_seconds(0.2);
+        let err = kernel
+            .replace_separated_rigid_body_state(separated, wrong_time)
+            .unwrap_err();
+        assert!(
+            matches!(err, SimulationError::InvalidRigidBodySeparation { ref reason } if reason.contains("does not match current kernel time")),
+            "expected separated replacement time mismatch, got {err:?}",
+        );
+
+        let err = kernel
+            .replace_separated_rigid_body_state(BodyId::new(99), replacement)
+            .unwrap_err();
+        assert!(
+            matches!(err, SimulationError::InvalidRigidBodySeparation { ref reason } if reason.contains("is not active")),
+            "expected missing separated body error, got {err:?}",
+        );
     }
 
     #[test]

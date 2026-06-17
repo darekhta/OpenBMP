@@ -238,16 +238,19 @@ The scenario schema and rigid runner now also expose guarded
 separated/articulated combinations, replaces the primary rigid state with the
 root-free-flyer multibody forecast after each fixed-step RK4 tick, and records
 the applied handoff (`REQ-MULTIBODY-039`).
+The same authority selector now also supports
+`propagation_authority = "separated_root_free_flyer"` for active separated
+root-free-flyer lanes, replacing both initially separated lanes and
+jettison-created lanes after a pre-step forecast exists while keeping
+articulated gimbal joints outside that authority mode (`REQ-MULTIBODY-040`).
 Missing for full WP-01.1:
 replacing the rigid-kernel propagation path beyond the guarded primary-root
-handoff, broader variable-mass multibody propagation beyond the primary-root and
-powered separated-lane shadow forecasts,
-full momentum-conserving welded-to-free joint-release propagation and full
-separated-body multibody propagation beyond first-post-release separated shadow
-forecasts and the substrate handoff, full orbital-ascent gimballed validation,
-authoritative articulated thrust propagation including authoritative two-axis
-propagation, and the independent Spatial_v2 oracle matrix across at least three
-small random trees.
+handoff and separated-lane root handoff, broader variable-mass multibody
+propagation beyond the primary-root and powered separated-lane root-free-flyer
+paths, full momentum-conserving welded-to-free joint-release propagation, full
+orbital-ascent gimballed validation, authoritative articulated thrust
+propagation including authoritative two-axis propagation, and the independent
+Spatial_v2 oracle matrix across at least three small random trees.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO

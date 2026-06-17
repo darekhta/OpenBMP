@@ -5137,6 +5137,96 @@ angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
     }
 
     #[test]
+    fn accepts_separated_root_free_flyer_propagation_authority() {
+        let prefix = VALID_STAGE_SEPARATION_SCENARIO
+            .split("\n[mission]\n")
+            .next()
+            .expect("fixture contains mission block");
+        let toml = format!(
+            r#"{prefix}
+[multi_body]
+primary_body_id = "upper"
+propagation_authority = "separated_root_free_flyer"
+
+[[multi_body.initial_lane]]
+body_id                         = "lower"
+position_eci_m                  = [10.0, 0.0, 100.0]
+velocity_eci_m_s                = [0.0, 1.0, 10.0]
+quaternion_body_to_eci_xyzw     = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
+"#
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
+        let multi_body = scenario
+            .document
+            .multi_body
+            .as_ref()
+            .expect("multi_body present");
+        assert_eq!(
+            multi_body.propagation_authority,
+            crate::document::MultiBodyPropagationAuthorityConfig::SeparatedRootFreeFlyer
+        );
+        assert_eq!(multi_body.initial_lanes[0].body_id, "lower");
+    }
+
+    #[test]
+    fn rejects_separated_root_free_flyer_authority_with_gimbal_joints() {
+        let prefix = VALID_STAGE_SEPARATION_SCENARIO
+            .split("\n[environment]\n")
+            .next()
+            .expect("fixture contains environment block");
+        let suffix = VALID_STAGE_SEPARATION_SCENARIO
+            .split("\n[environment]\n")
+            .nth(1)
+            .expect("fixture contains environment block");
+        let toml = format!(
+            r#"{prefix}
+[[vehicle.assembly.engines]]
+id = "landing-engine"
+mounted_to = "lower"
+kind = {{ kind = "liquid_engine" }}
+mount_point_body_m = [0.0, 0.0, 0.0]
+limits = {{ max_thrust_n = 10.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.0 }}
+
+[environment]
+{suffix}
+"#
+        )
+        .replace(
+            "\n[multi_body]\n",
+            "\n[multi_body]\npropagation_authority = \"separated_root_free_flyer\"\n",
+        )
+        .replace(r#"models = ["gravity"]"#, r#"models = ["gravity", "thrust"]"#)
+        .replace(
+            "\n[[multi_body.separation]]\n",
+            r#"
+[[multi_body.gimbal_joint]]
+body_id = "lower"
+engine_id = "landing-engine"
+axis_body = [0.0, 1.0, 0.0]
+pivot_body_m = [0.0, 0.0, 0.0]
+neutral_thrust_body = [0.0, 0.0, 1.0]
+thrust_application_body_m = [0.0, 0.0, 0.0]
+engine_mass_kg = 1.0
+engine_cg_body_m = [0.0, 0.0, 0.0]
+engine_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[[multi_body.separation]]
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InconsistentSection { ref field_a, ref field_b, .. }
+                    if field_a == "multi_body.propagation_authority"
+                        && field_b == "multi_body.gimbal_joint"
+            ),
+            "expected separated authority/gimbal conflict, got {err:?}",
+        );
+    }
+
+    #[test]
     fn accepts_multi_body_attitude_target_with_direct_torque_effector() {
         let prefix = VALID_STAGE_SEPARATION_SCENARIO
             .split("\n[environment]\n")

@@ -13688,6 +13688,22 @@ impl MultiBodyConfig {
                 });
             }
         }
+        if self.propagation_authority == MultiBodyPropagationAuthorityConfig::SeparatedRootFreeFlyer
+        {
+            if self.initial_lanes.is_empty() && self.separations.is_empty() {
+                return Err(ScenarioError::EmptyList {
+                    field: "multi_body.initial_lane or multi_body.separation".to_owned(),
+                });
+            }
+            if !self.gimbal_joints.is_empty() {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: "multi_body.propagation_authority".to_owned(),
+                    value_a: "separated_root_free_flyer".to_owned(),
+                    field_b: "multi_body.gimbal_joint".to_owned(),
+                    value_b: "present".to_owned(),
+                });
+            }
+        }
         if !self.initial_lanes.is_empty() {
             let primary_body_id = self.primary_body_id.as_ref().ok_or_else(|| {
                 ScenarioError::MissingRequiredField {
@@ -13749,6 +13765,9 @@ pub enum MultiBodyPropagationAuthorityConfig {
     /// Replace the primary rigid-body state with the root-free-flyer
     /// multibody forecast after each fixed-step RK4 tick.
     PrimaryRootFreeFlyer,
+    /// Replace active separated rigid-body lane states with their
+    /// root-free-flyer multibody forecasts after each fixed-step RK4 tick.
+    SeparatedRootFreeFlyer,
 }
 
 /// One entry under `[[multi_body.initial_lane]]`.

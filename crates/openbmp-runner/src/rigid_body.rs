@@ -797,6 +797,7 @@ impl RigidBodySession {
         let prev_orientation = self.kernel.current_state().orientation.q;
         self.kernel.step()?;
         self.apply_primary_root_free_flyer_authority(document)?;
+        self.apply_separated_root_free_flyer_authority(document)?;
         // Refresh tank-rack drivers from the post-step
         // rigid-body state. `accel_body_m_s2` is finite-differenced
         // from the velocity change rotated into the prior-step body
@@ -1115,6 +1116,43 @@ impl RigidBodySession {
         self.kernel.replace_current_rigid_state(replacement)?;
         if let Some(shadow) = self.primary_multibody_shadow.as_mut() {
             shadow.last_authoritative_state = Some(replacement);
+        }
+        Ok(())
+    }
+
+    fn apply_separated_root_free_flyer_authority(
+        &mut self,
+        document: &ScenarioDocument,
+    ) -> Result<(), RunnerError> {
+        if !separated_root_free_flyer_authority_enabled(document) {
+            return Ok(());
+        }
+        let replacements: Vec<(BodyId, RigidBodyState)> = self
+            .kernel
+            .separated_rigid_bodies()
+            .iter()
+            .filter(|separated| separated.propagating)
+            .map(|separated| {
+                let replacement = self
+                    .separated_multibody_shadows
+                    .get(&separated.body)
+                    .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+                    .map(|forecast| forecast.rigid_state)
+                    .ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "separated_root_free_flyer propagation authority requires a recorded root multibody forecast for body {}",
+                            separated.body.value()
+                        ),
+                    })?;
+                Ok((separated.body, replacement))
+            })
+            .collect::<Result<_, RunnerError>>()?;
+        for (body, replacement) in replacements {
+            self.kernel
+                .replace_separated_rigid_body_state(body, replacement)?;
+            if let Some(shadow) = self.separated_multibody_shadows.get_mut(&body) {
+                shadow.last_authoritative_state = Some(replacement);
+            }
         }
         Ok(())
     }
@@ -1548,6 +1586,13 @@ fn primary_root_free_flyer_authority_enabled(document: &ScenarioDocument) -> boo
     document.multi_body.as_ref().is_some_and(|multi_body| {
         multi_body.propagation_authority
             == MultiBodyPropagationAuthorityConfig::PrimaryRootFreeFlyer
+    })
+}
+
+fn separated_root_free_flyer_authority_enabled(document: &ScenarioDocument) -> bool {
+    document.multi_body.as_ref().is_some_and(|multi_body| {
+        multi_body.propagation_authority
+            == MultiBodyPropagationAuthorityConfig::SeparatedRootFreeFlyer
     })
 }
 
@@ -6647,9 +6692,58 @@ mod tests {
             .get(&booster)
             .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
             .expect("booster separated-lane RK4 forecast is recorded");
+        assert!(
+            session
+                .separated_multibody_shadows
+                .get(&booster)
+                .and_then(|shadow| shadow.last_authoritative_state.as_ref())
+                .is_none(),
+            "default rigid separated-lane authority must not record a multibody handoff"
+        );
         let predicted = &forecast.rigid_state;
         let actual = separated_lane_state(&session, booster);
         assert_rigid_forecast_matches_state(predicted, actual, 0.1);
+    }
+
+    #[test]
+    fn separated_multibody_root_free_flyer_authority_records_initial_lane_handoff() {
+        let toml = SEPARATED_DIRECT_TORQUE_SCENARIO.replace(
+            "[multi_body]\n",
+            "[multi_body]\npropagation_authority = \"separated_root_free_flyer\"\n",
+        );
+        let scenario = openbmp_scenario::Scenario::from_toml_str(&toml)
+            .expect("separated authority scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("session step applies separated authority");
+
+        let booster = body_id_from_scenario_text("booster");
+        let shadow = session
+            .separated_multibody_shadows
+            .get(&booster)
+            .expect("booster separated-lane shadow is recorded");
+        let forecast = shadow
+            .last_rk4_forecast
+            .as_ref()
+            .expect("booster separated-lane forecast is recorded");
+        let authoritative = shadow
+            .last_authoritative_state
+            .as_ref()
+            .expect("booster separated-lane handoff is recorded");
+        assert_rigid_forecast_matches_state(
+            &forecast.rigid_state,
+            separated_lane_state(&session, booster),
+            0.1,
+        );
+        assert_rigid_forecast_matches_state(
+            authoritative,
+            separated_lane_state(&session, booster),
+            0.1,
+        );
     }
 
     #[test]
@@ -6752,6 +6846,72 @@ once = true
 
         assert_rigid_forecast_matches_state(
             &predicted,
+            separated_lane_state(&session, booster),
+            0.2,
+        );
+    }
+
+    #[test]
+    fn separated_multibody_root_free_flyer_authority_records_jettisoned_lane_handoff() {
+        let initial_lane = r#"
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [0.0, 0.0, 10.0]
+velocity_eci_m_s = [0.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+"#;
+        let jettison = r#"
+[[multi_body.separation]]
+event_id = "drop_booster"
+upper_body_id = "bus"
+lower_body_id = "booster"
+
+[scenario_script]
+[[scenario_script.events]]
+id = "drop_booster"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "jettison_stage", body = "booster" }
+once = true
+"#;
+        let toml = SEPARATED_DIRECT_TORQUE_SCENARIO
+            .replace(initial_lane, jettison)
+            .replace(
+                "[multi_body]\n",
+                "[multi_body]\npropagation_authority = \"separated_root_free_flyer\"\n",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("jettison step records next separated forecast");
+        let booster = body_id_from_scenario_text("booster");
+        assert!(
+            session
+                .separated_multibody_shadows
+                .get(&booster)
+                .and_then(|shadow| shadow.last_authoritative_state.as_ref())
+                .is_none(),
+            "jettison-created lane cannot be overwritten before a pre-step forecast exists"
+        );
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("post-jettison step applies separated authority");
+        let shadow = session
+            .separated_multibody_shadows
+            .get(&booster)
+            .expect("jettisoned booster shadow remains recorded");
+        let authoritative = shadow
+            .last_authoritative_state
+            .as_ref()
+            .expect("jettisoned booster handoff is recorded");
+        assert_rigid_forecast_matches_state(
+            authoritative,
             separated_lane_state(&session, booster),
             0.2,
         );

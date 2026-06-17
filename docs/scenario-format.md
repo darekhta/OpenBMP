@@ -3027,8 +3027,13 @@ requires `primary_body_id`, rejects `[[multi_body.initial_lane]]`,
 `[[multi_body.separation]]`, `[[multi_body.landing_controller]]`, and
 `[[multi_body.gimbal_joint]]`, and after each fixed-step RK4 tick replaces the
 primary rigid state with the root-free-flyer multibody forecast recorded for
-that same tick. Separated lanes and articulated gimbals remain outside this
-authority mode.
+that same tick. Setting it to `"separated_root_free_flyer"` is a separated-lane
+handoff mode: it requires at least one `[[multi_body.initial_lane]]` or
+`[[multi_body.separation]]`, rejects `[[multi_body.gimbal_joint]]`, and after
+each fixed-step RK4 tick replaces already-active separated lanes with their
+same-tick root-free-flyer multibody forecasts. Lanes created by a jettison on
+the current tick are mirrored for the next tick; they are not retroactively
+rewritten before a pre-step forecast exists.
 
 Each `[[multi_body.separation]]` entry binds to a mission event by id
 and declares the two `vehicle.assembly.bodies[*].id` values that

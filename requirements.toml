@@ -235,6 +235,12 @@ statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"p
 verification = ["V-MULTIBODY-039"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-040"
+title = "The rigid runner can hand separated-lane authority to multibody forecasts"
+statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"separated_root_free_flyer\" as an explicit separated-lane handoff mode that requires an initial lane or separation declaration and rejects articulated gimbal joints. In that mode, the rigid runner records the existing pre-step root-free-flyer multibody RK4 forecast for each active separated lane, advances the existing rigid kernel tick to preserve event, stop, jettison, and lane-retirement machinery, replaces each already-active separated lane with its same-tick forecast through a validity-checked kernel handoff API that refreshes rigid event caches, and records the applied authoritative handoff on the separated shadow. The regressions cover an initially separated lane and a jettison-created lane after a pre-step forecast exists. This makes no claim that articulated gimbal authority, momentum-conserving tree release, or full rigid-kernel removal is complete."
+verification = ["V-MULTIBODY-040"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1689,6 +1695,32 @@ contains = [
   "REQ-MULTIBODY-039",
 ]
 requirements = ["REQ-MULTIBODY-039"]
+
+[[verification]]
+id = "V-MULTIBODY-040"
+kind = "test"
+command = "cargo test -p openbmp-scenario separated_root_free_flyer --locked && cargo test -p openbmp-sim replace_separated_rigid_body_state_requires_active_same_time_lane --locked && cargo test -p openbmp-runner separated_multibody_root_free_flyer_authority --locked && cargo check -p openbmp-scenario -p openbmp-sim -p openbmp-runner --locked && cargo clippy -p openbmp-scenario -p openbmp-sim -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-sim/src/kernel.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "SeparatedRootFreeFlyer",
+  "separated_root_free_flyer",
+  "replace_separated_rigid_body_state",
+  "replace_separated_rigid_body_state_requires_active_same_time_lane",
+  "refresh_rigid_event_caches_after_state_replacement",
+  "apply_separated_root_free_flyer_authority",
+  "separated_multibody_root_free_flyer_authority_records_initial_lane_handoff",
+  "separated_multibody_root_free_flyer_authority_records_jettisoned_lane_handoff",
+  "REQ-MULTIBODY-040",
+]
+requirements = ["REQ-MULTIBODY-040"]
 
 [[verification]]
 id = "V-SIL-001"

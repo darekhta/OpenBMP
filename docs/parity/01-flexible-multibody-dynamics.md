@@ -257,15 +257,20 @@ Featherstone Spatial_v2 run. The scenario schema and rigid runner now also
 expose guarded `propagation_authority = "primary_root_free_flyer"` mode, which
 is limited to primary root-free-flyer handoff, rejects separated/articulated
 combinations, and replaces the primary rigid state with the recorded
-root-free-flyer multibody forecast after each fixed-step RK4 tick.
+root-free-flyer multibody forecast after each fixed-step RK4 tick. The same
+authority selector now also supports
+`propagation_authority = "separated_root_free_flyer"` for active separated
+root-free-flyer lanes, replacing initially separated lanes and jettison-created
+lanes once a pre-step forecast exists while keeping articulated gimbal joints
+out of that authority mode.
 Default authoritative propagation is still the rigid kernel.
 Replacing the rigid propagation path beyond that guarded primary-root handoff,
-broader variable-mass multibody propagation beyond the one-body root forecast,
-full separated-lane multibody propagation beyond the one-step separated shadow
-forecast, authoritative articulated thrust propagation including authoritative
-two-axis propagation, full orbital-ascent gimballed validation, and the
-independent Spatial_v2 oracle matrix across at least three small random trees
-remain open.
+broader variable-mass multibody propagation beyond the one-body root and
+separated root-free-flyer paths, authoritative articulated thrust propagation
+including authoritative two-axis propagation, full orbital-ascent gimballed
+validation, full momentum-conserving welded-to-free release propagation, and
+the independent Spatial_v2 oracle matrix across at least three small random
+trees remain open.
 
 ---
 
@@ -901,16 +906,19 @@ justification first, reviewed before the implementation lands.
   schema and runner now also expose guarded
   `propagation_authority = "primary_root_free_flyer"` mode, reject
   separated/articulated combinations for that mode, and record the applied
-  post-step primary-root multibody handoff (`REQ-MULTIBODY-039`).
+  post-step primary-root multibody handoff (`REQ-MULTIBODY-039`). The same
+  selector now also exposes `propagation_authority = "separated_root_free_flyer"`
+  mode for active separated root-free-flyer lanes, rejects articulated gimbal
+  combinations for that mode, and records handoffs for both initially separated
+  lanes and jettison-created lanes after a pre-step forecast exists
+  (`REQ-MULTIBODY-040`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path beyond
-  the guarded primary-root handoff, broader variable-mass multibody propagation
-  beyond the primary-root and powered separated-lane shadow forecasts,
-  runner-side momentum-conserving welded-to-free joint-release propagation and
-  full separated-body multibody propagation beyond the substrate handoff and
-  first-post-release separated shadow forecasts, the independent Spatial_v2
-  oracle matrix across at least three small random trees, full orbital-ascent
-  gimballed validation, and authoritative articulated thrust propagation
-  including authoritative two-axis propagation.
+  the guarded primary-root and separated-lane root handoffs, broader
+  variable-mass multibody propagation beyond the root-free-flyer paths,
+  runner-side momentum-conserving welded-to-free joint-release propagation,
+  the independent Spatial_v2 oracle matrix across at least three small random
+  trees, full orbital-ascent gimballed validation, and authoritative
+  articulated thrust propagation including authoritative two-axis propagation.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics
