@@ -717,7 +717,7 @@ verification = ["V-PROP-009"]
 [[requirements]]
 id = "REQ-PROP-010"
 title = "Feed-system controllers produce bounded throttle and mixture commands"
-statement = "The feed-system crate exposes a deterministic dual-valve throttle/MR controller that validates finite chamber-pressure and optional mixture-ratio setpoints/measurements, applies pressure PI correction to both valve commands, applies mixture-ratio PI correction with opposite oxidizer/fuel signs, clamps outputs to declared valve bounds, applies deterministic slew limiting, and fails closed when an MR setpoint lacks an MR measurement."
+statement = "The feed-system crate exposes a deterministic dual-valve throttle/MR controller that validates finite chamber-pressure and optional mixture-ratio setpoints/measurements, applies pressure PI correction to both valve commands, applies mixture-ratio PI correction with opposite oxidizer/fuel signs, clamps outputs to declared valve bounds, applies deterministic slew limiting, fails closed when an MR setpoint lacks an MR measurement, and is backed by a provenance-recorded controller tolerance table."
 verification = ["V-PROP-010"]
 
 [[requirements]]
@@ -4067,6 +4067,8 @@ id = "V-PROP-010"
 kind = "test"
 command = "cargo test -p openbmp-feedsystem controller --locked"
 paths = [
+  "data/feed_system/generic-feed-controller-v1.toml",
+  "data/feed_system/provenance.md",
   "crates/openbmp-feedsystem/src/lib.rs",
   "crates/openbmp-feedsystem/src/error.rs",
   "crates/openbmp-feedsystem/src/control.rs",
@@ -4079,6 +4081,8 @@ contains = [
   "ThrottleMixtureSetpoint",
   "ThrottleMixtureMeasurement",
   "ValveCommandPair",
+  "generic-feed-controller-v1.toml",
+  "controller_matches_provenance_tolerance_table",
   "controller_opens_both_valves_for_low_chamber_pressure",
   "controller_biases_valves_for_mixture_ratio_error",
   "controller_applies_clamp_and_slew_limit",

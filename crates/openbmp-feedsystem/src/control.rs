@@ -373,6 +373,7 @@ fn clamp_symmetric(value: f64, limit: f64) -> f64 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use toml::value::Table;
 
     use super::*;
 
@@ -519,6 +520,112 @@ mod tests {
     }
 
     #[test]
+    fn controller_matches_provenance_tolerance_table() {
+        let data: toml::Value = toml::from_str(include_str!(
+            "../../../data/feed_system/generic-feed-controller-v1.toml"
+        ))
+        .unwrap();
+        assert_eq!(
+            table("openbmp", &data)["feed_controller"]
+                .as_integer()
+                .unwrap(),
+            1
+        );
+        let config = table("controller_config", &data);
+        let controller = ThrottleMixtureController::new(ThrottleMixtureControllerConfig {
+            pressure_proportional_gain_per_pa: float(config, "pressure_proportional_gain_per_pa"),
+            pressure_integral_gain_per_pa_s: float(config, "pressure_integral_gain_per_pa_s"),
+            pressure_integral_limit_pa_s: float(config, "pressure_integral_limit_pa_s"),
+            mixture_proportional_gain: float(config, "mixture_proportional_gain"),
+            mixture_integral_gain_per_s: float(config, "mixture_integral_gain_per_s"),
+            mixture_integral_limit_s: float(config, "mixture_integral_limit_s"),
+            min_open_fraction: float(config, "min_open_fraction"),
+            max_open_fraction: float(config, "max_open_fraction"),
+            max_open_fraction_slew_per_s: float(config, "max_open_fraction_slew_per_s"),
+        })
+        .unwrap();
+        let tolerances = table("tolerances", &data);
+
+        for case in data
+            .get("case")
+            .and_then(toml::Value::as_array)
+            .expect("case array")
+        {
+            let case = case.as_table().unwrap();
+            let name = string(case, "name");
+            let snapshot = controller
+                .step(
+                    ThrottleMixtureControllerState {
+                        valve_commands: ValveCommandPair {
+                            oxidizer_open_fraction: float(case, "initial_oxidizer_open_fraction"),
+                            fuel_open_fraction: float(case, "initial_fuel_open_fraction"),
+                        },
+                        pressure_integral_pa_s: float(case, "initial_pressure_integral_pa_s"),
+                        mixture_integral_s: float(case, "initial_mixture_integral_s"),
+                    },
+                    ThrottleMixtureSetpoint {
+                        chamber_pressure_pa: float(case, "setpoint_chamber_pressure_pa"),
+                        mixture_ratio: optional_float(case, "setpoint_mixture_ratio"),
+                    },
+                    ThrottleMixtureMeasurement {
+                        chamber_pressure_pa: float(case, "measured_chamber_pressure_pa"),
+                        mixture_ratio: optional_float(case, "measured_mixture_ratio"),
+                    },
+                    float(case, "dt_s"),
+                )
+                .unwrap();
+
+            assert_abs_diff_eq!(
+                snapshot.pressure_error_pa,
+                float(case, "expected_pressure_error_pa"),
+                epsilon = float(tolerances, "absolute_pressure_error_pa")
+            );
+            assert_optional_float_eq(
+                snapshot.mixture_ratio_error,
+                optional_float(case, "expected_mixture_ratio_error"),
+                float(tolerances, "absolute_mixture_ratio"),
+                name,
+            );
+            assert_abs_diff_eq!(
+                snapshot.state.pressure_integral_pa_s,
+                float(case, "expected_pressure_integral_pa_s"),
+                epsilon = float(tolerances, "absolute_integral")
+            );
+            assert_abs_diff_eq!(
+                snapshot.state.mixture_integral_s,
+                float(case, "expected_mixture_integral_s"),
+                epsilon = float(tolerances, "absolute_integral")
+            );
+            assert_abs_diff_eq!(
+                snapshot.raw_oxidizer_open_fraction,
+                float(case, "expected_raw_oxidizer_open_fraction"),
+                epsilon = float(tolerances, "absolute_command")
+            );
+            assert_abs_diff_eq!(
+                snapshot.raw_fuel_open_fraction,
+                float(case, "expected_raw_fuel_open_fraction"),
+                epsilon = float(tolerances, "absolute_command")
+            );
+            assert_abs_diff_eq!(
+                snapshot.state.valve_commands.oxidizer_open_fraction,
+                float(case, "expected_oxidizer_open_fraction"),
+                epsilon = float(tolerances, "absolute_command")
+            );
+            assert_abs_diff_eq!(
+                snapshot.state.valve_commands.fuel_open_fraction,
+                float(case, "expected_fuel_open_fraction"),
+                epsilon = float(tolerances, "absolute_command")
+            );
+            assert_eq!(
+                string(case, "expected_validation"),
+                "validated-toy",
+                "case {name}"
+            );
+            assert_eq!(snapshot.validation, ValidationStatus::ValidatedToy);
+        }
+    }
+
+    #[test]
     fn controller_rejects_invalid_limits() {
         let mut bad = config();
         bad.min_open_fraction = 0.8;
@@ -528,5 +635,57 @@ mod tests {
             ThrottleMixtureController::new(bad),
             Err(FeedSystemError::InvalidParameter { .. })
         ));
+    }
+
+    fn table<'a>(key: &str, value: &'a toml::Value) -> &'a Table {
+        value
+            .get(key)
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("missing table {key}"))
+    }
+
+    fn float(table: &Table, key: &str) -> f64 {
+        table
+            .get(key)
+            .and_then(toml::Value::as_float)
+            .unwrap_or_else(|| panic!("missing float {key}"))
+    }
+
+    fn optional_float(table: &Table, key: &str) -> Option<f64> {
+        let value = table
+            .get(key)
+            .unwrap_or_else(|| panic!("missing optional float {key}"));
+        if value.as_str() == Some("none") {
+            return None;
+        }
+        Some(
+            value
+                .as_float()
+                .unwrap_or_else(|| panic!("missing float or none marker {key}")),
+        )
+    }
+
+    fn assert_optional_float_eq(
+        actual: Option<f64>,
+        expected: Option<f64>,
+        epsilon: f64,
+        name: &str,
+    ) {
+        match (actual, expected) {
+            (Some(actual), Some(expected)) => {
+                assert_abs_diff_eq!(actual, expected, epsilon = epsilon);
+            }
+            (None, None) => {}
+            _ => panic!(
+                "mixture ratio mismatch for case {name}: actual {actual:?}, expected {expected:?}"
+            ),
+        }
+    }
+
+    fn string<'a>(table: &'a Table, key: &str) -> &'a str {
+        table
+            .get(key)
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("missing string {key}"))
     }
 }

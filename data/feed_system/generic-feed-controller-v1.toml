@@ -1,0 +1,89 @@
+openbmp.feed_controller = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.generic_feed_controller.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic throttle/mixture controller tolerance table"
+provenance = "OpenBMP synthetic analytic fixture derived from the deterministic pressure/MR PI law, symmetric integral clamps, valve bounds, and slew limiting used by openbmp-feedsystem; not a real controller calibration."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[controller_config]
+pressure_proportional_gain_per_pa = 1.0e-7
+pressure_integral_gain_per_pa_s = 2.0e-8
+pressure_integral_limit_pa_s = 100000.0
+mixture_proportional_gain = 0.1
+mixture_integral_gain_per_s = 0.02
+mixture_integral_limit_s = 0.25
+min_open_fraction = 0.05
+max_open_fraction = 0.95
+max_open_fraction_slew_per_s = 0.2
+
+[tolerances]
+absolute_pressure_error_pa = 1.0e-9
+absolute_integral = 1.0e-12
+absolute_command = 1.0e-12
+absolute_mixture_ratio = 1.0e-12
+
+[[case]]
+name = "pressure_only_pi"
+initial_oxidizer_open_fraction = 0.5
+initial_fuel_open_fraction = 0.5
+initial_pressure_integral_pa_s = 0.0
+initial_mixture_integral_s = 0.0
+setpoint_chamber_pressure_pa = 4.0e6
+setpoint_mixture_ratio = "none"
+measured_chamber_pressure_pa = 3.0e6
+measured_mixture_ratio = "none"
+dt_s = 1.0
+expected_pressure_error_pa = 1000000.0
+expected_mixture_ratio_error = "none"
+expected_pressure_integral_pa_s = 100000.0
+expected_mixture_integral_s = 0.0
+expected_raw_oxidizer_open_fraction = 0.602
+expected_raw_fuel_open_fraction = 0.602
+expected_oxidizer_open_fraction = 0.602
+expected_fuel_open_fraction = 0.602
+expected_validation = "validated-toy"
+
+[[case]]
+name = "mixture_active_pi"
+initial_oxidizer_open_fraction = 0.5
+initial_fuel_open_fraction = 0.5
+initial_pressure_integral_pa_s = 0.0
+initial_mixture_integral_s = 0.0
+setpoint_chamber_pressure_pa = 4.0e6
+setpoint_mixture_ratio = 2.5
+measured_chamber_pressure_pa = 4.0e6
+measured_mixture_ratio = 2.0
+dt_s = 1.0
+expected_pressure_error_pa = 0.0
+expected_mixture_ratio_error = 0.5
+expected_pressure_integral_pa_s = 0.0
+expected_mixture_integral_s = 0.25
+expected_raw_oxidizer_open_fraction = 0.555
+expected_raw_fuel_open_fraction = 0.445
+expected_oxidizer_open_fraction = 0.555
+expected_fuel_open_fraction = 0.445
+expected_validation = "validated-toy"
+
+[[case]]
+name = "clamp_and_slew_limit"
+initial_oxidizer_open_fraction = 0.5
+initial_fuel_open_fraction = 0.5
+initial_pressure_integral_pa_s = 0.0
+initial_mixture_integral_s = 0.0
+setpoint_chamber_pressure_pa = 10.0e6
+setpoint_mixture_ratio = "none"
+measured_chamber_pressure_pa = 1.0e6
+measured_mixture_ratio = "none"
+dt_s = 0.5
+expected_pressure_error_pa = 9000000.0
+expected_mixture_ratio_error = "none"
+expected_pressure_integral_pa_s = 100000.0
+expected_mixture_integral_s = 0.0
+expected_raw_oxidizer_open_fraction = 1.402
+expected_raw_fuel_open_fraction = 1.402
+expected_oxidizer_open_fraction = 0.6
+expected_fuel_open_fraction = 0.6
+expected_validation = "validated-toy"

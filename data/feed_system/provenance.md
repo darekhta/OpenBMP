@@ -51,6 +51,31 @@ safety_review:
 ```
 
 ```yaml
+dataset_id: openbmp.feed_system.generic_feed_controller.v1
+files:
+  - data/feed_system/generic-feed-controller-v1.toml
+source_class: synthetic-openbmp
+source_title: "Synthetic throttle/mixture controller tolerance table"
+source_authors: "OpenBMP contributors"
+source_url: "repository-local analytic fixture"
+license_or_terms: "OpenBMP project synthetic data"
+retrieved_utc: "2026-06-17"
+source_hash_sha256: "not applicable: repository-local synthetic derivation"
+transformation:
+  method: "closed-form evaluation of the pressure/MR PI law, symmetric integral clamps, valve bounds, and slew limiter used by openbmp-feedsystem"
+  script: "manual arithmetic recorded in crates/openbmp-feedsystem/src/control.rs regression test"
+verification:
+  method: "parse the TOML table and compare expected pressure error, mixture-ratio error, integral state, raw valve requests, and bounded valve commands against ThrottleMixtureController"
+  test: "cargo test -p openbmp-feedsystem controller_matches_provenance_tolerance_table --locked"
+  tolerance: "absolute tolerances recorded in [tolerances]"
+validation_status: validated-toy
+safety_review:
+  reviewer: "OpenBMP maintainers"
+  decision: accepted
+  notes: "Synthetic reduced controller fixture; no real vehicle, controller tuning, feed system, propellant-system, or operational data."
+```
+
+```yaml
 dataset_id: openbmp.feed_system.generic_turbopump_map.v1
 files:
   - data/feed_system/generic-turbopump-map-v1.toml
