@@ -50,9 +50,10 @@ use openbmp_physics::{
 use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
-    AnyStop, ConstantMass, EndTime, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane,
-    RigidBodySeparation, RigidMassModel, RigidModels, ScenarioScriptAction, SimulationConfig,
-    SimulationKernel, StopReason,
+    AnyStop, ConstantMass, EffectorActualsView, EndTime, EngineSnapshotView, EnvironmentModel,
+    EnvironmentQuery, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane, MomentContext,
+    RecoverySnapshotView, RigidBodySeparation, RigidMassModel, RigidModels, ScenarioScriptAction,
+    SimulationConfig, SimulationKernel, StopReason, TankSnapshotView,
 };
 use openbmp_state::{MassProperties, RigidBodyState};
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -275,24 +276,14 @@ impl RigidBodySession {
             &initial_engine_snapshot,
             &initial_tank_snapshot,
         )?;
-        if let Some(primary_body_id) = document
-            .multi_body
-            .as_ref()
-            .and_then(|multi_body| multi_body.primary_body_id.as_deref())
-        {
-            let (initial_multibody_tree, initial_multibody_state) =
-                build_root_free_flyer_multibody_state(
-                    body_id_from_scenario_text(primary_body_id),
-                    &initial_state,
-                )?;
-            let _initial_multibody_derivative =
-                root_free_flyer_multibody_derivative_from_rigid_loads(
-                    &initial_multibody_tree,
-                    &initial_multibody_state,
-                    Vector3::zeros(),
-                    Vector3::zeros(),
-                )?;
-        }
+        let initial_multibody_root = build_initial_root_free_flyer_multibody_seed(
+            document,
+            &loaded,
+            &mass_resources,
+            &initial_engine_snapshot,
+            &initial_tank_snapshot,
+            &initial_state,
+        )?;
         let kernel_vehicle = build_vehicle(
             document,
             &loaded,
@@ -317,6 +308,62 @@ impl RigidBodySession {
             aerothermal_feedback,
         );
         let moment_model = build_moment_model(document, &loaded, landing_gear_runtime.clone())?;
+        let runtime_environment =
+            RuntimeEnvironment::from_document(document, resolved_files, &frame)?;
+        let deck_bindings = crate::aero_effector_match::assert_axes_match_effectors(
+            loaded.aero_deck.as_ref(),
+            document,
+        )?;
+        let initial_snapshot = effector_rack.snapshot();
+        let direct_torque_present = document.vehicle.assembly.effectors.iter().any(|e| {
+            matches!(
+                e.kind,
+                openbmp_scenario::EffectorKindConfig::DirectTorque { .. }
+            )
+        });
+        let initial_effector_actuals = if !deck_bindings.is_empty() || direct_torque_present {
+            build_effector_actual_snapshot_map(
+                document,
+                &deck_bindings,
+                &initial_snapshot,
+                direct_torque_present,
+            )?
+        } else {
+            BTreeMap::new()
+        };
+        let initial_recovery_snapshot = if recovery_rack.is_empty() {
+            BTreeMap::new()
+        } else {
+            recovery_rack.snapshot_map()
+        };
+        if let Some(seed) = &initial_multibody_root {
+            let mut environment = runtime_environment
+                .sample(EnvironmentQuery {
+                    time: seed.rigid_state.time,
+                    position_eci: seed.rigid_state.position,
+                })
+                .map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!("initial root free-flyer environment sample failed: {err}"),
+                })?;
+            if !wind_rack.is_inactive() {
+                let wind =
+                    wind_rack.sample(seed.rigid_state.position, &frame, seed.rigid_state.time)?;
+                environment.set_wind_ned_m_s(wind);
+            }
+            let _initial_multibody_derivative =
+                root_free_flyer_multibody_derivative_from_runner_models(
+                    seed,
+                    &kernel_vehicle,
+                    &moment_model,
+                    InitialRootLoadViews {
+                        environment: &environment,
+                        effector_actuals: &initial_effector_actuals,
+                        engine_snapshot: &initial_engine_snapshot,
+                        tank_snapshot: &initial_tank_snapshot,
+                        recovery_snapshot: &initial_recovery_snapshot,
+                    },
+                )?;
+        }
         let rigid_models = RigidModels::new(moment_model, mass_model.clone());
         let separation_specs = build_rigid_body_separations(document, &mass_resources)?;
         // Bodies currently attached to the primary continuing stack. Starts as
@@ -348,7 +395,7 @@ impl RigidBodySession {
             integrator: runtime_integrator,
             force_model: kernel_vehicle,
             mass_model: rigid_models,
-            environment: RuntimeEnvironment::from_document(document, resolved_files, &frame)?,
+            environment: runtime_environment,
             stop_condition: AnyStop::new(
                 automatic_ground_impact(document),
                 EndTime::new(SimTime::from_seconds(document.time.stop_s)),
@@ -411,30 +458,8 @@ impl RigidBodySession {
         let metadata = build_schema_metadata(document, resolved_files)?;
         let mut table = TelemetryTable::new(channel_set.schema(metadata)?);
 
-        // See point_mass.rs sibling for the rationale.
-        let deck_bindings = crate::aero_effector_match::assert_axes_match_effectors(
-            loaded.aero_deck.as_ref(),
-            document,
-        )?;
-
-        let initial_snapshot = effector_rack.snapshot();
-        let direct_torque_present = document.vehicle.assembly.effectors.iter().any(|e| {
-            matches!(
-                e.kind,
-                openbmp_scenario::EffectorKindConfig::DirectTorque { .. }
-            )
-        });
         if !deck_bindings.is_empty() || direct_torque_present {
-            let mut snapshot_map =
-                crate::aero_effector_match::build_snapshot_map(&deck_bindings, &initial_snapshot);
-            if direct_torque_present {
-                let dt_map = crate::aero_effector_match::build_direct_torque_snapshot_map(
-                    document,
-                    &initial_snapshot,
-                );
-                merge_direct_torque_snapshot_map(&mut snapshot_map, dt_map)?;
-            }
-            kernel.set_effector_actuals(snapshot_map);
+            kernel.set_effector_actuals(initial_effector_actuals);
         }
         if !engine_rack.is_empty() {
             kernel.set_engine_snapshot(engine_rack.snapshot_map());
@@ -443,7 +468,7 @@ impl RigidBodySession {
             kernel.set_tank_snapshot(tank_rack.snapshot_map());
         }
         if !recovery_rack.is_empty() {
-            kernel.set_recovery_snapshot(recovery_rack.snapshot_map());
+            kernel.set_recovery_snapshot(initial_recovery_snapshot);
         }
         if !wind_rack.is_inactive() {
             let s = kernel.current_state();
@@ -1027,6 +1052,21 @@ fn merge_direct_torque_snapshot_map(
         }
     }
     Ok(())
+}
+
+fn build_effector_actual_snapshot_map(
+    document: &ScenarioDocument,
+    deck_bindings: &[crate::aero_effector_match::DeckAxisBinding],
+    snapshot: &[openbmp_vehicle::EffectorState],
+    direct_torque_present: bool,
+) -> Result<BTreeMap<String, f64>, RunnerError> {
+    let mut snapshot_map = crate::aero_effector_match::build_snapshot_map(deck_bindings, snapshot);
+    if direct_torque_present {
+        let direct_torque_map =
+            crate::aero_effector_match::build_direct_torque_snapshot_map(document, snapshot);
+        merge_direct_torque_snapshot_map(&mut snapshot_map, direct_torque_map)?;
+    }
+    Ok(snapshot_map)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1861,6 +1901,62 @@ fn rigid_body_state_from_parts(
     )
 }
 
+#[derive(Clone, Debug)]
+struct RootFreeFlyerMultibodySeed {
+    body: BodyId,
+    rigid_state: RigidBodyState,
+    tree: MultibodyTree,
+    sim_state: MultibodySimState,
+}
+
+fn build_initial_root_free_flyer_multibody_seed(
+    document: &ScenarioDocument,
+    loaded: &LoadedModels,
+    mass_resources: &RigidMassResources,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    tank_snapshot: &BTreeMap<TankId, openbmp_sim::TankSnapshot>,
+    initial_state: &RigidBodyState,
+) -> Result<Option<RootFreeFlyerMultibodySeed>, RunnerError> {
+    let Some(primary_body_id) = document
+        .multi_body
+        .as_ref()
+        .and_then(|multi_body| multi_body.primary_body_id.as_deref())
+    else {
+        return Ok(None);
+    };
+    let body = body_id_from_scenario_text(primary_body_id);
+    let primary_mass_properties = RigidMassResourceModel::new(
+        mass_resources.clone(),
+        loaded.motor.clone(),
+        None,
+        RIGID_BODY_MOTOR_MASS_MODEL_ID,
+    )
+    .mass_properties_from_snapshots(
+        initial_state.time,
+        Some(body),
+        engine_snapshot,
+        tank_snapshot,
+    )
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("initial primary body `{primary_body_id}` mass properties failed: {err}"),
+    })?;
+    let rigid_state = RigidBodyState::new(
+        initial_state.time,
+        initial_state.position,
+        initial_state.velocity,
+        initial_state.orientation,
+        initial_state.angular_velocity,
+        primary_mass_properties,
+    );
+    let (tree, sim_state) = build_root_free_flyer_multibody_state(body, &rigid_state)?;
+    Ok(Some(RootFreeFlyerMultibodySeed {
+        body,
+        rigid_state,
+        tree,
+        sim_state,
+    }))
+}
+
 fn build_root_free_flyer_multibody_state(
     body: BodyId,
     state: &RigidBodyState,
@@ -1909,6 +2005,64 @@ fn build_root_free_flyer_multibody_state(
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("root free-flyer multibody state failed: {err}"),
         })
+}
+
+fn root_free_flyer_multibody_derivative_from_runner_models<F, M>(
+    seed: &RootFreeFlyerMultibodySeed,
+    force_model: &F,
+    moment_model: &M,
+    views: InitialRootLoadViews<'_>,
+) -> Result<MultibodyDerivative, RunnerError>
+where
+    F: ForceModel<RigidBodyState>,
+    M: openbmp_sim::MomentModel<RigidBodyState>,
+{
+    let mass_kg = seed.rigid_state.mass_props.mass_kg();
+    let force_eci_n = force_model
+        .force_n_eci(ForceContext {
+            state: &seed.rigid_state,
+            environment: views.environment,
+            mass_kg,
+            time: seed.rigid_state.time,
+            active_body: Some(seed.body),
+            phase_id: None,
+            effector_actuals: EffectorActualsView::new(views.effector_actuals),
+            engine_snapshot: EngineSnapshotView::new(views.engine_snapshot),
+            tank_snapshot: TankSnapshotView::new(views.tank_snapshot),
+            recovery_snapshot: RecoverySnapshotView::new(views.recovery_snapshot),
+        })
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("initial root free-flyer force adapter evaluation failed: {err}"),
+        })?;
+    let moment_body_n_m = moment_model
+        .moment_n_m_body(MomentContext {
+            state: &seed.rigid_state,
+            environment: views.environment,
+            time: seed.rigid_state.time,
+            active_body: Some(seed.body),
+            phase_id: None,
+            effector_actuals: EffectorActualsView::new(views.effector_actuals),
+            engine_snapshot: EngineSnapshotView::new(views.engine_snapshot),
+            tank_snapshot: TankSnapshotView::new(views.tank_snapshot),
+        })
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("initial root free-flyer moment adapter evaluation failed: {err}"),
+        })?;
+    root_free_flyer_multibody_derivative_from_rigid_loads(
+        &seed.tree,
+        &seed.sim_state,
+        moment_body_n_m,
+        force_eci_n,
+    )
+}
+
+#[derive(Copy, Clone, Debug)]
+struct InitialRootLoadViews<'a> {
+    environment: &'a openbmp_sim::EnvironmentSample,
+    effector_actuals: &'a BTreeMap<String, f64>,
+    engine_snapshot: &'a BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    tank_snapshot: &'a BTreeMap<TankId, openbmp_sim::TankSnapshot>,
+    recovery_snapshot: &'a BTreeMap<RecoveryId, openbmp_sim::RecoverySnapshot>,
 }
 
 fn root_free_flyer_multibody_derivative_from_rigid_loads(
@@ -4120,6 +4274,48 @@ mod tests {
     }
 
     #[test]
+    fn initial_root_free_flyer_multibody_seed_uses_primary_body_mass() {
+        let scenario = openbmp_scenario::Scenario::from_toml_str(INITIAL_MULTI_BODY_SCENARIO)
+            .expect("initial multi-body scenario must parse");
+        let document = &scenario.document;
+        let assembly = crate::assembly::synthesize_assembly(document).expect("assembly");
+        let mass_resources = RigidMassResources::new(document, &assembly).expect("mass resources");
+        let loaded = LoadedModels::default();
+        let engine_snapshot = BTreeMap::new();
+        let tank_snapshot = BTreeMap::new();
+        let initial_state = build_initial_state(
+            document,
+            &loaded,
+            &mass_resources,
+            &engine_snapshot,
+            &tank_snapshot,
+        )
+        .expect("initial state");
+
+        let seed = build_initial_root_free_flyer_multibody_seed(
+            document,
+            &loaded,
+            &mass_resources,
+            &engine_snapshot,
+            &tank_snapshot,
+            &initial_state,
+        )
+        .expect("seed builds")
+        .expect("primary body seed present");
+
+        assert_eq!(
+            initial_state.mass_props.mass_kg().to_bits(),
+            4.0_f64.to_bits()
+        );
+        assert_eq!(
+            seed.rigid_state.mass_props.mass_kg().to_bits(),
+            3.0_f64.to_bits()
+        );
+        assert_eq!(seed.body, body_id_from_scenario_text("bus"));
+        assert_eq!(seed.tree.bodies()[0].id, body_id_from_scenario_text("bus"));
+    }
+
+    #[test]
     fn root_free_flyer_multibody_derivative_bridge_matches_rigid_equations() {
         let state = RigidBodyState::new(
             SimTime::ZERO,
@@ -4222,6 +4418,72 @@ mod tests {
             }
             other => panic!("expected UnsupportedScenario, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn root_free_flyer_multibody_derivative_bridge_uses_runner_force_and_moment_models() {
+        let toml = PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO
+            .replace("gravity_m_s2 = 0.0", "gravity_m_s2 = 2.0")
+            .replace(
+                "limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }\n",
+                "limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }\ninitial_position = 0.5\n",
+            )
+            .replace(
+                "[telemetry]\n",
+                "[multi_body]\nprimary_body_id = \"main\"\n\n[[multi_body.attitude_target]]\nbody_id = \"main\"\nstart_time_s = 1.0\npitch_effector = \"main-pitch-torque\"\nkp = 1.0\nkd = 0.0\nmax_command = 1.0\ntarget = { kind = \"eci_vector\", vector_eci = [0.0, 0.0, 1.0] }\n\n[telemetry]\n",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let document = &scenario.document;
+        let assembly = crate::assembly::synthesize_assembly(document).expect("assembly");
+        let loaded = LoadedModels::default();
+        let mass_resources = RigidMassResources::new(document, &assembly).expect("mass resources");
+        let engine_snapshot = BTreeMap::new();
+        let tank_snapshot = BTreeMap::new();
+        let recovery_snapshot = BTreeMap::new();
+        let initial_state = build_initial_state(
+            document,
+            &loaded,
+            &mass_resources,
+            &engine_snapshot,
+            &tank_snapshot,
+        )
+        .expect("initial state");
+        let seed = build_initial_root_free_flyer_multibody_seed(
+            document,
+            &loaded,
+            &mass_resources,
+            &engine_snapshot,
+            &tank_snapshot,
+            &initial_state,
+        )
+        .expect("seed builds")
+        .expect("primary body seed present");
+        let force_model = build_vehicle(document, &loaded, &assembly, &BTreeMap::new(), None, None)
+            .expect("force model");
+        let moment_model = build_moment_model(document, &loaded, None).expect("moment model");
+        let effector_rack = crate::effectors::EffectorRack::build(document).expect("effectors");
+        let effector_actuals =
+            build_effector_actual_snapshot_map(document, &[], &effector_rack.snapshot(), true)
+                .expect("effector actuals");
+        let environment = openbmp_sim::EnvironmentSample::default();
+
+        let derivative = root_free_flyer_multibody_derivative_from_runner_models(
+            &seed,
+            &force_model,
+            &moment_model,
+            InitialRootLoadViews {
+                environment: &environment,
+                effector_actuals: &effector_actuals,
+                engine_snapshot: &engine_snapshot,
+                tank_snapshot: &tank_snapshot,
+                recovery_snapshot: &recovery_snapshot,
+            },
+        )
+        .expect("runner model bridge derivative");
+
+        assert_eq!(derivative.qd_dot()[1].to_bits(), 2.5_f64.to_bits());
+        assert_eq!(derivative.qd_dot()[5].to_bits(), (-2.0_f64).to_bits());
     }
 
     #[test]

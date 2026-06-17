@@ -135,9 +135,16 @@ runner-level no-joint identity-orientation equivalence against the current
 byte-equivalence guard now parses and runs a disabled primary `[multi_body]`
 configuration through the real runner setup path, proving the current rigid
 kernel telemetry stays byte-identical while the root free-flyer bridge is
-exercised (`REQ-MULTIBODY-014`). Missing for full WP-01.1: full kernel/runner
-force adapter wiring, simulator/environment force wiring, gimballed ascent
-exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
+exercised (`REQ-MULTIBODY-014`). The bridge now also seeds primary
+`[multi_body]` roots from the mounted primary-body mass resources instead of
+the pre-split composite mass, evaluates the live runner force/moment adapter
+stacks with the initial environment and rack snapshots, and feeds those loads
+through the multibody derivative bridge; tests prove primary mass selection and
+nonzero gravity/direct-torque adapter load flow (`REQ-MULTIBODY-015`). Missing
+for full WP-01.1: replacing/mirroring per-step kernel propagation,
+simulator/environment force wiring beyond the single-root bridge, gimballed
+ascent exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not
+started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 

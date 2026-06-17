@@ -760,11 +760,16 @@ justification first, reviewed before the implementation lands.
   byte-equivalence guard now parses and runs a disabled primary `[multi_body]`
   configuration through the real runner setup path and proves the current
   `RigidBodyState` telemetry CSV remains byte-identical while the root
-  free-flyer bridge is exercised.
-  Remaining WP-01.1 work: full kernel/runner force adapter wiring,
-  simulator/environment force wiring, double-pendulum tolerance table,
-  Spatial_v2 oracle fixtures, and a live multibody force-adapter scenario
-  exercise.
+  free-flyer bridge is exercised. The bridge also now seeds primary
+  `[multi_body]` roots from the mounted primary-body mass resources rather than
+  the pre-split composite mass, evaluates the live runner force/moment adapter
+  stacks against the initial environment plus rack snapshots, and feeds those
+  loads through the multibody derivative bridge; tests cover primary mass
+  selection and nonzero gravity/direct-torque adapter load flow.
+  Remaining WP-01.1 work: replacing/mirroring per-step kernel propagation,
+  simulator/environment force wiring beyond the single-root bridge,
+  double-pendulum tolerance table, Spatial_v2 oracle fixtures, and a gimballed
+  ascent exercise.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics
