@@ -791,13 +791,16 @@ impl RigidBodySession {
         }
         let mission_fired = self.kernel.drain_mission_fired_events();
         let script_fired = self.kernel.drain_script_fired_events();
-        apply_jettison_events(
+        let jettison_applied = apply_jettison_events(
             &mut self.kernel,
             &script_fired,
             &self.separation_specs,
             &self.mass_model,
             &mut self.stack_bodies,
         )?;
+        if jettison_applied {
+            self.mirror_separated_multibody_root_steps()?;
+        }
         if !self.engine_rack.is_empty() {
             self.engine_rack
                 .set_retired_bodies(retired_separated_body_ids(
@@ -1837,7 +1840,7 @@ fn apply_jettison_events<I, F, MOM, MM, E, SC>(
     separation_specs: &BTreeMap<BodyId, RigidBodySeparationSpec>,
     mass_model: &RigidMassEither,
     stack_bodies: &mut BTreeSet<BodyId>,
-) -> Result<(), RunnerError>
+) -> Result<bool, RunnerError>
 where
     I: openbmp_sim::Integrator<RigidBodyState>,
     F: ForceModel<RigidBodyState>,
@@ -1846,6 +1849,7 @@ where
     E: openbmp_sim::EnvironmentModel,
     SC: openbmp_sim::StopCondition<RigidBodyState>,
 {
+    let mut applied = false;
     for event in fired {
         match &event.action {
             ScenarioScriptAction::JettisonStage { body } => {
@@ -1867,6 +1871,7 @@ where
                 let runtime =
                     build_runtime_rigid_body_separation(kernel, mass_model, separation, &inert)?;
                 kernel.jettison_rigid_body(runtime)?;
+                applied = true;
             }
             ScenarioScriptAction::JettisonBodies { bodies } => {
                 // Remove every departing body from the stack FIRST so the
@@ -1892,11 +1897,12 @@ where
                     )?);
                 }
                 kernel.jettison_rigid_bodies(&batch)?;
+                applied = true;
             }
             _ => {}
         }
     }
-    Ok(())
+    Ok(applied)
 }
 
 fn build_runtime_rigid_body_separation<I, F, MOM, MM, E, SC>(
@@ -4835,6 +4841,59 @@ mod tests {
         assert!(
             qd_dot[3].abs() < 1.0e-12 && qd_dot[4].abs() < 1.0e-12 && qd_dot[5].abs() < 1.0e-12,
             "direct torque scenario should not add separated translational acceleration: {qd_dot:?}"
+        );
+    }
+
+    #[test]
+    fn separated_multibody_shadow_refreshes_after_jettison_event() {
+        let initial_lane = r#"
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [0.0, 0.0, 10.0]
+velocity_eci_m_s = [0.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+"#;
+        let jettison = r#"
+[[multi_body.separation]]
+event_id = "drop_booster"
+upper_body_id = "bus"
+lower_body_id = "booster"
+
+[scenario_script]
+[[scenario_script.events]]
+id = "drop_booster"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "jettison_stage", body = "booster" }
+once = true
+"#;
+        let toml = SEPARATED_DIRECT_TORQUE_SCENARIO.replace(initial_lane, jettison);
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("jettison step succeeds");
+        let booster = body_id_from_scenario_text("booster");
+        let shadow = session
+            .separated_multibody_shadows
+            .get(&booster)
+            .expect("jettisoned booster shadow is recorded immediately");
+        assert_eq!(
+            shadow.seed.rigid_state.time.as_seconds().to_bits(),
+            0.1_f64.to_bits()
+        );
+        let derivative = shadow
+            .last_derivative
+            .as_ref()
+            .expect("jettisoned separated shadow derivative is recorded");
+        assert!(
+            derivative.qd_dot()[1] > 0.0,
+            "booster-owned pitch torque should reach jettisoned shadow: {:?}",
+            derivative.qd_dot()
         );
     }
 

@@ -104,8 +104,8 @@ verification = ["V-MULTIBODY-017"]
 
 [[requirements]]
 id = "REQ-MULTIBODY-018"
-title = "The runner mirrors initial separated lanes through multibody shadows"
-statement = "The openbmp-runner prepared rigid-body session maintains root-free-flyer multibody shadows for currently propagating separated lanes in multi_body scenarios, refreshes each shadow from the separated lane's current rigid state before the authoritative rigid-kernel step, evaluates the runner's per-body force and moment adapter stacks with the lane body id, held rack snapshots, lane environment sample, wind, and mission-phase views, and records the resulting multibody derivative without changing rigid separated-lane propagation or telemetry authority. The runner test uses an initial multi_body lane with a booster-owned direct-torque effector and proves the separated shadow derivative sees the signed pitch-torque contribution while the translational slots remain zero, making no claim that jettisoned-body joint release, full separated-body multibody propagation, or Spatial_v2 oracle validation is complete."
+title = "The runner mirrors separated lanes through multibody shadows"
+statement = "The openbmp-runner prepared rigid-body session maintains root-free-flyer multibody shadows for currently propagating separated lanes in multi_body scenarios, refreshes each shadow from the separated lane's current rigid state before the authoritative rigid-kernel step, refreshes immediately after jettison events create new separated lanes, evaluates the runner's per-body force and moment adapter stacks with the lane body id, held rack snapshots, lane environment sample, wind, and mission-phase views, and records the resulting multibody derivative without changing rigid separated-lane propagation or telemetry authority. The runner tests use an initial multi_body lane and a jettison-created lane with a booster-owned direct-torque effector and prove the separated shadow derivative sees the signed pitch-torque contribution while the direct-torque-only translational slots remain zero, making no claim that welded-to-free joint-release propagation, full separated-body multibody propagation, or Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-018"]
 
 [[requirements]]
@@ -1108,7 +1108,7 @@ requirements = ["REQ-MULTIBODY-017"]
 [[verification]]
 id = "V-MULTIBODY-018"
 kind = "test"
-command = "cargo test -p openbmp-runner separated_multibody_shadow_mirrors_initial_lane_loads --locked && cargo test -p openbmp-runner direct_torque_routes_to_separated_body_owner --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+command = "cargo test -p openbmp-runner separated_multibody_shadow_mirrors_initial_lane_loads --locked && cargo test -p openbmp-runner separated_multibody_shadow_refreshes_after_jettison_event --locked && cargo test -p openbmp-runner direct_torque_routes_to_separated_body_owner --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
 paths = [
   "crates/openbmp-sim/src/kernel.rs",
   "crates/openbmp-runner/src/rigid_body.rs",
@@ -1119,6 +1119,7 @@ contains = [
   "environment_sample_for_rigid_state",
   "mirror_separated_multibody_root_steps",
   "separated_multibody_shadow_mirrors_initial_lane_loads",
+  "separated_multibody_shadow_refreshes_after_jettison_event",
   "REQ-MULTIBODY-018",
   "WP-01.1 is now **partial**",
   "**implementation_status:** partial",

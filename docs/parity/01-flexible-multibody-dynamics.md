@@ -219,10 +219,10 @@ the generic integrators and aggregate vehicle model forwarding now clone reused
 values explicitly, and `MultibodySimState` carries tree-derived quaternion
 projection offsets so the existing `SimState`/`Integratable` surface can
 advance vector-backed multibody states. Runner/kernel force wiring is now
-present for primary root-free-flyer and initial separated-lane shadows, but
-authoritative propagation is still the rigid kernel. Double-pendulum tolerance
-tables, full separated-lane multibody propagation, and external Spatial_v2
-oracle fixtures remain open.
+present for primary root-free-flyer and separated-lane shadows, including lanes
+created by jettison events, but authoritative propagation is still the rigid
+kernel. Double-pendulum tolerance tables, full separated-lane multibody
+propagation, and external Spatial_v2 oracle fixtures remain open.
 
 ---
 
@@ -779,15 +779,16 @@ justification first, reviewed before the implementation lands.
   `engine_command`, publishes the resulting gimballed liquid-engine snapshot
   through the runner/kernel adapter views, and proves the primary shadow
   derivative sees signed engine-cluster force and moment contributions. The
-  session now also mirrors currently propagating initial separated lanes as
-  root free-flyer multibody shadows, using the separated lane state and the
-  same per-body runner force/moment adapter stacks; a booster-owned
-  direct-torque regression proves the separated shadow derivative sees the
-  signed pitch-torque load without changing rigid separated-lane authority.
+  session now also mirrors currently propagating separated lanes as root
+  free-flyer multibody shadows, covering both initial lanes and lanes created
+  by jettison events, using each separated lane state and the same per-body
+  runner force/moment adapter stacks; booster-owned direct-torque regressions
+  prove the separated shadow derivative sees the signed pitch-torque load
+  without changing rigid separated-lane authority.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
-  jettisoned-body joint-release and full separated-body multibody propagation,
-  double-pendulum tolerance table, Spatial_v2 oracle fixtures, and full
-  gimballed ascent validation.
+  welded-to-free joint-release propagation and full separated-body multibody
+  propagation, double-pendulum tolerance table, Spatial_v2 oracle fixtures, and
+  full gimballed ascent validation.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics
