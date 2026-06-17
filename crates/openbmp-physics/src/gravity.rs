@@ -1164,6 +1164,53 @@ pub struct NormalizedHarmonicField {
     coefficient_count: usize,
 }
 
+/// Iterator over every valid normalized harmonic coefficient slot in row order.
+///
+/// The iterator yields `(degree, order)` pairs with degree increasing first and
+/// order increasing inside each degree, constrained to
+/// `0 <= order <= min(degree, max_order)`. Missing coefficients inside the
+/// field envelope are yielded as zero-valued [`NormalizedHarmonicCoefficient`]
+/// entries so synthesis kernels can consume a complete deterministic stream.
+#[derive(Clone, Debug)]
+pub struct NormalizedHarmonicFieldIter<'a> {
+    field: &'a NormalizedHarmonicField,
+    degree: usize,
+    order: usize,
+    remaining: usize,
+}
+
+impl Iterator for NormalizedHarmonicFieldIter<'_> {
+    type Item = NormalizedHarmonicCoefficient;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 || self.degree > self.field.max_degree {
+            return None;
+        }
+        let degree = self.degree;
+        let order = self.order;
+        let (cbar, sbar) = self.field.coefficient(degree, order).ok()?;
+        self.remaining -= 1;
+        if order < degree.min(self.field.max_order) {
+            self.order += 1;
+        } else {
+            self.degree += 1;
+            self.order = 0;
+        }
+        Some(NormalizedHarmonicCoefficient {
+            degree,
+            order,
+            cbar,
+            sbar,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for NormalizedHarmonicFieldIter<'_> {}
+
 impl NormalizedHarmonicField {
     /// Construct a fully-normalized coefficient field.
     ///
@@ -1252,6 +1299,21 @@ impl NormalizedHarmonicField {
     #[must_use]
     pub fn storage_len(&self) -> usize {
         self.coefficients.len()
+    }
+
+    /// Iterate every deterministic packed coefficient slot.
+    ///
+    /// Missing entries inside the declared envelope are yielded as zero-valued
+    /// coefficients. This is the stream shape expected by future harmonic
+    /// synthesis kernels.
+    #[must_use]
+    pub fn coefficients(&self) -> NormalizedHarmonicFieldIter<'_> {
+        NormalizedHarmonicFieldIter {
+            field: self,
+            degree: 0,
+            order: 0,
+            remaining: self.coefficients.len(),
+        }
     }
 
     /// Return a fully-normalized `Cbar/Sbar` pair for `(degree, order)`.
@@ -2754,6 +2816,58 @@ mod tests {
             field.coefficient(1, 2),
             Err(PhysicsError::InvalidParameter { .. })
         ));
+    }
+
+    #[test]
+    fn tesseral_normalized_harmonic_field_iterates_slots_in_row_order() {
+        let field = NormalizedHarmonicField::new(
+            3,
+            2,
+            TideSystem::MeanTide,
+            [
+                NormalizedHarmonicCoefficient::new(2, 0, -4.0e-4, 0.0).unwrap(),
+                NormalizedHarmonicCoefficient::new(3, 2, 4.2e-9, -7.0e-10).unwrap(),
+            ],
+        )
+        .unwrap();
+
+        let slots = field
+            .coefficients()
+            .map(|coefficient| {
+                (
+                    coefficient.degree(),
+                    coefficient.order(),
+                    coefficient.cbar(),
+                    coefficient.sbar(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            slots
+                .iter()
+                .map(|(degree, order, _, _)| (*degree, *order))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 0),
+                (1, 0),
+                (1, 1),
+                (2, 0),
+                (2, 1),
+                (2, 2),
+                (3, 0),
+                (3, 1),
+                (3, 2),
+            ]
+        );
+        assert_eq!(slots.len(), field.storage_len());
+        assert_eq!(slots[3], (2, 0, -4.0e-4, 0.0));
+        assert_eq!(slots[8], (3, 2, 4.2e-9, -7.0e-10));
+        assert_eq!(slots[4], (2, 1, 0.0, 0.0));
+        let mut iter = field.coefficients();
+        assert_eq!(iter.len(), field.storage_len());
+        assert!(iter.next().is_some());
+        assert_eq!(iter.len(), field.storage_len() - 1);
     }
 
     #[test]

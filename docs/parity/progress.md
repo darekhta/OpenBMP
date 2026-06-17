@@ -359,11 +359,11 @@ Baseline confirmed: `Egm2008ZonalGravity` is zonal-only, hard-capped at
 degree 6 (`gravity.rs`), and WP-08.1 is now **partial** through
 `TesseralGravity`, `DegreeTwoTesseralCoefficients`,
 `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
-`NormalizedHarmonicField`, and `TideSystem`: the first degree-2/order-2 static
-harmonic surface supports C20, C21/S21, and C22/S22 terms, converts
+`NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`, and `TideSystem`: the
+first degree-2/order-2 static harmonic surface supports C20, C21/S21, and C22/S22 terms, converts
 fully-normalized degree-2 blocks, stores normalized `Cbar/Sbar` fields in
-deterministic packed `(n, m)` order, rebuilds the current `Egm2008ZonalGravity`
-J2-J6 truncation from the
+deterministic packed `(n, m)` order, exposes default-zero coefficient-slot
+iteration, rebuilds the current `Egm2008ZonalGravity` J2-J6 truncation from the
 `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
 fixture, parses the `data/gravity/wgs84-degree2-normalized-v1.toml` provenance
 pin, keeps the degree-2/order-0 WGS84 J2 path byte-identical to `J2Gravity`,
