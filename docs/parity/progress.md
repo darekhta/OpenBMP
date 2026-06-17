@@ -386,7 +386,10 @@ coefficient-slot iteration, rebuilds the current
 `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
 fixture through the public TOML parser, parses the
 `data/gravity/wgs84-degree2-normalized-v1.toml` provenance pin through the same
-path, keeps the degree-2/order-0 WGS84 J2 path byte-identical to `J2Gravity`,
+path, parses the synthetic non-zonal
+`data/gravity/synthetic-degree4-normalized-field-v1.toml` fixture through the
+general normalized-field schema, keeps the degree-2/order-0 WGS84 J2 path
+byte-identical to `J2Gravity`,
 stays finite near the pole, and rejects unsupported
 degree/order/duplicate/out-of-envelope coefficient requests fail-closed
 (`REQ-ENV-001`). Missing for full WP-08.1:

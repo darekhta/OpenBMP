@@ -129,11 +129,12 @@ Verified by reading the actual files (paths absolute under the repo root).
   wiring lands, and a complete default-zero coefficient-slot iterator for
   future synthesis kernels, rejects duplicate or
   out-of-envelope coefficient entries, parses a provenance-pinned WGS84
-  normalized degree-2 fixture, proves its degree-2/order-0 path is
-  byte-identical to `J2Gravity`, and stays finite near the pole. This is **not
-  yet** the full Pines/Gottlieb high-degree EGM2008 kernel; high-degree EGM2008
-  coefficient ingestion and external HARMONIC_SYNTH validation remain the
-  central gap.
+  normalized degree-2 fixture, parses a synthetic non-zonal degree-4
+  normalized-field fixture for the general TOML schema, proves its
+  degree-2/order-0 path is byte-identical to `J2Gravity`, and stays finite
+  near the pole. This is **not yet** the full Pines/Gottlieb high-degree
+  EGM2008 kernel; high-degree EGM2008 coefficient ingestion and external
+  HARMONIC_SYNTH validation remain the central gap.
 - `ThirdBody` / `ThirdBodyGravity<G,E>` — central + Σ third-body perturbation
   with Battin's cancellation-free `f(q)` formulation in
   `third_body_perturbation()`. The regression suite now compares the Battin form
@@ -688,7 +689,10 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   Cartesian solid-harmonic polynomials, the low-degree ingestion bridge parses
   normalized-harmonic TOML, converts fully-normalized degree-2 blocks, and
   extracts them from a normalized harmonic field parsed from
-  `data/gravity/wgs84-degree2-normalized-v1.toml`, and the
+  `data/gravity/wgs84-degree2-normalized-v1.toml`, the general
+  `openbmp.gravity.normalized-field.v1` parser is covered by the synthetic
+  non-zonal
+  `data/gravity/synthetic-degree4-normalized-field-v1.toml` fixture, and the
   existing `Egm2008ZonalGravity` J2-J6 truncation can be rebuilt from the
   provenance-pinned
   `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
@@ -701,7 +705,8 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   Legendre recurrence, normalized
   Pines scalar-potential summation matching the existing degree-2 Cartesian
   polynomial, fail-closed normalized-harmonic TOML parsing for the WGS84
-  degree-2 and EGM2008 zonal fixtures plus malformed metadata, Gottlieb-style
+  degree-2, synthetic non-zonal degree-4, and EGM2008 zonal fixtures plus
+  malformed metadata, Gottlieb-style
   scalar-potential recomposition matching Pines at
   generic/equatorial/near-pole points, Pines and Gottlieb-style
   finite-difference acceleration plus `FiniteDifferencePinesGravity` model

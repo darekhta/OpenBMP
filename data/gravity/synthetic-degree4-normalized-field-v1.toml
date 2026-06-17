@@ -1,0 +1,62 @@
+# Synthetic degree-4/order-3 gravity coefficients in fully-normalized form.
+#
+# This file is an OpenBMP-owned ingestion fixture for the general
+# `openbmp.gravity.normalized-field.v1` schema. The coefficients are small,
+# deterministic, non-zonal test values used to exercise tesseral/sectoral
+# parser paths and Pines/Gottlieb scalar cross-checks. They are not WGS84,
+# EGM2008, or any physical Earth gravity field.
+
+dataset_id     = "openbmp.synthetic.gravity.degree4-normalized-field.v1"
+schema_version = "openbmp.gravity.normalized-field.v1"
+normalization  = "fully_normalized"
+tide_system    = "tide_free"
+max_degree     = 4
+max_order      = 3
+
+[[coefficient]]
+degree = 2
+order  = 0
+cbar   = -4.8e-4
+sbar   = 0.0
+
+[[coefficient]]
+degree = 2
+order  = 1
+cbar   = 1.7e-6
+sbar   = -2.1e-6
+
+[[coefficient]]
+degree = 2
+order  = 2
+cbar   = 2.4e-6
+sbar   = 3.1e-6
+
+[[coefficient]]
+degree = 3
+order  = 0
+cbar   = 9.0e-7
+sbar   = 0.0
+
+[[coefficient]]
+degree = 3
+order  = 1
+cbar   = -7.0e-7
+sbar   = 4.0e-7
+
+[[coefficient]]
+degree = 3
+order  = 3
+cbar   = 2.5e-8
+sbar   = -1.5e-8
+
+[[coefficient]]
+degree = 4
+order  = 2
+cbar   = -3.0e-8
+sbar   = 6.0e-8
+
+[[coefficient]]
+degree = 4
+order  = 3
+cbar   = 7.0e-9
+sbar   = -5.0e-9

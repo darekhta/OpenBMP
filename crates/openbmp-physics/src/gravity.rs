@@ -3941,6 +3941,15 @@ mod tests {
             .expect("finite normalized EGM2008 zonal field")
     }
 
+    fn load_synthetic_normalized_degree4_field_fixture() -> NormalizedHarmonicField {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/gravity/synthetic-degree4-normalized-field-v1.toml"
+        ));
+        NormalizedHarmonicField::from_normalized_toml_str(fixture)
+            .expect("finite synthetic normalized field")
+    }
+
     #[derive(Copy, Clone, Debug)]
     struct FixedEphemeris {
         position: Vector3<f64>,
@@ -4401,6 +4410,31 @@ mod tests {
             0.0_f64.to_bits()
         );
         assert_eq!(field.coefficient(1, 0).unwrap(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn tesseral_normalized_harmonic_field_parses_synthetic_general_toml_pin() {
+        let field = load_synthetic_normalized_degree4_field_fixture();
+
+        assert_eq!(field.max_degree(), 4);
+        assert_eq!(field.max_order(), 3);
+        assert_eq!(field.tide_system(), TideSystem::TideFree);
+        assert_eq!(field.coefficient_count(), 8);
+        assert_eq!(field.storage_len(), 14);
+        assert_eq!(field.coefficient(3, 2).unwrap(), (0.0, 0.0));
+        assert_eq!(field.coefficient(4, 1).unwrap(), (0.0, 0.0));
+        assert_eq!(field.coefficient(4, 3).unwrap(), (7.0e-9, -5.0e-9));
+        assert!(matches!(
+            field.coefficient(4, 4),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let plan = HarmonicSynthesisPlan::for_normalized_field(
+            &field,
+            HarmonicTruncation::new(4, 3).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plan.truncation(), HarmonicTruncation::new(4, 3).unwrap());
     }
 
     #[test]
@@ -4942,22 +4976,7 @@ mod tests {
 
     #[test]
     fn tesseral_gottlieb_potential_sum_matches_pines_scalar_sum() {
-        let field = NormalizedHarmonicField::new(
-            4,
-            3,
-            TideSystem::TideFree,
-            [
-                NormalizedHarmonicCoefficient::new(2, 0, -4.8e-4, 0.0).unwrap(),
-                NormalizedHarmonicCoefficient::new(2, 1, 1.7e-6, -2.1e-6).unwrap(),
-                NormalizedHarmonicCoefficient::new(2, 2, 2.4e-6, 3.1e-6).unwrap(),
-                NormalizedHarmonicCoefficient::new(3, 0, 9.0e-7, 0.0).unwrap(),
-                NormalizedHarmonicCoefficient::new(3, 1, -7.0e-7, 4.0e-7).unwrap(),
-                NormalizedHarmonicCoefficient::new(3, 3, 2.5e-8, -1.5e-8).unwrap(),
-                NormalizedHarmonicCoefficient::new(4, 2, -3.0e-8, 6.0e-8).unwrap(),
-                NormalizedHarmonicCoefficient::new(4, 3, 7.0e-9, -5.0e-9).unwrap(),
-            ],
-        )
-        .unwrap();
+        let field = load_synthetic_normalized_degree4_field_fixture();
         let truncation = HarmonicTruncation::new(4, 3).unwrap();
         let positions = [
             Vector3::new(7_100_000.0, -800_000.0, 1_200_000.0),
