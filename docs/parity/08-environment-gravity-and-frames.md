@@ -90,7 +90,7 @@ above. No artifact in this dimension ever claims `flight-qualified` / `certified
 
 Verified by reading the actual files (paths absolute under the repo root).
 
-### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (6465 lines)
+### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (6833 lines)
 
 - `trait GravityModel { fn gravity_eci_m_s2(&self, position_eci, time) -> Result<Vector3<f64>, PhysicsError> }` — the single environment-side acceleration surface used by current gravity/perturbation models; ephemeris-backed paths vary with time.
 - `ConstantGravity`, `PointMassGravity` (`−µ/r² r̂`), `J2Gravity` (point-mass + J₂ in closed Cartesian form, Vallado §8.6).
@@ -132,10 +132,12 @@ Verified by reading the actual files (paths absolute under the repo root).
   cross-checks the Pines sum through ordinary longitude trigonometry and an
   explicit horizontal-power term,
   bounded Pines and Gottlieb-style symmetric-finite-difference acceleration
-  oracles derived from those scalar potentials, and a public static
-  `GravityModel` wrapper for the Pines oracle with
+  oracles and finite-difference acceleration-gradient `Matrix3` oracles derived
+  from those scalar potentials, and a public static `GravityModel` wrapper for
+  the Pines oracle with
   `new_from_full_normalized_field` central-term stripping for full imported
-  fields
+  fields plus `acceleration_gradient_eci_s2` for the point-mass-plus-correction
+  transition tensor
   whose ECI axes are currently treated as body-fixed until frame-rotating force
   wiring lands, and a complete default-zero coefficient-slot iterator for
   future synthesis kernels, rejects duplicate or
@@ -695,9 +697,9 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   direction-cosine-longitude, truncation-validation,
   runtime high-degree tier validation for the planned 70/120/360 EGM2008
   requests, Pines-Legendre, scalar-potential summation,
-  Gottlieb-style scalar recomposition, and Pines/Gottlieb-style
-  finite-difference acceleration-oracle substrate plus a static `GravityModel`
-  wrapper.
+  Gottlieb-style scalar recomposition, Pines/Gottlieb-style finite-difference
+  acceleration and acceleration-gradient oracle substrate, plus a static
+  `GravityModel` wrapper.
   `TesseralGravity::wgs84_j2()` is byte-identical to `J2Gravity`, the degree-2
   evaluator includes C21/S21 tesseral and C22/S22 sectoral terms through
   Cartesian solid-harmonic polynomials, the low-degree ingestion bridge parses
@@ -732,14 +734,17 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   Gottlieb-style
   scalar-potential recomposition matching Pines at
   generic/equatorial/near-pole points, Pines and Gottlieb-style
-  finite-difference acceleration plus `FiniteDifferencePinesGravity` model
-  output matching existing analytic degree-2 tesseral terms, default-zero
+  finite-difference acceleration-gradient matrices matching a finite-differenced
+  independent degree-2 Cartesian oracle, finite-difference acceleration plus
+  `FiniteDifferencePinesGravity` model output matching existing analytic
+  degree-2 tesseral terms, model gradient degeneration to the closed-form
+  point-mass tensor for zero correction fields, default-zero
   missing coefficients and iteration slots,
   normalized-field zonal fixture equivalence, and fail-closed unsupported
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:
   full runtime high-degree Pines synthesis over real EGM2008 coefficient
-  blocks, full normalized Gottlieb acceleration-gradient oracle, real
+  blocks, full analytic normalized Gottlieb acceleration-gradient oracle, real
   high-degree EGM2008 coefficient ingestion/provenance/tripwire, and NGA HARMONIC_SYNTH
   benchmark tolerance tables.
 - **goal:** Replace the deg-6 zonal cap with full tesseral gravity. Build the shared `HarmonicSynthesis` kernel (Pines + normalized Gottlieb oracle + Holmes–Featherstone scaled recursion) and `TesseralGravity`; load EGM2008 to a runtime-selectable degree. The central gap-closer for this dimension and a "pure win that improves all propagation" (`00` §5).

@@ -33,7 +33,7 @@
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 use openbmp_core::{Eci, Position3, SimTime, Velocity3};
@@ -222,6 +222,34 @@ impl GravityModel for PointMassGravity {
         }
         Ok(g)
     }
+}
+
+fn point_mass_acceleration_gradient_s2(
+    mu_m3_s2: f64,
+    position_eci_m: Vector3<f64>,
+) -> Result<Matrix3<f64>, PhysicsError> {
+    if !mu_m3_s2.is_finite() || mu_m3_s2 <= 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "point-mass gradient µ must be strictly positive and finite",
+        });
+    }
+    let r2 = position_eci_m.dot(&position_eci_m);
+    if r2 == 0.0 {
+        return Err(PhysicsError::OutOfEnvelope {
+            reason: "point-mass gradient is singular at r = 0",
+        });
+    }
+    let r = r2.sqrt();
+    let r3 = r * r2;
+    let r5 = r3 * r2;
+    let gradient = (3.0 * mu_m3_s2 / r5) * (position_eci_m * position_eci_m.transpose())
+        - (mu_m3_s2 / r3) * Matrix3::identity();
+    if !gradient.iter().all(|value| value.is_finite()) {
+        return Err(PhysicsError::NonFinite {
+            reason: "point-mass gradient produced non-finite output",
+        });
+    }
+    Ok(gradient)
 }
 
 // ---------------------------------------------------------------------
@@ -2908,6 +2936,88 @@ impl NormalizedHarmonicField {
         Ok(acceleration)
     }
 
+    /// Evaluate the harmonic-correction acceleration gradient from the
+    /// normalized Gottlieb-style finite-difference acceleration oracle.
+    ///
+    /// The returned matrix uses the convention `gradient[(i, j)] = da_i / dr_j`
+    /// in `s^-2`, with columns representing derivatives with respect to `x`,
+    /// `y`, and `z`. This is a deterministic finite-difference oracle, not the
+    /// final analytic normalized Gottlieb gradient kernel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if either finite-difference
+    /// step is not strictly positive and finite, or if the wrapped acceleration
+    /// evaluation rejects the model inputs. Returns [`PhysicsError::NonFinite`]
+    /// if the finite-difference matrix contains non-finite values.
+    pub fn gottlieb_potential_correction_acceleration_gradient_finite_difference_s2(
+        &self,
+        mu_m3_s2: f64,
+        position_body_fixed_m: Vector3<f64>,
+        reference_radius_m: f64,
+        truncation: HarmonicTruncation,
+        acceleration_step_m: f64,
+        gradient_step_m: f64,
+    ) -> Result<Matrix3<f64>, PhysicsError> {
+        PinesSynthesisPoint::new(position_body_fixed_m, reference_radius_m)?;
+        finite_difference_acceleration_gradient_s2(
+            position_body_fixed_m,
+            gradient_step_m,
+            |position| {
+                self.gottlieb_potential_correction_acceleration_finite_difference_m_s2(
+                    mu_m3_s2,
+                    position,
+                    reference_radius_m,
+                    truncation,
+                    acceleration_step_m,
+                )
+            },
+            "Gottlieb finite-difference gradient step must be strictly positive and finite",
+            "Gottlieb finite-difference acceleration gradient produced non-finite output",
+        )
+    }
+
+    /// Evaluate the harmonic-correction acceleration gradient from the
+    /// normalized Pines finite-difference acceleration oracle.
+    ///
+    /// The returned matrix uses the convention `gradient[(i, j)] = da_i / dr_j`
+    /// in `s^-2`, with columns representing derivatives with respect to `x`,
+    /// `y`, and `z`. This is a deterministic finite-difference oracle, not the
+    /// final analytic high-degree Pines/Gottlieb gradient kernel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if either finite-difference
+    /// step is not strictly positive and finite, or if the wrapped acceleration
+    /// evaluation rejects the model inputs. Returns [`PhysicsError::NonFinite`]
+    /// if the finite-difference matrix contains non-finite values.
+    pub fn pines_potential_correction_acceleration_gradient_finite_difference_s2(
+        &self,
+        mu_m3_s2: f64,
+        position_body_fixed_m: Vector3<f64>,
+        reference_radius_m: f64,
+        truncation: HarmonicTruncation,
+        acceleration_step_m: f64,
+        gradient_step_m: f64,
+    ) -> Result<Matrix3<f64>, PhysicsError> {
+        PinesSynthesisPoint::new(position_body_fixed_m, reference_radius_m)?;
+        finite_difference_acceleration_gradient_s2(
+            position_body_fixed_m,
+            gradient_step_m,
+            |position| {
+                self.pines_potential_correction_acceleration_finite_difference_m_s2(
+                    mu_m3_s2,
+                    position,
+                    reference_radius_m,
+                    truncation,
+                    acceleration_step_m,
+                )
+            },
+            "Pines finite-difference gradient step must be strictly positive and finite",
+            "Pines finite-difference acceleration gradient produced non-finite output",
+        )
+    }
+
     fn coefficient_or_default(&self, degree: usize, order: usize) -> (f64, f64) {
         if degree > self.max_degree || order > self.max_order || order > degree {
             return (0.0, 0.0);
@@ -3117,6 +3227,37 @@ fn parse_icgem_f64(value: Option<&str>, reason: &'static str) -> Result<f64, Phy
         });
     }
     Ok(parsed)
+}
+
+fn finite_difference_acceleration_gradient_s2(
+    position_m: Vector3<f64>,
+    gradient_step_m: f64,
+    acceleration_at: impl Fn(Vector3<f64>) -> Result<Vector3<f64>, PhysicsError>,
+    invalid_step_reason: &'static str,
+    non_finite_reason: &'static str,
+) -> Result<Matrix3<f64>, PhysicsError> {
+    if !gradient_step_m.is_finite() || gradient_step_m <= 0.0 {
+        return Err(PhysicsError::InvalidParameter {
+            reason: invalid_step_reason,
+        });
+    }
+    let offset_x = Vector3::new(gradient_step_m, 0.0, 0.0);
+    let offset_y = Vector3::new(0.0, gradient_step_m, 0.0);
+    let offset_z = Vector3::new(0.0, 0.0, gradient_step_m);
+    let inv_delta = 1.0 / (2.0 * gradient_step_m);
+    let da_dx = (acceleration_at(position_m + offset_x)? - acceleration_at(position_m - offset_x)?)
+        * inv_delta;
+    let da_dy = (acceleration_at(position_m + offset_y)? - acceleration_at(position_m - offset_y)?)
+        * inv_delta;
+    let da_dz = (acceleration_at(position_m + offset_z)? - acceleration_at(position_m - offset_z)?)
+        * inv_delta;
+    let gradient = Matrix3::from_columns(&[da_dx, da_dy, da_dz]);
+    if !gradient.iter().all(|value| value.is_finite()) {
+        return Err(PhysicsError::NonFinite {
+            reason: non_finite_reason,
+        });
+    }
+    Ok(gradient)
 }
 
 fn normalized_harmonic_storage_len(max_degree: usize, max_order: usize) -> Option<usize> {
@@ -3386,6 +3527,44 @@ impl FiniteDifferencePinesGravity {
     #[must_use]
     pub const fn finite_difference_step_m(&self) -> f64 {
         self.finite_difference_step_m
+    }
+
+    /// Full acceleration-gradient matrix for the current transition model.
+    ///
+    /// The returned matrix uses `gradient[(i, j)] = da_i / dr_j` in `s^-2`.
+    /// It is the closed-form point-mass tensor plus the finite-difference Pines
+    /// harmonic-correction tensor. As with [`Self::gravity_eci_m_s2`], the input
+    /// ECI axes are currently treated as body-fixed aligned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] if point-mass or harmonic-correction gradient
+    /// evaluation rejects the position, model constants, truncation, or
+    /// finite-difference steps.
+    pub fn acceleration_gradient_eci_s2(
+        &self,
+        position_eci: Position3<Eci>,
+        gradient_step_m: f64,
+    ) -> Result<Matrix3<f64>, PhysicsError> {
+        let position = position_eci.vector;
+        let point_mass_gradient = point_mass_acceleration_gradient_s2(self.mu_m3_s2, position)?;
+        let correction_gradient = self
+            .field
+            .pines_potential_correction_acceleration_gradient_finite_difference_s2(
+                self.mu_m3_s2,
+                position,
+                self.reference_radius_m,
+                self.truncation,
+                self.finite_difference_step_m,
+                gradient_step_m,
+            )?;
+        let gradient = point_mass_gradient + correction_gradient;
+        if !gradient.iter().all(|value| value.is_finite()) {
+            return Err(PhysicsError::NonFinite {
+                reason: "Pines gravity acceleration gradient produced non-finite output",
+            });
+        }
+        Ok(gradient)
     }
 }
 
@@ -5785,6 +5964,168 @@ mod tests {
     }
 
     #[test]
+    fn tesseral_finite_difference_acceleration_gradient_matches_degree_two_analytic_terms() {
+        let coefficients = DegreeTwoTesseralCoefficients::new(
+            -1.2e-3,
+            2.0e-6,
+            -3.0e-6,
+            4.0e-6,
+            -5.0e-6,
+            TideSystem::TideFree,
+        )
+        .unwrap();
+        let field = normalized_field_from_degree_two(coefficients);
+        let position: Vector3<f64> = Vector3::new(7_100_000.0, -800_000.0, 1_200_000.0);
+        let truncation = HarmonicTruncation::new(2, 2).unwrap();
+        let gradient_step_m = 100.0;
+        let expected = finite_difference_acceleration_gradient_s2(
+            position,
+            gradient_step_m,
+            |candidate| {
+                let r2 = candidate.dot(&candidate);
+                let r_norm = r2.sqrt();
+                Ok(degree_two_tesseral_perturbation_eci(
+                    candidate,
+                    r2,
+                    r_norm,
+                    WGS84_MU_M3_S2,
+                    WGS84_A_M,
+                    coefficients,
+                    2,
+                ))
+            },
+            "test gradient step must be finite",
+            "test acceleration gradient must be finite",
+        )
+        .unwrap();
+
+        let pines = field
+            .pines_potential_correction_acceleration_gradient_finite_difference_s2(
+                WGS84_MU_M3_S2,
+                position,
+                WGS84_A_M,
+                truncation,
+                10.0,
+                gradient_step_m,
+            )
+            .unwrap();
+        let gottlieb = field
+            .gottlieb_potential_correction_acceleration_gradient_finite_difference_s2(
+                WGS84_MU_M3_S2,
+                position,
+                WGS84_A_M,
+                truncation,
+                10.0,
+                gradient_step_m,
+            )
+            .unwrap();
+
+        for row in 0..3 {
+            for col in 0..3 {
+                assert_abs_diff_eq!(pines[(row, col)], expected[(row, col)], epsilon = 1.0e-14);
+                assert_abs_diff_eq!(
+                    gottlieb[(row, col)],
+                    expected[(row, col)],
+                    epsilon = 1.0e-14
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tesseral_pines_and_gottlieb_finite_difference_acceleration_gradients_match() {
+        let field = load_synthetic_normalized_degree4_field_fixture();
+        let position = Vector3::new(7_100_000.0, -800_000.0, 1_200_000.0);
+        let truncation = HarmonicTruncation::new(4, 3).unwrap();
+
+        let pines = field
+            .pines_potential_correction_acceleration_gradient_finite_difference_s2(
+                WGS84_MU_M3_S2,
+                position,
+                WGS84_A_M,
+                truncation,
+                10.0,
+                100.0,
+            )
+            .unwrap();
+        let gottlieb = field
+            .gottlieb_potential_correction_acceleration_gradient_finite_difference_s2(
+                WGS84_MU_M3_S2,
+                position,
+                WGS84_A_M,
+                truncation,
+                10.0,
+                100.0,
+            )
+            .unwrap();
+
+        for row in 0..3 {
+            for col in 0..3 {
+                assert!(pines[(row, col)].is_finite());
+                assert_abs_diff_eq!(pines[(row, col)], gottlieb[(row, col)], epsilon = 2.0e-15);
+            }
+        }
+    }
+
+    #[test]
+    fn tesseral_finite_difference_acceleration_gradient_rejects_invalid_inputs() {
+        let field = NormalizedHarmonicField::new(
+            2,
+            0,
+            TideSystem::TideFree,
+            [NormalizedHarmonicCoefficient::new(2, 0, -WGS84_J2 / 5.0_f64.sqrt(), 0.0).unwrap()],
+        )
+        .unwrap();
+        let position = Vector3::new(7_000_000.0, 0.0, 0.0);
+        let truncation = HarmonicTruncation::new(2, 0).unwrap();
+
+        assert!(matches!(
+            field.pines_potential_correction_acceleration_gradient_finite_difference_s2(
+                WGS84_MU_M3_S2,
+                position,
+                WGS84_A_M,
+                truncation,
+                0.0,
+                100.0
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            field.pines_potential_correction_acceleration_gradient_finite_difference_s2(
+                WGS84_MU_M3_S2,
+                position,
+                WGS84_A_M,
+                truncation,
+                10.0,
+                0.0
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            field.gottlieb_potential_correction_acceleration_gradient_finite_difference_s2(
+                WGS84_MU_M3_S2,
+                Vector3::new(0.0, 0.0, 0.0),
+                WGS84_A_M,
+                truncation,
+                10.0,
+                100.0
+            ),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
+        assert!(matches!(
+            field.gottlieb_potential_correction_acceleration_gradient_finite_difference_s2(
+                WGS84_MU_M3_S2,
+                position,
+                WGS84_A_M,
+                HarmonicTruncation::new(2, 1).unwrap(),
+                10.0,
+                100.0
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
     fn finite_difference_pines_gravity_matches_degree_two_tesseral_model() {
         let coefficients = DegreeTwoTesseralCoefficients::new(
             -1.2e-3,
@@ -5843,6 +6184,33 @@ mod tests {
                 pines_acceleration[axis].to_bits(),
                 point_mass_acceleration[axis].to_bits()
             );
+        }
+    }
+
+    #[test]
+    fn finite_difference_pines_gravity_zero_field_gradient_reduces_to_point_mass() {
+        let field = NormalizedHarmonicField::new(0, 0, TideSystem::TideFree, []).unwrap();
+        let pines = FiniteDifferencePinesGravity::new(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            field,
+            HarmonicTruncation::new(0, 0).unwrap(),
+            10.0,
+        )
+        .unwrap();
+        let position = Position3::new(7_200_000.0, -900_000.0, 300_000.0);
+
+        let gradient = pines.acceleration_gradient_eci_s2(position, 100.0).unwrap();
+        let expected =
+            point_mass_acceleration_gradient_s2(WGS84_MU_M3_S2, position.vector).unwrap();
+
+        for row in 0..3 {
+            for col in 0..3 {
+                assert_eq!(
+                    gradient[(row, col)].to_bits(),
+                    expected[(row, col)].to_bits()
+                );
+            }
         }
     }
 

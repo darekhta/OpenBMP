@@ -387,9 +387,10 @@ recurrence table, a body-fixed synthesis-point validator, a normalized Pines
 scalar-potential correction sum,
 a normalized Gottlieb-style scalar-potential recomposition oracle cross-checked
 against the Pines sum, Pines and Gottlieb-style symmetric finite-difference
-acceleration oracles plus a public static `GravityModel` wrapper with
-`new_from_full_normalized_field` central-term stripping matched against the
-existing analytic degree-2 tesseral terms, and default-zero
+acceleration and acceleration-gradient oracles plus a public static
+`GravityModel` wrapper with `new_from_full_normalized_field` central-term
+stripping, `acceleration_gradient_eci_s2`, and checks against the existing
+analytic degree-2 tesseral terms and point-mass tensor, and default-zero
 coefficient-slot iteration, rebuilds the current
 `Egm2008ZonalGravity` J2-J6 truncation from the
 `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
@@ -405,7 +406,7 @@ stays finite near the pole, and rejects unsupported
 degree/order/duplicate/out-of-envelope coefficient requests fail-closed
 (`REQ-ENV-001`). Missing for full WP-08.1:
 full runtime high-degree Pines synthesis over real EGM2008 coefficient blocks,
-full normalized Gottlieb acceleration-gradient oracle, high-degree EGM2008
+full analytic normalized Gottlieb acceleration-gradient oracle, high-degree EGM2008
 coefficient ingestion/provenance/tripwire, and NGA HARMONIC_SYNTH benchmark
 tables. IAU 1976/1980 equinox frames remain
 the frame path (no CIO); NRLMSISE-00/HWM14 means only (no perturbed-atmosphere
