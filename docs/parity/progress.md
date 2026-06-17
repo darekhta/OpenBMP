@@ -167,10 +167,14 @@ multibody free-flyer quaternion convention is now explicit, body velocity lifts
 into parent-frame position rate, parent forces rotate into body generalized
 force slots, raw RK substep quaternions drive `q_dot` until projection, and a
 constant-mass direct-torque/changing-attitude forecast matches the current
-rigid kernel (`REQ-MULTIBODY-019`). Missing for full WP-01.1: replacing the
-rigid-kernel propagation path, variable-mass multibody propagation,
-welded-to-free joint-release propagation and full separated-body multibody
-propagation, full gimballed ascent validation, and Spatial_v2 oracle checks.
+rigid kernel (`REQ-MULTIBODY-019`). The RK4 forecast now also evaluates the
+same mass-rate adapter surface as the rigid kernel at each stage and proves a
+no-rotation solid-motor burn forecasts the same variable-mass next rigid state
+as the current kernel (`REQ-MULTIBODY-020`). Missing for full WP-01.1:
+replacing the rigid-kernel propagation path, broader variable-mass multibody
+propagation beyond the one-body root forecast, welded-to-free joint-release
+propagation and full separated-body multibody propagation, full gimballed
+ascent validation, and Spatial_v2 oracle checks.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO

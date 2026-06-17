@@ -225,8 +225,11 @@ root free-flyer `MultibodySimState` back into `RigidBodyState`; it is exact for
 the constant-mass, no-rotation gravity case and for a constant-mass
 direct-torque/changing-attitude case after making the free-flyer quaternion,
 raw RK substep quaternion-rate, parent/body force, and ECI-translation
-conventions explicit. Authoritative propagation is still the rigid kernel.
-Replacing the rigid propagation path, variable-mass multibody propagation,
+conventions explicit. The forecast path also evaluates the rigid mass-rate
+adapter at RK stages and matches the current rigid kernel for a no-rotation
+solid-motor burn, including the next-step mass. Authoritative propagation is
+still the rigid kernel. Replacing the rigid propagation path, broader
+variable-mass multibody propagation beyond the one-body root forecast,
 double-pendulum tolerance tables, full separated-lane multibody propagation,
 and external Spatial_v2 oracle fixtures remain open.
 
@@ -797,11 +800,15 @@ justification first, reviewed before the implementation lands.
   kernel over one step in that limited envelope, and a direct-torque regression
   proves the changing-attitude forecast can also match after fixing the root
   free-flyer parent/body quaternion, raw RK substep quaternion-rate, force, and
-  ECI-translation conventions.
+  ECI-translation conventions. The RK4 forecast now also carries mass-property
+  rates from the same rigid mass adapter used by the current kernel, and a
+  no-rotation solid-motor regression proves the variable-mass root forecast
+  matches the current rigid kernel over one step.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
-  variable-mass multibody propagation, welded-to-free joint-release propagation
-  and full separated-body multibody propagation, double-pendulum tolerance
-  table, Spatial_v2 oracle fixtures, and full gimballed ascent validation.
+  broader variable-mass multibody propagation beyond the one-body root
+  forecast, welded-to-free joint-release propagation and full separated-body
+  multibody propagation, double-pendulum tolerance table, Spatial_v2 oracle
+  fixtures, and full gimballed ascent validation.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

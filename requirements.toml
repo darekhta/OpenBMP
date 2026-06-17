@@ -115,6 +115,12 @@ statement = "The openbmp-runner root-free-flyer bridge can project a one-body Mu
 verification = ["V-MULTIBODY-019"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-020"
+title = "The primary multibody shadow can forecast a variable-mass root step"
+statement = "The openbmp-runner root-free-flyer RK4 forecast evaluates the same RigidMassModel mass-property-rate surface as the current rigid kernel at each stage, carries mass rate, center-of-mass rate, and inertia-rate fields into RigidBodyDerivative, and applies the rigid kernel's inertia-rate angular correction before rebuilding the next one-body root-free-flyer seed. The runner test proves a no-rotation solid-motor primary multi_body scenario forecasts the same next mass, position, velocity, quaternion, and body angular rate as the current rigid kernel over one step while leaving telemetry authority with the rigid kernel. This makes no claim that replacing the rigid-kernel propagation path, liquid-engine snapshot-timing equivalence, full gimballed ascent propagation, welded-to-free joint-release propagation, broad articulated variable-mass propagation, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-020"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -1155,6 +1161,24 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-019"]
+
+[[verification]]
+id = "V-MULTIBODY-020"
+kind = "test"
+command = "cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_matches_variable_mass_solid_motor_step --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "mass_properties_rate_at",
+  "primary_multibody_shadow_rk4_forecast_matches_variable_mass_solid_motor_step",
+  "REQ-MULTIBODY-020",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-020"]
 
 [[verification]]
 id = "V-SIL-001"

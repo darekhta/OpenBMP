@@ -927,6 +927,7 @@ impl RigidBodySession {
             &seed,
             &self.breakdown_vehicle,
             moment_model,
+            &self.mass_model,
             self.kernel_step_s,
             RootFreeFlyerHeldLoadViews {
                 phase_id,
@@ -2338,10 +2339,11 @@ struct RootFreeFlyerHeldLoadViews<'a> {
     recovery_snapshot: &'a BTreeMap<RecoveryId, openbmp_sim::RecoverySnapshot>,
 }
 
-fn root_free_flyer_multibody_rk4_forecast_from_runner_models<F, M, ENV>(
+fn root_free_flyer_multibody_rk4_forecast_from_runner_models<F, M, MM, ENV>(
     seed: &RootFreeFlyerMultibodySeed,
     force_model: &F,
     moment_model: &M,
+    mass_model: &MM,
     dt_s: f64,
     held_views: RootFreeFlyerHeldLoadViews<'_>,
     environment_for_state: ENV,
@@ -2349,6 +2351,7 @@ fn root_free_flyer_multibody_rk4_forecast_from_runner_models<F, M, ENV>(
 where
     F: ForceModel<RigidBodyState>,
     M: openbmp_sim::MomentModel<RigidBodyState>,
+    MM: RigidMassModel,
     ENV: Fn(&RigidBodyState) -> Result<openbmp_sim::EnvironmentSample, RunnerError>,
 {
     let next_rigid_state = Rk4FixedStep
@@ -2374,16 +2377,41 @@ where
                     },
                 )
                 .map_err(multibody_shadow_model_eval_error)?;
+                let rate = mass_model
+                    .mass_properties_rate_at(MassContext {
+                        time: rigid_state.time,
+                        active_body: Some(seed.body),
+                        engine_snapshot: EngineSnapshotView::new(held_views.engine_snapshot),
+                        tank_snapshot: TankSnapshotView::new(held_views.tank_snapshot),
+                    })
+                    .map_err(|err| {
+                        multibody_shadow_model_eval_error(RunnerError::UnsupportedScenario {
+                            what: format!(
+                                "root free-flyer mass-rate adapter evaluation failed: {err}"
+                            ),
+                        })
+                    })?;
                 let q_dot = stage.multibody.q_dot();
                 let qd_dot = stage.multibody.qd_dot();
+                let inv_inertia = rigid_state.mass_props.inertia_body.try_inverse().ok_or_else(
+                    || {
+                        multibody_shadow_model_eval_error(RunnerError::UnsupportedScenario {
+                            what: "root free-flyer mass-rate forecast inertia tensor is not invertible"
+                                .to_owned(),
+                        })
+                    },
+                )?;
+                let i_dot_omega = rate.inertia_rate_body * rigid_state.angular_velocity.vector;
+                let angular_acceleration =
+                    Vector3::new(qd_dot[0], qd_dot[1], qd_dot[2]) - inv_inertia * i_dot_omega;
                 Ok(RigidBodyDerivative::new(
                     rigid_state.velocity.vector,
                     stage.force_eci_n / rigid_state.mass_props.mass_kg(),
                     nalgebra::Quaternion::new(q_dot[0], q_dot[1], q_dot[2], q_dot[3]),
-                    Vector3::new(qd_dot[0], qd_dot[1], qd_dot[2]),
-                    0.0,
-                    Vector3::zeros(),
-                    nalgebra::Matrix3::zeros(),
+                    angular_acceleration,
+                    rate.mass_rate_kg_s,
+                    rate.center_of_mass_rate_body_m_s,
+                    rate.inertia_rate_body,
                 ))
             },
             Duration::from_seconds(dt_s),
@@ -5110,6 +5138,76 @@ mod tests {
     }
 
     #[test]
+    fn primary_multibody_shadow_rk4_forecast_matches_variable_mass_solid_motor_step() {
+        let scenario = openbmp_scenario::Scenario::from_toml_str(
+            PRIMARY_MULTIBODY_SOLID_MOTOR_SHADOW_SCENARIO,
+        )
+        .expect("solid-motor primary multibody scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+        let initial_mass_kg = session.state().mass_props.mass_kg();
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step forecasts variable-mass primary root");
+
+        let shadow = session
+            .primary_multibody_shadow
+            .as_ref()
+            .expect("primary shadow recorded");
+        let forecast = shadow
+            .last_rk4_forecast
+            .as_ref()
+            .expect("primary RK4 forecast recorded");
+        let predicted = &forecast.rigid_state;
+        let actual = session.state();
+        assert_eq!(predicted.time.as_seconds().to_bits(), 0.1_f64.to_bits());
+        assert!(
+            predicted.mass_props.mass_kg() < initial_mass_kg,
+            "solid motor forecast should drain mass: predicted={} initial={}",
+            predicted.mass_props.mass_kg(),
+            initial_mass_kg
+        );
+        assert!(
+            (predicted.mass_props.mass_kg() - actual.mass_props.mass_kg()).abs() < 1.0e-12,
+            "mass predicted={} actual={}",
+            predicted.mass_props.mass_kg(),
+            actual.mass_props.mass_kg()
+        );
+        assert!(
+            (predicted.position.vector - actual.position.vector).norm() < 1.0e-12,
+            "position predicted={:?} actual={:?} diff={:?}",
+            predicted.position.vector,
+            actual.position.vector,
+            predicted.position.vector - actual.position.vector
+        );
+        assert!(
+            (predicted.velocity.vector - actual.velocity.vector).norm() < 1.0e-12,
+            "velocity predicted={:?} actual={:?} diff={:?}",
+            predicted.velocity.vector,
+            actual.velocity.vector,
+            predicted.velocity.vector - actual.velocity.vector
+        );
+        assert!(
+            (predicted.angular_velocity.vector - actual.angular_velocity.vector).norm() < 1.0e-12,
+            "omega predicted={:?} actual={:?} diff={:?}",
+            predicted.angular_velocity.vector,
+            actual.angular_velocity.vector,
+            predicted.angular_velocity.vector - actual.angular_velocity.vector
+        );
+        let predicted_q = predicted.orientation.q.into_inner();
+        let actual_q = actual.orientation.q.into_inner();
+        assert!(
+            (predicted_q.coords - actual_q.coords).norm() < 1.0e-12,
+            "q predicted={:?} actual={:?} diff={:?}",
+            predicted_q.coords,
+            actual_q.coords,
+            predicted_q.coords - actual_q.coords
+        );
+    }
+
+    #[test]
     fn primary_multibody_shadow_mirrors_gimballed_engine_loads() {
         let scenario =
             openbmp_scenario::Scenario::from_toml_str(PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO)
@@ -5396,6 +5494,104 @@ once = true
 
 [telemetry]
 output.csv = "out/primary-multibody-gimbal-shadow-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
+    const PRIMARY_MULTIBODY_SOLID_MOTOR_SHADOW_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "primary-multibody-solid-motor-shadow-test"
+description = "Synthetic rigid-body run used to prove the primary multibody shadow forecasts a variable-mass burn."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.2
+dt_s = 0.1
+seed = 45
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 10.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "primary-multibody-solid-motor-shadow-test"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 10.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]]
+
+[[vehicle.assembly.effectors]]
+id = "unused_pitch"
+mounted_to = "main"
+kind = { kind = "direct_torque", axis = "pitch", effectiveness_n_m_per_rad = 1.0 }
+limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[propulsion.motor]
+variant = "solid"
+ignite_at_s = 0.0
+mounted_to = "main"
+
+[propulsion.motor.grain]
+geometry = "end_burner"
+cross_section_area_m2 = 0.02
+length_m = 0.05
+throat_radius_m = 0.005641895835477563
+expansion_ratio = 20.0
+dry_mass_kg = 0.2
+name = "primary-multibody-solid-motor-shadow-grain"
+provenance = "synthetic primary multibody variable-mass regression"
+
+[propulsion.motor.grain.propellant]
+label = "synthetic_textbook"
+density_kg_m3 = 1700.0
+burn_rate_a = 0.00004
+burn_rate_n = 0.32
+c_star_m_s = 1400.0
+gamma = 1.2
+web_steps = 64
+
+[forces]
+models = ["thrust"]
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[multi_body]
+primary_body_id = "main"
+
+[[multi_body.attitude_target]]
+body_id = "main"
+start_time_s = 1.0
+pitch_effector = "unused_pitch"
+kp = 1.0
+kd = 0.0
+max_command = 1.0
+target = { kind = "eci_vector", vector_eci = [0.0, 0.0, 1.0] }
+
+[telemetry]
+output.csv = "out/primary-multibody-solid-motor-shadow-test.csv"
 
 [validation]
 require_finite_state = true
