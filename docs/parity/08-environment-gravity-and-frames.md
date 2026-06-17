@@ -90,7 +90,7 @@ above. No artifact in this dimension ever claims `flight-qualified` / `certified
 
 Verified by reading the actual files (paths absolute under the repo root).
 
-### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (4642 lines)
+### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (6465 lines)
 
 - `trait GravityModel { fn gravity_eci_m_s2(&self, position_eci, time) -> Result<Vector3<f64>, PhysicsError> }` — the single environment-side acceleration surface used by current gravity/perturbation models; ephemeris-backed paths vary with time.
 - `ConstantGravity`, `PointMassGravity` (`−µ/r² r̂`), `J2Gravity` (point-mass + J₂ in closed Cartesian form, Vallado §8.6).
@@ -99,6 +99,7 @@ Verified by reading the actual files (paths absolute under the repo root).
   harmonic surface with `DegreeTwoTesseralCoefficients`,
   `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
   `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
+  `IcgemGfcNormalizedField`,
   `HarmonicLongitudeTrigonometry`, `HarmonicTruncation`,
   `HarmonicSynthesisPlan`, `HarmonicSynthesisTier`, `PinesLegendreTable`,
   `PinesLongitudePolynomials`, `PinesSynthesisPoint`, `PinesPotentialSum`,
@@ -113,8 +114,11 @@ Verified by reading the actual files (paths absolute under the repo root).
   evaluators, exposes a checked
   `fully_normalized_to_unnormalized_scale` helper, a std-gated fail-closed
   `from_normalized_toml_str` parser for OpenBMP normalized harmonic TOML
-  fixtures, a std-gated fail-closed `from_icgem_gfc_str` parser for static
-  ICGEM/NGA-style fully-normalized `gfc` coefficient lines, checked runtime
+  fixtures, std-gated fail-closed `from_icgem_gfc_str` and
+  `from_icgem_gfc_str_with_metadata` parsers for static ICGEM/NGA-style
+  fully-normalized `gfc` coefficient lines and their source `µ`/radius/source
+  degree headers, `FiniteDifferencePinesGravity::new_from_icgem_gfc_str` to
+  carry those parsed constants into the transition model, checked runtime
   high-degree EGM2008 tier requests for the planned 70/120/360 truncations that
   must resolve against a concrete field envelope and the bounded Pines scratch
   tables, a bounded `cos(mλ)` / `sin(mλ)` recurrence table, a
@@ -678,14 +682,16 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   now exposes `TesseralGravity`, `FiniteDifferencePinesGravity`,
   `DegreeTwoTesseralCoefficients`, `NormalizedDegreeTwoTesseralCoefficients`,
   `NormalizedHarmonicCoefficient`, `NormalizedHarmonicField`,
-  `NormalizedHarmonicFieldIter`, `HarmonicLongitudeTrigonometry`,
+  `NormalizedHarmonicFieldIter`, `IcgemGfcNormalizedField`,
+  `HarmonicLongitudeTrigonometry`,
   `HarmonicTruncation`,
   `HarmonicSynthesisPlan`, `HarmonicSynthesisTier`, `PinesLegendreTable`,
   `PinesLongitudePolynomials`, `PinesSynthesisPoint`, `PinesPotentialSum`,
   `GottliebPotentialSum`, and `TideSystem` as the first non-zonal static
   harmonic force surface plus reusable normalized `Cbar/Sbar`
   coefficient-field, std-gated normalized-harmonic TOML ingestion,
-  std-gated ICGEM-style GFC ingestion, longitude-trigonometry,
+  std-gated ICGEM-style GFC coefficient-and-source-metadata ingestion,
+  longitude-trigonometry,
   direction-cosine-longitude, truncation-validation,
   runtime high-degree tier validation for the planned 70/120/360 EGM2008
   requests, Pines-Legendre, scalar-potential summation,
@@ -701,7 +707,7 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   `openbmp.gravity.normalized-field.v1` parser is covered by the synthetic
   non-zonal
   `data/gravity/synthetic-degree4-normalized-field-v1.toml` fixture, the
-  ICGEM-style parser is covered by
+  ICGEM-style parser and metadata bridge are covered by
   `data/gravity/synthetic-degree4-normalized-icgem-v1.gfc`, and the
   existing `Egm2008ZonalGravity` J2-J6 truncation can be rebuilt from the
   provenance-pinned
@@ -712,13 +718,17 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   direction-cosine longitude polynomials, checked truncation-envelope
   validation, checked runtime-tier resolution against 70/120/360-style field
   envelopes and the bounded Pines scratch caps, Cbar00 stripping for full GFC
-  fields before finite-difference Pines correction evaluation, low-degree
+  fields before finite-difference Pines correction evaluation,
+  ICGEM `earth_gravity_constant`/`radius`/source-max-degree validation before
+  direct `FiniteDifferencePinesGravity::new_from_icgem_gfc_str` construction,
+  low-degree
   closed-form Pines Legendre recurrence, normalized
   Pines scalar-potential summation matching the existing degree-2 Cartesian
   polynomial, fail-closed normalized-harmonic TOML parsing for the WGS84
   degree-2, synthetic non-zonal degree-4, and EGM2008 zonal fixtures plus
   malformed metadata, fail-closed ICGEM-style GFC parsing for normalization,
-  tide-system, header, dynamic-line, and malformed-float errors,
+  tide-system, source-constant, header, dynamic-line, source-envelope, and
+  malformed-float errors,
   Gottlieb-style
   scalar-potential recomposition matching Pines at
   generic/equatorial/near-pole points, Pines and Gottlieb-style

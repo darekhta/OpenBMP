@@ -361,7 +361,7 @@ degree 6 (`gravity.rs`), and WP-08.1 is now **partial** through
 `DegreeTwoTesseralCoefficients`,
 `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
 `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
-`HarmonicLongitudeTrigonometry`, `HarmonicTruncation`,
+`IcgemGfcNormalizedField`, `HarmonicLongitudeTrigonometry`, `HarmonicTruncation`,
 `HarmonicSynthesisPlan`, `HarmonicSynthesisTier`, `PinesLegendreTable`,
 `PinesLongitudePolynomials`, `PinesSynthesisPoint`, `PinesPotentialSum`,
 `GottliebPotentialSum`, and
@@ -374,7 +374,10 @@ point-mass-plus-correction evaluators, checked fully-normalized scale factors,
 a std-gated fail-closed
 `from_normalized_toml_str` parser for the OpenBMP normalized harmonic TOML
 schemas, a std-gated fail-closed `from_icgem_gfc_str` parser for static
-ICGEM/NGA-style fully-normalized `gfc` coefficient lines, checked runtime
+ICGEM/NGA-style fully-normalized `gfc` coefficient lines plus
+`from_icgem_gfc_str_with_metadata` source `µ`/radius/source-degree validation
+and direct `FiniteDifferencePinesGravity::new_from_icgem_gfc_str`
+construction, checked runtime
 high-degree EGM2008 tier requests for the planned 70/120/360 truncations that
 must resolve against a concrete field envelope and the bounded Pines scratch
 tables, a bounded `cos(mλ)`/`sin(mλ)` recurrence table, a singularity-free
@@ -396,7 +399,7 @@ path, parses the synthetic non-zonal
 `data/gravity/synthetic-degree4-normalized-field-v1.toml` fixture through the
 general normalized-field schema, parses
 `data/gravity/synthetic-degree4-normalized-icgem-v1.gfc` through the
-ICGEM-style static coefficient schema, keeps the degree-2/order-0 WGS84 J2
+ICGEM-style static coefficient-and-metadata schema, keeps the degree-2/order-0 WGS84 J2
 path byte-identical to `J2Gravity`,
 stays finite near the pole, and rejects unsupported
 degree/order/duplicate/out-of-envelope coefficient requests fail-closed

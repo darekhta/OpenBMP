@@ -119,7 +119,8 @@ pub use gravity::{
 };
 #[cfg(feature = "std")]
 pub use gravity::{
-    IAU_NOMINAL_SOLAR_RADIUS_M, SolarRadiationPressure, ThirdBody, ThirdBodyGravity,
+    IAU_NOMINAL_SOLAR_RADIUS_M, IcgemGfcNormalizedField, SolarRadiationPressure, ThirdBody,
+    ThirdBodyGravity,
 };
 pub use kinematics::{
     quaternion_error_small_angle, quaternion_from_axis_angle, quaternion_from_omega,

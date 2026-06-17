@@ -2093,6 +2093,91 @@ pub struct NormalizedHarmonicFieldIter<'a> {
     remaining: usize,
 }
 
+/// Fully-normalized ICGEM `.gfc` coefficients plus source constants.
+///
+/// ICGEM/NGA-style gravity files carry both normalized coefficient rows and the
+/// source `µ`, reference radius, and declared maximum degree needed to build a
+/// deterministic runtime force model. This parsed result keeps that metadata
+/// attached to the truncated [`NormalizedHarmonicField`] instead of requiring
+/// callers to duplicate constants out-of-band.
+#[cfg(feature = "std")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct IcgemGfcNormalizedField {
+    field: NormalizedHarmonicField,
+    gravity_constant_m3_s2: f64,
+    reference_radius_m: f64,
+    source_max_degree: usize,
+}
+
+#[cfg(feature = "std")]
+impl IcgemGfcNormalizedField {
+    /// Construct an ICGEM parsed field result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if source constants are not
+    /// strictly positive and finite or if the field envelope exceeds the source
+    /// degree declared by the file header.
+    pub fn new(
+        field: NormalizedHarmonicField,
+        gravity_constant_m3_s2: f64,
+        reference_radius_m: f64,
+        source_max_degree: usize,
+    ) -> Result<Self, PhysicsError> {
+        if !gravity_constant_m3_s2.is_finite() || gravity_constant_m3_s2 <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ICGEM GFC earth_gravity_constant must be strictly positive and finite",
+            });
+        }
+        if !reference_radius_m.is_finite() || reference_radius_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ICGEM GFC radius must be strictly positive and finite",
+            });
+        }
+        if field.max_degree() > source_max_degree {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "ICGEM GFC requested max_degree exceeds source max_degree",
+            });
+        }
+        Ok(Self {
+            field,
+            gravity_constant_m3_s2,
+            reference_radius_m,
+            source_max_degree,
+        })
+    }
+
+    /// Truncated normalized harmonic field.
+    #[must_use]
+    pub const fn field(&self) -> &NormalizedHarmonicField {
+        &self.field
+    }
+
+    /// Consume the parsed result and return its truncated field.
+    #[must_use]
+    pub fn into_field(self) -> NormalizedHarmonicField {
+        self.field
+    }
+
+    /// Source gravitational parameter in m^3/s^2.
+    #[must_use]
+    pub const fn gravity_constant_m3_s2(&self) -> f64 {
+        self.gravity_constant_m3_s2
+    }
+
+    /// Source harmonic reference radius in metres.
+    #[must_use]
+    pub const fn reference_radius_m(&self) -> f64 {
+        self.reference_radius_m
+    }
+
+    /// Maximum harmonic degree declared by the source file header.
+    #[must_use]
+    pub const fn source_max_degree(&self) -> usize {
+        self.source_max_degree
+    }
+}
+
 impl Iterator for NormalizedHarmonicFieldIter<'_> {
     type Item = NormalizedHarmonicCoefficient;
 
@@ -2260,8 +2345,33 @@ impl NormalizedHarmonicField {
         max_degree: usize,
         max_order: usize,
     ) -> Result<Self, PhysicsError> {
+        Ok(Self::from_icgem_gfc_str_with_metadata(input, max_degree, max_order)?.into_field())
+    }
+
+    /// Construct a fully-normalized coefficient field plus ICGEM source metadata.
+    ///
+    /// This validates and returns the `earth_gravity_constant`, `radius`, and
+    /// source `max_degree` headers alongside the requested field truncation. The
+    /// requested `max_degree` must not exceed the source header degree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] when required metadata is
+    /// missing, source constants are invalid, the requested degree exceeds the
+    /// source degree, the normalization is unsupported, a coefficient line is
+    /// malformed, or any retained coefficient fails the same validation as
+    /// [`Self::new`].
+    #[cfg(feature = "std")]
+    pub fn from_icgem_gfc_str_with_metadata(
+        input: &str,
+        max_degree: usize,
+        max_order: usize,
+    ) -> Result<IcgemGfcNormalizedField, PhysicsError> {
         let mut norm_is_fully_normalized = false;
         let mut tide_system = None;
+        let mut gravity_constant_m3_s2 = None;
+        let mut reference_radius_m = None;
+        let mut source_max_degree = None;
         let mut in_header = true;
         let mut saw_end_of_head = false;
         let mut coefficients = Vec::new();
@@ -2293,6 +2403,34 @@ impl NormalizedHarmonicField {
                         }
                         norm_is_fully_normalized = true;
                     }
+                    "earth_gravity_constant" => {
+                        let value = parse_icgem_f64(
+                            parts.next(),
+                            "ICGEM GFC earth_gravity_constant header must parse",
+                        )?;
+                        if value <= 0.0 {
+                            return Err(PhysicsError::InvalidParameter {
+                                reason: "ICGEM GFC earth_gravity_constant must be strictly positive and finite",
+                            });
+                        }
+                        gravity_constant_m3_s2 = Some(value);
+                    }
+                    "radius" => {
+                        let value =
+                            parse_icgem_f64(parts.next(), "ICGEM GFC radius header must parse")?;
+                        if value <= 0.0 {
+                            return Err(PhysicsError::InvalidParameter {
+                                reason: "ICGEM GFC radius must be strictly positive and finite",
+                            });
+                        }
+                        reference_radius_m = Some(value);
+                    }
+                    "max_degree" => {
+                        source_max_degree = Some(parse_icgem_usize(
+                            parts.next(),
+                            "ICGEM GFC max_degree header must parse",
+                        )?);
+                    }
                     "tide_system" => {
                         let tag = parts.next().ok_or(PhysicsError::InvalidParameter {
                             reason: "ICGEM GFC tide_system header must include a value",
@@ -2314,6 +2452,13 @@ impl NormalizedHarmonicField {
             if order > degree {
                 return Err(PhysicsError::InvalidParameter {
                     reason: "ICGEM GFC coefficient order must be <= degree",
+                });
+            }
+            if let Some(source_max_degree) = source_max_degree
+                && degree > source_max_degree
+            {
+                return Err(PhysicsError::InvalidParameter {
+                    reason: "ICGEM GFC coefficient degree exceeds source max_degree",
                 });
             }
             let cbar = parse_icgem_f64(parts.next(), "ICGEM GFC Cbar must parse")?;
@@ -2338,7 +2483,23 @@ impl NormalizedHarmonicField {
         let tide_system = tide_system.ok_or(PhysicsError::InvalidParameter {
             reason: "ICGEM GFC input must declare tide_system",
         })?;
-        Self::new(max_degree, max_order, tide_system, coefficients)
+        let gravity_constant_m3_s2 =
+            gravity_constant_m3_s2.ok_or(PhysicsError::InvalidParameter {
+                reason: "ICGEM GFC input must declare earth_gravity_constant",
+            })?;
+        let reference_radius_m = reference_radius_m.ok_or(PhysicsError::InvalidParameter {
+            reason: "ICGEM GFC input must declare radius",
+        })?;
+        let source_max_degree = source_max_degree.ok_or(PhysicsError::InvalidParameter {
+            reason: "ICGEM GFC input must declare max_degree",
+        })?;
+        let field = Self::new(max_degree, max_order, tide_system, coefficients)?;
+        IcgemGfcNormalizedField::new(
+            field,
+            gravity_constant_m3_s2,
+            reference_radius_m,
+            source_max_degree,
+        )
     }
 
     /// Declared maximum harmonic degree.
@@ -3108,6 +3269,40 @@ impl FiniteDifferencePinesGravity {
             reference_radius_m,
             field.without_central_term(),
             truncation,
+            finite_difference_step_m,
+        )
+    }
+
+    /// Construct directly from an ICGEM `.gfc` coefficient block.
+    ///
+    /// The parser validates `norm fully_normalized`, `tide_system`,
+    /// `earth_gravity_constant`, `radius`, and the source `max_degree` header,
+    /// truncates static `gfc` rows to the requested degree/order envelope, strips
+    /// `Cbar00`, and then builds the finite-difference Pines transition model
+    /// with the source constants from the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if the GFC input is malformed,
+    /// if the requested truncation exceeds the source/field/scratch envelopes, or
+    /// if model constants and finite-difference settings are invalid.
+    #[cfg(feature = "std")]
+    pub fn new_from_icgem_gfc_str(
+        input: &str,
+        max_degree: usize,
+        max_order: usize,
+        finite_difference_step_m: f64,
+    ) -> Result<Self, PhysicsError> {
+        let parsed = NormalizedHarmonicField::from_icgem_gfc_str_with_metadata(
+            input, max_degree, max_order,
+        )?;
+        let mu_m3_s2 = parsed.gravity_constant_m3_s2();
+        let reference_radius_m = parsed.reference_radius_m();
+        Self::new_from_full_normalized_field(
+            mu_m3_s2,
+            reference_radius_m,
+            parsed.into_field(),
+            HarmonicTruncation::new(max_degree, max_order)?,
             finite_difference_step_m,
         )
     }
@@ -4129,16 +4324,23 @@ mod tests {
             .expect("finite synthetic normalized field")
     }
 
+    fn synthetic_icgem_degree4_fixture() -> &'static str {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/gravity/synthetic-degree4-normalized-icgem-v1.gfc"
+        ))
+    }
+
     fn load_synthetic_icgem_degree4_field_fixture(
         max_degree: usize,
         max_order: usize,
     ) -> NormalizedHarmonicField {
-        let fixture = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../data/gravity/synthetic-degree4-normalized-icgem-v1.gfc"
-        ));
-        NormalizedHarmonicField::from_icgem_gfc_str(fixture, max_degree, max_order)
-            .expect("finite synthetic ICGEM normalized field")
+        NormalizedHarmonicField::from_icgem_gfc_str(
+            synthetic_icgem_degree4_fixture(),
+            max_degree,
+            max_order,
+        )
+        .expect("finite synthetic ICGEM normalized field")
     }
 
     #[derive(Copy, Clone, Debug)]
@@ -4675,11 +4877,33 @@ mod tests {
     }
 
     #[test]
+    fn tesseral_normalized_harmonic_field_parses_icgem_gfc_metadata_pin() {
+        let parsed = NormalizedHarmonicField::from_icgem_gfc_str_with_metadata(
+            synthetic_icgem_degree4_fixture(),
+            4,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            parsed.gravity_constant_m3_s2().to_bits(),
+            WGS84_MU_M3_S2.to_bits()
+        );
+        assert_eq!(parsed.reference_radius_m().to_bits(), WGS84_A_M.to_bits());
+        assert_eq!(parsed.source_max_degree(), 4);
+        assert_eq!(parsed.field().max_degree(), 4);
+        assert_eq!(parsed.field().max_order(), 3);
+        assert_eq!(parsed.field().tide_system(), TideSystem::TideFree);
+        assert_eq!(parsed.field().coefficient(0, 0).unwrap(), (1.0, 0.0));
+
+        let field = parsed.into_field();
+        assert_eq!(field.coefficient_count(), 9);
+        assert_eq!(field.coefficient(4, 3).unwrap(), (7.0e-9, -5.0e-9));
+    }
+
+    #[test]
     fn tesseral_normalized_harmonic_field_icgem_parser_rejects_bad_metadata() {
-        let fixture = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../data/gravity/synthetic-degree4-normalized-icgem-v1.gfc"
-        ));
+        let fixture = synthetic_icgem_degree4_fixture();
 
         let bad_norm = fixture.replace("norm fully_normalized", "norm unnormalized");
         assert!(matches!(
@@ -4712,6 +4936,27 @@ mod tests {
             fixture.replace("gfc 2 1 1.7000000000000000D-06", "gfc 2 1 not-a-float");
         assert!(matches!(
             NormalizedHarmonicField::from_icgem_gfc_str(&malformed_value, 4, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let missing_mu = fixture.replace("earth_gravity_constant 3.9860044180000000D+14\n", "");
+        assert!(matches!(
+            NormalizedHarmonicField::from_icgem_gfc_str_with_metadata(&missing_mu, 4, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let bad_radius = fixture.replace(
+            "radius 6.3781370000000000D+06",
+            "radius -6.3781370000000000D+06",
+        );
+        assert!(matches!(
+            NormalizedHarmonicField::from_icgem_gfc_str_with_metadata(&bad_radius, 4, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let undersized_source = fixture.replace("max_degree 4", "max_degree 3");
+        assert!(matches!(
+            NormalizedHarmonicField::from_icgem_gfc_str_with_metadata(&undersized_source, 4, 3),
             Err(PhysicsError::InvalidParameter { .. })
         ));
     }
@@ -5644,6 +5889,45 @@ mod tests {
             assert_eq!(
                 from_full_acceleration[axis].to_bits(),
                 from_correction_acceleration[axis].to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn finite_difference_pines_gravity_builds_from_icgem_gfc_metadata() {
+        let from_gfc = FiniteDifferencePinesGravity::new_from_icgem_gfc_str(
+            synthetic_icgem_degree4_fixture(),
+            4,
+            3,
+            10.0,
+        )
+        .unwrap();
+        let from_full = FiniteDifferencePinesGravity::new_from_full_normalized_field(
+            WGS84_MU_M3_S2,
+            WGS84_A_M,
+            load_synthetic_icgem_degree4_field_fixture(4, 3),
+            HarmonicTruncation::new(4, 3).unwrap(),
+            10.0,
+        )
+        .unwrap();
+
+        assert_eq!(from_gfc.mu_m3_s2().to_bits(), WGS84_MU_M3_S2.to_bits());
+        assert_eq!(from_gfc.reference_radius_m().to_bits(), WGS84_A_M.to_bits());
+        assert_eq!(
+            from_gfc.truncation(),
+            HarmonicTruncation::new(4, 3).unwrap()
+        );
+        assert_eq!(from_gfc.field().coefficient(0, 0).unwrap(), (0.0, 0.0));
+        assert_eq!(from_gfc.field().coefficient_count(), 8);
+
+        let position = Position3::new(7_100_000.0, -800_000.0, 1_200_000.0);
+        let from_gfc_acceleration = from_gfc.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        let from_full_acceleration = from_full.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+
+        for axis in 0..3 {
+            assert_eq!(
+                from_gfc_acceleration[axis].to_bits(),
+                from_full_acceleration[axis].to_bits()
             );
         }
     }
