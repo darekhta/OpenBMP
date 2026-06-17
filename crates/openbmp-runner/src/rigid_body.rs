@@ -48,7 +48,7 @@ use openbmp_physics::{
     AtmosphereModel, ConstantGravity, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
 };
 use openbmp_propulsion::{Motor, SolidMotor};
-use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
+use openbmp_scenario::{MultiBodyGimbalJointConfig, ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{
     AnyStop, ConstantMass, EffectorActualsView, EndTime, EngineSnapshotView, EnvironmentModel,
     EnvironmentQuery, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane, Integrator,
@@ -186,6 +186,7 @@ pub(crate) struct RigidBodySession {
     breakdown_vehicle: KernelVehicle<RigidBodyState>,
     primary_multibody_shadow: Option<RootFreeFlyerMultibodyShadow>,
     separated_multibody_shadows: BTreeMap<BodyId, RootFreeFlyerMultibodyShadow>,
+    articulated_gimbal_shadows: BTreeMap<EngineId, ArticulatedGimbalMultibodyShadow>,
     multibody_moment_model: Option<KernelVehicle<RigidBodyState>>,
     table: TelemetryTable,
     deck_bindings: Vec<crate::aero_effector_match::DeckAxisBinding>,
@@ -297,14 +298,24 @@ impl RigidBodySession {
             &initial_tank_snapshot,
             &initial_state,
         )?;
-        for seed in &initial_articulated_gimbal_seeds {
-            let _body = seed.body;
-            let _engine = seed.engine;
+        let mut articulated_gimbal_shadows = BTreeMap::new();
+        for seed in initial_articulated_gimbal_seeds {
             seed.tree
                 .joint_space_inertia_crba_at_state(seed.sim_state.state())
                 .map_err(|err| RunnerError::UnsupportedScenario {
                     what: format!("initial articulated gimbal inertia validation failed: {err}"),
                 })?;
+            let derivative = articulated_gimbal_multibody_derivative_from_engine_thrust(
+                &seed,
+                &initial_engine_snapshot,
+            )?;
+            articulated_gimbal_shadows.insert(
+                seed.engine,
+                ArticulatedGimbalMultibodyShadow {
+                    seed,
+                    last_derivative: Some(derivative),
+                },
+            );
         }
         let kernel_vehicle = build_vehicle(
             document,
@@ -575,6 +586,7 @@ impl RigidBodySession {
             breakdown_vehicle,
             primary_multibody_shadow,
             separated_multibody_shadows: BTreeMap::new(),
+            articulated_gimbal_shadows,
             multibody_moment_model,
             table,
             deck_bindings,
@@ -761,6 +773,7 @@ impl RigidBodySession {
         }
         self.mirror_primary_multibody_root_step()?;
         self.mirror_separated_multibody_root_steps()?;
+        self.mirror_articulated_gimbal_steps()?;
         // Feed the bending mode's reaction moment to the rigid-body torque for
         // this step (held across the RK4 stages). Zero when no flex mode.
         if !self.structural_rack.is_inactive() {
@@ -1056,6 +1069,66 @@ impl RigidBodySession {
                     last_rk4_forecast: Some(forecast),
                 },
             );
+        }
+        Ok(())
+    }
+
+    fn mirror_articulated_gimbal_steps(&mut self) -> Result<(), RunnerError> {
+        if self.articulated_gimbal_shadows.is_empty() {
+            return Ok(());
+        }
+        let current_state = *self.kernel.current_state();
+        let primary_body = self.kernel.primary_rigid_body();
+        let engine_snapshot = self.kernel.engine_snapshot();
+        let tank_snapshot = self.kernel.tank_snapshot();
+        let mut updates = Vec::with_capacity(self.articulated_gimbal_shadows.len());
+        for shadow in self.articulated_gimbal_shadows.values() {
+            let body = shadow.seed.body;
+            if let Some(active_body) = primary_body
+                && active_body != body
+            {
+                continue;
+            }
+            let mass_properties =
+                if self.stack_bodies.len() == 1 && self.stack_bodies.contains(&body) {
+                    current_state.mass_props
+                } else {
+                    self.mass_model
+                        .mass_properties_at(MassContext {
+                            time: current_state.time,
+                            active_body: Some(body),
+                            engine_snapshot: EngineSnapshotView::new(engine_snapshot),
+                            tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                        })
+                        .map_err(|err| RunnerError::UnsupportedScenario {
+                            what: format!(
+                                "per-step articulated gimbal body mass properties failed: {err}"
+                            ),
+                        })?
+                };
+            let parent_state = RigidBodyState::new(
+                current_state.time,
+                current_state.position,
+                current_state.velocity,
+                current_state.orientation,
+                current_state.angular_velocity,
+                mass_properties,
+            );
+            let seed = articulated_gimbal_multibody_seed_from_config(
+                body,
+                shadow.seed.engine,
+                &shadow.seed.joint,
+                &parent_state,
+            )?;
+            let derivative =
+                articulated_gimbal_multibody_derivative_from_engine_thrust(&seed, engine_snapshot)?;
+            updates.push((seed.engine, seed, derivative));
+        }
+        for (engine, seed, derivative) in updates {
+            if let Some(shadow) = self.articulated_gimbal_shadows.get_mut(&engine) {
+                shadow.seed = seed;
+                shadow.last_derivative = Some(derivative);
+            }
         }
         Ok(())
     }
@@ -2139,8 +2212,15 @@ struct RootFreeFlyerMultibodySeed {
 struct ArticulatedGimbalMultibodySeed {
     body: BodyId,
     engine: EngineId,
+    joint: MultiBodyGimbalJointConfig,
     tree: MultibodyTree,
     sim_state: MultibodySimState,
+}
+
+#[derive(Clone, Debug)]
+struct ArticulatedGimbalMultibodyShadow {
+    seed: ArticulatedGimbalMultibodySeed,
+    last_derivative: Option<MultibodyDerivative>,
 }
 
 #[derive(Debug)]
@@ -2250,7 +2330,7 @@ fn build_initial_articulated_gimbal_multibody_seeds(
 fn articulated_gimbal_multibody_seed_from_config(
     body: BodyId,
     engine: EngineId,
-    joint: &openbmp_scenario::MultiBodyGimbalJointConfig,
+    joint: &MultiBodyGimbalJointConfig,
     parent_state: &RigidBodyState,
 ) -> Result<ArticulatedGimbalMultibodySeed, RunnerError> {
     let root_inertia =
@@ -2349,11 +2429,65 @@ fn articulated_gimbal_multibody_seed_from_config(
         .map(|sim_state| ArticulatedGimbalMultibodySeed {
             body,
             engine,
+            joint: joint.clone(),
             tree,
             sim_state,
         })
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("articulated gimbal multibody state failed: {err}"),
+        })
+}
+
+fn articulated_gimbal_multibody_derivative_from_engine_thrust(
+    seed: &ArticulatedGimbalMultibodySeed,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+) -> Result<MultibodyDerivative, RunnerError> {
+    if seed.tree.bodies().len() != 2 {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "articulated gimbal tree for engine {} has {} bodies (expected 2)",
+                seed.engine.value(),
+                seed.tree.bodies().len()
+            ),
+        });
+    }
+    let snapshot =
+        engine_snapshot
+            .get(&seed.engine)
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: format!(
+                    "articulated gimbal engine {} snapshot is missing",
+                    seed.engine.value()
+                ),
+            })?;
+    let child_transform = seed
+        .tree
+        .body_transform_parent_to_child_at_state(
+            openbmp_multibody::BodyIndex::new(1),
+            seed.sim_state.state(),
+        )
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("articulated gimbal child transform failed: {err}"),
+        })?;
+    let thrust_child_n = child_transform.rot_child_from_parent() * snapshot.thrust_body;
+    let thrust_application_child_m = Vector3::new(
+        seed.joint.thrust_application_body_m[0],
+        seed.joint.thrust_application_body_m[1],
+        seed.joint.thrust_application_body_m[2],
+    );
+    let thrust_moment_child_n_m = thrust_application_child_m.cross(&thrust_child_n);
+    let mut external_forces_body = vec![SpatialForce::zero(); seed.tree.bodies().len()];
+    external_forces_body[1] = SpatialForce::new(thrust_moment_child_n_m, thrust_child_n);
+    let generalized_forces = vec![0.0; seed.tree.n_qd()];
+    seed.tree
+        .derivative_from_forward_dynamics(
+            seed.sim_state.state(),
+            &generalized_forces,
+            SpatialMotion::zero(),
+            &external_forces_body,
+        )
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("articulated gimbal thrust derivative failed: {err}"),
         })
 }
 
@@ -5187,6 +5321,71 @@ mod tests {
         let resolved_files = scenario.resolved_files().expect("resolved files");
         RigidBodySession::prepare(&scenario, &resolved_files)
             .expect("session prepare validates articulated gimbal seed");
+    }
+
+    #[test]
+    fn articulated_gimbal_shadow_derivative_uses_live_engine_thrust() {
+        let toml = PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO.replace(
+            "[[multi_body.attitude_target]]\n",
+            "[[multi_body.gimbal_joint]]\n\
+             body_id = \"main\"\n\
+             engine_id = \"main_engine\"\n\
+             axis_body = [0.0, 1.0, 0.0]\n\
+             pivot_body_m = [0.0, 1.0, 0.0]\n\
+             engine_mass_kg = 1.5\n\
+             engine_cg_body_m = [0.2, 0.0, -0.4]\n\
+             engine_inertia_body_kg_m2 = [[0.08, 0.0, 0.0], [0.0, 0.12, 0.0], [0.0, 0.0, 0.1]]\n\
+             thrust_application_body_m = [0.2, 0.0, 0.0]\n\
+             initial_angle_rad = 0.0\n\
+             initial_rate_rad_s = 0.0\n\
+             \n\
+             [[multi_body.attitude_target]]\n",
+        );
+        let scenario = openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario parses");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step fires engine command");
+        session
+            .step_once(&scenario.document, None)
+            .expect("second step mirrors articulated gimbal thrust");
+
+        let engine = engine_id_from_scenario_text("main_engine");
+        let powered_snapshot = session
+            .engine_snapshots()
+            .get(&engine)
+            .copied()
+            .expect("engine snapshot present");
+        assert!(
+            powered_snapshot.thrust_body.norm() > 1.0,
+            "scenario command should produce powered thrust: {:?}",
+            powered_snapshot.thrust_body
+        );
+        let shadow = session
+            .articulated_gimbal_shadows
+            .get(&engine)
+            .expect("articulated gimbal shadow present");
+        let derivative = shadow
+            .last_derivative
+            .as_ref()
+            .expect("articulated gimbal derivative recorded");
+        assert_eq!(derivative.qd_dot().len(), 7);
+        let root_accel = (0..6)
+            .map(|index| derivative.qd_dot()[index].abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            root_accel > 1.0e-6,
+            "engine thrust should drive root acceleration through articulated child: {:?}",
+            derivative.qd_dot()
+        );
+        assert!(
+            derivative.qd_dot()[6].abs() > 1.0e-6,
+            "offset thrust should drive revolute gimbal acceleration: {:?}",
+            derivative.qd_dot()
+        );
     }
 
     #[test]

@@ -14161,6 +14161,9 @@ pub struct MultiBodyGimbalJointConfig {
     pub engine_cg_body_m: [f64; 3],
     /// Engine-body inertia tensor about the gimbal frame.
     pub engine_inertia_body_kg_m2: [[f64; 3]; 3],
+    /// Engine-body point where thrust is applied, relative to the gimbal frame.
+    #[serde(default = "zero_vec3_meters")]
+    pub thrust_application_body_m: [f64; 3],
     /// Initial revolute coordinate.
     #[serde(default)]
     pub initial_angle_rad: f64,
@@ -14182,6 +14185,10 @@ impl MultiBodyGimbalJointConfig {
         validate_inertia_tensor(
             &path("engine_inertia_body_kg_m2"),
             &self.engine_inertia_body_kg_m2,
+        )?;
+        require_finite_array(
+            &path("thrust_application_body_m"),
+            &self.thrust_application_body_m,
         )?;
         require_finite(&path("initial_angle_rad"), self.initial_angle_rad)?;
         require_finite(&path("initial_rate_rad_s"), self.initial_rate_rad_s)?;

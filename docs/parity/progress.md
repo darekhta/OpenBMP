@@ -210,14 +210,18 @@ cross-checks ABA, dense forward dynamics, and biased RNEA
 now validate owned engine/body references plus declared engine inertial
 properties, and the rigid runner materializes each declaration into a root
 free-flyer plus revolute-engine multibody tree during session preparation
-(`REQ-MULTIBODY-032`). Missing for full WP-01.1:
+(`REQ-MULTIBODY-032`). The session-stepped rigid runner now also refreshes a
+non-authoritative articulated shadow for each declared gimbal from live parent
+mass properties and engine thrust snapshots, applying thrust at
+`thrust_application_body_m` through ABA and proving powered root/gimbal
+acceleration (`REQ-MULTIBODY-033`). Missing for full WP-01.1:
 replacing the rigid-kernel propagation path, broader variable-mass multibody
 propagation beyond the primary-root and powered separated-lane shadow forecasts,
 full momentum-conserving welded-to-free joint-release propagation and full
 separated-body multibody propagation beyond first-post-release separated shadow
 forecasts and the substrate handoff, full orbital-ascent gimballed validation,
-runtime thrust/joint actuation through articulated gimbal joints, and Spatial_v2
-oracle checks.
+authoritative commanded joint-state handoff through articulated gimbal joints,
+and Spatial_v2 oracle checks.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO

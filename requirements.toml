@@ -189,8 +189,14 @@ verification = ["V-MULTIBODY-031"]
 [[requirements]]
 id = "REQ-MULTIBODY-032"
 title = "The runner materializes scenario-declared articulated gimbal joints"
-statement = "Schema-v3 [multi_body] scenarios can declare [[multi_body.gimbal_joint]] entries that bind an owned liquid-engine id to its parent assembly body, a finite nonzero revolute axis, a parent-frame pivot, declared engine inertial mass properties, and initial joint state. The scenario parser validates finite/positive mass-property fields, rejects unknown body or engine references, rejects duplicate engine gimbal declarations, and rejects engine/body ownership mismatches; the rigid runner materializes each declaration during session preparation as a root free-flyer plus revolute engine MultibodyTree seeded from live parent body mass resources and validates its state-dependent CRBA inertia matrix. This makes no claim that the articulated gimbal tree has replaced the current rigid-kernel propagation path, that thrust loads are applied through the revolute joint actuator, that WP-01.2 two-axis gimbal acceptance is complete, or that Spatial_v2 oracle validation is complete."
+statement = "Schema-v3 [multi_body] scenarios can declare [[multi_body.gimbal_joint]] entries that bind an owned liquid-engine id to its parent assembly body, a finite nonzero revolute axis, a parent-frame pivot, declared engine inertial mass properties, a finite child-frame thrust application point, and initial joint state. The scenario parser validates finite/positive mass-property fields, rejects unknown body or engine references, rejects duplicate engine gimbal declarations, and rejects engine/body ownership mismatches; the rigid runner materializes each declaration during session preparation as a root free-flyer plus revolute engine MultibodyTree seeded from live parent body mass resources and validates its state-dependent CRBA inertia matrix. This makes no claim that the articulated gimbal tree has replaced the current rigid-kernel propagation path, that commanded gimbal joint-state handoff is authoritative, that WP-01.2 two-axis gimbal acceptance is complete, or that Spatial_v2 oracle validation is complete."
 verification = ["V-MULTIBODY-032"]
+
+[[requirements]]
+id = "REQ-MULTIBODY-033"
+title = "Articulated gimbal shadows consume live engine thrust snapshots"
+statement = "For each scenario-declared [[multi_body.gimbal_joint]], the prepared rigid-body session keeps a non-authoritative articulated gimbal shadow, refreshes the parent root state from the current rigid state and parent-body mass resources before each rigid tick, maps the live EngineSnapshot::thrust_body vector into the revolute child frame, applies it as a child-body external spatial force and moment at the finite thrust_application_body_m point, and records the ABA derivative. The regression fires a real scenario_script engine_command through EngineRack and proves the powered engine snapshot drives both root acceleration and revolute gimbal-axis acceleration through the articulated tree. This makes no claim that the rigid kernel has been replaced by articulated propagation, that the joint coordinate is commanded by the flight-control gimbal command, that two-axis gimbals are accepted, or that Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-033"]
 
 [[requirements]]
 id = "REQ-SIL-001"
@@ -1486,6 +1492,28 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-032"]
+
+[[verification]]
+id = "V-MULTIBODY-033"
+kind = "test"
+command = "cargo test -p openbmp-runner articulated_gimbal_shadow_derivative_uses_live_engine_thrust --locked && cargo check -p openbmp-scenario -p openbmp-runner --locked && cargo clippy -p openbmp-scenario -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "thrust_application_body_m",
+  "ArticulatedGimbalMultibodyShadow",
+  "articulated_gimbal_multibody_derivative_from_engine_thrust",
+  "mirror_articulated_gimbal_steps",
+  "articulated_gimbal_shadow_derivative_uses_live_engine_thrust",
+  "REQ-MULTIBODY-033",
+  "authoritative commanded joint-state handoff",
+]
+requirements = ["REQ-MULTIBODY-033"]
 
 [[verification]]
 id = "V-SIL-001"

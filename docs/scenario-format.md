@@ -3129,6 +3129,7 @@ pivot_body_m               = [0.0, 0.0, -16.0]
 engine_mass_kg             = 115.0
 engine_cg_body_m           = [0.0, 0.0, -0.4]
 engine_inertia_body_kg_m2  = [[9.0, 0.0, 0.0], [0.0, 17.0, 0.0], [0.0, 0.0, 14.0]]
+thrust_application_body_m  = [0.2, 0.0, -0.4]
 initial_angle_rad          = 0.0
 initial_rate_rad_s         = 0.0
 ```
@@ -3138,11 +3139,15 @@ engine whose `vehicle.assembly.engines[*].mounted_to` owner is that body. The
 axis must be finite and non-zero; the pivot is expressed in the parent body
 frame; `engine_mass_kg`, `engine_cg_body_m`, and
 `engine_inertia_body_kg_m2` supply the inertial engine body because the
-existing thrust engine entry has no dry-mass contract. The runner materializes
-each declaration during rigid-body session preparation as a root free-flyer
-plus one revolute engine body and validates its CRBA inertia matrix. This is
-currently a non-authoritative multibody shadow: thrust still enters the
-existing rigid force/moment path until the WP-01.2 propagation handoff lands.
+existing thrust engine entry has no dry-mass contract.
+`thrust_application_body_m` is optional, defaults to the gimbal-frame origin,
+and gives the child-frame point where the runner applies the live
+`EngineSnapshot::thrust_body` vector when evaluating the articulated shadow.
+The runner materializes each declaration during rigid-body session preparation
+as a root free-flyer plus one revolute engine body, validates its CRBA inertia
+matrix, and refreshes a non-authoritative ABA derivative from the live engine
+snapshot before each rigid-body tick. The current rigid force/moment path
+remains authoritative until the WP-01.2 propagation handoff lands.
 
 ### v3-only `[fc]` sub-blocks
 

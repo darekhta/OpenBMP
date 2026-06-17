@@ -238,13 +238,16 @@ evidence and an articulated gimbal regression that proves a revolute inertial
 engine couples into the free-flyer root inertia and reaction acceleration. The
 scenario parser and rigid runner now also accept `[[multi_body.gimbal_joint]]`
 entries, validate engine/body ownership plus declared engine mass properties,
-and materialize a root free-flyer plus revolute engine tree during session
-preparation. Authoritative propagation is still the rigid kernel. Replacing
-the rigid propagation path, broader variable-mass multibody propagation beyond
-the one-body root forecast, full separated-lane multibody propagation beyond
-the one-step separated shadow forecast, runtime thrust/joint actuation through
-articulated gimbal joints, full orbital-ascent gimballed validation, and
-external Spatial_v2 oracle fixtures remain open.
+materialize a root free-flyer plus revolute engine tree during session
+preparation, and refresh a non-authoritative per-tick articulated shadow that
+applies live engine thrust at the declared child-frame application point through
+ABA. Authoritative propagation is still the rigid kernel. Replacing the rigid
+propagation path, broader variable-mass multibody propagation beyond the
+one-body root forecast, full separated-lane multibody propagation beyond the
+one-step separated shadow forecast, authoritative thrust propagation and
+commanded joint-state handoff through articulated gimbal joints, full
+orbital-ascent gimballed validation, and external Spatial_v2 oracle fixtures
+remain open.
 
 ---
 
@@ -852,15 +855,20 @@ justification first, reviewed before the implementation lands.
   engine, finite nonzero revolute axis, pivot, declared engine inertia, and
   initial joint state, and the rigid runner materializes each declaration into
   the same root free-flyer plus revolute-engine tree during session preparation
-  (`REQ-MULTIBODY-032`).
+  (`REQ-MULTIBODY-032`). The prepared rigid-body session now also keeps a
+  shadow for each declared gimbal, refreshes it from current parent-body mass
+  properties before each rigid tick, maps the live engine thrust snapshot into
+  the revolute child frame, applies it at `thrust_application_body_m`, and
+  records the ABA derivative with powered root and gimbal-axis acceleration
+  (`REQ-MULTIBODY-033`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   broader variable-mass multibody propagation beyond the primary-root and
   powered separated-lane shadow forecasts, runner-side momentum-conserving
   welded-to-free joint-release propagation and full separated-body multibody
   propagation beyond the substrate handoff and first-post-release separated
   shadow forecasts, Spatial_v2 oracle fixtures, full orbital-ascent gimballed
-  validation, and runtime thrust/joint actuation through articulated gimbal
-  joints.
+  validation, and authoritative commanded joint-state handoff through
+  articulated gimbal joints.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics
