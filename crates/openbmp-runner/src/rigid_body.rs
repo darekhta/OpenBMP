@@ -103,6 +103,7 @@ const RIGID_BODY_DIRECT_TORQUE_MOMENT_MODEL_ID: ModelId = ModelId::new(500);
 const RIGID_BODY_MULTIBODY_SHADOW_MODEL_ID: ModelId = ModelId::new(520);
 const MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE: &str =
     "forces includes `aerothermal_diagnostics` but [aerothermal] block is missing";
+const ARTICULATED_GIMBAL_THRUST_DIRECTION_EPS: f64 = 1.0e-12;
 
 /// Run a rigid-body scenario through a freshly-built kernel
 /// and return the populated telemetry table.
@@ -1114,11 +1115,19 @@ impl RigidBodySession {
                 current_state.angular_velocity,
                 mass_properties,
             );
-            let seed = articulated_gimbal_multibody_seed_from_config(
+            let (joint_angle_rad, joint_rate_rad_s) =
+                articulated_gimbal_joint_state_from_engine_thrust(
+                    &shadow.seed,
+                    engine_snapshot,
+                    self.kernel_step_s,
+                )?;
+            let seed = articulated_gimbal_multibody_seed_from_config_with_joint_state(
                 body,
                 shadow.seed.engine,
                 &shadow.seed.joint,
                 &parent_state,
+                joint_angle_rad,
+                joint_rate_rad_s,
             )?;
             let derivative =
                 articulated_gimbal_multibody_derivative_from_engine_thrust(&seed, engine_snapshot)?;
@@ -2333,6 +2342,24 @@ fn articulated_gimbal_multibody_seed_from_config(
     joint: &MultiBodyGimbalJointConfig,
     parent_state: &RigidBodyState,
 ) -> Result<ArticulatedGimbalMultibodySeed, RunnerError> {
+    articulated_gimbal_multibody_seed_from_config_with_joint_state(
+        body,
+        engine,
+        joint,
+        parent_state,
+        joint.initial_angle_rad,
+        joint.initial_rate_rad_s,
+    )
+}
+
+fn articulated_gimbal_multibody_seed_from_config_with_joint_state(
+    body: BodyId,
+    engine: EngineId,
+    joint: &MultiBodyGimbalJointConfig,
+    parent_state: &RigidBodyState,
+    joint_angle_rad: f64,
+    joint_rate_rad_s: f64,
+) -> Result<ArticulatedGimbalMultibodySeed, RunnerError> {
     let root_inertia =
         SpatialInertia::from_mass_properties(&parent_state.mass_props).map_err(|err| {
             RunnerError::UnsupportedScenario {
@@ -2414,7 +2441,7 @@ fn articulated_gimbal_multibody_seed_from_config(
         parent_state.position.vector.x,
         parent_state.position.vector.y,
         parent_state.position.vector.z,
-        joint.initial_angle_rad,
+        joint_angle_rad,
     ];
     let qd = vec![
         parent_state.angular_velocity.vector.x,
@@ -2423,7 +2450,7 @@ fn articulated_gimbal_multibody_seed_from_config(
         linear_velocity_body.x,
         linear_velocity_body.y,
         linear_velocity_body.z,
-        joint.initial_rate_rad_s,
+        joint_rate_rad_s,
     ];
     tree.sim_state_from_state(MultibodyState::new(parent_state.time, q, qd))
         .map(|sim_state| ArticulatedGimbalMultibodySeed {
@@ -2489,6 +2516,75 @@ fn articulated_gimbal_multibody_derivative_from_engine_thrust(
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("articulated gimbal thrust derivative failed: {err}"),
         })
+}
+
+fn articulated_gimbal_joint_state_from_engine_thrust(
+    seed: &ArticulatedGimbalMultibodySeed,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    dt_s: f64,
+) -> Result<(f64, f64), RunnerError> {
+    let previous_angle = seed.sim_state.q()[7];
+    let snapshot =
+        engine_snapshot
+            .get(&seed.engine)
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: format!(
+                    "articulated gimbal engine {} snapshot is missing",
+                    seed.engine.value()
+                ),
+            })?;
+    let thrust_norm = snapshot.thrust_body.norm();
+    if thrust_norm <= ARTICULATED_GIMBAL_THRUST_DIRECTION_EPS {
+        return Ok((previous_angle, 0.0));
+    }
+    if !dt_s.is_finite() || dt_s <= 0.0 {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "articulated gimbal joint-state handoff requires positive finite dt".to_owned(),
+        });
+    }
+    let axis = normalized_vec3(
+        seed.joint.axis_body,
+        "articulated gimbal axis_body is invalid",
+    )?;
+    let neutral = normalized_vec3(
+        seed.joint.neutral_thrust_body,
+        "articulated gimbal neutral_thrust_body is invalid",
+    )?;
+    let thrust_parent = snapshot.thrust_body / thrust_norm;
+    let neutral_perp = vector_reject_axis(neutral, axis);
+    let thrust_perp = vector_reject_axis(thrust_parent, axis);
+    let neutral_perp_norm = neutral_perp.norm();
+    let thrust_perp_norm = thrust_perp.norm();
+    if neutral_perp_norm <= ARTICULATED_GIMBAL_THRUST_DIRECTION_EPS {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "articulated gimbal neutral_thrust_body is parallel to axis_body".to_owned(),
+        });
+    }
+    if thrust_perp_norm <= ARTICULATED_GIMBAL_THRUST_DIRECTION_EPS {
+        return Ok((previous_angle, 0.0));
+    }
+    let neutral_perp = neutral_perp / neutral_perp_norm;
+    let thrust_perp = thrust_perp / thrust_perp_norm;
+    let sin_angle = axis.dot(&thrust_perp.cross(&neutral_perp));
+    let cos_angle = thrust_perp.dot(&neutral_perp);
+    let angle = sin_angle.atan2(cos_angle);
+    let rate = (angle - previous_angle) / dt_s;
+    Ok((angle, rate))
+}
+
+fn normalized_vec3(value: [f64; 3], reason: &'static str) -> Result<Vector3<f64>, RunnerError> {
+    let vector = Vector3::new(value[0], value[1], value[2]);
+    let norm = vector.norm();
+    if !norm.is_finite() || norm <= ARTICULATED_GIMBAL_THRUST_DIRECTION_EPS {
+        return Err(RunnerError::UnsupportedScenario {
+            what: reason.to_owned(),
+        });
+    }
+    Ok(vector / norm)
+}
+
+fn vector_reject_axis(vector: Vector3<f64>, axis: Vector3<f64>) -> Vector3<f64> {
+    vector - axis * vector.dot(&axis)
 }
 
 fn root_free_flyer_multibody_seed_from_rigid_state(
@@ -5368,6 +5464,16 @@ mod tests {
             .articulated_gimbal_shadows
             .get(&engine)
             .expect("articulated gimbal shadow present");
+        assert!(
+            (shadow.seed.sim_state.q()[7] + 0.1).abs() < 1.0e-12,
+            "positive propulsion pitch should map to child-from-parent gimbal angle: {:?}",
+            shadow.seed.sim_state.q()
+        );
+        assert!(
+            (shadow.seed.sim_state.qd()[6] + 1.0).abs() < 1.0e-12,
+            "gimbal joint rate should finite-difference the live handoff: {:?}",
+            shadow.seed.sim_state.qd()
+        );
         let derivative = shadow
             .last_derivative
             .as_ref()

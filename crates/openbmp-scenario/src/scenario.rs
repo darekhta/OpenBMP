@@ -5221,6 +5221,9 @@ initial_rate_rad_s         = -0.02
         assert_eq!(joint.axis_body[0].to_bits(), 0.0_f64.to_bits());
         assert_eq!(joint.axis_body[1].to_bits(), 1.0_f64.to_bits());
         assert_eq!(joint.axis_body[2].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(joint.neutral_thrust_body[0].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(joint.neutral_thrust_body[1].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(joint.neutral_thrust_body[2].to_bits(), 1.0_f64.to_bits());
     }
 
     #[test]
@@ -5263,6 +5266,48 @@ engine_inertia_body_kg_m2  = [[0.02, 0.0, 0.0], [0.0, 0.03, 0.0], [0.0, 0.0, 0.0
                     && field_b == "vehicle.assembly.engines.upper-gimbal.mounted_to"
                     && value_b == "upper"),
             "expected gimbal joint engine/body mismatch, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_multi_body_gimbal_joint_neutral_thrust_parallel_to_axis() {
+        let toml = VALID_STAGE_SEPARATION_SCENARIO
+            .replace(r#"models = ["gravity"]"#, r#"models = ["gravity", "thrust"]"#)
+            .replace(
+                "\n[environment]\n",
+                r#"
+[[vehicle.assembly.engines]]
+id                 = "lower-gimbal"
+mounted_to         = "lower"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, -0.5]
+limits             = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.2 }
+
+[environment]
+"#,
+            )
+            .replace(
+                "\n[[multi_body.separation]]\n",
+                r#"
+[[multi_body.gimbal_joint]]
+body_id                    = "lower"
+engine_id                  = "lower-gimbal"
+axis_body                  = [0.0, 1.0, 0.0]
+pivot_body_m               = [0.0, 0.0, -0.5]
+engine_mass_kg             = 0.2
+engine_cg_body_m           = [0.0, 0.0, -0.1]
+engine_inertia_body_kg_m2  = [[0.02, 0.0, 0.0], [0.0, 0.03, 0.0], [0.0, 0.0, 0.025]]
+neutral_thrust_body        = [0.0, 2.0, 0.0]
+
+[[multi_body.separation]]
+"#,
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, rule, .. }
+                if field == "multi_body.gimbal_joint[0].axis_body_cross_neutral_thrust_body"
+                    && rule == "must have non-zero norm"),
+            "expected neutral thrust/axis validation, got {err:?}",
         );
     }
 

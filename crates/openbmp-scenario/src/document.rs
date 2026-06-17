@@ -9836,6 +9836,10 @@ const fn zero_vec3_meters() -> [f64; 3] {
     [0.0, 0.0, 0.0]
 }
 
+const fn positive_z_vec3() -> [f64; 3] {
+    [0.0, 0.0, 1.0]
+}
+
 impl AssemblyBodyConfig {
     fn validate(&self, index: usize, rigid_body: bool) -> Result<(), ScenarioError> {
         require_non_empty(&format!("vehicle.assembly.bodies[{index}].id"), &self.id)?;
@@ -14164,6 +14168,9 @@ pub struct MultiBodyGimbalJointConfig {
     /// Engine-body point where thrust is applied, relative to the gimbal frame.
     #[serde(default = "zero_vec3_meters")]
     pub thrust_application_body_m: [f64; 3],
+    /// Child-frame neutral thrust direction used to derive live joint angle.
+    #[serde(default = "positive_z_vec3")]
+    pub neutral_thrust_body: [f64; 3],
     /// Initial revolute coordinate.
     #[serde(default)]
     pub initial_angle_rad: f64,
@@ -14190,6 +14197,17 @@ impl MultiBodyGimbalJointConfig {
             &path("thrust_application_body_m"),
             &self.thrust_application_body_m,
         )?;
+        require_finite_array(&path("neutral_thrust_body"), &self.neutral_thrust_body)?;
+        require_nonzero_vector(&path("neutral_thrust_body"), &self.neutral_thrust_body)?;
+        let cross = [
+            self.axis_body[1] * self.neutral_thrust_body[2]
+                - self.axis_body[2] * self.neutral_thrust_body[1],
+            self.axis_body[2] * self.neutral_thrust_body[0]
+                - self.axis_body[0] * self.neutral_thrust_body[2],
+            self.axis_body[0] * self.neutral_thrust_body[1]
+                - self.axis_body[1] * self.neutral_thrust_body[0],
+        ];
+        require_nonzero_vector(&path("axis_body_cross_neutral_thrust_body"), &cross)?;
         require_finite(&path("initial_angle_rad"), self.initial_angle_rad)?;
         require_finite(&path("initial_rate_rad_s"), self.initial_rate_rad_s)?;
         Ok(())

@@ -3130,6 +3130,7 @@ engine_mass_kg             = 115.0
 engine_cg_body_m           = [0.0, 0.0, -0.4]
 engine_inertia_body_kg_m2  = [[9.0, 0.0, 0.0], [0.0, 17.0, 0.0], [0.0, 0.0, 14.0]]
 thrust_application_body_m  = [0.2, 0.0, -0.4]
+neutral_thrust_body        = [0.0, 0.0, 1.0]
 initial_angle_rad          = 0.0
 initial_rate_rad_s         = 0.0
 ```
@@ -3143,6 +3144,12 @@ existing thrust engine entry has no dry-mass contract.
 `thrust_application_body_m` is optional, defaults to the gimbal-frame origin,
 and gives the child-frame point where the runner applies the live
 `EngineSnapshot::thrust_body` vector when evaluating the articulated shadow.
+`neutral_thrust_body` is optional, defaults to child-frame `+z`, must be
+finite, non-zero, and not parallel to `axis_body`, and is used to derive the
+one-axis revolute coordinate from a nonzero live thrust vector. The stored
+coordinate follows the multibody child-from-parent sign convention, so it may
+have the opposite sign of a propulsion pitch/yaw command depending on the
+chosen axis.
 The runner materializes each declaration during rigid-body session preparation
 as a root free-flyer plus one revolute engine body, validates its CRBA inertia
 matrix, and refreshes a non-authoritative ABA derivative from the live engine
