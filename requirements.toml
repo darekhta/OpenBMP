@@ -79,6 +79,12 @@ statement = "The openbmp-runner crate exposes a runner-side root-free-flyer deri
 verification = ["V-MULTIBODY-013"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-014"
+title = "The rigid runner exercises the primary multibody bridge from scenario setup"
+statement = "The openbmp-runner crate carries a scenario-level byte-equivalence regression that runs the existing rigid-body kernel with and without a disabled primary multi_body block, thereby exercising the root free-flyer seed and zero-load derivative validation path through real Scenario parsing and RigidBodySession preparation while proving that the current rigid-kernel telemetry remains byte-identical when the multibody controller is inactive. The runner test proves schema channel count and CSV telemetry byte equivalence for the disabled primary bridge path while making no claim that the rigid kernel has been replaced by a multibody kernel, that full environment/force adapter wiring is complete, or that Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-014"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -997,6 +1003,25 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-013"]
+
+[[verification]]
+id = "V-MULTIBODY-014"
+kind = "test"
+command = "cargo test -p openbmp-runner primary_multibody_bridge_scenario_is_byte_identical_when_disabled --locked && cargo test -p openbmp-runner root_free_flyer_multibody_derivative_bridge --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "primary_multibody_bridge_scenario_is_byte_identical_when_disabled",
+  "PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO",
+  "telemetry_csv_bytes(&multibody_outcome)",
+  "REQ-MULTIBODY-014",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-014"]
 
 [[verification]]
 id = "V-SIL-001"

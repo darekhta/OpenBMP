@@ -756,11 +756,15 @@ justification first, reviewed before the implementation lands.
   through the multibody root load adapter, validates the zero-load derivative
   path during primary `[multi_body]` setup, and proves runner-level no-joint
   identity-orientation equivalence against the current `RigidBodyDerivative`
-  force, moment, quaternion-rate, and acceleration equations.
+  force, moment, quaternion-rate, and acceleration equations. A scenario-level
+  byte-equivalence guard now parses and runs a disabled primary `[multi_body]`
+  configuration through the real runner setup path and proves the current
+  `RigidBodyState` telemetry CSV remains byte-identical while the root
+  free-flyer bridge is exercised.
   Remaining WP-01.1 work: full kernel/runner force adapter wiring,
-  runner-level scenario byte-equivalence against the current `RigidBodyState`
-  kernel, simulator/environment force wiring, double-pendulum tolerance table,
-  Spatial_v2 oracle fixtures, and scenario exercise.
+  simulator/environment force wiring, double-pendulum tolerance table,
+  Spatial_v2 oracle fixtures, and a live multibody force-adapter scenario
+  exercise.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

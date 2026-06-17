@@ -131,11 +131,13 @@ linear-velocity q/qd mapping with fail-closed mass-property validation
 moments and ECI-frame forces through the multibody load adapter, validates the
 zero-load derivative path during primary `[multi_body]` setup, and proves
 runner-level no-joint identity-orientation equivalence against the current
-`RigidBodyDerivative` equations (`REQ-MULTIBODY-013`). Missing for full
-WP-01.1: full kernel/runner force adapter wiring, runner-level scenario
-byte-equivalence against the current kernel, simulator/environment force
-wiring, gimballed ascent exercise, and Spatial_v2 oracle checks. WP-01.2 …
-WP-01.6: **not started**.
+`RigidBodyDerivative` equations (`REQ-MULTIBODY-013`). A scenario-level
+byte-equivalence guard now parses and runs a disabled primary `[multi_body]`
+configuration through the real runner setup path, proving the current rigid
+kernel telemetry stays byte-identical while the root free-flyer bridge is
+exercised (`REQ-MULTIBODY-014`). Missing for full WP-01.1: full kernel/runner
+force adapter wiring, simulator/environment force wiring, gimballed ascent
+exercise, and Spatial_v2 oracle checks. WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO
 

@@ -4224,6 +4224,107 @@ mod tests {
         }
     }
 
+    #[test]
+    fn primary_multibody_bridge_scenario_is_byte_identical_when_disabled() {
+        let baseline =
+            openbmp_scenario::Scenario::from_toml_str(PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO)
+                .expect("baseline scenario must parse");
+        let multibody_toml = PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO.replace(
+            "[telemetry]\n",
+            "[multi_body]\n\
+             primary_body_id = \"main\"\n\
+             \n\
+             [[multi_body.attitude_target]]\n\
+             body_id = \"main\"\n\
+             start_time_s = 1.0\n\
+             pitch_effector = \"main-pitch-torque\"\n\
+             kp = 1.0\n\
+             kd = 0.0\n\
+             max_command = 1.0\n\
+             target = { kind = \"eci_vector\", vector_eci = [0.0, 0.0, 1.0] }\n\
+             \n\
+             [telemetry]\n",
+        );
+        let multibody = openbmp_scenario::Scenario::from_toml_str(&multibody_toml)
+            .expect("primary multibody bridge scenario must parse");
+
+        let baseline_outcome = crate::run(&baseline).expect("baseline scenario must run");
+        let multibody_outcome =
+            crate::run(&multibody).expect("primary multibody bridge scenario must run");
+
+        assert_eq!(
+            baseline_outcome.table.schema().channels().len(),
+            multibody_outcome.table.schema().channels().len()
+        );
+        assert_eq!(
+            telemetry_csv_bytes(&multibody_outcome),
+            telemetry_csv_bytes(&baseline_outcome),
+            "disabled primary multi_body setup must not perturb rigid-kernel telemetry"
+        );
+    }
+
+    const PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "primary-multibody-bridge-byte-equivalence-test"
+description = "Synthetic rigid-body run used to prove disabled primary multibody setup is non-perturbing."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.2
+dt_s = 0.1
+seed = 43
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 10.0]
+initial_velocity_eci_m_s = [1.0, 2.0, 3.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "primary-multibody-bridge-byte-equivalence-test"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 2.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]]
+
+[[vehicle.assembly.effectors]]
+id = "main-pitch-torque"
+mounted_to = "main"
+kind = { kind = "direct_torque", axis = "pitch", effectiveness_n_m_per_rad = 10.0 }
+limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[telemetry]
+output.csv = "out/primary-multibody-bridge-byte-equivalence-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     const LIVE_ENTRY_SCENARIO: &str = r#"
 openbmp.scenario = 3
 
