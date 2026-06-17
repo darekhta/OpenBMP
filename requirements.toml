@@ -261,7 +261,7 @@ verification = ["V-MULTIBODY-043"]
 [[requirements]]
 id = "REQ-MULTIBODY-044"
 title = "The rigid runner can install welded-release jettison states"
-statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"welded_release_jettison\" as an explicit guarded mode that requires primary_body_id and a separation declaration, rejects initial lanes and articulated gimbal joints, and routes jettison_stage plus batch jettison_bodies events through runner-side configured welded upper/lower multibody pairs. Separations may declare lower_weld_translation_upper_body_m and lower_weld_quaternion_upper_to_lower_xyzw; the parser validates finite translation and unit orientation. In that mode, the runner computes each departing lower-body free-flyer state with release_welded_subtree_as_free_flyer, projects same-time continuing and departing rigid states from the pre-install event state, applies configured welded geometry, separation delta-v, angular-rate tip-off, lower attitude offset, and mass-property COM-offset semantics, and installs them through jettison_rigid_body_with_states. The regressions prove successful single and batch release-state installation plus configured welded-transform and impulse/tip-off/attitude-offset application. This makes no claim that arbitrary subtree release or full rigid-kernel removal is complete."
+statement = "Schema-v3 [multi_body] scenarios accept propagation_authority = \"welded_release_jettison\" as an explicit guarded mode that requires primary_body_id and a separation declaration, rejects initial lanes and articulated gimbal joints, and routes jettison_stage plus batch jettison_bodies events through runner-side configured welded upper/lower multibody pairs. Separations may declare lower_weld_translation_upper_body_m and lower_weld_quaternion_upper_to_lower_xyzw, and [[multi_body.welded_body]] entries may declare dry welded descendants under a departing lower body; the parser validates finite translations, unit orientations, real body references, unique child parents, acyclic welded topology, and subtree ancestry. In that mode, the runner computes each departing lower-body free-flyer state with release_welded_subtree_as_free_flyer, projects same-time continuing and departing rigid states from the pre-install event state, applies configured welded geometry, dry descendant mass aggregation, separation delta-v, angular-rate tip-off, lower attitude offset, and mass-property COM-offset semantics, and installs them through jettison_rigid_body_with_states. The regressions prove successful single and batch release-state installation plus configured welded-transform, dry welded-subtree release, and impulse/tip-off/attitude-offset application. This makes no claim that dynamic/resource-owning subtree release or full rigid-kernel removal is complete."
 verification = ["V-MULTIBODY-044"]
 
 [[requirements]]
@@ -1826,12 +1826,16 @@ contains = [
   "welded_release_jettison",
   "lower_weld_translation_upper_body_m",
   "lower_weld_quaternion_upper_to_lower_xyzw",
+  "MultiBodyWeldedBodyConfig",
+  "welded_body",
   "build_runtime_welded_release_separation_states",
+  "aggregate_welded_subtree_mass_properties",
   "release_welded_subtree_as_free_flyer",
   "jettison_rigid_body_with_states",
   "apply_welded_release_impulses",
   "welded_release_jettison_authority_installs_release_states",
   "welded_release_jettison_authority_applies_weld_transform",
+  "welded_release_jettison_authority_releases_dry_subtree",
   "welded_release_jettison_authority_installs_batch_release_states",
   "welded_release_jettison_authority_applies_impulses_and_attitude_offset",
   "accepts_welded_release_jettison_propagation_authority",

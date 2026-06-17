@@ -2090,7 +2090,7 @@ impl<M: Motor> openbmp_sim::RigidMassModel for RigidMassResourceModel<M> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 struct RigidBodySeparationSpec {
     stack_body: BodyId,
     body: BodyId,
@@ -2101,6 +2101,28 @@ struct RigidBodySeparationSpec {
     stage_attitude_offset_body_xyzw: [f64; 4],
     stage_weld_translation_stack_body_m: [f64; 3],
     stage_weld_quaternion_stack_to_stage_xyzw: [f64; 4],
+    subtree_welded_bodies: Vec<RigidBodyWeldedBodySpec>,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct RigidBodyWeldedBodySpec {
+    parent_body: BodyId,
+    body: BodyId,
+    child_weld_translation_parent_body_m: [f64; 3],
+    child_weld_quaternion_parent_to_child_xyzw: [f64; 4],
+}
+
+impl RigidBodySeparationSpec {
+    fn departing_body_ids(&self) -> Vec<BodyId> {
+        let mut bodies = Vec::with_capacity(self.subtree_welded_bodies.len() + 1);
+        bodies.push(self.body);
+        bodies.extend(
+            self.subtree_welded_bodies
+                .iter()
+                .map(|welded_body| welded_body.body),
+        );
+        bodies
+    }
 }
 
 fn build_rigid_body_separations(
@@ -2112,6 +2134,34 @@ fn build_rigid_body_separations(
     };
 
     let mut specs = BTreeMap::new();
+    let mut welded_children: BTreeMap<BodyId, Vec<RigidBodyWeldedBodySpec>> = BTreeMap::new();
+    for welded_body in &multi_body.welded_bodies {
+        let parent_body = body_id_from_scenario_text(&welded_body.parent_body_id);
+        let child_body = body_id_from_scenario_text(&welded_body.child_body_id);
+        if !mass_resources.dry_bodies.contains_key(&parent_body) {
+            return Err(RunnerError::Assembly {
+                field: "multi_body.welded_body.parent_body_id".to_owned(),
+                reason: format!("body `{}` was not resolved", welded_body.parent_body_id),
+            });
+        }
+        if !mass_resources.dry_bodies.contains_key(&child_body) {
+            return Err(RunnerError::Assembly {
+                field: "multi_body.welded_body.child_body_id".to_owned(),
+                reason: format!("body `{}` was not resolved", welded_body.child_body_id),
+            });
+        }
+        welded_children
+            .entry(parent_body)
+            .or_default()
+            .push(RigidBodyWeldedBodySpec {
+                parent_body,
+                body: child_body,
+                child_weld_translation_parent_body_m: welded_body
+                    .child_weld_translation_parent_body_m,
+                child_weld_quaternion_parent_to_child_xyzw: welded_body
+                    .child_weld_quaternion_parent_to_child_xyzw,
+            });
+    }
     for separation in &multi_body.separations {
         let upper_body = BodyId::from_path(&format!(
             "vehicle.assembly.bodies.{id}",
@@ -2139,6 +2189,8 @@ fn build_rigid_body_separations(
                 reason: format!("body `{}` was not resolved", separation.lower_body_id),
             });
         }
+        let subtree_welded_bodies =
+            collect_welded_subtree_specs(document, lower_body, &welded_children)?;
         let previous = specs.insert(
             lower_body,
             RigidBodySeparationSpec {
@@ -2165,6 +2217,7 @@ fn build_rigid_body_separations(
                 stage_weld_quaternion_stack_to_stage_xyzw: separation
                     .lower_weld_quaternion_upper_to_lower_xyzw
                     .unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                subtree_welded_bodies,
             },
         );
         if previous.is_some() {
@@ -2178,6 +2231,108 @@ fn build_rigid_body_separations(
         }
     }
     Ok(specs)
+}
+
+fn collect_welded_subtree_specs(
+    document: &ScenarioDocument,
+    root_body: BodyId,
+    welded_children: &BTreeMap<BodyId, Vec<RigidBodyWeldedBodySpec>>,
+) -> Result<Vec<RigidBodyWeldedBodySpec>, RunnerError> {
+    let mut specs = Vec::new();
+    collect_welded_subtree_specs_from_parent(document, root_body, welded_children, &mut specs)?;
+    Ok(specs)
+}
+
+fn collect_welded_subtree_specs_from_parent(
+    document: &ScenarioDocument,
+    parent_body: BodyId,
+    welded_children: &BTreeMap<BodyId, Vec<RigidBodyWeldedBodySpec>>,
+    specs: &mut Vec<RigidBodyWeldedBodySpec>,
+) -> Result<(), RunnerError> {
+    let Some(children) = welded_children.get(&parent_body) else {
+        return Ok(());
+    };
+    for child in children {
+        if body_has_active_runtime_resources(document, child.body) {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "welded_release_jettison currently supports dry welded descendants only; \
+                     body {} owns runtime resources",
+                    child.body.value()
+                ),
+            });
+        }
+        specs.push(*child);
+        collect_welded_subtree_specs_from_parent(document, child.body, welded_children, specs)?;
+    }
+    Ok(())
+}
+
+fn body_has_active_runtime_resources(document: &ScenarioDocument, body: BodyId) -> bool {
+    let owner_matches = |owner: &str| body_id_from_scenario_text(owner) == body;
+    if document
+        .aero
+        .as_ref()
+        .and_then(|aero| aero.mounted_to.as_deref())
+        .is_some_and(owner_matches)
+    {
+        return true;
+    }
+    if document
+        .propulsion
+        .as_ref()
+        .and_then(|propulsion| propulsion.motor.as_ref())
+        .and_then(|motor| motor.mounted_to.as_deref())
+        .is_some_and(owner_matches)
+    {
+        return true;
+    }
+    if document
+        .vehicle
+        .assembly
+        .effectors
+        .iter()
+        .any(|effector| effector.mounted_to.as_deref().is_some_and(owner_matches))
+    {
+        return true;
+    }
+    if document
+        .vehicle
+        .assembly
+        .engines
+        .iter()
+        .any(|engine| engine.mounted_to.as_deref().is_some_and(owner_matches))
+    {
+        return true;
+    }
+    if document
+        .vehicle
+        .assembly
+        .tanks
+        .iter()
+        .any(|tank| owner_matches(&tank.mounted_to))
+    {
+        return true;
+    }
+    if document
+        .vehicle
+        .assembly
+        .recovery
+        .iter()
+        .any(|recovery| recovery.mounted_to.as_deref().is_some_and(owner_matches))
+    {
+        return true;
+    }
+    document
+        .vehicle
+        .landing_gear
+        .as_ref()
+        .is_some_and(|landing_gear| {
+            landing_gear
+                .legs
+                .iter()
+                .any(|leg| owner_matches(&leg.mounted_to))
+        })
 }
 
 /// Bodies (other than `stack_body`) still attached to the continuing stack,
@@ -2211,7 +2366,7 @@ where
     for event in fired {
         match &event.action {
             ScenarioScriptAction::JettisonStage { body } => {
-                let separation = separation_specs.get(body).copied().ok_or_else(|| {
+                let separation = separation_specs.get(body).cloned().ok_or_else(|| {
                     RunnerError::UnsupportedScenario {
                         what: format!(
                             "jettison_stage event {} fired for body id {} with no \
@@ -2221,10 +2376,12 @@ where
                         ),
                     }
                 })?;
-                // The departing body leaves the stack; the remaining
+                // The departing subtree leaves the stack; the remaining
                 // members (minus the lead stack body) ride along and their
                 // dry mass is folded into the continuing-stack mass.
-                stack_bodies.remove(body);
+                for departing in separation.departing_body_ids() {
+                    stack_bodies.remove(&departing);
+                }
                 let inert = continuing_inert_bodies(stack_bodies, separation.stack_body);
                 if use_welded_release_states {
                     let runtime = build_runtime_welded_release_separation_states(
@@ -2243,21 +2400,28 @@ where
                 if use_welded_release_states {
                     // Remove every departing body from the stack FIRST so the
                     // continuing-inert set reflects the post-batch membership.
-                    for body in bodies {
-                        stack_bodies.remove(body);
+                    let separations = bodies
+                        .iter()
+                        .map(|body| {
+                            separation_specs.get(body).cloned().ok_or_else(|| {
+                                RunnerError::UnsupportedScenario {
+                                    what: format!(
+                                        "jettison_bodies event {} fired for body id {} with no \
+                                             matching [multi_body] separation",
+                                        event.binding_id.value(),
+                                        body.value()
+                                    ),
+                                }
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    for separation in &separations {
+                        for departing in separation.departing_body_ids() {
+                            stack_bodies.remove(&departing);
+                        }
                     }
                     let mut batch = Vec::with_capacity(bodies.len());
-                    for body in bodies {
-                        let separation = separation_specs.get(body).copied().ok_or_else(|| {
-                            RunnerError::UnsupportedScenario {
-                                what: format!(
-                                    "jettison_bodies event {} fired for body id {} with no \
-                                         matching [multi_body] separation",
-                                    event.binding_id.value(),
-                                    body.value()
-                                ),
-                            }
-                        })?;
+                    for separation in separations {
                         let inert = continuing_inert_bodies(stack_bodies, separation.stack_body);
                         batch.push(build_runtime_welded_release_separation_states(
                             kernel, mass_model, separation, &inert,
@@ -2296,21 +2460,28 @@ where
                 } else {
                     // Remove every departing body from the stack FIRST so the
                     // continuing-inert set reflects the post-batch membership.
-                    for body in bodies {
-                        stack_bodies.remove(body);
+                    let separations = bodies
+                        .iter()
+                        .map(|body| {
+                            separation_specs.get(body).cloned().ok_or_else(|| {
+                                RunnerError::UnsupportedScenario {
+                                    what: format!(
+                                        "jettison_bodies event {} fired for body id {} with no \
+                                             matching [multi_body] separation",
+                                        event.binding_id.value(),
+                                        body.value()
+                                    ),
+                                }
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    for separation in &separations {
+                        for departing in separation.departing_body_ids() {
+                            stack_bodies.remove(&departing);
+                        }
                     }
                     let mut batch = Vec::with_capacity(bodies.len());
-                    for body in bodies {
-                        let separation = separation_specs.get(body).copied().ok_or_else(|| {
-                            RunnerError::UnsupportedScenario {
-                                what: format!(
-                                    "jettison_bodies event {} fired for body id {} with no \
-                                         matching [multi_body] separation",
-                                    event.binding_id.value(),
-                                    body.value()
-                                ),
-                            }
-                        })?;
+                    for separation in separations {
                         let inert = continuing_inert_bodies(stack_bodies, separation.stack_body);
                         batch.push(build_runtime_rigid_body_separation(
                             kernel, mass_model, separation, &inert,
@@ -2411,8 +2582,12 @@ where
     E: openbmp_sim::EnvironmentModel,
     SC: openbmp_sim::StopCondition<RigidBodyState>,
 {
-    let runtime =
-        build_runtime_rigid_body_separation(kernel, mass_model, separation, continuing_inert)?;
+    let runtime = build_runtime_rigid_body_separation(
+        kernel,
+        mass_model,
+        separation.clone(),
+        continuing_inert,
+    )?;
     let current = *kernel.current_state();
     let stack_inertia = SpatialInertia::from_mass_properties(&runtime.stack_mass_properties)
         .map_err(|err| RunnerError::UnsupportedScenario {
@@ -2422,30 +2597,16 @@ where
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("welded-release stage spatial inertia failed: {err}"),
         })?;
-    let stage_translation_stack_body_m = Vector3::new(
+    let stage_parent_to_body = welded_transform_from_arrays(
         separation.stage_weld_translation_stack_body_m[0],
         separation.stage_weld_translation_stack_body_m[1],
         separation.stage_weld_translation_stack_body_m[2],
-    );
-    let stage_quaternion_stack_to_stage =
-        nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-            separation.stage_weld_quaternion_stack_to_stage_xyzw[3],
-            separation.stage_weld_quaternion_stack_to_stage_xyzw[0],
-            separation.stage_weld_quaternion_stack_to_stage_xyzw[1],
-            separation.stage_weld_quaternion_stack_to_stage_xyzw[2],
-        ));
-    let rot_stage_from_stack = stage_quaternion_stack_to_stage
-        .to_rotation_matrix()
-        .matrix()
-        .clone_owned();
-    let rot_stack_from_stage = rot_stage_from_stack.transpose();
-    let stage_parent_to_body =
-        PluckerTransform::new(rot_stage_from_stack, stage_translation_stack_body_m).map_err(
-            |err| RunnerError::UnsupportedScenario {
-                what: format!("welded-release fixed transform failed: {err}"),
-            },
-        )?;
-    let tree = MultibodyTree::new(vec![
+        separation.stage_weld_quaternion_stack_to_stage_xyzw,
+        "welded-release fixed transform failed",
+    )?;
+    let stage_translation_stack_body_m = *stage_parent_to_body.translation_parent_m();
+    let rot_stack_from_stage = stage_parent_to_body.rot_child_from_parent().transpose();
+    let mut tree_specs = vec![
         TreeBodySpec {
             id: runtime.stack_body,
             parent: None,
@@ -2460,8 +2621,79 @@ where
             inertia: stage_inertia,
             parent_to_body: stage_parent_to_body,
         },
-    ])
-    .map_err(|err| RunnerError::UnsupportedScenario {
+    ];
+    let mut body_indices = BTreeMap::from([
+        (runtime.stack_body, openbmp_multibody::BodyIndex::new(0)),
+        (runtime.body, openbmp_multibody::BodyIndex::new(1)),
+    ]);
+    let mut root_transforms = BTreeMap::from([(runtime.body, PluckerTransform::identity())]);
+    let mut subtree_mass_components = Vec::new();
+    for welded_body in &separation.subtree_welded_bodies {
+        let parent_index = body_indices
+            .get(&welded_body.parent_body)
+            .copied()
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: format!(
+                    "welded-release descendant parent {} was not built before child {}",
+                    welded_body.parent_body.value(),
+                    welded_body.body.value()
+                ),
+            })?;
+        let parent_root_transform =
+            *root_transforms
+                .get(&welded_body.parent_body)
+                .ok_or_else(|| RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "welded-release descendant parent {} is not inside released subtree",
+                        welded_body.parent_body.value()
+                    ),
+                })?;
+        let parent_to_body = welded_transform_from_arrays(
+            welded_body.child_weld_translation_parent_body_m[0],
+            welded_body.child_weld_translation_parent_body_m[1],
+            welded_body.child_weld_translation_parent_body_m[2],
+            welded_body.child_weld_quaternion_parent_to_child_xyzw,
+            "welded-release descendant transform failed",
+        )?;
+        let root_to_body = parent_root_transform.then(&parent_to_body).map_err(|err| {
+            RunnerError::UnsupportedScenario {
+                what: format!("welded-release descendant transform chain failed: {err}"),
+            }
+        })?;
+        let dry_mass_properties = mass_model
+            .dry_body_properties(welded_body.body)
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: format!(
+                    "welded-release descendant body {} has no dry mass properties",
+                    welded_body.body.value()
+                ),
+            })?;
+        let inertia =
+            SpatialInertia::from_mass_properties(&dry_mass_properties).map_err(|err| {
+                RunnerError::UnsupportedScenario {
+                    what: format!("welded-release descendant spatial inertia failed: {err}"),
+                }
+            })?;
+        let body_index = openbmp_multibody::BodyIndex::new(tree_specs.len());
+        tree_specs.push(TreeBodySpec {
+            id: welded_body.body,
+            parent: Some(parent_index),
+            joint: Joint::Welded { released: false },
+            inertia,
+            parent_to_body,
+        });
+        body_indices.insert(welded_body.body, body_index);
+        root_transforms.insert(welded_body.body, root_to_body);
+        subtree_mass_components.push(WeldedSubtreeMassComponent {
+            root_to_body,
+            mass_properties: dry_mass_properties,
+        });
+    }
+    let stage_mass_properties = aggregate_welded_subtree_mass_properties(
+        runtime.stage_mass_properties,
+        &subtree_mass_components,
+    );
+    let tree = MultibodyTree::new(tree_specs).map_err(|err| RunnerError::UnsupportedScenario {
         what: format!("welded-release multibody tree failed: {err}"),
     })?;
     let orientation = current.orientation.q.into_inner();
@@ -2508,7 +2740,7 @@ where
     let stage_state = root_free_flyer_rigid_state_from_multibody_state(
         runtime.body,
         &released_sim_state,
-        runtime.stage_mass_properties,
+        stage_mass_properties,
     )?;
     let stack_state = RigidBodyState::new(
         current.time,
@@ -2533,7 +2765,7 @@ where
     let stage_state = apply_welded_release_impulses(
         &current,
         &stage_state,
-        runtime.stage_mass_properties,
+        stage_mass_properties,
         WeldedReleaseGeometry {
             body_origin_parent_m: stage_translation_stack_body_m,
             rot_parent_from_body: rot_stack_from_stage,
@@ -2548,6 +2780,88 @@ where
         stack_state,
         stage_state,
     })
+}
+
+struct WeldedSubtreeMassComponent {
+    root_to_body: PluckerTransform,
+    mass_properties: MassProperties,
+}
+
+fn welded_transform_from_arrays(
+    translation_x_m: f64,
+    translation_y_m: f64,
+    translation_z_m: f64,
+    quaternion_parent_to_child_xyzw: [f64; 4],
+    context: &str,
+) -> Result<PluckerTransform, RunnerError> {
+    let quaternion_parent_to_child =
+        nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            quaternion_parent_to_child_xyzw[3],
+            quaternion_parent_to_child_xyzw[0],
+            quaternion_parent_to_child_xyzw[1],
+            quaternion_parent_to_child_xyzw[2],
+        ));
+    let rot_child_from_parent = quaternion_parent_to_child
+        .to_rotation_matrix()
+        .matrix()
+        .clone_owned();
+    PluckerTransform::new(
+        rot_child_from_parent,
+        Vector3::new(translation_x_m, translation_y_m, translation_z_m),
+    )
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("{context}: {err}"),
+    })
+}
+
+fn aggregate_welded_subtree_mass_properties(
+    root: MassProperties,
+    descendants: &[WeldedSubtreeMassComponent],
+) -> MassProperties {
+    if descendants.is_empty() {
+        return root;
+    }
+    let mut components = Vec::with_capacity(descendants.len() + 1);
+    components.push((
+        root.mass_kg(),
+        root.center_of_mass_body.vector,
+        root.inertia_body,
+    ));
+    for descendant in descendants {
+        let rot_root_from_body = descendant.root_to_body.rot_child_from_parent().transpose();
+        let body_origin_root_m = *descendant.root_to_body.translation_parent_m();
+        let mass_properties = descendant.mass_properties;
+        let center_of_mass_root_m =
+            body_origin_root_m + rot_root_from_body * mass_properties.center_of_mass_body.vector;
+        let inertia_root =
+            rot_root_from_body * mass_properties.inertia_body * rot_root_from_body.transpose();
+        components.push((
+            mass_properties.mass_kg(),
+            center_of_mass_root_m,
+            inertia_root,
+        ));
+    }
+
+    let mut total_mass_kg = 0.0_f64;
+    let mut weighted_center = Vector3::zeros();
+    for (mass_kg, center, _) in &components {
+        total_mass_kg += *mass_kg;
+        weighted_center += center * *mass_kg;
+    }
+    let aggregate_center = weighted_center / total_mass_kg;
+    let mut aggregate_inertia = nalgebra::Matrix3::zeros();
+    let identity = nalgebra::Matrix3::identity();
+    for (mass_kg, center, inertia) in components {
+        let offset = center - aggregate_center;
+        aggregate_inertia +=
+            inertia + (identity * offset.dot(&offset) - offset * offset.transpose()) * mass_kg;
+    }
+
+    MassProperties::new(
+        Mass::new::<kilogram>(total_mass_kg),
+        Position3::<Body>::new(aggregate_center.x, aggregate_center.y, aggregate_center.z),
+        aggregate_inertia,
+    )
 }
 
 struct WeldedReleaseGeometry {
@@ -5880,6 +6194,39 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_welded_subtree_mass_properties_shifts_descendant_inertia_to_root() {
+        let root = MassProperties::new(
+            Mass::new::<kilogram>(1.0),
+            Position3::<Body>::new(0.0, 0.0, 0.0),
+            nalgebra::Matrix3::identity(),
+        );
+        let descendant = MassProperties::new(
+            Mass::new::<kilogram>(2.0),
+            Position3::<Body>::new(1.0, 0.0, 0.0),
+            nalgebra::Matrix3::from_diagonal(&nalgebra::Vector3::new(2.0, 3.0, 4.0)),
+        );
+        let component = WeldedSubtreeMassComponent {
+            root_to_body: PluckerTransform::new(
+                nalgebra::Matrix3::identity(),
+                Vector3::new(0.0, 3.0, 0.0),
+            )
+            .unwrap(),
+            mass_properties: descendant,
+        };
+
+        let aggregate = aggregate_welded_subtree_mass_properties(root, &[component]);
+
+        assert_eq!(aggregate.mass_kg().to_bits(), 3.0_f64.to_bits());
+        assert!((aggregate.center_of_mass_body.vector.x - (2.0 / 3.0)).abs() < 1.0e-12);
+        assert!((aggregate.center_of_mass_body.vector.y - 2.0).abs() < 1.0e-12);
+        assert!((aggregate.inertia_body[(0, 0)] - 9.0).abs() < 1.0e-12);
+        assert!((aggregate.inertia_body[(0, 1)] + 2.0).abs() < 1.0e-12);
+        assert!((aggregate.inertia_body[(1, 0)] + 2.0).abs() < 1.0e-12);
+        assert!((aggregate.inertia_body[(1, 1)] - (14.0 / 3.0)).abs() < 1.0e-12);
+        assert!((aggregate.inertia_body[(2, 2)] - (35.0 / 3.0)).abs() < 1.0e-12);
+    }
+
+    #[test]
     fn root_free_flyer_multibody_seed_maps_rigid_state() {
         let state = RigidBodyState::new(
             SimTime::from_seconds(4.5),
@@ -7423,6 +7770,99 @@ once = true
         assert!((q.j - 0.0).abs() < 1.0e-12);
         assert!((q.k + std::f64::consts::FRAC_1_SQRT_2).abs() < 1.0e-12);
         assert!((q.w - std::f64::consts::FRAC_1_SQRT_2).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn welded_release_jettison_authority_releases_dry_subtree() {
+        let initial_lane = r#"
+[[multi_body.initial_lane]]
+body_id = "booster"
+position_eci_m = [0.0, 0.0, 10.0]
+velocity_eci_m_s = [0.0, 0.0, 0.0]
+quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+"#;
+        let booster_body = r#"
+[[vehicle.assembly.bodies]]
+id = "booster"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+"#;
+        let booster_and_payload_bodies = r#"
+[[vehicle.assembly.bodies]]
+id = "booster"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+[[vehicle.assembly.bodies]]
+id = "payload"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 2.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]]
+"#;
+        let jettison = r#"
+[[multi_body.separation]]
+event_id = "drop_booster"
+upper_body_id = "bus"
+lower_body_id = "booster"
+lower_weld_translation_upper_body_m = [0.0, 2.0, 0.0]
+lower_weld_quaternion_upper_to_lower_xyzw = [0.0, 0.0, 0.0, 1.0]
+
+[[multi_body.welded_body]]
+parent_body_id = "booster"
+child_body_id = "payload"
+child_weld_translation_parent_body_m = [0.0, 3.0, 0.0]
+child_weld_quaternion_parent_to_child_xyzw = [0.0, 0.0, 0.0, 1.0]
+
+[scenario_script]
+[[scenario_script.events]]
+id = "drop_booster"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "jettison_stage", body = "booster" }
+once = true
+"#;
+        let toml = SEPARATED_DIRECT_TORQUE_SCENARIO
+            .replace(booster_body, booster_and_payload_bodies)
+            .replace(initial_lane, jettison)
+            .replace(
+                "[multi_body]\n",
+                "[multi_body]\npropagation_authority = \"welded_release_jettison\"\n",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = BTreeMap::new();
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("welded-release subtree jettison step succeeds");
+
+        let booster = body_id_from_scenario_text("booster");
+        let lane = separated_lane_state(&session, booster);
+        assert_eq!(
+            lane.mass_props.mass_kg().to_bits(),
+            3.0_f64.to_bits(),
+            "departing lane should preserve lower-root plus dry payload mass"
+        );
+        assert_eq!(
+            session.state().mass_props.mass_kg().to_bits(),
+            3.0_f64.to_bits(),
+            "continuing stack should not retain dry payload mass"
+        );
+        let expected_offset = session.state().orientation.q * Vector3::new(0.0, 4.0, 0.0);
+        assert!(
+            (lane.position.vector - session.state().position.vector - expected_offset).norm()
+                < 1.0e-12,
+            "departing subtree COM should offset lane position: lane={:?} stack={:?} expected_offset={expected_offset:?}",
+            lane.position.vector,
+            session.state().position.vector
+        );
     }
 
     #[test]

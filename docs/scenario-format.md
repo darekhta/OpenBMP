@@ -3010,6 +3010,12 @@ lower_weld_quaternion_upper_to_lower_xyzw = [0.0, 0.0, 0.0, 1.0]
 upper_delta_v_body_m_s = [0.0, 0.0, 0.5]
 lower_delta_v_body_m_s = [0.0, 0.0, -0.5]
 conserve_momentum     = true
+
+[[multi_body.welded_body]]
+parent_body_id = "lower_stage"
+child_body_id = "payload"
+child_weld_translation_parent_body_m = [0.0, 0.0, 1.5]
+child_weld_quaternion_parent_to_child_xyzw = [0.0, 0.0, 0.0, 1.0]
 ```
 
 `primary_body_id` and `[[multi_body.initial_lane]]` declare rigid-body
@@ -3040,12 +3046,13 @@ rewritten before a pre-step forecast exists. Setting it to
 requires `primary_body_id` and at least one `[[multi_body.separation]]`, rejects
 `[[multi_body.initial_lane]]` and `[[multi_body.gimbal_joint]]`, computes the
 departing lower body or bodies by releasing configured welded upper/lower
-multibody pairs with `release_welded_subtree_as_free_flyer()`, and installs the
-continuing and departing same-time rigid states through the explicit
-separation-state kernel API. This mode supports `jettison_stage` and
-`jettison_bodies`, and applies the declared welded translation/orientation,
-separation delta-v, angular-rate tip-off, lower attitude offset, and
-mass-property COM-offset semantics after the welded release. Setting it to
+multibody pairs, including declared dry welded descendants, with
+`release_welded_subtree_as_free_flyer()`, and installs the continuing and
+departing same-time rigid states through the explicit separation-state kernel
+API. This mode supports `jettison_stage` and `jettison_bodies`, and applies the
+declared welded translation/orientation, dry descendant mass-property
+aggregation, separation delta-v, angular-rate tip-off, lower attitude offset,
+and mass-property COM-offset semantics after the welded release. Setting it to
 `"articulated_gimbal_root"` is a single-gimbal root-state handoff mode: it
 requires `primary_body_id` and exactly one `[[multi_body.gimbal_joint]]` whose
 `body_id` matches `primary_body_id`, rejects initial lanes, separation
@@ -3063,10 +3070,16 @@ continue propagating after the event.
 `lower_weld_translation_upper_body_m` and
 `lower_weld_quaternion_upper_to_lower_xyzw` optionally declare the fixed welded
 pose of the departing body relative to the continuing upper body before release;
-they default to zero translation and identity orientation. Optional impulsive
-delta-V fields apply at the separation moment. `conserve_momentum` defaults to
-`true`; the loader verifies
-`m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance.
+they default to zero translation and identity orientation. Optional
+`[[multi_body.welded_body]]` entries declare dry welded descendants under a
+departing lower body with `parent_body_id`, `child_body_id`,
+`child_weld_translation_parent_body_m`, and
+`child_weld_quaternion_parent_to_child_xyzw`; the runner preserves their dry
+mass in the departing lane and rejects descendants that own active runtime
+resources. Optional impulsive delta-V fields apply at the separation moment.
+`conserve_momentum` defaults to `true`; the loader verifies
+`m_u·Δv_u + m_l·Δv_l ≈ 0` to a documented tolerance, where `m_l` includes
+declared dry welded descendants of the departing lower body.
 
 The runtime consumer supports fixed-step RK4 rigid-body profiles.
 Initial and post-separation force-stack ownership is explicit:

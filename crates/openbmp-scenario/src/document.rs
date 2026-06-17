@@ -1379,6 +1379,10 @@ impl ScenarioDocument {
             .multi_body
             .as_ref()
             .map_or(&[][..], |multi_body| multi_body.separations.as_slice());
+        let multi_body_welded_bodies = self
+            .multi_body
+            .as_ref()
+            .map_or(&[][..], |multi_body| multi_body.welded_bodies.as_slice());
         if jettisons.is_empty() && multi_body_separations.is_empty() {
             return Ok(());
         }
@@ -1404,10 +1408,16 @@ impl ScenarioDocument {
             multi_body_separations,
             &body_masses,
         )?;
+        validate_multi_body_welded_body_references(
+            multi_body_welded_bodies,
+            multi_body_separations,
+            &body_masses,
+        )?;
         validate_stage_separation_uniqueness(&jettisons, multi_body_separations)?;
         validate_stage_separation_symmetry_and_momentum(
             &jettisons,
             multi_body_separations,
+            multi_body_welded_bodies,
             &body_masses,
         )?;
         Ok(())
@@ -2540,6 +2550,83 @@ fn validate_stage_separation_body_references(
     Ok(())
 }
 
+fn validate_multi_body_welded_body_references(
+    welded_bodies: &[MultiBodyWeldedBodyConfig],
+    separations: &[MultiBodySeparationConfig],
+    body_masses: &BTreeMap<&str, f64>,
+) -> Result<(), ScenarioError> {
+    let separation_roots: BTreeSet<&str> = separations
+        .iter()
+        .map(|separation| separation.lower_body_id.as_str())
+        .collect();
+    let mut parent_by_child = BTreeMap::new();
+    for (index, welded_body) in welded_bodies.iter().enumerate() {
+        if !body_masses.contains_key(welded_body.parent_body_id.as_str()) {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: format!("multi_body.welded_body[{index}].parent_body_id"),
+                value: welded_body.parent_body_id.clone(),
+            });
+        }
+        if !body_masses.contains_key(welded_body.child_body_id.as_str()) {
+            return Err(ScenarioError::UnknownBodyReference {
+                field: format!("multi_body.welded_body[{index}].child_body_id"),
+                value: welded_body.child_body_id.clone(),
+            });
+        }
+        if separation_roots.contains(welded_body.child_body_id.as_str()) {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: format!("multi_body.welded_body[{index}].child_body_id"),
+                value_a: welded_body.child_body_id.clone(),
+                field_b: "multi_body.separation.lower_body_id".to_owned(),
+                value_b: welded_body.child_body_id.clone(),
+            });
+        }
+        if parent_by_child
+            .insert(
+                welded_body.child_body_id.as_str(),
+                welded_body.parent_body_id.as_str(),
+            )
+            .is_some()
+        {
+            return Err(ScenarioError::DuplicateValue {
+                field: format!("multi_body.welded_body[{index}].child_body_id"),
+                value: welded_body.child_body_id.clone(),
+            });
+        }
+    }
+
+    for (index, welded_body) in welded_bodies.iter().enumerate() {
+        let mut seen = BTreeSet::new();
+        let mut current = welded_body.child_body_id.as_str();
+        let mut reaches_separation_root = false;
+        while let Some(parent) = parent_by_child.get(current).copied() {
+            if !seen.insert(current) {
+                return Err(ScenarioError::InconsistentSection {
+                    field_a: format!("multi_body.welded_body[{index}].child_body_id"),
+                    value_a: welded_body.child_body_id.clone(),
+                    field_b: "multi_body.welded_body.parent_body_id".to_owned(),
+                    value_b: "cycle".to_owned(),
+                });
+            }
+            if separation_roots.contains(parent) {
+                reaches_separation_root = true;
+                break;
+            }
+            current = parent;
+        }
+        if !reaches_separation_root {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: format!("multi_body.welded_body[{index}].child_body_id"),
+                value_a: welded_body.child_body_id.clone(),
+                field_b: "multi_body.separation.lower_body_id".to_owned(),
+                value_b: "missing welded ancestor".to_owned(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_stage_separation_uniqueness(
     jettisons: &[JettisonStageAction<'_>],
     separations: &[MultiBodySeparationConfig],
@@ -2568,6 +2655,7 @@ fn validate_stage_separation_uniqueness(
 fn validate_stage_separation_symmetry_and_momentum(
     jettisons: &[JettisonStageAction<'_>],
     separations: &[MultiBodySeparationConfig],
+    welded_bodies: &[MultiBodyWeldedBodyConfig],
     body_masses: &BTreeMap<&str, f64>,
 ) -> Result<(), ScenarioError> {
     for action in jettisons {
@@ -2596,7 +2684,7 @@ fn validate_stage_separation_symmetry_and_momentum(
             });
         }
         if separation.conserve_momentum {
-            validate_separation_momentum(index, separation, body_masses)?;
+            validate_separation_momentum(index, separation, welded_bodies, body_masses)?;
         }
     }
     Ok(())
@@ -2605,10 +2693,16 @@ fn validate_stage_separation_symmetry_and_momentum(
 fn validate_separation_momentum(
     index: usize,
     separation: &MultiBodySeparationConfig,
+    welded_bodies: &[MultiBodyWeldedBodyConfig],
     body_masses: &BTreeMap<&str, f64>,
 ) -> Result<(), ScenarioError> {
     let upper_mass = body_masses[separation.upper_body_id.as_str()];
-    let lower_mass = body_masses[separation.lower_body_id.as_str()];
+    let lower_mass = body_masses[separation.lower_body_id.as_str()]
+        + welded_descendant_mass_sum(
+            separation.lower_body_id.as_str(),
+            welded_bodies,
+            body_masses,
+        );
     let upper_dv = separation.upper_delta_v_body_m_s.unwrap_or([0.0, 0.0, 0.0]);
     let lower_dv = separation.lower_delta_v_body_m_s.unwrap_or([0.0, 0.0, 0.0]);
     let residual = [
@@ -2629,6 +2723,26 @@ fn validate_separation_momentum(
         });
     }
     Ok(())
+}
+
+fn welded_descendant_mass_sum(
+    parent_body_id: &str,
+    welded_bodies: &[MultiBodyWeldedBodyConfig],
+    body_masses: &BTreeMap<&str, f64>,
+) -> f64 {
+    let mut mass = 0.0_f64;
+    for welded_body in welded_bodies
+        .iter()
+        .filter(|welded_body| welded_body.parent_body_id == parent_body_id)
+    {
+        mass += body_masses[welded_body.child_body_id.as_str()];
+        mass += welded_descendant_mass_sum(
+            welded_body.child_body_id.as_str(),
+            welded_bodies,
+            body_masses,
+        );
+    }
+    mass
 }
 
 /// OpenBMP schema header.
@@ -13658,6 +13772,11 @@ pub struct MultiBodyConfig {
     /// `gimbal_joints` in Rust.
     #[serde(default, rename = "gimbal_joint")]
     pub gimbal_joints: Vec<MultiBodyGimbalJointConfig>,
+    /// Additional fixed welded topology used by welded-release jettison.
+    /// Serde key is `[[multi_body.welded_body]]`; root separation pairs still
+    /// come from `[[multi_body.separation]]`.
+    #[serde(default, rename = "welded_body")]
+    pub welded_bodies: Vec<MultiBodyWeldedBodyConfig>,
 }
 
 impl MultiBodyConfig {
@@ -13821,6 +13940,17 @@ impl MultiBodyConfig {
                 });
             }
         }
+        if !self.welded_bodies.is_empty()
+            && self.propagation_authority
+                != MultiBodyPropagationAuthorityConfig::WeldedReleaseJettison
+        {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: "multi_body.welded_body".to_owned(),
+                value_a: "present".to_owned(),
+                field_b: "multi_body.propagation_authority".to_owned(),
+                value_b: "welded_release_jettison".to_owned(),
+            });
+        }
         if !self.initial_lanes.is_empty() {
             let primary_body_id = self.primary_body_id.as_ref().ok_or_else(|| {
                 ScenarioError::MissingRequiredField {
@@ -13867,6 +13997,9 @@ impl MultiBodyConfig {
         }
         for (index, joint) in self.gimbal_joints.iter().enumerate() {
             joint.validate(index)?;
+        }
+        for (index, welded_body) in self.welded_bodies.iter().enumerate() {
+            welded_body.validate(index)?;
         }
         Ok(())
     }
@@ -14076,6 +14209,63 @@ impl MultiBodySeparationConfig {
 
 fn default_true() -> bool {
     true
+}
+
+/// One entry under `[[multi_body.welded_body]]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MultiBodyWeldedBodyConfig {
+    /// Parent body id in the fixed welded topology.
+    pub parent_body_id: String,
+    /// Child body id in the fixed welded topology.
+    pub child_body_id: String,
+    /// Fixed welded-joint translation from the parent body origin to the child
+    /// body origin, expressed in the parent body frame (m).
+    pub child_weld_translation_parent_body_m: [f64; 3],
+    /// Fixed welded-joint orientation from parent body frame to child body
+    /// frame, `[x, y, z, w]`.
+    pub child_weld_quaternion_parent_to_child_xyzw: [f64; 4],
+}
+
+impl MultiBodyWeldedBodyConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        require_non_empty(
+            &format!("multi_body.welded_body[{index}].parent_body_id"),
+            &self.parent_body_id,
+        )?;
+        require_non_empty(
+            &format!("multi_body.welded_body[{index}].child_body_id"),
+            &self.child_body_id,
+        )?;
+        if self.parent_body_id == self.child_body_id {
+            return Err(ScenarioError::InconsistentSection {
+                field_a: format!("multi_body.welded_body[{index}].parent_body_id"),
+                value_a: self.parent_body_id.clone(),
+                field_b: format!("multi_body.welded_body[{index}].child_body_id"),
+                value_b: self.child_body_id.clone(),
+            });
+        }
+        require_finite_array(
+            &format!("multi_body.welded_body[{index}].child_weld_translation_parent_body_m"),
+            &self.child_weld_translation_parent_body_m,
+        )?;
+        let field =
+            format!("multi_body.welded_body[{index}].child_weld_quaternion_parent_to_child_xyzw");
+        require_finite_array(&field, &self.child_weld_quaternion_parent_to_child_xyzw)?;
+        let norm_sq: f64 = self
+            .child_weld_quaternion_parent_to_child_xyzw
+            .iter()
+            .map(|c| c * c)
+            .sum();
+        if (norm_sq - 1.0).abs() > 1.0e-6 {
+            return Err(ScenarioError::InvalidNumber {
+                field,
+                value: norm_sq,
+                rule: "must be a unit quaternion (||q||² = 1)",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// One entry under `[[multi_body.attitude_target]]`.

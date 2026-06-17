@@ -5176,8 +5176,16 @@ angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
             "\n[multi_body]\nprimary_body_id = \"upper\"\npropagation_authority = \"welded_release_jettison\"\n",
         )
         .replace(
+            "\n[environment]\n",
+            "\n[[vehicle.assembly.bodies]]\nid = \"payload\"\ngeometry = { kind = \"cylinder\", length_m = 1.0, diameter_m = 0.1 }\ndry_mass_kg = 0.5\ndry_cg_body_m = [0.0, 0.0, 0.0]\ndry_inertia_body_kg_m2 = [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]]\n\n[environment]\n",
+        )
+        .replace(
             "lower_body_id             = \"lower\"",
             "lower_body_id             = \"lower\"\nlower_weld_translation_upper_body_m = [0.0, 0.0, 2.0]\nlower_weld_quaternion_upper_to_lower_xyzw = [0.0, 0.0, 0.7071067811865475, 0.7071067811865476]",
+        )
+        .replace(
+            "conserve_momentum         = true",
+            "conserve_momentum         = false\n\n[[multi_body.welded_body]]\nparent_body_id = \"lower\"\nchild_body_id = \"payload\"\nchild_weld_translation_parent_body_m = [0.0, 0.0, -1.0]\nchild_weld_quaternion_parent_to_child_xyzw = [0.0, 0.0, 0.0, 1.0]",
         );
         let scenario = Scenario::from_toml_str(&toml).expect("scenario validates");
         let multi_body = scenario
@@ -5199,6 +5207,9 @@ angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
             multi_body.separations[0].lower_weld_quaternion_upper_to_lower_xyzw,
             Some([0.0, 0.0, 0.7071067811865475, 0.7071067811865476])
         );
+        assert_eq!(multi_body.welded_bodies.len(), 1);
+        assert_eq!(multi_body.welded_bodies[0].parent_body_id, "lower");
+        assert_eq!(multi_body.welded_bodies[0].child_body_id, "payload");
     }
 
     #[test]
