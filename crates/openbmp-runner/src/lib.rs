@@ -64,6 +64,7 @@ use std::collections::BTreeMap;
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{MissionAction, PhaseId, RegionId, StopReason};
 use openbmp_telemetry::TelemetryTable;
+use openbmp_uq::CorrelatedErrorBudget;
 
 pub use crate::error::RunnerError;
 pub use openbmp_propulsion::EngineFault;
@@ -263,6 +264,8 @@ pub struct RunOutcome {
     /// Optional landing-gear touchdown report for `[vehicle.landing_gear]`
     /// scenarios.
     pub landing_gear: Option<landing_gear::LandingGearRunReport>,
+    /// Source-tagged upstream UQ budget gathered while resolving runner decks.
+    pub upstream_uq: CorrelatedErrorBudget,
 }
 
 /// Run a scenario through the appropriate kernel path.

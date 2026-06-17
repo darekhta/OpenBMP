@@ -513,6 +513,7 @@ pub fn run(
         actuator_stream,
         contact,
         landing_gear: None,
+        upstream_uq: engine_rack.upstream_uq_budget(),
     })
 }
 

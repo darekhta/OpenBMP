@@ -1351,6 +1351,7 @@ impl RigidBodySession {
             actuator_stream,
             contact,
             landing_gear,
+            upstream_uq: self.engine_rack.upstream_uq_budget(),
         })
     }
 
@@ -9587,6 +9588,26 @@ require_monotonic_time = true
             .expect("resolve thermochemistry deck");
         let outcome = run(&scenario, &resolved_files, None)
             .expect("plume engine telemetry scenario must run");
+        let upstream_sources = &outcome.upstream_uq.sources;
+        assert_eq!(upstream_sources.len(), 1);
+        assert_eq!(
+            upstream_sources[0].source_id,
+            "05.propulsion.synthetic-grain.fa3ff43bc91d.c_star_efficiency"
+        );
+        assert_eq!(
+            upstream_sources[0].class,
+            openbmp_uq::UncertaintyClass::Epistemic
+        );
+        assert!(
+            upstream_sources[0]
+                .justification
+                .contains("tests/fixtures/thermochem/synthetic-grain.toml#sha256=fa3ff43bc91d")
+        );
+        assert!(
+            (outcome.upstream_uq.epistemic_one_sigma().unwrap() - upstream_sources[0].one_sigma)
+                .abs()
+                < 1.0e-15
+        );
 
         let npr = f64_column(&outcome, "plume.nozzle_pressure_ratio");
         assert!(

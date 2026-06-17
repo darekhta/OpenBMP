@@ -663,7 +663,7 @@ verification = ["V-UQ-003"]
 [[requirements]]
 id = "REQ-UQ-004"
 title = "Upstream deck margins can become source-tagged UQ sources"
-statement = "The UQ crate exposes a no-std-compatible UpstreamMargin adapter that validates source ids, quantity ids, finite ordered lower/nominal/upper bounds, uncertainty class, upstream evidence, and credibility records, converts the larger side of each bounded band into a conservative one-sigma source contribution, can build a CorrelatedErrorBudget from ordered upstream margins plus an optional correlation matrix, and provides structural bending, aerodynamic coefficient, aerothermal model, and propulsion c_star_efficiency helpers that map upstream deck bands into source-tagged epistemic budget sources with evidence pointers and credibility scores; the runner gathers the resolved thermochemical liquid-engine c_star_efficiency band into EngineRack upstream UQ sources without changing nominal engine performance."
+statement = "The UQ crate exposes a no-std-compatible UpstreamMargin adapter that validates source ids, quantity ids, finite ordered lower/nominal/upper bounds, uncertainty class, upstream evidence, and credibility records, converts the larger side of each bounded band into a conservative one-sigma source contribution, can build a CorrelatedErrorBudget from ordered upstream margins plus an optional correlation matrix, and provides structural bending, aerodynamic coefficient, aerothermal model, and propulsion c_star_efficiency helpers that map upstream deck bands into source-tagged epistemic budget sources with evidence pointers and credibility scores; the runner gathers the resolved thermochemical liquid-engine c_star_efficiency band into EngineRack upstream UQ sources and exposes the gathered budget on RunOutcome without changing nominal engine performance."
 verification = ["V-UQ-004"]
 
 [[requirements]]
@@ -3816,11 +3816,14 @@ requirements = ["REQ-UQ-003"]
 [[verification]]
 id = "V-UQ-004"
 kind = "test"
-command = "cargo test -p openbmp-uq upstream_margin --locked && cargo test -p openbmp-uq cross_discipline_deck_margin_helpers_emit_stable_source_tags --locked && cargo test -p openbmp-uq propulsion_c_star_efficiency_band_flows_into_epistemic_budget --locked && cargo test -p openbmp-runner build_engine_applies_thermochemical_performance --locked"
+command = "cargo test -p openbmp-uq upstream_margin --locked && cargo test -p openbmp-uq cross_discipline_deck_margin_helpers_emit_stable_source_tags --locked && cargo test -p openbmp-uq propulsion_c_star_efficiency_band_flows_into_epistemic_budget --locked && cargo test -p openbmp-runner build_engine_applies_thermochemical_performance --locked && cargo test -p openbmp-runner rigid_liquid_plume_telemetry_uses_engine_snapshots --locked"
 paths = [
   "crates/openbmp-uq/src/lib.rs",
   "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/lib.rs",
   "crates/openbmp-runner/src/engines.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
   "crates/openbmp-runner/tests/fixtures/thermochem/synthetic-grain.toml",
   "data/thermochem/lox-lch4-cantera-gri30-schema-1.toml",
   "data/aero/synthetic-finned-cylinder.toml",
@@ -3834,6 +3837,8 @@ contains = [
   "aero_coefficient_margin_source",
   "aerothermal_model_margin_source",
   "propulsion_c_star_efficiency_margin_source",
+  "RunOutcome",
+  "upstream_uq",
   "upstream_uq_sources",
   "upstream_uq_budget",
   "uniform_credibility_record",
@@ -3847,6 +3852,7 @@ contains = [
   "upstream_margins_build_correlated_budget_in_margin_order",
   "propulsion_c_star_efficiency_band_flows_into_epistemic_budget",
   "build_engine_applies_thermochemical_performance",
+  "rigid_liquid_plume_telemetry_uses_engine_snapshots",
   "upstream_margin_rejects_unordered_or_missing_evidence",
 ]
 requirements = ["REQ-UQ-004"]
