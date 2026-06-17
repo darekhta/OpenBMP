@@ -747,7 +747,11 @@ justification first, reviewed before the implementation lands.
   `derivative_from_root_free_flyer_loads()`, mapping body-frame moment plus
   parent-frame force into the locked moment-then-force free-flyer slots, rotating
   force through the root quaternion, zero-filling non-root slots, and feeding the
-  result through the ABA derivative bridge.
+  result through the ABA derivative bridge. The rigid runner now depends on
+  `openbmp-multibody` and builds a one-body root free-flyer `MultibodyTree` plus
+  `MultibodySimState` from the existing `RigidBodyState` seed for `[multi_body]`
+  scenarios with `primary_body_id`, preserving the deterministic q/qd ordering
+  and rotating ECI linear velocity into body-frame free-flyer velocity slots.
   Remaining WP-01.1 work: full kernel/runner force adapter wiring,
   runner-level no-joint byte-equivalence against the current `RigidBodyState`
   kernel, simulator/environment force wiring, double-pendulum tolerance table,

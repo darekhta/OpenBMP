@@ -1778,6 +1778,7 @@ dependencies = [
  "openbmp-feedsystem",
  "openbmp-mc",
  "openbmp-mission",
+ "openbmp-multibody",
  "openbmp-physics",
  "openbmp-plume",
  "openbmp-propulsion",

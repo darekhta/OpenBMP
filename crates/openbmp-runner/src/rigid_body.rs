@@ -40,6 +40,10 @@ use openbmp_core::{
     AngularVelocity3, Body, BodyId, ChannelId, Duration, EngineId, ModelId, Position3, Quaternion,
     RecoveryId, SimTime, TankId, ValidationStatus, Velocity3,
 };
+use openbmp_multibody::{
+    Joint, MultibodySimState, MultibodyState, MultibodyTree, PluckerTransform, SpatialInertia,
+    TreeBodySpec,
+};
 use openbmp_physics::{
     AtmosphereModel, ConstantGravity, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
 };
@@ -271,6 +275,16 @@ impl RigidBodySession {
             &initial_engine_snapshot,
             &initial_tank_snapshot,
         )?;
+        if let Some(primary_body_id) = document
+            .multi_body
+            .as_ref()
+            .and_then(|multi_body| multi_body.primary_body_id.as_deref())
+        {
+            let _initial_multibody_root = build_root_free_flyer_multibody_state(
+                body_id_from_scenario_text(primary_body_id),
+                &initial_state,
+            )?;
+        }
         let kernel_vehicle = build_vehicle(
             document,
             &loaded,
@@ -1837,6 +1851,56 @@ fn rigid_body_state_from_parts(
         AngularVelocity3::<Body>::new(omega[0], omega[1], omega[2]),
         mass_props,
     )
+}
+
+fn build_root_free_flyer_multibody_state(
+    body: BodyId,
+    state: &RigidBodyState,
+) -> Result<(MultibodyTree, MultibodySimState), RunnerError> {
+    let inertia = SpatialInertia::from_mass_properties(&state.mass_props).map_err(|err| {
+        RunnerError::UnsupportedScenario {
+            what: format!("root free-flyer multibody spatial inertia failed: {err}"),
+        }
+    })?;
+    let tree = MultibodyTree::new(vec![TreeBodySpec {
+        id: body,
+        parent: None,
+        joint: Joint::FreeFlyer,
+        inertia,
+        parent_to_body: PluckerTransform::identity(),
+    }])
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("root free-flyer multibody tree failed: {err}"),
+    })?;
+
+    let orientation = state.orientation.q.into_inner();
+    let linear_velocity_body = state
+        .orientation
+        .inverse()
+        .rotate_velocity(state.velocity)
+        .vector;
+    let q = vec![
+        orientation.w,
+        orientation.i,
+        orientation.j,
+        orientation.k,
+        state.position.vector.x,
+        state.position.vector.y,
+        state.position.vector.z,
+    ];
+    let qd = vec![
+        state.angular_velocity.vector.x,
+        state.angular_velocity.vector.y,
+        state.angular_velocity.vector.z,
+        linear_velocity_body.x,
+        linear_velocity_body.y,
+        linear_velocity_body.z,
+    ];
+    tree.sim_state_from_state(MultibodyState::new(state.time, q, qd))
+        .map(|sim_state| (tree, sim_state))
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("root free-flyer multibody state failed: {err}"),
+        })
 }
 
 fn seed_initial_rigid_body_lanes<I, F, MOM, MM, E, SC>(
@@ -3920,6 +3984,112 @@ mod tests {
         assert!((c2.mass.get::<kilogram>() - 400.0).abs() < 1.0e-9);
         // (100*0 + 300*4) / 400 = 3.0
         assert!((c2.center_of_mass_body.vector.z - 3.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn root_free_flyer_multibody_seed_maps_rigid_state() {
+        let state = RigidBodyState::new(
+            SimTime::from_seconds(4.5),
+            Position3::<openbmp_core::Eci>::new(1.0, -2.0, 3.0),
+            Velocity3::<openbmp_core::Eci>::new(4.0, -5.0, 6.0),
+            Quaternion::<Body, openbmp_core::Eci>::from_unit_quaternion(
+                nalgebra::UnitQuaternion::identity(),
+            ),
+            AngularVelocity3::<Body>::new(0.1, -0.2, 0.3),
+            MassProperties::with_uniform_inertia(
+                Mass::new::<kilogram>(12.0),
+                Position3::<Body>::origin(),
+                4.0,
+            ),
+        );
+        let body = body_id_from_scenario_text("main");
+
+        let (tree, sim_state) =
+            build_root_free_flyer_multibody_state(body, &state).expect("root seed builds");
+
+        assert_eq!(tree.n_q(), 7);
+        assert_eq!(tree.n_qd(), 6);
+        assert_eq!(tree.bodies()[0].id, body);
+        assert_eq!(sim_state.state().time, SimTime::from_seconds(4.5));
+        assert_eq!(sim_state.quaternion_offsets(), &[0]);
+        assert_eq!(
+            sim_state
+                .q()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            [1.0_f64, 0.0, 0.0, 0.0, 1.0, -2.0, 3.0]
+                .into_iter()
+                .map(f64::to_bits)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            sim_state
+                .qd()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            [0.1_f64, -0.2, 0.3, 4.0, -5.0, 6.0]
+                .into_iter()
+                .map(f64::to_bits)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn root_free_flyer_multibody_seed_rotates_eci_velocity_to_body_qd() {
+        let orientation = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(Vector3::new(0.0, 0.0, 1.0)),
+            core::f64::consts::FRAC_PI_2,
+        );
+        let state = RigidBodyState::new(
+            SimTime::ZERO,
+            Position3::<openbmp_core::Eci>::origin(),
+            Velocity3::<openbmp_core::Eci>::new(0.0, 2.0, 0.0),
+            Quaternion::<Body, openbmp_core::Eci>::from_unit_quaternion(orientation),
+            AngularVelocity3::<Body>::zero(),
+            MassProperties::with_uniform_inertia(
+                Mass::new::<kilogram>(12.0),
+                Position3::<Body>::origin(),
+                4.0,
+            ),
+        );
+
+        let (_, sim_state) =
+            build_root_free_flyer_multibody_state(body_id_from_scenario_text("main"), &state)
+                .expect("root seed builds");
+
+        assert!((sim_state.qd()[3] - 2.0).abs() < 1.0e-12);
+        assert!(sim_state.qd()[4].abs() < 1.0e-12);
+        assert!(sim_state.qd()[5].abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn root_free_flyer_multibody_seed_rejects_invalid_mass_properties() {
+        let state = RigidBodyState::new(
+            SimTime::ZERO,
+            Position3::<openbmp_core::Eci>::origin(),
+            Velocity3::<openbmp_core::Eci>::zero(),
+            Quaternion::<Body, openbmp_core::Eci>::from_unit_quaternion(
+                nalgebra::UnitQuaternion::identity(),
+            ),
+            AngularVelocity3::<Body>::zero(),
+            MassProperties::new(
+                Mass::new::<kilogram>(0.0),
+                Position3::<Body>::origin(),
+                nalgebra::Matrix3::zeros(),
+            ),
+        );
+
+        let err = build_root_free_flyer_multibody_state(body_id_from_scenario_text("main"), &state)
+            .unwrap_err();
+
+        match err {
+            RunnerError::UnsupportedScenario { what } => {
+                assert!(what.contains("root free-flyer multibody spatial inertia"));
+            }
+            other => panic!("expected UnsupportedScenario, got {other:?}"),
+        }
     }
 
     const LIVE_ENTRY_SCENARIO: &str = r#"

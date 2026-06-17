@@ -67,6 +67,12 @@ statement = "The openbmp-multibody crate exposes root_free_flyer_generalized_for
 verification = ["V-MULTIBODY-011"]
 
 [[requirements]]
+id = "REQ-MULTIBODY-012"
+title = "The rigid runner seeds a root free-flyer multibody state"
+statement = "The openbmp-runner crate depends on openbmp-multibody and exposes a runner-side root-free-flyer seed bridge that constructs a one-body MultibodyTree plus MultibodySimState from the existing RigidBodyState seed for multi_body scenarios that declare a primary_body_id, preserving the body id, quaternion wxyz order, inertial position, body-frame angular velocity, and ECI velocity rotated into body-frame free-flyer linear qd slots. The runner tests prove deterministic q/qd mapping, quaternion projection offsets, body-frame velocity rotation, and fail-closed invalid mass properties while making no claim that the rigid kernel has been replaced by a multibody kernel, that full force/environment adapter wiring is complete, or that Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-012"]
+
+[[requirements]]
 id = "REQ-SIL-001"
 title = "FC-owned mission decisions use the estimated-state commander"
 statement = "When mission authority belongs to the flight controller, mission events and mission actions are evaluated by the commander on bus-published estimated state; the simulator kernel does not re-evaluate them on truth."
@@ -944,6 +950,28 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-011"]
+
+[[verification]]
+id = "V-MULTIBODY-012"
+kind = "test"
+command = "cargo test -p openbmp-runner root_free_flyer_multibody_seed --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "openbmp-multibody",
+  "build_root_free_flyer_multibody_state",
+  "root_free_flyer_multibody_seed_maps_rigid_state",
+  "root_free_flyer_multibody_seed_rotates_eci_velocity_to_body_qd",
+  "root_free_flyer_multibody_seed_rejects_invalid_mass_properties",
+  "REQ-MULTIBODY-012",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-012"]
 
 [[verification]]
 id = "V-SIL-001"
