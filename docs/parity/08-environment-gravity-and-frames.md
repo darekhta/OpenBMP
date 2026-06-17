@@ -90,7 +90,7 @@ above. No artifact in this dimension ever claims `flight-qualified` / `certified
 
 Verified by reading the actual files (paths absolute under the repo root).
 
-### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (4129 lines)
+### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (4421 lines)
 
 - `trait GravityModel { fn gravity_eci_m_s2(&self, position_eci, time) -> Result<Vector3<f64>, PhysicsError> }` — the single environment-side acceleration surface used by current gravity/perturbation models; ephemeris-backed paths vary with time.
 - `ConstantGravity`, `PointMassGravity` (`−µ/r² r̂`), `J2Gravity` (point-mass + J₂ in closed Cartesian form, Vallado §8.6).
@@ -100,17 +100,19 @@ Verified by reading the actual files (paths absolute under the repo root).
   `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
   `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
   `HarmonicLongitudeTrigonometry`, `HarmonicTruncation`,
-  `PinesLegendreTable`, `PinesLongitudePolynomials`, `TideSystem`, and
-  fail-closed degree/order validation. It supports `C20`, `C21/S21`, and
-  `C22/S22` Cartesian solid-harmonic acceleration, converts fully-normalized
-  degree-2 coefficient blocks into the current unnormalized evaluator, stores
-  reusable normalized `Cbar/Sbar` fields in deterministic packed `(n, m)`
-  order, exposes a checked `fully_normalized_to_unnormalized_scale` helper, a
-  bounded `cos(mλ)` / `sin(mλ)` recurrence table, a direction-cosine
-  `(s + i t)^m` Pines longitude-polynomial table that remains finite at the
-  pole, a reusable truncation envelope validator, a bounded
-  Holmes-Featherstone/Pines `A_nm(u)` recurrence table, and complete
-  default-zero coefficient-slot iterator for future synthesis kernels, rejects duplicate or
+  `PinesLegendreTable`, `PinesLongitudePolynomials`, `PinesSynthesisPoint`,
+  `PinesPotentialSum`, `TideSystem`, and fail-closed degree/order validation.
+  It supports `C20`, `C21/S21`, and `C22/S22` Cartesian solid-harmonic
+  acceleration, converts fully-normalized degree-2 coefficient blocks into the
+  current unnormalized evaluator, stores reusable normalized `Cbar/Sbar` fields
+  in deterministic packed `(n, m)` order, exposes a checked
+  `fully_normalized_to_unnormalized_scale` helper, a bounded `cos(mλ)` /
+  `sin(mλ)` recurrence table, a direction-cosine `(s + i t)^m` Pines
+  longitude-polynomial table that remains finite at the pole, a reusable
+  truncation envelope validator, a bounded Holmes-Featherstone/Pines `A_nm(u)`
+  recurrence table, a body-fixed synthesis-point validator, a normalized
+  Pines scalar-potential correction sum over deterministic coefficient slots,
+  and complete default-zero coefficient-slot iterator for future synthesis kernels, rejects duplicate or
   out-of-envelope coefficient entries, parses a provenance-pinned WGS84
   normalized degree-2 fixture, proves its degree-2/order-0 path is
   byte-identical to `J2Gravity`, and stays finite near the pole. This is **not
@@ -654,11 +656,11 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
   `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
   `HarmonicLongitudeTrigonometry`, `HarmonicTruncation`,
-  `PinesLegendreTable`, `PinesLongitudePolynomials`, and `TideSystem` as the
-  first non-zonal static harmonic force surface plus reusable normalized
-  `Cbar/Sbar` coefficient-field, longitude-trigonometry,
-  direction-cosine-longitude, truncation-validation, and Pines-Legendre
-  substrate.
+  `PinesLegendreTable`, `PinesLongitudePolynomials`, `PinesSynthesisPoint`,
+  `PinesPotentialSum`, and `TideSystem` as the first non-zonal static harmonic
+  force surface plus reusable normalized `Cbar/Sbar` coefficient-field,
+  longitude-trigonometry, direction-cosine-longitude, truncation-validation,
+  Pines-Legendre, and scalar-potential summation substrate.
   `TesseralGravity::wgs84_j2()` is byte-identical to `J2Gravity`, the degree-2
   evaluator includes C21/S21 tesseral and C22/S22 sectoral terms through
   Cartesian solid-harmonic polynomials, the low-degree ingestion bridge converts
@@ -671,8 +673,9 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   point-mass degeneration, shared fully-normalized scale factors, bounded
   longitude `cos(mλ)`/`sin(mλ)` recurrence, singularity-free Pines
   direction-cosine longitude polynomials, checked truncation-envelope
-  validation, low-degree closed-form Pines Legendre recurrence, default-zero
-  missing coefficients and iteration slots,
+  validation, low-degree closed-form Pines Legendre recurrence, normalized
+  Pines scalar-potential summation matching the existing degree-2 Cartesian
+  polynomial, default-zero missing coefficients and iteration slots,
   normalized-field zonal fixture equivalence, and fail-closed unsupported
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:

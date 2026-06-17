@@ -1423,6 +1423,105 @@ impl PinesLongitudePolynomials {
     }
 }
 
+/// Body-fixed geometry for normalized Pines harmonic synthesis.
+///
+/// The position is expressed in the body-fixed frame associated with the
+/// harmonic coefficients. The cached direction cosines feed the
+/// singularity-free Pines Legendre and longitude recurrences; the cached
+/// radius ratio feeds the radial attenuation `(R/r)^n`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PinesSynthesisPoint {
+    radius_m: f64,
+    reference_radius_m: f64,
+    reference_radius_over_radius: f64,
+    s: f64,
+    t: f64,
+    u: f64,
+}
+
+impl PinesSynthesisPoint {
+    /// Build a synthesis point from a body-fixed Cartesian position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if any input is non-finite or
+    /// if `reference_radius_m` is not strictly positive. Returns
+    /// [`PhysicsError::OutOfEnvelope`] at the central-body singularity.
+    pub fn new(
+        position_body_fixed_m: Vector3<f64>,
+        reference_radius_m: f64,
+    ) -> Result<Self, PhysicsError> {
+        if !position_body_fixed_m.iter().all(|value| value.is_finite()) {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines synthesis position must be finite",
+            });
+        }
+        if !reference_radius_m.is_finite() || reference_radius_m <= 0.0 {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "Pines synthesis reference radius must be strictly positive and finite",
+            });
+        }
+        let radius2 = position_body_fixed_m.dot(&position_body_fixed_m);
+        if radius2 == 0.0 {
+            return Err(PhysicsError::OutOfEnvelope {
+                reason: "Pines synthesis is singular at r = 0",
+            });
+        }
+        let radius_m = radius2.sqrt();
+        let inv_radius = 1.0 / radius_m;
+        let reference_radius_over_radius = reference_radius_m * inv_radius;
+        if !reference_radius_over_radius.is_finite() {
+            return Err(PhysicsError::NonFinite {
+                reason: "Pines synthesis radial ratio produced non-finite output",
+            });
+        }
+        Ok(Self {
+            radius_m,
+            reference_radius_m,
+            reference_radius_over_radius,
+            s: position_body_fixed_m.x * inv_radius,
+            t: position_body_fixed_m.y * inv_radius,
+            u: position_body_fixed_m.z * inv_radius,
+        })
+    }
+
+    /// Radius `r`, in metres.
+    #[must_use]
+    pub const fn radius_m(&self) -> f64 {
+        self.radius_m
+    }
+
+    /// Harmonic reference radius `R`, in metres.
+    #[must_use]
+    pub const fn reference_radius_m(&self) -> f64 {
+        self.reference_radius_m
+    }
+
+    /// Radial attenuation base `R/r`.
+    #[must_use]
+    pub const fn reference_radius_over_radius(&self) -> f64 {
+        self.reference_radius_over_radius
+    }
+
+    /// Direction cosine `s = x/r`.
+    #[must_use]
+    pub const fn s(&self) -> f64 {
+        self.s
+    }
+
+    /// Direction cosine `t = y/r`.
+    #[must_use]
+    pub const fn t(&self) -> f64 {
+        self.t
+    }
+
+    /// Direction cosine `u = z/r`.
+    #[must_use]
+    pub const fn u(&self) -> f64 {
+        self.u
+    }
+}
+
 /// Checked harmonic degree/order truncation request.
 ///
 /// The type validates only the mathematical truncation shape (`order <= degree`)
@@ -1697,6 +1796,40 @@ fn harmonic_index_to_f64(value: usize) -> Result<f64, PhysicsError> {
         reason: "harmonic index does not fit checked integer range",
     })?;
     Ok(f64::from(value_u32))
+}
+
+/// Deterministic normalized Pines scalar-potential correction sum.
+///
+/// This is the dimensionless coefficient sum
+/// `Σ (R/r)^n A_nm(u) (Cbar_nm r_m + Sbar_nm i_m)` over a validated
+/// truncation. Multiplying by `µ/r` yields the corresponding scalar potential
+/// correction. This is kernel substrate only; acceleration and gradients remain
+/// separate synthesis work.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PinesPotentialSum {
+    truncation: HarmonicTruncation,
+    dimensionless_correction: f64,
+    term_count: usize,
+}
+
+impl PinesPotentialSum {
+    /// Truncation used to produce this sum.
+    #[must_use]
+    pub const fn truncation(&self) -> HarmonicTruncation {
+        self.truncation
+    }
+
+    /// Dimensionless normalized scalar-potential correction.
+    #[must_use]
+    pub const fn dimensionless_correction(&self) -> f64 {
+        self.dimensionless_correction
+    }
+
+    /// Number of deterministic `(n, m)` slots visited by the summation.
+    #[must_use]
+    pub const fn term_count(&self) -> usize {
+        self.term_count
+    }
 }
 
 /// One fully-normalized spherical-harmonic coefficient pair.
@@ -1978,6 +2111,67 @@ impl NormalizedHarmonicField {
             sbar22,
             self.tide_system,
         )
+    }
+
+    /// Evaluate the normalized Pines scalar-potential correction sum.
+    ///
+    /// The position must be in the body-fixed frame associated with this
+    /// coefficient field. Missing in-envelope coefficients participate as
+    /// exact zeros, preserving deterministic slot order for future acceleration
+    /// and gradient synthesis.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] if the truncation exceeds the field envelope,
+    /// if the synthesis geometry is invalid, or if any recurrence/sum produces
+    /// a non-finite value.
+    pub fn pines_dimensionless_potential_sum(
+        &self,
+        position_body_fixed_m: Vector3<f64>,
+        reference_radius_m: f64,
+        truncation: HarmonicTruncation,
+    ) -> Result<PinesPotentialSum, PhysicsError> {
+        let truncation = HarmonicTruncation::within_envelope(
+            truncation.degree(),
+            truncation.order(),
+            self.max_degree,
+            self.max_order,
+        )?;
+        let point = PinesSynthesisPoint::new(position_body_fixed_m, reference_radius_m)?;
+        let legendre = PinesLegendreTable::new(point.u(), truncation.degree(), truncation.order())?;
+        let longitude = PinesLongitudePolynomials::new(point.s(), point.t(), truncation.order())?;
+
+        let mut radial_power = 1.0_f64;
+        let mut sum = 0.0_f64;
+        let mut term_count = 0_usize;
+        for degree in 0..=truncation.degree() {
+            if degree > 0 {
+                radial_power *= point.reference_radius_over_radius();
+                if !radial_power.is_finite() {
+                    return Err(PhysicsError::NonFinite {
+                        reason: "Pines potential radial power produced non-finite output",
+                    });
+                }
+            }
+            for order in 0..=degree.min(truncation.order()) {
+                let (cbar, sbar) = self.coefficient(degree, order)?;
+                let a_nm = legendre.value(degree, order)?;
+                let (real, imaginary) = longitude.polynomial(order)?;
+                sum += radial_power * a_nm * (cbar * real + sbar * imaginary);
+                if !sum.is_finite() {
+                    return Err(PhysicsError::NonFinite {
+                        reason: "Pines potential sum produced non-finite output",
+                    });
+                }
+                term_count += 1;
+            }
+        }
+
+        Ok(PinesPotentialSum {
+            truncation,
+            dimensionless_correction: sum,
+            term_count,
+        })
     }
 
     fn coefficient_or_default(&self, degree: usize, order: usize) -> (f64, f64) {
@@ -3712,6 +3906,104 @@ mod tests {
         ));
         assert!(matches!(
             PinesLegendreTable::new(0.0, PINES_LEGENDRE_MAX_DEGREE + 1, 0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tesseral_pines_potential_sum_matches_degree_two_cartesian_terms() {
+        let c20 = -1.2e-3;
+        let c21 = 2.0e-6;
+        let s21 = -3.0e-6;
+        let c22 = 4.0e-6;
+        let s22 = -5.0e-6;
+        let field = NormalizedHarmonicField::new(
+            2,
+            2,
+            TideSystem::TideFree,
+            [
+                NormalizedHarmonicCoefficient::new(
+                    2,
+                    0,
+                    c20 / fully_normalized_to_unnormalized_scale(2, 0).unwrap(),
+                    0.0,
+                )
+                .unwrap(),
+                NormalizedHarmonicCoefficient::new(
+                    2,
+                    1,
+                    c21 / fully_normalized_to_unnormalized_scale(2, 1).unwrap(),
+                    s21 / fully_normalized_to_unnormalized_scale(2, 1).unwrap(),
+                )
+                .unwrap(),
+                NormalizedHarmonicCoefficient::new(
+                    2,
+                    2,
+                    c22 / fully_normalized_to_unnormalized_scale(2, 2).unwrap(),
+                    s22 / fully_normalized_to_unnormalized_scale(2, 2).unwrap(),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let position: Vector3<f64> = Vector3::new(7_100_000.0, -800_000.0, 1_200_000.0);
+        let r2 = position.dot(&position);
+        let r = r2.sqrt();
+        let x = position.x;
+        let y = position.y;
+        let z = position.z;
+        let numerator = 0.5 * c20 * (2.0 * z * z - x * x - y * y)
+            + 3.0 * z * (c21 * x + s21 * y)
+            + 3.0 * c22 * (x * x - y * y)
+            + 6.0 * s22 * x * y;
+        let expected = (WGS84_A_M / r).powi(2) * numerator / r2;
+
+        let sum = field
+            .pines_dimensionless_potential_sum(
+                position,
+                WGS84_A_M,
+                HarmonicTruncation::new(2, 2).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(sum.truncation(), HarmonicTruncation::new(2, 2).unwrap());
+        assert_eq!(sum.term_count(), 6);
+        assert_abs_diff_eq!(sum.dimensionless_correction(), expected, epsilon = 1.0e-18);
+    }
+
+    #[test]
+    fn tesseral_pines_potential_sum_rejects_invalid_geometry_or_truncation() {
+        let field = NormalizedHarmonicField::new(
+            2,
+            0,
+            TideSystem::TideFree,
+            [NormalizedHarmonicCoefficient::new(2, 0, -WGS84_J2 / 5.0_f64.sqrt(), 0.0).unwrap()],
+        )
+        .unwrap();
+        let truncation = HarmonicTruncation::new(2, 0).unwrap();
+
+        assert!(matches!(
+            PinesSynthesisPoint::new(Vector3::new(0.0, 0.0, 0.0), WGS84_A_M),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
+        assert!(matches!(
+            PinesSynthesisPoint::new(Vector3::new(f64::NAN, 0.0, 0.0), WGS84_A_M),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            field.pines_dimensionless_potential_sum(
+                Vector3::new(7_000_000.0, 0.0, 0.0),
+                0.0,
+                truncation
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            field.pines_dimensionless_potential_sum(
+                Vector3::new(7_000_000.0, 0.0, 0.0),
+                WGS84_A_M,
+                HarmonicTruncation::new(2, 1).unwrap()
+            ),
             Err(PhysicsError::InvalidParameter { .. })
         ));
     }
