@@ -1081,6 +1081,13 @@ impl TideSystem {
 
 const FULLY_NORMALIZED_SCALE_MAX_DEGREE: usize = 4096;
 
+/// Maximum order accepted by [`HarmonicLongitudeTrigonometry`].
+///
+/// The bound matches the checked normalization helper envelope and keeps
+/// synthesis scratch allocation explicit until the full high-degree kernel
+/// chooses a runtime policy.
+pub const HARMONIC_LONGITUDE_MAX_ORDER: usize = 4096;
+
 /// Scale a real fully-normalized harmonic coefficient into the unnormalized
 /// associated-Legendre convention used by the current low-degree evaluators.
 ///
@@ -1136,6 +1143,137 @@ pub fn fully_normalized_to_unnormalized_scale(
         });
     }
     Ok(scale)
+}
+
+/// Deterministic `cos(mλ)` / `sin(mλ)` table for harmonic synthesis.
+///
+/// Real spherical-harmonic gravity uses longitude terms in the form
+/// `Cbar_nm cos(mλ) + Sbar_nm sin(mλ)`. This table computes the complete
+/// order range `0..=max_order` once using a locked complex-multiply recurrence:
+///
+/// ```text
+/// cos(mλ) = cos(λ) cos((m-1)λ) - sin(λ) sin((m-1)λ)
+/// sin(mλ) = sin(λ) cos((m-1)λ) + cos(λ) sin((m-1)λ)
+/// ```
+///
+/// It is a small shared substrate for the future Pines/Gottlieb kernels; it
+/// does not evaluate a gravity field by itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HarmonicLongitudeTrigonometry {
+    longitude_rad: f64,
+    cosine_by_order: Vec<f64>,
+    sine_by_order: Vec<f64>,
+}
+
+impl HarmonicLongitudeTrigonometry {
+    /// Build a longitude trigonometry table through `max_order`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if the longitude is
+    /// non-finite, the order exceeds [`HARMONIC_LONGITUDE_MAX_ORDER`], or the
+    /// table length overflows. Returns [`PhysicsError::NonFinite`] if the
+    /// recurrence produces a non-finite value.
+    pub fn new(longitude_rad: f64, max_order: usize) -> Result<Self, PhysicsError> {
+        if !longitude_rad.is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "harmonic longitude must be finite",
+            });
+        }
+        if max_order > HARMONIC_LONGITUDE_MAX_ORDER {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "harmonic longitude order exceeds checked high-order envelope",
+            });
+        }
+        let len = max_order
+            .checked_add(1)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "harmonic longitude table length overflowed",
+            })?;
+        let mut cosine_by_order = Vec::with_capacity(len);
+        let mut sine_by_order = Vec::with_capacity(len);
+        cosine_by_order.push(1.0);
+        sine_by_order.push(0.0);
+
+        if max_order > 0 {
+            let (sin_lambda, cos_lambda) = longitude_rad.sin_cos();
+            cosine_by_order.push(cos_lambda);
+            sine_by_order.push(sin_lambda);
+            for order in 2..=max_order {
+                let previous_cosine = cosine_by_order[order - 1];
+                let previous_sine = sine_by_order[order - 1];
+                let cosine = cos_lambda * previous_cosine - sin_lambda * previous_sine;
+                let sine = sin_lambda * previous_cosine + cos_lambda * previous_sine;
+                if !cosine.is_finite() || !sine.is_finite() {
+                    return Err(PhysicsError::NonFinite {
+                        reason: "harmonic longitude recurrence produced non-finite output",
+                    });
+                }
+                cosine_by_order.push(cosine);
+                sine_by_order.push(sine);
+            }
+        }
+
+        Ok(Self {
+            longitude_rad,
+            cosine_by_order,
+            sine_by_order,
+        })
+    }
+
+    /// Input longitude `λ`, in radians.
+    #[must_use]
+    pub const fn longitude_rad(&self) -> f64 {
+        self.longitude_rad
+    }
+
+    /// Maximum order available in this table.
+    #[must_use]
+    pub fn max_order(&self) -> usize {
+        self.cosine_by_order.len() - 1
+    }
+
+    /// Return `(cos(mλ), sin(mλ))` for `order = m`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `order` is outside the
+    /// table envelope.
+    pub fn harmonic(&self, order: usize) -> Result<(f64, f64), PhysicsError> {
+        let cosine = self
+            .cosine_by_order
+            .get(order)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "harmonic longitude lookup outside table envelope",
+            })?;
+        let sine = self
+            .sine_by_order
+            .get(order)
+            .ok_or(PhysicsError::InvalidParameter {
+                reason: "harmonic longitude lookup outside table envelope",
+            })?;
+        Ok((*cosine, *sine))
+    }
+
+    /// Return `cos(mλ)` for `order = m`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `order` is outside the
+    /// table envelope.
+    pub fn cosine(&self, order: usize) -> Result<f64, PhysicsError> {
+        Ok(self.harmonic(order)?.0)
+    }
+
+    /// Return `sin(mλ)` for `order = m`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `order` is outside the
+    /// table envelope.
+    pub fn sine(&self, order: usize) -> Result<f64, PhysicsError> {
+        Ok(self.harmonic(order)?.1)
+    }
 }
 
 /// One fully-normalized spherical-harmonic coefficient pair.
@@ -2948,6 +3086,63 @@ mod tests {
         ));
         assert!(matches!(
             fully_normalized_to_unnormalized_scale(FULLY_NORMALIZED_SCALE_MAX_DEGREE + 1, 0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tesseral_longitude_trigonometry_matches_direct_trig() {
+        let longitude_rad = 0.73_f64;
+        let table = HarmonicLongitudeTrigonometry::new(longitude_rad, 12).unwrap();
+
+        assert_eq!(table.longitude_rad().to_bits(), longitude_rad.to_bits());
+        assert_eq!(table.max_order(), 12);
+        assert_eq!(table.harmonic(0).unwrap(), (1.0, 0.0));
+
+        for order in 1..=12 {
+            let order_u32 = u32::try_from(order).unwrap();
+            let (expected_sine, expected_cosine) = (f64::from(order_u32) * longitude_rad).sin_cos();
+            assert_abs_diff_eq!(
+                table.cosine(order).unwrap(),
+                expected_cosine,
+                epsilon = 1.0e-14
+            );
+            assert_abs_diff_eq!(table.sine(order).unwrap(), expected_sine, epsilon = 1.0e-14);
+            assert_abs_diff_eq!(
+                table.harmonic(order).unwrap().0,
+                expected_cosine,
+                epsilon = 1.0e-14
+            );
+            assert_abs_diff_eq!(
+                table.harmonic(order).unwrap().1,
+                expected_sine,
+                epsilon = 1.0e-14
+            );
+        }
+    }
+
+    #[test]
+    fn tesseral_longitude_trigonometry_rejects_invalid_inputs() {
+        assert!(matches!(
+            HarmonicLongitudeTrigonometry::new(f64::NAN, 0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            HarmonicLongitudeTrigonometry::new(0.0, HARMONIC_LONGITUDE_MAX_ORDER + 1),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+
+        let table = HarmonicLongitudeTrigonometry::new(-1.2, 3).unwrap();
+        assert!(matches!(
+            table.harmonic(4),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            table.cosine(4),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            table.sine(4),
             Err(PhysicsError::InvalidParameter { .. })
         ));
     }

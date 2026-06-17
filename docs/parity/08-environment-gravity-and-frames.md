@@ -90,7 +90,7 @@ above. No artifact in this dimension ever claims `flight-qualified` / `certified
 
 Verified by reading the actual files (paths absolute under the repo root).
 
-### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (3101 lines)
+### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (3560 lines)
 
 - `trait GravityModel { fn gravity_eci_m_s2(&self, position_eci, time) -> Result<Vector3<f64>, PhysicsError> }` — the single environment-side acceleration surface used by current gravity/perturbation models; ephemeris-backed paths vary with time.
 - `ConstantGravity`, `PointMassGravity` (`−µ/r² r̂`), `J2Gravity` (point-mass + J₂ in closed Cartesian form, Vallado §8.6).
@@ -98,13 +98,15 @@ Verified by reading the actual files (paths absolute under the repo root).
 - `TesseralGravity` — first WP-08.1 substrate: a static degree-2/order-2 ECI
   harmonic surface with `DegreeTwoTesseralCoefficients`,
   `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
-  `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`, `TideSystem`, and
-  fail-closed degree/order validation. It supports `C20`, `C21/S21`, and `C22/S22` Cartesian
+  `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
+  `HarmonicLongitudeTrigonometry`, `TideSystem`, and fail-closed degree/order
+  validation. It supports `C20`, `C21/S21`, and `C22/S22` Cartesian
   solid-harmonic acceleration, converts fully-normalized degree-2 coefficient
   blocks into the current unnormalized evaluator, stores reusable normalized
   `Cbar/Sbar` fields in deterministic packed `(n, m)` order, exposes a checked
-  `fully_normalized_to_unnormalized_scale` helper and complete default-zero
-  coefficient-slot iterator for future synthesis kernels, rejects duplicate or
+  `fully_normalized_to_unnormalized_scale` helper, a bounded `cos(mλ)` /
+  `sin(mλ)` recurrence table, and complete default-zero coefficient-slot
+  iterator for future synthesis kernels, rejects duplicate or
   out-of-envelope coefficient entries, parses a provenance-pinned WGS84
   normalized degree-2 fixture, proves its degree-2/order-0 path is
   byte-identical to `J2Gravity`, and stays finite near the pole. This is **not
@@ -646,9 +648,10 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
 - **implementation_status:** partial. `crates/openbmp-physics/src/gravity.rs`
   now exposes `TesseralGravity`, `DegreeTwoTesseralCoefficients`,
   `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
-  `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`, and `TideSystem` as
-  the first non-zonal static harmonic force surface plus reusable normalized
-  `Cbar/Sbar` coefficient-field substrate.
+  `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
+  `HarmonicLongitudeTrigonometry`, and `TideSystem` as the first non-zonal
+  static harmonic force surface plus reusable normalized `Cbar/Sbar`
+  coefficient-field and longitude-trigonometry substrate.
   `TesseralGravity::wgs84_j2()` is byte-identical to `J2Gravity`, the degree-2
   evaluator includes C21/S21 tesseral and C22/S22 sectoral terms through
   Cartesian solid-harmonic polynomials, the low-degree ingestion bridge converts
@@ -658,8 +661,9 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   provenance-pinned
   `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
   fixture. Tests prove non-zonal acceleration, near-pole finite evaluation,
-  point-mass degeneration, shared fully-normalized scale factors, default-zero
-  missing coefficients and iteration slots,
+  point-mass degeneration, shared fully-normalized scale factors, bounded
+  longitude `cos(mλ)`/`sin(mλ)` recurrence, default-zero missing coefficients
+  and iteration slots,
   normalized-field zonal fixture equivalence, and fail-closed unsupported
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:
