@@ -101,7 +101,8 @@ Verified by reading the actual files (paths absolute under the repo root).
   `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
   `HarmonicLongitudeTrigonometry`, `HarmonicTruncation`,
   `PinesLegendreTable`, `PinesLongitudePolynomials`, `PinesSynthesisPoint`,
-  `PinesPotentialSum`, `TideSystem`, and fail-closed degree/order validation.
+  `PinesPotentialSum`, `GottliebPotentialSum`, `TideSystem`, and fail-closed
+  degree/order validation.
   It supports `C20`, `C21/S21`, and `C22/S22` Cartesian solid-harmonic
   acceleration, converts fully-normalized degree-2 coefficient blocks into the
   current unnormalized evaluator, stores reusable normalized `Cbar/Sbar` fields
@@ -112,6 +113,9 @@ Verified by reading the actual files (paths absolute under the repo root).
   truncation envelope validator, a bounded Holmes-Featherstone/Pines `A_nm(u)`
   recurrence table, a body-fixed synthesis-point validator, a normalized
   Pines scalar-potential correction sum over deterministic coefficient slots,
+  a normalized Gottlieb-style scalar-potential recomposition oracle that
+  cross-checks the Pines sum through ordinary longitude trigonometry and an
+  explicit horizontal-power term,
   a bounded symmetric-finite-difference acceleration oracle derived from that
   scalar potential, and a public static `GravityModel` wrapper for that oracle
   whose ECI axes are currently treated as body-fixed until frame-rotating force
@@ -662,10 +666,11 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   `NormalizedHarmonicFieldIter`, `HarmonicLongitudeTrigonometry`,
   `HarmonicTruncation`,
   `PinesLegendreTable`, `PinesLongitudePolynomials`, `PinesSynthesisPoint`,
-  `PinesPotentialSum`, and `TideSystem` as the first non-zonal static harmonic
-  force surface plus reusable normalized `Cbar/Sbar` coefficient-field,
-  longitude-trigonometry, direction-cosine-longitude, truncation-validation,
-  Pines-Legendre, scalar-potential summation, and finite-difference
+  `PinesPotentialSum`, `GottliebPotentialSum`, and `TideSystem` as the first
+  non-zonal static harmonic force surface plus reusable normalized `Cbar/Sbar`
+  coefficient-field, longitude-trigonometry, direction-cosine-longitude,
+  truncation-validation, Pines-Legendre, scalar-potential summation,
+  Gottlieb-style scalar recomposition, and finite-difference
   acceleration-oracle substrate plus a static `GravityModel` wrapper.
   `TesseralGravity::wgs84_j2()` is byte-identical to `J2Gravity`, the degree-2
   evaluator includes C21/S21 tesseral and C22/S22 sectoral terms through
@@ -681,15 +686,17 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   direction-cosine longitude polynomials, checked truncation-envelope
   validation, low-degree closed-form Pines Legendre recurrence, normalized
   Pines scalar-potential summation matching the existing degree-2 Cartesian
-  polynomial, finite-difference acceleration and `FiniteDifferencePinesGravity`
-  model output matching existing analytic degree-2 tesseral terms, default-zero
-  missing coefficients and iteration slots,
+  polynomial, Gottlieb-style scalar-potential recomposition matching Pines at
+  generic/equatorial/near-pole points, finite-difference acceleration and
+  `FiniteDifferencePinesGravity` model output matching existing analytic
+  degree-2 tesseral terms, default-zero missing coefficients and iteration slots,
   normalized-field zonal fixture equivalence, and fail-closed unsupported
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:
-  runtime-selectable high-degree Pines synthesis, independent normalized
-  Gottlieb oracle, high-degree EGM2008 coefficient ingestion/provenance/tripwire, and
-  NGA HARMONIC_SYNTH benchmark tolerance tables.
+  runtime-selectable high-degree Pines synthesis, full normalized Gottlieb
+  acceleration-gradient oracle, high-degree EGM2008 coefficient
+  ingestion/provenance/tripwire, and NGA HARMONIC_SYNTH benchmark tolerance
+  tables.
 - **goal:** Replace the deg-6 zonal cap with full tesseral gravity. Build the shared `HarmonicSynthesis` kernel (Pines + normalized Gottlieb oracle + Holmes–Featherstone scaled recursion) and `TesseralGravity`; load EGM2008 to a runtime-selectable degree. The central gap-closer for this dimension and a "pure win that improves all propagation" (`00` §5).
 - **fidelity_tier:** T1
 - **depends_on:** []

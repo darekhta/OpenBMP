@@ -362,7 +362,8 @@ degree 6 (`gravity.rs`), and WP-08.1 is now **partial** through
 `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
 `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
 `HarmonicLongitudeTrigonometry`, `HarmonicTruncation`, `PinesLegendreTable`,
-`PinesLongitudePolynomials`, `PinesSynthesisPoint`, `PinesPotentialSum`, and
+`PinesLongitudePolynomials`, `PinesSynthesisPoint`, `PinesPotentialSum`,
+`GottliebPotentialSum`, and
 `TideSystem`: the first degree-2/order-2 static harmonic surface supports C20,
 C21/S21, and C22/S22 terms, converts fully-normalized degree-2 blocks, stores
 normalized `Cbar/Sbar` fields in deterministic packed `(n, m)` order, exposes
@@ -371,9 +372,10 @@ recurrence table, a singularity-free Pines direction-cosine longitude-
 polynomial table, a reusable truncation-envelope validator, a bounded
 Holmes-Featherstone/Pines `A_nm(u)` recurrence table, a body-fixed
 synthesis-point validator, a normalized Pines scalar-potential correction sum,
-a symmetric finite-difference acceleration oracle plus a public static
-`GravityModel` wrapper matched against the existing analytic degree-2 tesseral
-terms, and default-zero coefficient-slot iteration, rebuilds the current
+a normalized Gottlieb-style scalar-potential recomposition oracle cross-checked
+against the Pines sum, a symmetric finite-difference acceleration oracle plus a
+public static `GravityModel` wrapper matched against the existing analytic
+degree-2 tesseral terms, and default-zero coefficient-slot iteration, rebuilds the current
 `Egm2008ZonalGravity` J2-J6 truncation from the
 `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
 fixture, parses the `data/gravity/wgs84-degree2-normalized-v1.toml` provenance

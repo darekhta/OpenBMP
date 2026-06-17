@@ -105,9 +105,9 @@ pub use frames::{
 };
 pub use gravity::{
     ConstantGravity, DegreeTwoTesseralCoefficients, EGM2008_J3, EGM2008_J4, EGM2008_J5, EGM2008_J6,
-    EGM2008_MAX_DEGREE, Egm2008ZonalGravity, FiniteDifferencePinesGravity, GravityModel,
-    HARMONIC_LONGITUDE_MAX_ORDER, HarmonicLongitudeTrigonometry, HarmonicTruncation, J2Gravity,
-    NormalizedHarmonicCoefficient, NormalizedHarmonicField, NormalizedHarmonicFieldIter,
+    EGM2008_MAX_DEGREE, Egm2008ZonalGravity, FiniteDifferencePinesGravity, GottliebPotentialSum,
+    GravityModel, HARMONIC_LONGITUDE_MAX_ORDER, HarmonicLongitudeTrigonometry, HarmonicTruncation,
+    J2Gravity, NormalizedHarmonicCoefficient, NormalizedHarmonicField, NormalizedHarmonicFieldIter,
     PINES_LEGENDRE_MAX_DEGREE, PinesLegendreTable, PinesLongitudePolynomials, PinesPotentialSum,
     PinesSynthesisPoint, PointMassGravity, RelativisticCorrection,
     SOLAR_RADIATION_PRESSURE_1_AU_N_M2, SPEED_OF_LIGHT_M_S, STANDARD_GRAVITY_M_S2,

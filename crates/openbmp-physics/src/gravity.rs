@@ -18,6 +18,8 @@
 //! * [`FiniteDifferencePinesGravity`] — a transitional normalized Pines
 //!   model that composes point mass with the bounded finite-difference
 //!   harmonic-correction oracle.
+//! * [`GottliebPotentialSum`] — a scalar-potential recomposition oracle
+//!   for cross-checking the Pines coefficient sum.
 //!
 //! All models implement the [`GravityModel`] trait and report
 //! failure via [`crate::error::PhysicsError`] (out-of-envelope, non-finite,
@@ -1835,6 +1837,40 @@ impl PinesPotentialSum {
     }
 }
 
+/// Deterministic normalized Gottlieb-style scalar-potential correction sum.
+///
+/// This recomposes the same fully-normalized coefficient field through ordinary
+/// longitude trigonometry and an explicit horizontal-power term
+/// `cos(phi)^m`, rather than through Pines direction-cosine longitude
+/// polynomials. It is a scalar-potential cross-check substrate only; the full
+/// normalized Gottlieb acceleration-gradient oracle remains separate work.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct GottliebPotentialSum {
+    truncation: HarmonicTruncation,
+    dimensionless_correction: f64,
+    term_count: usize,
+}
+
+impl GottliebPotentialSum {
+    /// Truncation used to produce this sum.
+    #[must_use]
+    pub const fn truncation(&self) -> HarmonicTruncation {
+        self.truncation
+    }
+
+    /// Dimensionless normalized scalar-potential correction.
+    #[must_use]
+    pub const fn dimensionless_correction(&self) -> f64 {
+        self.dimensionless_correction
+    }
+
+    /// Number of deterministic `(n, m)` slots visited by the summation.
+    #[must_use]
+    pub const fn term_count(&self) -> usize {
+        self.term_count
+    }
+}
+
 /// One fully-normalized spherical-harmonic coefficient pair.
 ///
 /// `degree` and `order` identify `(n, m)`. The cosine coefficient is `Cbar_nm`;
@@ -2171,6 +2207,82 @@ impl NormalizedHarmonicField {
         }
 
         Ok(PinesPotentialSum {
+            truncation,
+            dimensionless_correction: sum,
+            term_count,
+        })
+    }
+
+    /// Evaluate the normalized Gottlieb-style scalar-potential correction sum.
+    ///
+    /// The position must be in the body-fixed frame associated with this
+    /// coefficient field. This is a scalar-potential recomposition oracle for
+    /// the Pines path: it uses `cos(mλ)` / `sin(mλ)` longitude terms and an
+    /// explicit `(sqrt(x² + y²) / r)^m` factor instead of Pines
+    /// direction-cosine longitude polynomials.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] if the truncation exceeds the field envelope,
+    /// if the synthesis geometry is invalid, or if any recurrence/sum produces
+    /// a non-finite value.
+    pub fn gottlieb_dimensionless_potential_sum(
+        &self,
+        position_body_fixed_m: Vector3<f64>,
+        reference_radius_m: f64,
+        truncation: HarmonicTruncation,
+    ) -> Result<GottliebPotentialSum, PhysicsError> {
+        let truncation = HarmonicTruncation::within_envelope(
+            truncation.degree(),
+            truncation.order(),
+            self.max_degree,
+            self.max_order,
+        )?;
+        let point = PinesSynthesisPoint::new(position_body_fixed_m, reference_radius_m)?;
+        let legendre = PinesLegendreTable::new(point.u(), truncation.degree(), truncation.order())?;
+        let longitude_rad = point.t().atan2(point.s());
+        let longitude = HarmonicLongitudeTrigonometry::new(longitude_rad, truncation.order())?;
+        let horizontal_norm = (point.s() * point.s() + point.t() * point.t()).sqrt();
+
+        let mut radial_power = 1.0_f64;
+        let mut sum = 0.0_f64;
+        let mut term_count = 0_usize;
+        for degree in 0..=truncation.degree() {
+            if degree > 0 {
+                radial_power *= point.reference_radius_over_radius();
+                if !radial_power.is_finite() {
+                    return Err(PhysicsError::NonFinite {
+                        reason: "Gottlieb potential radial power produced non-finite output",
+                    });
+                }
+            }
+            let mut horizontal_power = 1.0_f64;
+            for order in 0..=degree.min(truncation.order()) {
+                if order > 0 {
+                    horizontal_power *= horizontal_norm;
+                    if !horizontal_power.is_finite() {
+                        return Err(PhysicsError::NonFinite {
+                            reason: "Gottlieb potential horizontal power produced non-finite output",
+                        });
+                    }
+                }
+                let (cbar, sbar) = self.coefficient(degree, order)?;
+                let a_nm = legendre.value(degree, order)?;
+                let (cos_m_lambda, sin_m_lambda) = longitude.harmonic(order)?;
+                sum += radial_power
+                    * horizontal_power
+                    * a_nm
+                    * (cbar * cos_m_lambda + sbar * sin_m_lambda);
+                if !sum.is_finite() {
+                    return Err(PhysicsError::NonFinite {
+                        reason: "Gottlieb potential sum produced non-finite output",
+                    });
+                }
+                term_count += 1;
+            }
+        }
+
+        Ok(GottliebPotentialSum {
             truncation,
             dimensionless_correction: sum,
             term_count,
@@ -4292,6 +4404,95 @@ mod tests {
         ));
         assert!(matches!(
             field.pines_dimensionless_potential_sum(
+                Vector3::new(7_000_000.0, 0.0, 0.0),
+                WGS84_A_M,
+                HarmonicTruncation::new(2, 1).unwrap()
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tesseral_gottlieb_potential_sum_matches_pines_scalar_sum() {
+        let field = NormalizedHarmonicField::new(
+            4,
+            3,
+            TideSystem::TideFree,
+            [
+                NormalizedHarmonicCoefficient::new(2, 0, -4.8e-4, 0.0).unwrap(),
+                NormalizedHarmonicCoefficient::new(2, 1, 1.7e-6, -2.1e-6).unwrap(),
+                NormalizedHarmonicCoefficient::new(2, 2, 2.4e-6, 3.1e-6).unwrap(),
+                NormalizedHarmonicCoefficient::new(3, 0, 9.0e-7, 0.0).unwrap(),
+                NormalizedHarmonicCoefficient::new(3, 1, -7.0e-7, 4.0e-7).unwrap(),
+                NormalizedHarmonicCoefficient::new(3, 3, 2.5e-8, -1.5e-8).unwrap(),
+                NormalizedHarmonicCoefficient::new(4, 2, -3.0e-8, 6.0e-8).unwrap(),
+                NormalizedHarmonicCoefficient::new(4, 3, 7.0e-9, -5.0e-9).unwrap(),
+            ],
+        )
+        .unwrap();
+        let truncation = HarmonicTruncation::new(4, 3).unwrap();
+        let positions = [
+            Vector3::new(7_100_000.0, -800_000.0, 1_200_000.0),
+            Vector3::new(WGS84_A_M + 300_000.0, 0.0, 0.0),
+            Vector3::new(1.0, -2.0, WGS84_A_M + 500_000.0),
+        ];
+
+        for position in positions {
+            let pines = field
+                .pines_dimensionless_potential_sum(position, WGS84_A_M, truncation)
+                .unwrap();
+            let gottlieb = field
+                .gottlieb_dimensionless_potential_sum(position, WGS84_A_M, truncation)
+                .unwrap();
+
+            assert_eq!(gottlieb.truncation(), pines.truncation());
+            assert_eq!(gottlieb.term_count(), pines.term_count());
+            assert_eq!(gottlieb.term_count(), 14);
+            assert_abs_diff_eq!(
+                gottlieb.dimensionless_correction(),
+                pines.dimensionless_correction(),
+                epsilon = 1.0e-15
+            );
+        }
+    }
+
+    #[test]
+    fn tesseral_gottlieb_potential_sum_rejects_invalid_geometry_or_truncation() {
+        let field = NormalizedHarmonicField::new(
+            2,
+            0,
+            TideSystem::TideFree,
+            [NormalizedHarmonicCoefficient::new(2, 0, -WGS84_J2 / 5.0_f64.sqrt(), 0.0).unwrap()],
+        )
+        .unwrap();
+        let truncation = HarmonicTruncation::new(2, 0).unwrap();
+
+        assert!(matches!(
+            field.gottlieb_dimensionless_potential_sum(
+                Vector3::new(0.0, 0.0, 0.0),
+                WGS84_A_M,
+                truncation
+            ),
+            Err(PhysicsError::OutOfEnvelope { .. })
+        ));
+        assert!(matches!(
+            field.gottlieb_dimensionless_potential_sum(
+                Vector3::new(f64::NAN, 0.0, 0.0),
+                WGS84_A_M,
+                truncation
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            field.gottlieb_dimensionless_potential_sum(
+                Vector3::new(7_000_000.0, 0.0, 0.0),
+                0.0,
+                truncation
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            field.gottlieb_dimensionless_potential_sum(
                 Vector3::new(7_000_000.0, 0.0, 0.0),
                 WGS84_A_M,
                 HarmonicTruncation::new(2, 1).unwrap()
