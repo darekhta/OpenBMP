@@ -1089,6 +1089,13 @@ reviewable commit (`13` §5).
 ### WP-11.7 — Wire per-entry aero/struct/prop UQ into the MC error budget
 
 - **title:** Flow ingested per-discipline uncertainty into `CorrelatedErrorBudget` as epistemic bands
+- **status:** first ingest adapter landed under `REQ-UQ-004` / `V-UQ-004`:
+  `openbmp-uq::UpstreamMargin` validates bounded upstream deck bands and turns
+  them into source-tagged `UncertaintySource` values, and
+  `propulsion_c_star_efficiency_margin_source` maps doc-05 thermochemistry
+  `c_star_efficiency` bands into epistemic budget sources with credibility
+  evidence. Runner gathering, MC campaign consumption, and the remaining
+  structural/aero/aerothermal deck adapters are still future work.
 - **goal:** Close the loop: consume the per-entry bias/random margins the aero (`03`), aerothermal (`04`), propulsion (`05`), and structural (`02`) database objects produce, mapping them into the source-tagged error budget as epistemic model-form bands, so a campaign's credibility report reflects the *actual* upstream uncertainty rather than hand-set figures.
 - **fidelity_tier:** T4
 - **depends_on:** [WP-11.2, WP-11.3]

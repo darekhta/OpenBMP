@@ -370,6 +370,159 @@ impl UncertaintySource {
     }
 }
 
+/// Bounded uncertainty band emitted by an upstream discipline deck.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UpstreamMargin {
+    /// Stable source identifier for the contributing deck entry.
+    pub source_id: String,
+    /// Quantity represented by the band, such as `c_star_efficiency`.
+    pub quantity_id: String,
+    /// Nominal value used by the deterministic model.
+    pub nominal: f64,
+    /// Lower bound for the quantity.
+    pub lower: f64,
+    /// Upper bound for the quantity.
+    pub upper: f64,
+    /// Aleatory or epistemic classification.
+    pub class: UncertaintyClass,
+    /// Credibility evidence inherited from the upstream deck.
+    pub credibility: CredibilityRecord,
+    /// Human-readable upstream evidence pointer.
+    pub justification: String,
+}
+
+impl UpstreamMargin {
+    /// Validate the bounded upstream margin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UqError`] when identifiers are empty, values are non-finite,
+    /// the band is not ordered as `lower <= nominal <= upper`, or credibility
+    /// evidence is incomplete.
+    pub fn validate(&self) -> Result<(), UqError> {
+        if self.source_id.trim().is_empty() {
+            return Err(UqError::InvalidInput {
+                field: "upstream_margin.source_id",
+            });
+        }
+        if self.quantity_id.trim().is_empty() {
+            return Err(UqError::InvalidInput {
+                field: "upstream_margin.quantity_id",
+            });
+        }
+        if !self.nominal.is_finite() || !self.lower.is_finite() || !self.upper.is_finite() {
+            return Err(UqError::InvalidInput {
+                field: "upstream_margin.value",
+            });
+        }
+        if self.lower > self.nominal || self.nominal > self.upper {
+            return Err(UqError::InvalidInput {
+                field: "upstream_margin.bounds",
+            });
+        }
+        if self.justification.trim().is_empty() {
+            return Err(UqError::InvalidInput {
+                field: "upstream_margin.justification",
+            });
+        }
+        self.credibility.validate()
+    }
+
+    /// Conservative one-sigma surrogate for the bounded margin.
+    ///
+    /// This intentionally preserves the full larger side of the bound as the
+    /// source contribution instead of assuming a distribution inside the band.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UqError`] when the margin is malformed or the width is
+    /// non-finite.
+    pub fn conservative_one_sigma(&self) -> Result<f64, UqError> {
+        self.validate()?;
+        let one_sigma = (self.nominal - self.lower)
+            .abs()
+            .max((self.upper - self.nominal).abs());
+        if one_sigma.is_finite() {
+            Ok(one_sigma)
+        } else {
+            Err(UqError::NonFinite {
+                field: "upstream_margin.one_sigma",
+            })
+        }
+    }
+
+    /// Convert the upstream band into a source-tagged UQ contribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UqError`] when the margin or produced source is malformed.
+    pub fn into_uncertainty_source(self) -> Result<UncertaintySource, UqError> {
+        let one_sigma = self.conservative_one_sigma()?;
+        let source = UncertaintySource {
+            source_id: self.source_id,
+            one_sigma,
+            class: self.class,
+            credibility: self.credibility,
+            justification: self.justification,
+        };
+        source.validate()?;
+        Ok(source)
+    }
+}
+
+/// Build a credibility record that assigns the same score to every factor.
+#[must_use]
+pub fn uniform_credibility_record(
+    level: CredibilityLevel,
+    evidence: impl Into<String>,
+) -> CredibilityRecord {
+    let evidence = evidence.into();
+    let mut record = CredibilityRecord::new();
+    for factor in CredibilityFactor::ALL {
+        record = record.with_score(factor, level, evidence.clone());
+    }
+    record
+}
+
+/// Convert a propulsion thermochemistry `c*` efficiency band into UQ source form.
+///
+/// The source is epistemic because the band represents model-form /
+/// calibration uncertainty in the upstream propulsion deck, not run-to-run
+/// variability.
+///
+/// # Errors
+///
+/// Returns [`UqError`] when the deck id, evidence, efficiency band, or
+/// resulting source is malformed.
+pub fn propulsion_c_star_efficiency_margin_source(
+    deck_id: impl Into<String>,
+    min_efficiency: f64,
+    nominal_efficiency: f64,
+    max_efficiency: f64,
+    credibility_level: CredibilityLevel,
+    evidence: impl Into<String>,
+) -> Result<UncertaintySource, UqError> {
+    let deck_id = deck_id.into();
+    if deck_id.trim().is_empty() {
+        return Err(UqError::InvalidInput {
+            field: "propulsion_c_star.deck_id",
+        });
+    }
+    let evidence = evidence.into();
+    let source_id = format!("05.propulsion.{deck_id}.c_star_efficiency");
+    UpstreamMargin {
+        source_id,
+        quantity_id: "c_star_efficiency".into(),
+        nominal: nominal_efficiency,
+        lower: min_efficiency,
+        upper: max_efficiency,
+        class: UncertaintyClass::Epistemic,
+        credibility: uniform_credibility_record(credibility_level, evidence.clone()),
+        justification: evidence,
+    }
+    .into_uncertainty_source()
+}
+
 /// Symmetric positive-semidefinite correlation matrix.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CorrelationMatrix {
@@ -1128,20 +1281,20 @@ mod tests {
 
     fn source(id: &str, sigma: f64, class: UncertaintyClass) -> UncertaintySource {
         UncertaintySource {
-            source_id: id.to_owned(),
+            source_id: String::from(id),
             one_sigma: sigma,
             class,
             credibility: credibility(CredibilityLevel::L2),
-            justification: "synthetic evidence".to_owned(),
+            justification: String::from("synthetic evidence"),
         }
     }
 
     fn contribution(id: &str, sigma: f64, status: ValidationStatus) -> UncertaintyContribution {
         UncertaintyContribution {
-            model_id: id.to_owned(),
+            model_id: String::from(id),
             one_sigma: sigma,
             status,
-            justification: "textbook reference".to_owned(),
+            justification: String::from("textbook reference"),
         }
     }
 
@@ -1208,6 +1361,72 @@ mod tests {
         let epistemic = budget.epistemic_one_sigma().unwrap();
         assert!((aleatory - 16.0_f64.sqrt()).abs() < 1.0e-12);
         assert!((epistemic - 5.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn propulsion_c_star_efficiency_band_flows_into_epistemic_budget() {
+        let source = propulsion_c_star_efficiency_margin_source(
+            "lox_lch4_cantera_gri30.v1",
+            0.96,
+            0.98,
+            1.0,
+            CredibilityLevel::L3,
+            "data/thermochem/lox-lch4-cantera-gri30-schema-1.toml",
+        )
+        .unwrap();
+        assert_eq!(
+            source.source_id,
+            "05.propulsion.lox_lch4_cantera_gri30.v1.c_star_efficiency"
+        );
+        assert_eq!(source.class, UncertaintyClass::Epistemic);
+        assert!((source.one_sigma - 0.02).abs() < 1.0e-15);
+
+        let budget = CorrelatedErrorBudget {
+            sources: vec![source],
+            correlation: None,
+        };
+        assert!((budget.epistemic_one_sigma().unwrap() - 0.02).abs() < 1.0e-15);
+        assert_eq!(
+            budget
+                .binding_credibility()
+                .expect("binding record")
+                .binding_level(),
+            CredibilityLevel::L3
+        );
+    }
+
+    #[test]
+    fn upstream_margin_rejects_unordered_or_missing_evidence() {
+        let unordered = UpstreamMargin {
+            source_id: String::from("05.propulsion.bad.c_star_efficiency"),
+            quantity_id: String::from("c_star_efficiency"),
+            nominal: 0.98,
+            lower: 1.0,
+            upper: 0.96,
+            class: UncertaintyClass::Epistemic,
+            credibility: credibility(CredibilityLevel::L2),
+            justification: String::from("synthetic bad band"),
+        };
+        assert!(matches!(
+            unordered.conservative_one_sigma(),
+            Err(UqError::InvalidInput {
+                field: "upstream_margin.bounds"
+            })
+        ));
+
+        assert!(matches!(
+            propulsion_c_star_efficiency_margin_source(
+                " ",
+                0.96,
+                0.98,
+                1.0,
+                CredibilityLevel::L2,
+                "evidence",
+            ),
+            Err(UqError::InvalidInput {
+                field: "propulsion_c_star.deck_id"
+            })
+        ));
     }
 
     #[test]

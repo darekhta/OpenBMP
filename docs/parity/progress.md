@@ -453,7 +453,7 @@ WP-09.1 … WP-09.12: **not started**.
 | WP-11.4 rare events | **implemented** | subset simulation (Au-Beck) + cross-entropy IS on sealed synthetic limit states; compile-fail tripwire `crates/openbmp-testkit/tests/limit_state_no_aimpoint_compile_fail.rs` + UI test |
 | WP-11.5 MMS + order verification | **partial** | manufactured ODE + observed-order/Richardson/GCI (`openbmp verify-order`, testkit verification module); campaign-scale integration pending |
 | WP-11.6 BET reconstruction | **partial** | RTS smoother + batch Gauss-Newton + NEES/NIS in `crates/openbmp-testkit/src/reconstruction.rs`; `openbmp reconstruct` CLI; pseudo-flight campaign + LOCAL workflow documentation pending |
-| WP-11.7 cross-discipline UQ wiring | **not started** | upstream per-entry margins (03/04/05 decks) not yet flowing |
+| WP-11.7 cross-discipline UQ wiring | **partial** | `openbmp-uq::UpstreamMargin` plus `propulsion_c_star_efficiency_margin_source` can convert doc-05 thermochemistry `c_star_efficiency` bands into source-tagged epistemic `CorrelatedErrorBudget` inputs with credibility evidence; missing: runner gathering, MC campaign consumption, and 02/03/04 deck adapters |
 | WP-11.8 campaign determinism/real-time | **partial** | delivered through doc 12's reducers/checkpointing; ensemble byte-diff gate extension pending |
 
 ### 12 — Determinism, real-time & compute
