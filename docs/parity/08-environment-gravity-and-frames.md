@@ -90,7 +90,7 @@ above. No artifact in this dimension ever claims `flight-qualified` / `certified
 
 Verified by reading the actual files (paths absolute under the repo root).
 
-### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (4421 lines)
+### 2.1 Gravity — `crates/openbmp-physics/src/gravity.rs` (4642 lines)
 
 - `trait GravityModel { fn gravity_eci_m_s2(&self, position_eci, time) -> Result<Vector3<f64>, PhysicsError> }` — the single environment-side acceleration surface used by current gravity/perturbation models; ephemeris-backed paths vary with time.
 - `ConstantGravity`, `PointMassGravity` (`−µ/r² r̂`), `J2Gravity` (point-mass + J₂ in closed Cartesian form, Vallado §8.6).
@@ -112,6 +112,8 @@ Verified by reading the actual files (paths absolute under the repo root).
   truncation envelope validator, a bounded Holmes-Featherstone/Pines `A_nm(u)`
   recurrence table, a body-fixed synthesis-point validator, a normalized
   Pines scalar-potential correction sum over deterministic coefficient slots,
+  a bounded symmetric-finite-difference acceleration oracle derived from that
+  scalar potential,
   and complete default-zero coefficient-slot iterator for future synthesis kernels, rejects duplicate or
   out-of-envelope coefficient entries, parses a provenance-pinned WGS84
   normalized degree-2 fixture, proves its degree-2/order-0 path is
@@ -660,7 +662,8 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   `PinesPotentialSum`, and `TideSystem` as the first non-zonal static harmonic
   force surface plus reusable normalized `Cbar/Sbar` coefficient-field,
   longitude-trigonometry, direction-cosine-longitude, truncation-validation,
-  Pines-Legendre, and scalar-potential summation substrate.
+  Pines-Legendre, scalar-potential summation, and finite-difference
+  acceleration-oracle substrate.
   `TesseralGravity::wgs84_j2()` is byte-identical to `J2Gravity`, the degree-2
   evaluator includes C21/S21 tesseral and C22/S22 sectoral terms through
   Cartesian solid-harmonic polynomials, the low-degree ingestion bridge converts
@@ -675,7 +678,8 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   direction-cosine longitude polynomials, checked truncation-envelope
   validation, low-degree closed-form Pines Legendre recurrence, normalized
   Pines scalar-potential summation matching the existing degree-2 Cartesian
-  polynomial, default-zero missing coefficients and iteration slots,
+  polynomial, finite-difference acceleration matching existing analytic
+  degree-2 tesseral terms, default-zero missing coefficients and iteration slots,
   normalized-field zonal fixture equivalence, and fail-closed unsupported
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:

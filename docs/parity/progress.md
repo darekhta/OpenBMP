@@ -370,7 +370,8 @@ recurrence table, a singularity-free Pines direction-cosine longitude-
 polynomial table, a reusable truncation-envelope validator, a bounded
 Holmes-Featherstone/Pines `A_nm(u)` recurrence table, a body-fixed
 synthesis-point validator, a normalized Pines scalar-potential correction sum,
-and default-zero coefficient-slot iteration, rebuilds the current
+a symmetric finite-difference acceleration oracle matched against the existing
+analytic degree-2 tesseral terms, and default-zero coefficient-slot iteration, rebuilds the current
 `Egm2008ZonalGravity` J2-J6 truncation from the
 `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
 fixture, parses the `data/gravity/wgs84-degree2-normalized-v1.toml` provenance
