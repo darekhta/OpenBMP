@@ -2294,6 +2294,7 @@ where
     root_free_flyer_multibody_derivative_from_rigid_loads(
         &seed.tree,
         &seed.sim_state,
+        seed.rigid_state.mass_props,
         moment_body_n_m,
         force_eci_n,
     )
@@ -2392,20 +2393,40 @@ struct RootFreeFlyerLoadViews<'a> {
 fn root_free_flyer_multibody_derivative_from_rigid_loads(
     tree: &MultibodyTree,
     state: &MultibodySimState,
+    mass_props: MassProperties,
     moment_body_n_m: Vector3<f64>,
     force_eci_n: Vector3<f64>,
 ) -> Result<MultibodyDerivative, RunnerError> {
     let external_forces_body = vec![SpatialForce::zero(); tree.bodies().len()];
-    tree.derivative_from_root_free_flyer_loads(
-        state.state(),
-        moment_body_n_m,
-        force_eci_n,
-        SpatialMotion::zero(),
-        &external_forces_body,
-    )
-    .map_err(|err| RunnerError::UnsupportedScenario {
-        what: format!("root free-flyer multibody derivative failed: {err}"),
-    })
+    let derivative = tree
+        .derivative_from_root_free_flyer_loads(
+            state.state(),
+            moment_body_n_m,
+            force_eci_n,
+            SpatialMotion::zero(),
+            &external_forces_body,
+        )
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("root free-flyer multibody derivative failed: {err}"),
+        })?;
+    let qd = state.qd();
+    let body_acceleration =
+        root_free_flyer_rigid_state_from_multibody_state(tree.bodies()[0].id, state, mass_props)?
+            .orientation
+            .inverse()
+            .q
+            * (force_eci_n / mass_props.mass_kg());
+    let omega_body = Vector3::new(qd[0], qd[1], qd[2]);
+    let velocity_body = Vector3::new(qd[3], qd[4], qd[5]);
+    let mut qd_dot = derivative.qd_dot().to_vec();
+    let linear_velocity_derivative_body = body_acceleration - omega_body.cross(&velocity_body);
+    qd_dot[3] = linear_velocity_derivative_body.x;
+    qd_dot[4] = linear_velocity_derivative_body.y;
+    qd_dot[5] = linear_velocity_derivative_body.z;
+    Ok(MultibodyDerivative::new(
+        derivative.q_dot().to_vec(),
+        qd_dot,
+    ))
 }
 
 fn seed_initial_rigid_body_lanes<I, F, MOM, MM, E, SC>(
@@ -4698,6 +4719,7 @@ mod tests {
         let derivative = root_free_flyer_multibody_derivative_from_rigid_loads(
             &tree,
             &sim_state,
+            state.mass_props,
             Vector3::new(4.0, 8.0, 12.0),
             Vector3::new(14.0, 16.0, 18.0),
         )
@@ -4767,6 +4789,7 @@ mod tests {
         let err = root_free_flyer_multibody_derivative_from_rigid_loads(
             &tree,
             &sim_state,
+            state.mass_props,
             Vector3::new(f64::NAN, 0.0, 0.0),
             Vector3::zeros(),
         )
@@ -4946,7 +4969,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_multibody_shadow_rk4_forecast_matches_constant_mass_rigid_step() {
+    fn primary_multibody_shadow_rk4_forecast_matches_constant_mass_no_rotation_rigid_step() {
         let toml = PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO
             .replace("gravity_m_s2 = 0.0", "gravity_m_s2 = 2.0")
             .replace(
@@ -4996,6 +5019,71 @@ mod tests {
         let actual_q = actual.orientation.q.into_inner();
         assert!(
             (predicted_q.coords - actual_q.coords).norm() < 1.0e-12,
+            "q predicted={:?} actual={:?} diff={:?}",
+            predicted_q.coords,
+            actual_q.coords,
+            predicted_q.coords - actual_q.coords
+        );
+    }
+
+    #[test]
+    fn primary_multibody_shadow_rk4_forecast_bounds_constant_mass_direct_torque_rigid_step() {
+        let toml = PRIMARY_MULTIBODY_BRIDGE_BASELINE_SCENARIO
+            .replace("gravity_m_s2 = 0.0", "gravity_m_s2 = 2.0")
+            .replace(
+                "limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }\n",
+                "limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }\ninitial_position = 0.5\n",
+            )
+            .replace(
+                "[telemetry]\n",
+                "[multi_body]\nprimary_body_id = \"main\"\n\n[[multi_body.attitude_target]]\nbody_id = \"main\"\nstart_time_s = 1.0\npitch_effector = \"main-pitch-torque\"\nkp = 1.0\nkd = 0.0\nmax_command = 1.0\ntarget = { kind = \"eci_vector\", vector_eci = [0.0, 0.0, 1.0] }\n\n[telemetry]\n",
+            );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step forecasts primary root");
+
+        let forecast = session
+            .primary_multibody_shadow
+            .as_ref()
+            .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+            .expect("primary RK4 forecast recorded");
+        let predicted = &forecast.rigid_state;
+        let actual = session.state();
+        assert_eq!(predicted.time.as_seconds().to_bits(), 0.1_f64.to_bits());
+        let position_error_m = (predicted.position.vector - actual.position.vector).norm();
+        assert!(
+            position_error_m < 3.0e-6,
+            "position predicted={:?} actual={:?} diff={:?}",
+            predicted.position.vector,
+            actual.position.vector,
+            predicted.position.vector - actual.position.vector
+        );
+        let velocity_error_m_s = (predicted.velocity.vector - actual.velocity.vector).norm();
+        assert!(
+            velocity_error_m_s < 2.0e-6,
+            "velocity predicted={:?} actual={:?} diff={:?}",
+            predicted.velocity.vector,
+            actual.velocity.vector,
+            predicted.velocity.vector - actual.velocity.vector
+        );
+        assert!(
+            (predicted.angular_velocity.vector - actual.angular_velocity.vector).norm() < 1.0e-12,
+            "omega predicted={:?} actual={:?} diff={:?}",
+            predicted.angular_velocity.vector,
+            actual.angular_velocity.vector,
+            predicted.angular_velocity.vector - actual.angular_velocity.vector
+        );
+        let predicted_q = predicted.orientation.q.into_inner();
+        let actual_q = actual.orientation.q.into_inner();
+        let quaternion_error = (predicted_q.coords - actual_q.coords).norm();
+        assert!(
+            quaternion_error < 2.0e-8,
             "q predicted={:?} actual={:?} diff={:?}",
             predicted_q.coords,
             actual_q.coords,

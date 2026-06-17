@@ -479,7 +479,8 @@ impl Joint {
         }
         match self {
             Self::FreeFlyer => {
-                let rot_child_from_parent = rotation_from_quaternion_child_from_parent(&q[0..4])?;
+                let rot_child_from_parent =
+                    rotation_parent_from_child_from_quaternion(&q[0..4])?.transpose();
                 PluckerTransform::new(rot_child_from_parent, Vector3::new(q[4], q[5], q[6]))
             }
             Self::Revolute { axis_body_unit } => PluckerTransform::new(
@@ -491,7 +492,7 @@ impl Joint {
             }
             Self::Welded { .. } => Ok(PluckerTransform::identity()),
             Self::Spherical => PluckerTransform::new(
-                rotation_from_quaternion_child_from_parent(q)?,
+                rotation_parent_from_child_from_quaternion(q)?.transpose(),
                 Vector3::zeros(),
             ),
         }
@@ -993,9 +994,10 @@ impl MultibodyTree {
     /// Scalar revolute/prismatic joints map `qd` directly into `q_dot`.
     /// Free-flyer and spherical quaternion coordinates use the same
     /// body-frame quaternion convention as the rigid-body state model,
-    /// `q_dot = 0.5 * q ⊗ [0, omega_body]`. Free-flyer translation rates are
-    /// converted from body-frame linear velocity to parent-frame position
-    /// derivatives with the current normalized quaternion.
+    /// `q_dot = 0.5 * q ⊗ [0, omega_body]`. Free-flyer quaternions store the
+    /// parent-from-child rotation, so translation rates are converted from
+    /// body-frame linear velocity to parent-frame position derivatives with the
+    /// current normalized quaternion.
     ///
     /// # Errors
     ///
@@ -1018,10 +1020,10 @@ impl MultibodyTree {
                         &q[0..4],
                         Vector3::new(qd[0], qd[1], qd[2]),
                     )?);
-                    let rot_child_from_parent =
-                        rotation_from_quaternion_child_from_parent(&q[0..4])?;
+                    let rot_parent_from_child =
+                        rotation_parent_from_child_from_quaternion(&q[0..4])?;
                     let linear_body = Vector3::new(qd[3], qd[4], qd[5]);
-                    let translation_dot_parent = rot_child_from_parent.transpose() * linear_body;
+                    let translation_dot_parent = rot_parent_from_child * linear_body;
                     q_dot.extend_from_slice(translation_dot_parent.as_slice());
                 }
                 Joint::Revolute { .. } | Joint::Prismatic { .. } => {
@@ -1109,9 +1111,9 @@ impl MultibodyTree {
     /// [`Joint::motion_subspace`]: body-frame moment `(x, y, z)` followed by
     /// body-frame force `(x, y, z)`. This helper accepts the force in the root's
     /// virtual-parent frame so a runner can pass an inertial force from the
-    /// existing force-model surface, then rotates it through the root
-    /// quaternion. Non-root generalized-force entries are filled with zero; later
-    /// joint actuators can add to the returned vector in the same locked order.
+    /// existing force-model surface, then rotates it into the root body frame.
+    /// Non-root generalized-force entries are filled with zero; later joint
+    /// actuators can add to the returned vector in the same locked order.
     ///
     /// # Errors
     ///
@@ -1135,9 +1137,9 @@ impl MultibodyTree {
         let root = &self.bodies[0];
         debug_assert!(matches!(root.joint, Joint::FreeFlyer));
         let q_start = root.q_offset;
-        let rot_body_from_parent =
-            rotation_from_quaternion_child_from_parent(&state.q[q_start..q_start + 4])?;
-        let force_body_n = rot_body_from_parent * force_parent_n;
+        let rot_parent_from_body =
+            rotation_parent_from_child_from_quaternion(&state.q[q_start..q_start + 4])?;
+        let force_body_n = rot_parent_from_body.transpose() * force_parent_n;
         let mut generalized_forces = vec![0.0; self.n_qd];
         generalized_forces[root.qd_offset] = moment_body_n_m.x;
         generalized_forces[root.qd_offset + 1] = moment_body_n_m.y;
@@ -2202,7 +2204,7 @@ fn rotation_about_unit_axis(axis: Vector3<f64>, angle_rad: f64) -> Matrix3<f64> 
     )
 }
 
-fn rotation_from_quaternion_child_from_parent(q: &[f64]) -> Result<Matrix3<f64>, MultibodyError> {
+fn rotation_parent_from_child_from_quaternion(q: &[f64]) -> Result<Matrix3<f64>, MultibodyError> {
     if q.len() != 4 {
         return Err(MultibodyError::GeneralizedVectorDimensionMismatch {
             vector: "quaternion",
@@ -3085,6 +3087,27 @@ mod tests {
     }
 
     #[test]
+    fn coordinate_derivative_rotates_free_flyer_body_velocity_to_parent() {
+        let tree = sample_tree();
+        let inv_sqrt_2 = 1.0 / <f64 as nalgebra::ComplexField>::sqrt(2.0);
+        let state = MultibodyState::new(
+            SimTime::ZERO,
+            vec![
+                inv_sqrt_2, 0.0, 0.0, inv_sqrt_2, 10.0, 20.0, 30.0, 0.25, 0.5,
+            ],
+            vec![0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, -5.0],
+        );
+
+        let q_dot = tree.coordinate_derivative_from_velocity(&state).unwrap();
+
+        assert_abs_diff_eq!(q_dot[4], -2.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(q_dot[5], 1.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(q_dot[6], 3.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(q_dot[7], 4.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(q_dot[8], -5.0, epsilon = 1.0e-15);
+    }
+
+    #[test]
     fn coordinate_derivative_lifts_spherical_quaternion_rate() {
         let root = TreeBodySpec {
             id: BodyId::new(1),
@@ -3706,8 +3729,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(&generalized_forces[0..3], &[1.0, 2.0, 3.0]);
-        assert_abs_diff_eq!(generalized_forces[3], -5.0, epsilon = 1.0e-14);
-        assert_abs_diff_eq!(generalized_forces[4], 4.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(generalized_forces[3], 5.0, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(generalized_forces[4], -4.0, epsilon = 1.0e-14);
         assert_abs_diff_eq!(generalized_forces[5], 6.0, epsilon = 1.0e-14);
         assert_eq!(&generalized_forces[6..], &[0.0, 0.0, 0.0]);
     }
