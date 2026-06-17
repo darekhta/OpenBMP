@@ -165,8 +165,14 @@ verification = ["V-MULTIBODY-027"]
 [[requirements]]
 id = "REQ-MULTIBODY-028"
 title = "The multibody substrate exposes checked energy and generalized momentum"
-statement = "The openbmp-multibody crate exposes generalized_momentum_at_state and kinetic_energy_at_state, evaluating p = H(q) qd in locked generalized-velocity order and scalar kinetic energy from the state-dependent CRBA matrix. A checked TOML fixture backs a planar point-mass double-pendulum regression with a zero-velocity free-flyer root, analytic total kinetic energy, and analytic revolute generalized momenta under strict absolute tolerances. This makes no claim that Spatial_v2 oracle validation, runner-level propagation replacement, articulated gimbal-joint inertia coupling, or vehicle-scale gimballed ascent validation is complete."
+statement = "The openbmp-multibody crate exposes generalized_momentum_at_state and kinetic_energy_at_state, evaluating p = H(q) qd in locked generalized-velocity order and scalar kinetic energy from the state-dependent CRBA matrix. A checked TOML fixture backs a planar point-mass double-pendulum regression with a zero-velocity free-flyer root, analytic total kinetic energy, and analytic revolute generalized momenta under strict absolute tolerances. This makes no claim that Spatial_v2 oracle validation, runner-level propagation replacement, articulated gimbal-joint inertia coupling, or full-duration vehicle-scale gimballed ascent validation is complete."
 verification = ["V-MULTIBODY-028"]
+
+[[requirements]]
+id = "REQ-MULTIBODY-029"
+title = "The primary multibody shadow validates a vehicle-scale TVC ascent probe"
+statement = "The openbmp-runner primary root-free-flyer multibody shadow is covered on the Phalcon-9 TVC probe scenario with a nine-engine gimballed liquid-engine cluster, real FC guidance/autopilot/engine-rack surfaces, an accelerated pitch schedule, and a dormant multi_body attitude-target hook used only to enable the shadow. The runner test advances 150 real RigidBodySession ticks, proves each recorded primary-shadow RK4 forecast matches the authoritative rigid state on that tick, and proves the vehicle-scale engine snapshots applied nonzero lateral gimballed thrust. This makes no claim that the rigid-kernel propagation path has been replaced, full-duration orbital-ascent validation is complete, articulated gimbal-joint inertia coupling is modeled, or Spatial_v2 oracle validation is complete."
+verification = ["V-MULTIBODY-029"]
 
 [[requirements]]
 id = "REQ-SIL-001"
@@ -1378,6 +1384,26 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-MULTIBODY-028"]
+
+[[verification]]
+id = "V-MULTIBODY-029"
+kind = "test"
+command = "cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_matches_phalcon9_tvc_probe_ascent --locked && cargo test -p openbmp-runner primary_multibody_shadow_rk4_forecast_matches_multi_step_gimballed_ascent --locked && cargo check -p openbmp-runner --locked && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings"
+paths = [
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "scenarios/phalcon9/phalcon9-tvc-probe.toml",
+  "docs/parity/01-flexible-multibody-dynamics.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "primary_multibody_shadow_rk4_forecast_matches_phalcon9_tvc_probe_ascent",
+  "phalcon9_tvc_probe_multibody_scenario",
+  "primary_multibody_shadow_rk4_forecast_matches_multi_step_gimballed_ascent",
+  "REQ-MULTIBODY-029",
+  "WP-01.1 is now **partial**",
+  "**implementation_status:** partial",
+]
+requirements = ["REQ-MULTIBODY-029"]
 
 [[verification]]
 id = "V-SIL-001"

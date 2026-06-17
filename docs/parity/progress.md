@@ -196,14 +196,17 @@ stacks from the kernel's authoritative mass state, avoiding liquid-engine
 snapshot double-drain, and proves a pitch-gimballed liquid-engine burn forecasts
 the same next rigid state over one powered step (`REQ-MULTIBODY-022`). The same
 synthetic gimballed ascent now validates two consecutive powered forecast ticks
-against the current rigid kernel (`REQ-MULTIBODY-023`). Missing for full
-WP-01.1: replacing the rigid-kernel propagation path, broader variable-mass
+against the current rigid kernel (`REQ-MULTIBODY-023`). A clipped Phalcon-9 TVC
+probe now validates the primary-shadow forecast over 150 real runner ticks with
+the nine-engine gimballed liquid-engine cluster, real FC guidance/autopilot
+surfaces, and nonzero lateral gimballed thrust (`REQ-MULTIBODY-029`). Missing
+for full WP-01.1: replacing the rigid-kernel propagation path, broader variable-mass
 multibody propagation beyond the primary-root and powered separated-lane shadow
 forecasts, full momentum-conserving welded-to-free joint-release propagation and
 full separated-body multibody propagation beyond first-post-release separated
-shadow forecasts and the substrate handoff, vehicle-scale gimballed ascent
-validation, articulated gimbal-joint inertia coupling, and Spatial_v2 oracle
-checks.
+shadow forecasts and the substrate handoff, full-duration vehicle-scale
+gimballed ascent validation, articulated gimbal-joint inertia coupling, and
+Spatial_v2 oracle checks.
 WP-01.2 … WP-01.6: **not started**.
 
 ### 02 — Structural dynamics, loads, slosh & POGO

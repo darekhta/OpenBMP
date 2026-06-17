@@ -4607,6 +4607,51 @@ mod tests {
             .state
     }
 
+    fn phalcon9_tvc_probe_multibody_scenario() -> openbmp_scenario::Scenario {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/phalcon9/phalcon9-tvc-probe.toml");
+        let toml = std::fs::read_to_string(&path).expect("read Phalcon-9 TVC probe scenario");
+        let toml = toml
+            .replace("stop_s  = 40.0", "stop_s  = 2.0")
+            .replace(
+                "schedule_s = [0.0, 10.0, 30.0, 40.0]",
+                "schedule_s = [0.0, 0.2, 1.0, 2.0]",
+            )
+            .replace(
+                "pitch_rad  = [0.0, 0.0, 0.5, 0.5]",
+                "pitch_rad  = [0.0, 0.0, 0.2, 0.2]",
+            )
+            .replace(
+                "[environment]\n",
+                "[[vehicle.assembly.effectors]]\n\
+                 id = \"shadow-proof-torque\"\n\
+                 mounted_to = \"core\"\n\
+                 kind = { kind = \"direct_torque\", axis = \"pitch\", effectiveness_n_m_per_rad = 1.0 }\n\
+                 limits = { min = -1.0, max = 1.0, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }\n\
+                 \n\
+                 [environment]\n",
+            )
+            .replace(
+                "[telemetry]\n",
+                "[multi_body]\n\
+                 primary_body_id = \"core\"\n\
+                 \n\
+                 [[multi_body.attitude_target]]\n\
+                 body_id = \"core\"\n\
+                 start_time_s = 999.0\n\
+                 pitch_effector = \"shadow-proof-torque\"\n\
+                 kp = 1.0\n\
+                 kd = 0.1\n\
+                 max_command = 1.0\n\
+                 target = { kind = \"eci_vector\", vector_eci = [0.0, 0.0, 1.0] }\n\
+                 \n\
+                 [telemetry]\n",
+            );
+        let source_dir = path.parent().map(std::path::Path::to_path_buf);
+        openbmp_scenario::Scenario::from_toml_str_with_source_dir(&toml, source_dir)
+            .expect("Phalcon-9 TVC multibody probe parses")
+    }
+
     #[test]
     fn combine_dry_body_adds_mass_weights_cg_and_sums_inertia() {
         let base = MassProperties::new(
@@ -5396,6 +5441,44 @@ mod tests {
                 expected_time_s,
             );
         }
+    }
+
+    #[test]
+    fn primary_multibody_shadow_rk4_forecast_matches_phalcon9_tvc_probe_ascent() {
+        let scenario = phalcon9_tvc_probe_multibody_scenario();
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+        let mut max_lateral_thrust_n = 0.0_f64;
+
+        for _ in 0..150 {
+            session
+                .step_once(&scenario.document, None)
+                .expect("Phalcon-9 TVC multibody step forecasts primary root");
+            let forecast = session
+                .primary_multibody_shadow
+                .as_ref()
+                .and_then(|shadow| shadow.last_rk4_forecast.as_ref())
+                .expect("Phalcon-9 TVC RK4 forecast recorded");
+            assert_rigid_forecast_matches_state(
+                &forecast.rigid_state,
+                session.state(),
+                session.state().time.as_seconds(),
+            );
+
+            for snapshot in session.engine_snapshots().values() {
+                max_lateral_thrust_n = max_lateral_thrust_n.max(
+                    (snapshot.thrust_body.x * snapshot.thrust_body.x
+                        + snapshot.thrust_body.y * snapshot.thrust_body.y)
+                        .sqrt(),
+                );
+            }
+        }
+
+        assert!(
+            max_lateral_thrust_n > 1.0,
+            "vehicle-scale TVC probe should apply lateral gimballed thrust"
+        );
     }
 
     #[test]

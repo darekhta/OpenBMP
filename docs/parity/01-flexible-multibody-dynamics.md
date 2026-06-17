@@ -830,14 +830,17 @@ justification first, reviewed before the implementation lands.
   active stacks from the kernel's authoritative mass state and proves a
   pitch-gimballed liquid-engine burn forecasts the same next rigid state over
   one powered step and over two consecutive powered ticks in the same synthetic
-  ascent.
+  ascent. A clipped Phalcon-9 TVC probe now validates the same primary-shadow
+  forecast path over 150 real runner ticks with the nine-engine gimballed
+  liquid-engine cluster, real FC guidance/autopilot surfaces, and nonzero
+  lateral gimballed thrust.
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path,
   broader variable-mass multibody propagation beyond the primary-root and
   powered separated-lane shadow forecasts, runner-side momentum-conserving
   welded-to-free joint-release propagation and full separated-body multibody
   propagation beyond the substrate handoff and first-post-release separated
-  shadow forecasts, Spatial_v2 oracle fixtures, vehicle-scale gimballed ascent
-  validation, and articulated gimbal-joint inertia coupling.
+  shadow forecasts, Spatial_v2 oracle fixtures, full-duration vehicle-scale
+  gimballed ascent validation, and articulated gimbal-joint inertia coupling.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics
