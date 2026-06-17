@@ -108,7 +108,8 @@ pub use gravity::{
     NormalizedHarmonicCoefficient, NormalizedHarmonicField, NormalizedHarmonicFieldIter,
     PointMassGravity, RelativisticCorrection, SOLAR_RADIATION_PRESSURE_1_AU_N_M2,
     SPEED_OF_LIGHT_M_S, STANDARD_GRAVITY_M_S2, TESSERAL_GRAVITY_MAX_DEGREE,
-    TESSERAL_GRAVITY_MAX_ORDER, TesseralGravity, TideSystem, WGS84_J2, standard_down_z_eci_m_s2,
+    TESSERAL_GRAVITY_MAX_ORDER, TesseralGravity, TideSystem, WGS84_J2,
+    fully_normalized_to_unnormalized_scale, standard_down_z_eci_m_s2,
 };
 #[cfg(feature = "std")]
 pub use gravity::{

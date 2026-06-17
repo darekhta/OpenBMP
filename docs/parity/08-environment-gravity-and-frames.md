@@ -102,9 +102,10 @@ Verified by reading the actual files (paths absolute under the repo root).
   fail-closed degree/order validation. It supports `C20`, `C21/S21`, and `C22/S22` Cartesian
   solid-harmonic acceleration, converts fully-normalized degree-2 coefficient
   blocks into the current unnormalized evaluator, stores reusable normalized
-  `Cbar/Sbar` fields in deterministic packed `(n, m)` order, exposes a complete
-  default-zero coefficient-slot iterator for future synthesis kernels, rejects
-  duplicate or out-of-envelope coefficient entries, parses a provenance-pinned WGS84
+  `Cbar/Sbar` fields in deterministic packed `(n, m)` order, exposes a checked
+  `fully_normalized_to_unnormalized_scale` helper and complete default-zero
+  coefficient-slot iterator for future synthesis kernels, rejects duplicate or
+  out-of-envelope coefficient entries, parses a provenance-pinned WGS84
   normalized degree-2 fixture, proves its degree-2/order-0 path is
   byte-identical to `J2Gravity`, and stays finite near the pole. This is **not
   yet** the full Pines/Gottlieb high-degree EGM2008 kernel; high-degree EGM2008
@@ -657,7 +658,8 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   provenance-pinned
   `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
   fixture. Tests prove non-zonal acceleration, near-pole finite evaluation,
-  point-mass degeneration, default-zero missing coefficients and iteration slots,
+  point-mass degeneration, shared fully-normalized scale factors, default-zero
+  missing coefficients and iteration slots,
   normalized-field zonal fixture equivalence, and fail-closed unsupported
   degree/order/duplicate/out-of-range coefficient handling. Remaining work for
   full WP-08.1 acceptance:

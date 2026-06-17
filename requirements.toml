@@ -489,7 +489,7 @@ verification = ["V-TRAJOPT-002"]
 [[requirements]]
 id = "REQ-ENV-001"
 title = "The physics layer exposes a first tesseral gravity substrate"
-statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a reusable NormalizedHarmonicField / NormalizedHarmonicCoefficient / NormalizedHarmonicFieldIter substrate that stores Cbar/Sbar pairs in deterministic packed (n, m) order, defaults missing in-envelope coefficients to zero for lookup and iteration, rejects duplicate or out-of-envelope entries, and can rebuild the current Egm2008ZonalGravity J2-J6 truncation from a provenance-pinned normalized zonal Cbar_n0 fixture, a provenance-pinned WGS84 normalized degree-2 fixture, a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, finite Cartesian evaluation near the pole, and deterministic non-zonal acceleration for sectoral/tesseral terms while making no high-degree EGM2008 or Pines/Gottlieb completion claim."
+statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a reusable NormalizedHarmonicField / NormalizedHarmonicCoefficient / NormalizedHarmonicFieldIter substrate and checked fully_normalized_to_unnormalized_scale helper that store and scale Cbar/Sbar pairs in deterministic packed (n, m) order, defaults missing in-envelope coefficients to zero for lookup and iteration, rejects duplicate or out-of-envelope entries, and can rebuild the current Egm2008ZonalGravity J2-J6 truncation from a provenance-pinned normalized zonal Cbar_n0 fixture, a provenance-pinned WGS84 normalized degree-2 fixture, a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, finite Cartesian evaluation near the pole, and deterministic non-zonal acceleration for sectoral/tesseral terms while making no high-degree EGM2008 or Pines/Gottlieb completion claim."
 verification = ["V-ENV-001"]
 
 [[requirements]]
@@ -2778,6 +2778,7 @@ contains = [
   "from_normalized_degree_two",
   "from_normalized_field",
   "from_fully_normalized",
+  "fully_normalized_to_unnormalized_scale",
   "normalized_degree_two_tesseral_coefficients",
   "fully_normalized_zonal_scale",
   "wgs84-degree2-normalized-v1.toml",
@@ -2788,6 +2789,7 @@ contains = [
   "tesseral_gravity_degree_two_zonal_matches_existing_j2_byte_for_byte",
   "tesseral_gravity_loads_normalized_degree_two_pin",
   "tesseral_gravity_loads_normalized_harmonic_field_pin",
+  "tesseral_fully_normalized_scale_matches_degree_two_and_zonal_factors",
   "tesseral_normalized_harmonic_field_defaults_missing_coefficients_to_zero",
   "tesseral_normalized_harmonic_field_iterates_slots_in_row_order",
   "tesseral_normalized_harmonic_field_rejects_invalid_or_duplicate_coefficients",

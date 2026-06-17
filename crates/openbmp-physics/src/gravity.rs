@@ -1079,6 +1079,65 @@ impl TideSystem {
     }
 }
 
+const FULLY_NORMALIZED_SCALE_MAX_DEGREE: usize = 4096;
+
+/// Scale a real fully-normalized harmonic coefficient into the unnormalized
+/// associated-Legendre convention used by the current low-degree evaluators.
+///
+/// The scale is
+/// `sqrt((2 - delta_0m) * (2n + 1) * (n - m)! / (n + m)!)`, so
+/// `C_nm = Cbar_nm * scale(n, m)` and `S_nm = Sbar_nm * scale(n, m)`.
+///
+/// # Errors
+///
+/// Returns [`PhysicsError::InvalidParameter`] if `order > degree` or if the
+/// degree exceeds the bounded high-degree envelope used by this checked helper.
+/// Returns [`PhysicsError::NonFinite`] if the finite recurrence underflows or
+/// overflows into a non-finite scale.
+pub fn fully_normalized_to_unnormalized_scale(
+    degree: usize,
+    order: usize,
+) -> Result<f64, PhysicsError> {
+    if order > degree {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "normalization scale order must be <= degree",
+        });
+    }
+    if degree > FULLY_NORMALIZED_SCALE_MAX_DEGREE {
+        return Err(PhysicsError::InvalidParameter {
+            reason: "normalization scale degree exceeds checked high-degree envelope",
+        });
+    }
+    let degree_u32 = u32::try_from(degree).map_err(|_| PhysicsError::InvalidParameter {
+        reason: "normalization scale degree does not fit checked integer range",
+    })?;
+    let order_u32 = u32::try_from(order).map_err(|_| PhysicsError::InvalidParameter {
+        reason: "normalization scale order does not fit checked integer range",
+    })?;
+    let two_n_plus_one = degree_u32
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(1))
+        .ok_or(PhysicsError::InvalidParameter {
+            reason: "normalization scale degree factor overflowed",
+        })?;
+    let mut scale_squared = f64::from(two_n_plus_one);
+    if order != 0 {
+        scale_squared *= 2.0;
+    }
+    let first_denominator = degree_u32 - order_u32 + 1;
+    let last_denominator = degree_u32 + order_u32;
+    for denominator in first_denominator..=last_denominator {
+        scale_squared /= f64::from(denominator);
+    }
+    let scale = scale_squared.sqrt();
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(PhysicsError::NonFinite {
+            reason: "normalization scale produced non-finite output",
+        });
+    }
+    Ok(scale)
+}
+
 /// One fully-normalized spherical-harmonic coefficient pair.
 ///
 /// `degree` and `order` identify `(n, m)`. The cosine coefficient is `Cbar_nm`;
@@ -1499,11 +1558,11 @@ impl NormalizedDegreeTwoTesseralCoefficients {
     /// `sqrt(5/12)`.
     pub fn to_unnormalized(self) -> Result<DegreeTwoTesseralCoefficients, PhysicsError> {
         DegreeTwoTesseralCoefficients::new(
-            self.cbar20 * 5.0_f64.sqrt(),
-            self.cbar21 * (5.0_f64 / 3.0).sqrt(),
-            self.sbar21 * (5.0_f64 / 3.0).sqrt(),
-            self.cbar22 * (5.0_f64 / 12.0).sqrt(),
-            self.sbar22 * (5.0_f64 / 12.0).sqrt(),
+            self.cbar20 * fully_normalized_to_unnormalized_scale(2, 0)?,
+            self.cbar21 * fully_normalized_to_unnormalized_scale(2, 1)?,
+            self.sbar21 * fully_normalized_to_unnormalized_scale(2, 1)?,
+            self.cbar22 * fully_normalized_to_unnormalized_scale(2, 2)?,
+            self.sbar22 * fully_normalized_to_unnormalized_scale(2, 2)?,
             self.tide_system,
         )
     }
@@ -2087,16 +2146,7 @@ impl Egm2008ZonalGravity {
 }
 
 fn fully_normalized_zonal_scale(degree: usize) -> Result<f64, PhysicsError> {
-    match degree {
-        2 => Ok(5.0_f64.sqrt()),
-        3 => Ok(7.0_f64.sqrt()),
-        4 => Ok(3.0),
-        5 => Ok(11.0_f64.sqrt()),
-        6 => Ok(13.0_f64.sqrt()),
-        _ => Err(PhysicsError::InvalidParameter {
-            reason: "fully-normalized zonal bridge currently supports degrees 2 through 6",
-        }),
-    }
+    fully_normalized_to_unnormalized_scale(degree, 0)
 }
 
 impl GravityModel for Egm2008ZonalGravity {
@@ -2868,6 +2918,38 @@ mod tests {
         assert_eq!(iter.len(), field.storage_len());
         assert!(iter.next().is_some());
         assert_eq!(iter.len(), field.storage_len() - 1);
+    }
+
+    #[test]
+    fn tesseral_fully_normalized_scale_matches_degree_two_and_zonal_factors() {
+        assert_abs_diff_eq!(
+            fully_normalized_to_unnormalized_scale(2, 0).unwrap(),
+            5.0_f64.sqrt(),
+            epsilon = 1.0e-15
+        );
+        assert_abs_diff_eq!(
+            fully_normalized_to_unnormalized_scale(2, 1).unwrap(),
+            (5.0_f64 / 3.0).sqrt(),
+            epsilon = 1.0e-15
+        );
+        assert_abs_diff_eq!(
+            fully_normalized_to_unnormalized_scale(2, 2).unwrap(),
+            (5.0_f64 / 12.0).sqrt(),
+            epsilon = 1.0e-15
+        );
+        assert_abs_diff_eq!(
+            fully_normalized_to_unnormalized_scale(6, 0).unwrap(),
+            13.0_f64.sqrt(),
+            epsilon = 1.0e-15
+        );
+        assert!(matches!(
+            fully_normalized_to_unnormalized_scale(2, 3),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            fully_normalized_to_unnormalized_scale(FULLY_NORMALIZED_SCALE_MAX_DEGREE + 1, 0),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
