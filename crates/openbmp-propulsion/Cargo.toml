@@ -14,7 +14,7 @@ std     = ["nalgebra/std", "num-traits/std", "openbmp-core/std", "serde?/std", "
 parser  = ["std", "dep:serde", "dep:toml"]
 
 [dependencies]
-nalgebra      = { version = "0.34.2", default-features = false, features = ["libm"] }
+nalgebra      = { version = "0.35.0", default-features = false, features = ["libm"] }
 num-traits    = { version = "0.2.19", default-features = false, features = ["libm"] }
 openbmp-core  = { version = "0.0.1", path = "../openbmp-core", default-features = false }
 serde         = { version = "1.0.228", default-features = false, optional = true, features = ["derive"] }

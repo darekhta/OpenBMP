@@ -13,7 +13,7 @@ default = ["std"]
 std     = ["nalgebra/std", "rand/std", "rand/std_rng", "serde/std", "uom/std"]
 
 [dependencies]
-nalgebra    = { version = "0.34.2", default-features = false, features = ["libm"] }
+nalgebra    = { version = "0.35.0", default-features = false, features = ["libm"] }
 uom         = { version = "0.38.0", default-features = false, features = ["f64", "si", "autoconvert"] }
 rand        = { version = "0.10.1", default-features = false }
 rand_chacha = { version = "0.10.0", default-features = false }

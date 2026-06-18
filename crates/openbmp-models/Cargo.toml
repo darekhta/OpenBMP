@@ -16,7 +16,7 @@ std     = ["dep:flate2", "nalgebra/std", "openbmp-core/std", "openbmp-state/std"
 openbmp-core       = { version = "0.0.1", path = "../openbmp-core", default-features = false }
 openbmp-state      = { version = "0.0.1", path = "../openbmp-state", default-features = false }
 flate2             = { workspace = true, optional = true }
-nalgebra           = { version = "0.34.2", default-features = false, features = ["libm"] }
+nalgebra           = { version = "0.35.0", default-features = false, features = ["libm"] }
 thiserror          = { version = "2.0.18", default-features = false }
 uom                = { version = "0.38.0", default-features = false, features = ["f64", "si", "autoconvert"] }
 
