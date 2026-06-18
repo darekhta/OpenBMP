@@ -14,7 +14,7 @@ std     = ["nalgebra/std", "openbmp-core/std", "uom/std"]
 
 [dependencies]
 openbmp-core = { version = "0.0.1", path = "../openbmp-core", default-features = false }
-nalgebra     = { version = "0.34.2", default-features = false, features = ["libm"] }
+nalgebra     = { version = "0.35.0", default-features = false, features = ["libm"] }
 uom          = { version = "0.38.0", default-features = false, features = ["f64", "si", "autoconvert"] }
 thiserror    = { version = "2.0.18", default-features = false }
 

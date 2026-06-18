@@ -20,7 +20,7 @@ std       = ["nalgebra/std", "openbmp-core/std", "serde?/std", "thiserror/std", 
 synthetic = ["std", "dep:serde", "dep:toml"]
 
 [dependencies]
-nalgebra     = { version = "0.34.2", default-features = false, features = ["libm"] }
+nalgebra     = { version = "0.35.0", default-features = false, features = ["libm"] }
 openbmp-core = { version = "0.0.1", path = "../openbmp-core", default-features = false }
 serde        = { version = "1.0.228", default-features = false, features = ["derive"], optional = true }
 thiserror    = { version = "2.0.18", default-features = false }

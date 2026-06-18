@@ -18,7 +18,7 @@ hal     = []
 [dependencies]
 openbmp-core    = { version = "0.0.1", path = "../openbmp-core", default-features = false }
 openbmp-mission = { version = "0.0.1", path = "../openbmp-mission", default-features = false }
-nalgebra        = { version = "0.34.2", default-features = false, features = ["alloc", "libm"] }
+nalgebra        = { version = "0.35.0", default-features = false, features = ["alloc", "libm"] }
 
 [dev-dependencies]
 static_assertions = { workspace = true }

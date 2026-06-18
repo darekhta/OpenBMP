@@ -13,7 +13,7 @@ default = ["std"]
 std     = ["nalgebra/std", "openbmp-bridge/std", "openbmp-core/std", "openbmp-fc/std", "thiserror/std"]
 
 [dependencies]
-nalgebra       = { version = "0.34.2", default-features = false, features = ["alloc", "libm"] }
+nalgebra       = { version = "0.35.0", default-features = false, features = ["alloc", "libm"] }
 openbmp-bridge = { version = "0.0.1", path = "../openbmp-bridge", default-features = false }
 openbmp-core   = { version = "0.0.1", path = "../openbmp-core", default-features = false }
 openbmp-fc     = { version = "0.0.1", path = "../openbmp-fc", default-features = false }
