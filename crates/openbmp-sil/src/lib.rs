@@ -25,7 +25,7 @@ pub use crate::monitor::{
 pub use crate::xil::{InMemoryXilBench, XilCaptureRecord, XilErrorRecord, XilGeneratorRecord};
 use openbmp_hal::{decode_iload_envelope, encode_iload_envelope};
 use openbmp_runner::{RunOutcome, RunnerError};
-use openbmp_scenario::{Scenario, ScenarioError};
+use openbmp_scenario::{AftsZoneColorConfig, Scenario, ScenarioError};
 use openbmp_telemetry::{TelemetryTable, TelemetryValue, TelemetryValueKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -286,6 +286,8 @@ pub enum RunUntilTarget {
 pub struct SilStimulation {
     /// Load-time fault injections.
     pub faults: Vec<FaultInjection>,
+    /// AFTS zone rules appended under `[[afts.zone]]` for this run only.
+    pub afts_zones: Vec<AftsZoneStimulus>,
     /// Parameter or I-load-style scenario overrides.
     pub parameter_overrides: Vec<ParameterOverride>,
     /// One-shot command writes.
@@ -297,9 +299,32 @@ impl SilStimulation {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.faults.is_empty()
+            && self.afts_zones.is_empty()
             && self.parameter_overrides.is_empty()
             && self.command_writes.is_empty()
     }
+}
+
+/// One AFTS zone rule appended by native SIL stimulation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AftsZoneStimulus {
+    /// Stable rule id for diagnostics and evidence.
+    pub id: String,
+    /// Scenario evidence/provenance string for the rule.
+    pub evidence: String,
+    /// Zone color.
+    pub color: AftsZoneColorConfig,
+    /// Polygon vertices in degrees.
+    pub vertices: Vec<AftsZoneStimulusVertex>,
+}
+
+/// One latitude/longitude vertex for [`AftsZoneStimulus`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AftsZoneStimulusVertex {
+    /// Latitude in degrees.
+    pub latitude_deg: f64,
+    /// Longitude in degrees.
+    pub longitude_deg: f64,
 }
 
 /// Target of a SIL fault injection.
@@ -494,6 +519,9 @@ pub struct EvidenceBundle {
     /// `None` for a plain run (the field is omitted from legacy evidence).
     #[serde(default)]
     pub observations: Option<SilObservationReport>,
+    /// Optional AFTS forward-containment evidence emitted by the runner.
+    #[serde(default)]
+    pub afts: Option<openbmp_runner::afts::AftsRunReport>,
     /// Telemetry inventory and bounds.
     pub telemetry_summary: TelemetrySummary,
     /// Telemetry row count.
@@ -1181,6 +1209,7 @@ impl MissionPackage {
             requirement_verdicts,
             failures,
             observations: None,
+            afts: outcome.afts.clone(),
             telemetry_rows: telemetry_summary.rows,
             telemetry_channels: telemetry_summary.channels,
             telemetry_summary,
@@ -1597,6 +1626,9 @@ fn apply_stimulation(
     for fault in &stimulation.faults {
         records.push(apply_fault_injection(scenario, fault)?);
     }
+    for zone in &stimulation.afts_zones {
+        records.push(append_afts_zone_rule(scenario, zone)?);
+    }
     for override_ in &stimulation.parameter_overrides {
         set_toml_path(scenario, &override_.path, override_.value.clone())?;
         records.push(StimulusRecord {
@@ -1668,6 +1700,60 @@ fn apply_fault_injection(
     })
 }
 
+fn append_afts_zone_rule(
+    scenario: &mut toml::Value,
+    zone: &AftsZoneStimulus,
+) -> Result<StimulusRecord, SilError> {
+    if zone.id.trim().is_empty() {
+        return Err(SilError::Stimulation {
+            summary: "AFTS zone stimulus id must not be empty".to_owned(),
+        });
+    }
+    if zone.evidence.trim().is_empty() {
+        return Err(SilError::Stimulation {
+            summary: "AFTS zone stimulus evidence must not be empty".to_owned(),
+        });
+    }
+    let mut rule = toml::map::Map::new();
+    rule.insert("id".to_owned(), toml::Value::String(zone.id.clone()));
+    rule.insert(
+        "evidence".to_owned(),
+        toml::Value::String(zone.evidence.clone()),
+    );
+    rule.insert(
+        "color".to_owned(),
+        toml::Value::String(afts_zone_color_label(zone.color).to_owned()),
+    );
+    let vertices = zone
+        .vertices
+        .iter()
+        .map(|vertex| {
+            let mut value = toml::map::Map::new();
+            value.insert(
+                "latitude_deg".to_owned(),
+                toml::Value::Float(vertex.latitude_deg),
+            );
+            value.insert(
+                "longitude_deg".to_owned(),
+                toml::Value::Float(vertex.longitude_deg),
+            );
+            toml::Value::Table(value)
+        })
+        .collect();
+    rule.insert("vertices".to_owned(), toml::Value::Array(vertices));
+    afts_zone_rules_mut(scenario)?.push(toml::Value::Table(rule));
+
+    Ok(StimulusRecord {
+        kind: "afts_zone_stimulus".to_owned(),
+        target: format!("afts.zone.{}", zone.id),
+        summary: format!(
+            "AFTS {} zone with {} vertices",
+            afts_zone_color_label(zone.color),
+            zone.vertices.len()
+        ),
+    })
+}
+
 fn append_scheduled_engine_fault_rule(
     scenario: &mut toml::Value,
     rule_id: &str,
@@ -1707,6 +1793,39 @@ fn append_scheduled_engine_fault_rule(
             telemetry_value_safe_toml(fault)
         ),
     })
+}
+
+fn afts_zone_rules_mut(scenario: &mut toml::Value) -> Result<&mut Vec<toml::Value>, SilError> {
+    let Some(root) = scenario.as_table_mut() else {
+        return Err(SilError::Stimulation {
+            summary: "scenario root is not a TOML table".to_owned(),
+        });
+    };
+    if !root.contains_key("afts") {
+        root.insert("afts".to_owned(), toml::Value::Table(toml::map::Map::new()));
+    }
+    let afts = root
+        .get_mut("afts")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| SilError::Stimulation {
+            summary: "afts is not a table".to_owned(),
+        })?;
+    afts.insert("enabled".to_owned(), toml::Value::Boolean(true));
+    if !afts.contains_key("zone") {
+        afts.insert("zone".to_owned(), toml::Value::Array(Vec::new()));
+    }
+    afts.get_mut("zone")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or_else(|| SilError::Stimulation {
+            summary: "afts.zone is not an array".to_owned(),
+        })
+}
+
+fn afts_zone_color_label(color: AftsZoneColorConfig) -> &'static str {
+    match color {
+        AftsZoneColorConfig::Green => "green",
+        AftsZoneColorConfig::Red => "red",
+    }
 }
 
 fn propulsion_fault_rules_mut(
@@ -2828,6 +2947,7 @@ id = "smoke"
                 id: "delta".to_owned(),
                 command: 0.2,
             }],
+            ..SilStimulation::default()
         };
         let faulted = package
             .run_case_with_stimulation(Some("smoke"), &faulted_stimulus)

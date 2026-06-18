@@ -35,7 +35,7 @@ openbmp-fc/
 ├── dictionary     # build-time JSON dictionary of topics/params/tables/jobs
 ├── topics         # canonical bus topics (sensor / estimator / commander / ...)
 ├── voter          # N-of-M voter (simplex / triplex / weighted / covariance)
-├── sensor_ingest  # per-sensor-kind ingest jobs + lane status
+├── sensor_ingest  # per-sensor-kind ingest jobs, including air-data + lane status
 ├── estimator      # EKF/MEKF/UKF with Joseph updates + false-alarm gates;
 │                  # gravity / magnetic models consumed from openbmp-physics
 ├── commander      # mission FSM + arming chain
@@ -92,10 +92,10 @@ set `mag_field = "wmm_2025"` in `[fc.ekf]` or `[fc.mekf]`.
 
 ## Inputs and Outputs
 
-Inputs: bus topics — `sensor.imu`, `sensor.barometer`, `sensor.gnss`,
-`sensor.magnetometer`, `sensor.star_tracker`, plus
-`sensor.status` from voted ingest jobs and `guidance.reference` from a
-guidance job.
+Inputs: bus topics — `sensor.imu`, `sensor.imu_increments`,
+`sensor.barometer`, `sensor.airdata`, `sensor.gnss`,
+`sensor.magnetometer`, `sensor.star_tracker`, plus `sensor.status` from
+voted ingest jobs and `guidance.reference` from a guidance job.
 
 Outputs: bus topics — `autopilot.actuator_cmd`,
 `actuator.effector_cmds`, `autopilot.engine_cmd` (after the mixer's

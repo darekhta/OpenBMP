@@ -14,6 +14,10 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use nalgebra::{UnitQuaternion, Vector3};
+use openbmp_bridge::{
+    ActuatorCommandPacket, EngineCommandPacket as BridgeEngineCommandPacket, ImuIncrementPacket,
+    SensorPacket,
+};
 use openbmp_core::{EffectorId, EngineId, SimTime, StepIndex};
 use openbmp_fc::autopilot::{
     AutopilotParams, GainSchedule, PidGains, ThreeLoopAutopilot, ThreeLoopGains, TrajectoryKind,
@@ -34,17 +38,19 @@ use openbmp_fc::imm::ImmEstimator;
 use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorityTable};
 use openbmp_fc::sr_ukf::{SquareRootUkf, SquareRootUkfAttitude, SquareRootUkfParams};
 use openbmp_fc::topics::{
-    ActuatorCommand, ActuatorStatus, AttitudeEstimate, AutopilotStatus, BarometerSample,
-    CommsRegionStatePublish, EffectorCommandSet, EngineCommandSet, EngineDemand,
+    ActuatorCommand, ActuatorStatus, AirDataSample, AttitudeEstimate, AutopilotStatus,
+    BarometerSample, CommsRegionStatePublish, EffectorCommandSet, EngineCommandSet, EngineDemand,
     EnvironmentEstimate, EstimatorLaneSelection, EstimatorMode, EstimatorRegimeRegionStatePublish,
     EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic, FdirStatus, GnssSample, GuidanceCutoff,
-    HealthRegionStatePublish, ImuSample, MagnetometerSample, MissionActionBatch,
-    MissionRegionStatePublish, MissionStatePublish, PositionEstimate, PropellantState,
-    ReferenceState, SensorStatus, StarTrackerSample, StorageStatus, VehicleStatus, WatchdogStatus,
+    HealthRegionStatePublish, ImuIncrementWindow, ImuInertialIncrement, ImuSample,
+    MagnetometerSample, MissionActionBatch, MissionRegionStatePublish, MissionStatePublish,
+    PositionEstimate, PropellantState, ReferenceState, SensorStatus, StarTrackerSample,
+    StorageStatus, VehicleStatus, WatchdogStatus,
 };
 use openbmp_fc::{
-    ControllerError, DispatchSummary, EstimatorError, FlightController, FlightControllerBuilder,
-    GuidanceError, Job, JobContext, JobTimingObserver,
+    ControllerError, DispatchSummary, EstimatorError, FcStepInput, FcStepOutput, FlightController,
+    FlightControllerBuilder, GuidanceError, Job, JobContext, JobTimingObserver, fc_step,
+    fc_step_with_timing_observer,
 };
 use openbmp_mission::{
     EventBinding, MissionAction, MissionPhaseGraph, MissionStateMachine, PhaseId, RegionSet,
@@ -61,6 +67,8 @@ use openbmp_scenario::{
     FcFdirDetectorKindV5, FcGainsConfig, FcGravityModelKind, FcGuidanceKind, FcHealthConfig,
     FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcSchedulerConfig, FcTrajectoryKind,
 };
+
+use crate::error::RunnerError;
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
 
@@ -365,6 +373,51 @@ impl FcRunner {
         }
     }
 
+    /// Adapts one bridge sensor packet into the portable FC step facade and
+    /// returns the matching bridge actuator packet.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed if FC dispatch fails, required topics are not registered,
+    /// or an emitted command id cannot be represented by the bridge schema.
+    pub(crate) fn step_bridge_packet(
+        &mut self,
+        sensor: &SensorPacket,
+    ) -> Result<ActuatorCommandPacket, RunnerError> {
+        let input = fc_step_input_from_bridge_packet(sensor);
+        let output = if self.instrument_timing {
+            let mut observer = HostTimingObserver;
+            fc_step_with_timing_observer(&mut self.fc, input, &mut observer)
+        } else {
+            fc_step(&mut self.fc, input)
+        }
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("flight-controller bridge packet tick failed: {err}"),
+        })?;
+        bridge_command_packet_from_step_output(sensor.sim_time_s, sensor.step, &output)
+    }
+
+    /// Returns the latest gated bridge command packet from controller topics.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed if an emitted command id cannot be represented by the
+    /// bridge schema.
+    pub(crate) fn latest_bridge_command_packet(
+        &self,
+        time: SimTime,
+        step: StepIndex,
+    ) -> Result<ActuatorCommandPacket, RunnerError> {
+        let effector_commands = self.latest_effector_command_set();
+        let engine_commands = self.latest_engine_command_set();
+        bridge_command_packet_from_command_sets(
+            time.as_seconds(),
+            step.value(),
+            effector_commands.as_ref(),
+            engine_commands.as_ref(),
+        )
+    }
+
     /// Borrows the underlying flight controller.
     #[must_use]
     pub fn controller(&self) -> &FlightController {
@@ -376,6 +429,11 @@ impl FcRunner {
         let _ = self.fc.bus().publish(sample);
     }
 
+    /// Publishes a high-rate IMU inertial-increment window.
+    pub fn publish_imu_increment_window(&self, sample: ImuIncrementWindow) {
+        let _ = self.fc.bus().publish(sample);
+    }
+
     /// Publishes a GNSS sample.
     pub fn publish_gnss(&self, sample: GnssSample) {
         let _ = self.fc.bus().publish(sample);
@@ -383,6 +441,11 @@ impl FcRunner {
 
     /// Publishes a barometer sample.
     pub fn publish_barometer(&self, sample: BarometerSample) {
+        let _ = self.fc.bus().publish(sample);
+    }
+
+    /// Publishes an air-data sample.
+    pub fn publish_airdata(&self, sample: AirDataSample) {
         let _ = self.fc.bus().publish(sample);
     }
 
@@ -593,7 +656,9 @@ impl FcRunner {
     fn register_canonical_topics(fc: &FlightController) -> Result<(), openbmp_fc::ControllerError> {
         let bus = fc.bus();
         bus.register::<ImuSample>()?;
+        bus.register::<ImuIncrementWindow>()?;
         bus.register::<BarometerSample>()?;
+        bus.register::<AirDataSample>()?;
         bus.register::<GnssSample>()?;
         bus.register::<MagnetometerSample>()?;
         bus.register::<StarTrackerSample>()?;
@@ -647,6 +712,175 @@ impl FcRunner {
         bus.register::<CommsRegionStatePublish>()?;
         bus.register::<EstimatorRegimeRegionStatePublish>()?;
         Ok(())
+    }
+}
+
+fn fc_step_input_from_bridge_packet(sensor: &SensorPacket) -> FcStepInput {
+    let time = SimTime::from_seconds(sensor.sim_time_s);
+    let mut input = FcStepInput::new(time, StepIndex::new(sensor.step)).with_imu(ImuSample {
+        time,
+        gyro_rad_s: Vector3::from(sensor.imu_gyro_body_rad_s),
+        accel_m_s2: Vector3::from(sensor.imu_accel_body_m_s2),
+        healthy: true,
+    });
+    if !sensor.imu_increments.is_empty() {
+        input = input.with_imu_increment_window(imu_increment_window_from_packet(sensor, time));
+    }
+
+    if let (Some(pressure_pa), Some(bias_pa)) = (sensor.baro_pressure_pa, sensor.baro_bias_pa) {
+        input = input.with_barometer(BarometerSample {
+            time,
+            pressure_pa,
+            bias_pa,
+            healthy: true,
+        });
+    }
+    if let (
+        Some(static_pressure_pa),
+        Some(impact_pressure_pa),
+        Some(mach),
+        Some(calibrated_airspeed_m_s),
+        Some(true_airspeed_m_s),
+        Some(angle_of_attack_rad),
+        Some(sideslip_rad),
+        Some(pressure_altitude_m),
+    ) = (
+        sensor.airdata_static_pressure_pa,
+        sensor.airdata_impact_pressure_pa,
+        sensor.airdata_mach,
+        sensor.airdata_calibrated_airspeed_m_s,
+        sensor.airdata_true_airspeed_m_s,
+        sensor.airdata_angle_of_attack_rad,
+        sensor.airdata_sideslip_rad,
+        sensor.airdata_pressure_altitude_m,
+    ) {
+        input = input.with_airdata(AirDataSample {
+            time,
+            static_pressure_pa,
+            impact_pressure_pa,
+            mach,
+            calibrated_airspeed_m_s,
+            true_airspeed_m_s,
+            angle_of_attack_rad,
+            sideslip_rad,
+            pressure_altitude_m,
+            healthy: true,
+        });
+    }
+    if let (Some(position_eci_m), Some(velocity_eci_m_s), Some(position_bias_eci_m)) = (
+        sensor.gnss_position_eci_m,
+        sensor.gnss_velocity_eci_m_s,
+        sensor.gnss_position_bias_eci_m,
+    ) {
+        input = input.with_gnss(GnssSample {
+            time,
+            position_eci_m: Vector3::from(position_eci_m),
+            velocity_eci_m_s: Vector3::from(velocity_eci_m_s),
+            position_bias_eci_m: Vector3::from(position_bias_eci_m),
+            healthy: true,
+        });
+    }
+    let field_body_nt = sensor
+        .mag_body_nt
+        .or_else(|| sensor.mag_body_tesla.map(|v| v.map(|value| value * 1.0e9)));
+    if let Some(field_body_nt) = field_body_nt {
+        input = input.with_magnetometer(MagnetometerSample {
+            time,
+            field_body_nt: Vector3::from(field_body_nt),
+            hard_iron_body_nt: Vector3::from(sensor.mag_hard_iron_body_nt.unwrap_or([0.0; 3])),
+            healthy: true,
+        });
+    }
+    if let Some(q) = sensor.star_tracker_attitude_eci_to_body_xyzw {
+        input = input.with_star_tracker(StarTrackerSample {
+            time,
+            q_eci_to_body_xyzw: q,
+            healthy: true,
+        });
+    }
+    input
+}
+
+fn imu_increment_window_from_packet(sensor: &SensorPacket, time: SimTime) -> ImuIncrementWindow {
+    ImuIncrementWindow {
+        time,
+        increments: sensor
+            .imu_increments
+            .iter()
+            .copied()
+            .map(imu_increment_from_packet)
+            .collect(),
+        healthy: true,
+    }
+}
+
+fn imu_increment_from_packet(increment: ImuIncrementPacket) -> ImuInertialIncrement {
+    ImuInertialIncrement {
+        delta_theta_rad: Vector3::from(increment.delta_theta_rad),
+        delta_v_m_s: Vector3::from(increment.delta_v_m_s),
+        dt_s: increment.dt_s,
+        seq: increment.seq,
+    }
+}
+
+fn bridge_command_packet_from_step_output(
+    sim_time_s: f64,
+    step: u64,
+    output: &FcStepOutput,
+) -> Result<ActuatorCommandPacket, RunnerError> {
+    bridge_command_packet_from_command_sets(
+        sim_time_s,
+        step,
+        output.effector_commands.as_ref(),
+        output.engine_commands.as_ref(),
+    )
+}
+
+fn bridge_command_packet_from_command_sets(
+    sim_time_s: f64,
+    step: u64,
+    effector_commands: Option<&EffectorCommandSet>,
+    engine_commands: Option<&EngineCommandSet>,
+) -> Result<ActuatorCommandPacket, RunnerError> {
+    let mut effector_packet_commands = Vec::new();
+    if let Some(commands) = effector_commands {
+        for command in commands.commands.iter().take(usize::from(commands.count)) {
+            let effector_id = u32::try_from(command.effector_id)
+                .map_err(|_| bridge_id_range_error("effector", command.effector_id))?;
+            effector_packet_commands.push((effector_id, command.command));
+        }
+    }
+
+    let mut engine_throttles = Vec::new();
+    let mut engine_packet_commands = Vec::new();
+    if let Some(commands) = engine_commands {
+        for command in commands.commands.iter().take(usize::from(commands.count)) {
+            let engine_id = u32::try_from(command.engine_id)
+                .map_err(|_| bridge_id_range_error("engine", command.engine_id))?;
+            engine_throttles.push((engine_id, command.throttle_unit));
+            engine_packet_commands.push(BridgeEngineCommandPacket {
+                engine_id,
+                throttle_unit: command.throttle_unit,
+                gimbal_pitch_rad: command.gimbal_pitch_rad,
+                gimbal_yaw_rad: command.gimbal_yaw_rad,
+                ignite: command.ignite,
+                shutdown: command.shutdown,
+            });
+        }
+    }
+
+    Ok(ActuatorCommandPacket {
+        sim_time_s,
+        step,
+        effector_commands: effector_packet_commands,
+        engine_throttles,
+        engine_commands: engine_packet_commands,
+    })
+}
+
+fn bridge_id_range_error(kind: &str, id: u64) -> RunnerError {
+    RunnerError::UnsupportedScenario {
+        what: format!("fc.transport {kind} id {id} exceeds bridge u32 id range"),
     }
 }
 
@@ -1863,6 +2097,84 @@ mod tests {
 
     use super::*;
 
+    struct PacketAdapterJob;
+
+    impl Job for PacketAdapterJob {
+        fn name(&self) -> &'static str {
+            "test.packet_adapter"
+        }
+
+        fn run(&mut self, ctx: &JobContext<'_>) -> Result<(), ControllerError> {
+            let (imu, _) = ctx
+                .bus
+                .latest::<ImuSample>()?
+                .expect("packet adapter should publish IMU");
+            let (baro, _) = ctx
+                .bus
+                .latest::<BarometerSample>()?
+                .expect("packet adapter should publish barometer");
+            let (airdata, _) = ctx
+                .bus
+                .latest::<AirDataSample>()?
+                .expect("packet adapter should publish airdata");
+            let (gnss, _) = ctx
+                .bus
+                .latest::<GnssSample>()?
+                .expect("packet adapter should publish GNSS");
+            let (mag, _) = ctx
+                .bus
+                .latest::<MagnetometerSample>()?
+                .expect("packet adapter should publish magnetometer");
+            let (star, _) = ctx
+                .bus
+                .latest::<StarTrackerSample>()?
+                .expect("packet adapter should publish star tracker");
+
+            assert_eq!(baro.pressure_pa.to_bits(), 91_250.0_f64.to_bits());
+            assert_eq!(airdata.mach.to_bits(), 0.15_f64.to_bits());
+            assert_eq!(airdata.pressure_altitude_m.to_bits(), 1_100.0_f64.to_bits());
+            assert_eq!(gnss.position_eci_m.x.to_bits(), 10.0_f64.to_bits());
+            assert_eq!(mag.field_body_nt.x.to_bits(), 1_000.0_f64.to_bits());
+            assert_eq!(
+                star.q_eci_to_body_xyzw.map(f64::to_bits),
+                [
+                    0.0_f64.to_bits(),
+                    0.1_f64.to_bits(),
+                    0.2_f64.to_bits(),
+                    0.97_f64.to_bits()
+                ]
+            );
+
+            let mut effector_set = EffectorCommandSet {
+                time: imu.time,
+                count: 1,
+                ..EffectorCommandSet::default()
+            };
+            effector_set.commands[0] = openbmp_fc::topics::EffectorCommand {
+                effector_id: 7,
+                command: imu.accel_m_s2.z,
+                saturated: false,
+            };
+            ctx.bus.publish(effector_set)?;
+
+            let mut engine_set = EngineCommandSet {
+                time: imu.time,
+                count: 1,
+                ..EngineCommandSet::default()
+            };
+            engine_set.commands[0] = openbmp_fc::topics::EngineCommand {
+                engine_id: 9,
+                throttle_unit: 0.64,
+                gimbal_pitch_rad: imu.gyro_rad_s.x,
+                gimbal_yaw_rad: imu.gyro_rad_s.y,
+                ignite: true,
+                shutdown: false,
+            };
+            ctx.bus.publish(engine_set)?;
+            Ok(())
+        }
+    }
+
     fn minimal_graph() -> (MissionPhaseGraph, Vec<EventBinding<MissionAction>>, PhaseId) {
         let pad = PhaseId::from_path("mission.phases.pad");
         let ascent = PhaseId::from_path("mission.phases.ascent");
@@ -2077,6 +2389,160 @@ mod tests {
         let regions = regions_from_graph(&graph);
         let mission = FcRunnerMission::new(graph, hsm, regions, bindings, pad);
         FcRunner::new(config, mission, None, 0.001, None, EstimatorSeed::default()).unwrap()
+    }
+
+    #[test]
+    fn fc_runner_step_bridge_packet_routes_sensor_packet_through_fc_step() {
+        let mut fc = FlightControllerBuilder::new()
+            .frame_budget_us(1_000)
+            .build();
+        FcRunner::register_canonical_topics(&fc).unwrap();
+        fc.scheduler_mut()
+            .register_periodic(1, 100, 1, Box::new(PacketAdapterJob))
+            .unwrap();
+        let mut runner = FcRunner {
+            fc,
+            instrument_timing: false,
+        };
+        let packet = SensorPacket {
+            sim_time_s: 0.125,
+            step: 42,
+            imu_accel_body_m_s2: [1.0, 2.0, 3.0],
+            imu_gyro_body_rad_s: [0.01, 0.02, 0.03],
+            baro_pressure_pa: Some(91_250.0),
+            baro_bias_pa: Some(12.0),
+            airdata_static_pressure_pa: Some(88_500.0),
+            airdata_impact_pressure_pa: Some(1_250.0),
+            airdata_mach: Some(0.15),
+            airdata_calibrated_airspeed_m_s: Some(51.0),
+            airdata_true_airspeed_m_s: Some(52.0),
+            airdata_angle_of_attack_rad: Some(0.02),
+            airdata_sideslip_rad: Some(-0.01),
+            airdata_pressure_altitude_m: Some(1_100.0),
+            gnss_position_eci_m: Some([10.0, 20.0, 30.0]),
+            gnss_velocity_eci_m_s: Some([1.0, 2.0, 3.0]),
+            gnss_position_bias_eci_m: Some([0.1, 0.2, 0.3]),
+            mag_body_tesla: Some([1.0e-6, -2.0e-6, 3.0e-6]),
+            star_tracker_attitude_eci_to_body_xyzw: Some([0.0, 0.1, 0.2, 0.97]),
+            ..SensorPacket::default()
+        };
+
+        let command = runner.step_bridge_packet(&packet).unwrap();
+
+        assert_eq!(command.sim_time_s.to_bits(), packet.sim_time_s.to_bits());
+        assert_eq!(command.step, packet.step);
+        assert_eq!(command.effector_commands, vec![(7, 3.0)]);
+        assert_eq!(command.engine_throttles, vec![(9, 0.64)]);
+        assert_eq!(command.engine_commands.len(), 1);
+        assert_eq!(command.engine_commands[0].engine_id, 9);
+        assert_eq!(
+            command.engine_commands[0].gimbal_pitch_rad.to_bits(),
+            0.01_f64.to_bits()
+        );
+        assert!(command.engine_commands[0].ignite);
+        assert!(!command.engine_commands[0].shutdown);
+    }
+
+    #[test]
+    fn bridge_packet_input_carries_imu_increment_window() {
+        let packet = SensorPacket {
+            sim_time_s: 0.125,
+            step: 42,
+            imu_accel_body_m_s2: [1.0, 2.0, 3.0],
+            imu_gyro_body_rad_s: [0.01, 0.02, 0.03],
+            imu_increments: vec![ImuIncrementPacket {
+                delta_theta_rad: [1.0e-4, 2.0e-4, 3.0e-4],
+                delta_v_m_s: [0.001, 0.002, 0.003],
+                dt_s: 0.00025,
+                seq: 28,
+            }],
+            ..SensorPacket::default()
+        };
+
+        let input = fc_step_input_from_bridge_packet(&packet);
+        let window = input
+            .imu_increments
+            .expect("bridge packet should carry IMU increment window");
+
+        assert_eq!(window.time.as_seconds().to_bits(), 0.125_f64.to_bits());
+        assert_eq!(window.increments.len(), 1);
+        assert_eq!(window.increments[0].seq, 28);
+        assert_eq!(
+            window.increments[0].delta_theta_rad,
+            Vector3::new(1.0e-4, 2.0e-4, 3.0e-4)
+        );
+        assert_eq!(
+            window.increments[0].delta_v_m_s,
+            Vector3::new(0.001, 0.002, 0.003)
+        );
+    }
+
+    #[test]
+    fn pil_framed_endpoint_matches_runner_bridge_packet_adapter() {
+        let mut runner_fc = FlightControllerBuilder::new()
+            .frame_budget_us(1_000)
+            .build();
+        FcRunner::register_canonical_topics(&runner_fc).unwrap();
+        runner_fc
+            .scheduler_mut()
+            .register_periodic(1, 100, 1, Box::new(PacketAdapterJob))
+            .unwrap();
+        let mut runner = FcRunner {
+            fc: runner_fc,
+            instrument_timing: false,
+        };
+
+        let mut pil_fc = FlightControllerBuilder::new()
+            .frame_budget_us(1_000)
+            .build();
+        FcRunner::register_canonical_topics(&pil_fc).unwrap();
+        pil_fc
+            .scheduler_mut()
+            .register_periodic(1, 100, 1, Box::new(PacketAdapterJob))
+            .unwrap();
+
+        let packet = SensorPacket {
+            sim_time_s: 0.125,
+            step: 42,
+            imu_accel_body_m_s2: [1.0, 2.0, 3.0],
+            imu_gyro_body_rad_s: [0.01, 0.02, 0.03],
+            baro_pressure_pa: Some(91_250.0),
+            baro_bias_pa: Some(12.0),
+            airdata_static_pressure_pa: Some(88_500.0),
+            airdata_impact_pressure_pa: Some(1_250.0),
+            airdata_mach: Some(0.15),
+            airdata_calibrated_airspeed_m_s: Some(51.0),
+            airdata_true_airspeed_m_s: Some(52.0),
+            airdata_angle_of_attack_rad: Some(0.02),
+            airdata_sideslip_rad: Some(-0.01),
+            airdata_pressure_altitude_m: Some(1_100.0),
+            gnss_position_eci_m: Some([10.0, 20.0, 30.0]),
+            gnss_velocity_eci_m_s: Some([1.0, 2.0, 3.0]),
+            gnss_position_bias_eci_m: Some([0.1, 0.2, 0.3]),
+            mag_body_tesla: Some([1.0e-6, -2.0e-6, 3.0e-6]),
+            star_tracker_attitude_eci_to_body_xyzw: Some([0.0, 0.1, 0.2, 0.97]),
+            ..SensorPacket::default()
+        };
+
+        let runner_command = runner.step_bridge_packet(&packet).unwrap();
+        let sensor_payload = openbmp_bridge::encode(&packet).unwrap();
+        let sensor_frame = openbmp_bridge::frame(&sensor_payload);
+        let mut command_frame = [0u8; 256];
+
+        let step =
+            openbmp_pil::fc_step_from_frame_into(&mut pil_fc, &sensor_frame, &mut command_frame)
+                .unwrap();
+        let (command_payload, consumed) =
+            openbmp_bridge::deframe(&command_frame[..step.written]).unwrap();
+        let pil_command: ActuatorCommandPacket = openbmp_bridge::decode(command_payload).unwrap();
+
+        assert_eq!(step.consumed, sensor_frame.len());
+        assert_eq!(step.written, consumed);
+        assert_eq!(pil_command, runner_command);
+        assert_eq!(
+            openbmp_bridge::encode(&pil_command).unwrap(),
+            openbmp_bridge::encode(&runner_command).unwrap()
+        );
     }
 
     /// Multi-lane configuration runs end-to-end through

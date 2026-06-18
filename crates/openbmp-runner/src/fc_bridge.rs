@@ -21,32 +21,34 @@ use openbmp_bridge::{
     ActuatorCommandPacket, BridgeEndpointRole, BridgeFaultRule, BridgeFaultTransformSet,
     BridgeHelloPacket, BridgeMessage, BridgePacketDirection, BridgePacketDisposition,
     BridgePacketFaultRule, BridgePacketTransform, BridgeScalarSignal, BridgeScalarTransform,
-    EngineCommandPacket as BridgeEngineCommandPacket, QuaternionAxis, SensorPacket,
-    SplitStreamTransport, StreamTransport, TcpBridgeListener, Transport, VectorAxis,
-    in_process_transport_pair, validate_ack_for_sensor, validate_command_for_sensor,
-    validate_protocol_version,
+    ImuIncrementPacket, QuaternionAxis, SensorPacket, SplitStreamTransport, StreamTransport,
+    TcpBridgeListener, Transport, VectorAxis, in_process_transport_pair, validate_ack_for_sensor,
+    validate_command_for_sensor, validate_protocol_version,
 };
+use openbmp_comm::{LinkPacketDisposition, LinkPacketEffect};
 use openbmp_core::{DeterministicRng, Position3, SensorId, StepIndex, Velocity3};
 use openbmp_fc::topics::{
-    BarometerSample, EffectorCommand, EffectorCommandSet, EngineCommand, EngineCommandSet,
-    EnvironmentEstimate, GnssSample, ImuSample, MagnetometerSample, PropellantState,
-    StarTrackerSample,
+    AirDataSample, BarometerSample, EffectorCommand, EffectorCommandSet, EngineCommand,
+    EngineCommandSet, EnvironmentEstimate, GnssSample, ImuIncrementWindow, ImuInertialIncrement,
+    ImuSample, MagnetometerSample, PropellantState, StarTrackerSample,
 };
 pub(crate) use openbmp_fc::topics::{GuidanceCutoff, ReferenceState};
 use openbmp_mission::{FiredEvent, MissionAction};
 use openbmp_physics::atmosphere::{AtmosphereModel, ExoatmosphericPolicy, UsStandard1976};
 use openbmp_physics::magnetic::{EarthDipoleField, MagneticFieldEci, Wmm2025};
+use openbmp_physics::{FrameContext, stationary_rotating_frame_imu_truth_eci};
 use openbmp_scenario::{
     FcConfig, FcEstimatorKind, FcMagFieldKind, FcSilFaultKind, FcTransportFaultSignalConfig,
     FcTransportFaultTransformConfig, FcTransportModeConfig, FcTransportPacketDirectionConfig,
     FcTransportPacketTransformConfig, FcTransportQuaternionAxisConfig, FcTransportVectorAxisConfig,
-    ResolvedFile, Scenario, ScenarioDocument, SensorConfig,
+    ResolvedFile, Scenario, ScenarioDocument, SensorConfig, SpecificForceSourceConfig,
 };
 use openbmp_sensors::{
-    GnssNoiseBudget, IdealStateSensor, ImuNoiseBudget, MagnetometerNoiseBudget,
-    MeasurementStimulus, Sensor as SensorTrait, SensorMeasurement, SensorTruth,
-    StarTrackerNoiseBudget, SyntheticBarometer, SyntheticGnss, SyntheticImu, SyntheticMagnetometer,
-    SyntheticSensorAdapter, SyntheticStarTracker,
+    AirDataNoiseBudget, GnssNoiseBudget, HighRateImuConfig, IdealStateSensor, ImuNoiseBudget,
+    MagnetometerNoiseBudget, MeasurementStimulus, Sensor as SensorTrait, SensorMeasurement,
+    SensorTruth, SpecificForceTruth, StarTrackerNoiseBudget, SyntheticAirData, SyntheticBarometer,
+    SyntheticGnss, SyntheticImu, SyntheticMagnetometer, SyntheticSensorAdapter,
+    SyntheticStarTracker,
 };
 use openbmp_state::{PointMassState, RigidBodyState};
 
@@ -72,6 +74,8 @@ pub struct FcBridge {
     fallback_atmosphere: UsStandard1976,
     geocentric_surface_radius_m: Option<f64>,
     magnetic: Box<dyn MagneticFieldEci>,
+    frame: FrameContext,
+    specific_force_source: SpecificForceSourceConfig,
     scenario_seed: u64,
     stimulus_schedule: StimulusSchedule,
     outage_windows: Vec<ArmedOutage>,
@@ -82,6 +86,9 @@ pub struct FcBridge {
     last_mission_action_sequence: Option<u64>,
     transport_session: Option<FcTransportSession>,
     transport_faults: BridgeFaultTransformSet,
+    comm_link_effects: Option<crate::comm::CommBridgePacketEffects>,
+    comm_frame_queues: CommLinkFrameQueues,
+    bridge_dt_s: f64,
     actuator_stream: Vec<ActuatorCommandPacket>,
 }
 
@@ -128,6 +135,12 @@ struct FcTransportSession {
     max_payload_len: u32,
     peer_protocol_version: u16,
     handshaken: bool,
+}
+
+#[derive(Debug, Default)]
+struct CommLinkFrameQueues {
+    sensors: BTreeMap<u64, Vec<SensorPacket>>,
+    commands: BTreeMap<u64, Vec<ActuatorCommandPacket>>,
 }
 
 enum FcControllerPeer {
@@ -344,6 +357,37 @@ impl FcTransportSession {
     }
 }
 
+impl CommLinkFrameQueues {
+    fn enqueue_sensor(&mut self, arrival_step: u64, sensor: SensorPacket) {
+        self.sensors.entry(arrival_step).or_default().push(sensor);
+    }
+
+    fn enqueue_command(&mut self, arrival_step: u64, command: ActuatorCommandPacket) {
+        self.commands.entry(arrival_step).or_default().push(command);
+    }
+
+    fn pop_due_sensor(&mut self, current_step: u64) -> Option<SensorPacket> {
+        pop_due_packet(&mut self.sensors, current_step)
+    }
+
+    fn pop_due_command(&mut self, current_step: u64) -> Option<ActuatorCommandPacket> {
+        pop_due_packet(&mut self.commands, current_step)
+    }
+}
+
+fn pop_due_packet<T>(queue: &mut BTreeMap<u64, Vec<T>>, current_step: u64) -> Option<T> {
+    let arrival_step = *queue.keys().next()?;
+    if arrival_step > current_step {
+        return None;
+    }
+    let mut packets = queue.remove(&arrival_step)?;
+    let packet = packets.remove(0);
+    if !packets.is_empty() {
+        queue.insert(arrival_step, packets);
+    }
+    Some(packet)
+}
+
 impl fmt::Debug for FcTransportSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FcTransportSession")
@@ -491,6 +535,7 @@ impl FcBridge {
             start_phase,
         );
         let magnetic = build_magnetic_field(fc_config)?;
+        let frame = crate::frames::build_frame_context(&scenario.document, resolved_files)?;
         let lqr_ctx = build_autopilot_lqr_context(scenario)?;
         let allocator = build_autopilot_allocator(scenario)?;
         // Seed the estimator from the scenario's known initial state so
@@ -525,6 +570,7 @@ impl FcBridge {
             what: format!("flight-controller construction failed: {err}"),
         })?;
         let sensors = build_sensors(&scenario.document, resolved_files)?;
+        let specific_force_source = bridge_specific_force_source(&scenario.document);
         let transport_session = build_transport_session(fc_config, &scenario.document)?;
         let transport_faults = build_transport_faults(fc_config);
         let atmosphere_kind = scenario_atmosphere_kind(&scenario.document);
@@ -542,6 +588,8 @@ impl FcBridge {
             ),
             geocentric_surface_radius_m: document_geocentric_surface_radius_m(&scenario.document),
             magnetic,
+            frame,
+            specific_force_source,
             scenario_seed: scenario.document.time.seed,
             stimulus_schedule: StimulusSchedule::build(&scenario.document)?,
             outage_windows: Vec::new(),
@@ -552,6 +600,9 @@ impl FcBridge {
             last_mission_action_sequence: None,
             transport_session,
             transport_faults,
+            comm_link_effects: None,
+            comm_frame_queues: CommLinkFrameQueues::default(),
+            bridge_dt_s: scenario.document.time.dt_s,
             actuator_stream: Vec::new(),
         }))
     }
@@ -565,6 +616,14 @@ impl FcBridge {
         &self,
     ) -> Result<Option<crate::determinism::ActuatorStreamReport>, RunnerError> {
         crate::determinism::actuator_stream_report(&self.actuator_stream).map_err(Into::into)
+    }
+
+    /// Set packet effects evaluated by the comm link model for this bridge tick.
+    pub(crate) fn set_comm_link_effects(
+        &mut self,
+        effects: Option<crate::comm::CommBridgePacketEffects>,
+    ) {
+        self.comm_link_effects = effects;
     }
 
     /// Returns the FC commander's most recent
@@ -600,6 +659,13 @@ impl FcBridge {
         self.runner.latest_reference_state()
     }
 
+    /// Whether the bridge needs runner-supplied force/moment truth for IMU
+    /// specific force and angular acceleration.
+    #[must_use]
+    pub(crate) fn uses_force_accumulator_truth(&self) -> bool {
+        self.specific_force_source == SpecificForceSourceConfig::ForceAccumulator
+    }
+
     /// Returns the most recent guidance cutoff estimate published by the FC.
     #[must_use]
     pub fn latest_guidance_cutoff(&self) -> Option<GuidanceCutoff> {
@@ -618,12 +684,13 @@ impl FcBridge {
         state: &PointMassState,
         step: StepIndex,
         gravity_eci_m_s2: Vector3<f64>,
+        specific_force_truth: Option<SpecificForceTruth>,
         propellant_state: Option<PropellantState>,
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
         monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
     ) -> Result<(), RunnerError> {
-        let truth = self.point_mass_truth(state, gravity_eci_m_s2);
+        let truth = self.point_mass_truth(state, gravity_eci_m_s2, specific_force_truth)?;
         self.step_from_truth(truth, step, propellant_state, effectors, engines, monitor)
     }
 
@@ -639,13 +706,19 @@ impl FcBridge {
         state: &RigidBodyState,
         step: StepIndex,
         gravity_eci_m_s2: Vector3<f64>,
+        specific_force_truth: Option<SpecificForceTruth>,
         propellant_state: Option<PropellantState>,
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
         gyro_pickup_rad_s: Vector3<f64>,
         monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
     ) -> Result<(), RunnerError> {
-        let truth = self.rigid_body_truth(state, gravity_eci_m_s2, gyro_pickup_rad_s);
+        let truth = self.rigid_body_truth(
+            state,
+            gravity_eci_m_s2,
+            specific_force_truth,
+            gyro_pickup_rad_s,
+        )?;
         self.step_from_truth(truth, step, propellant_state, effectors, engines, monitor)
     }
 
@@ -733,6 +806,7 @@ impl FcBridge {
             step: step.value(),
             imu_accel_body_m_s2: [0.0; 3],
             imu_gyro_body_rad_s: [0.0; 3],
+            imu_increments: Vec::new(),
             baro_altitude_m: None,
             gnss_position_eci_m: None,
             gnss_velocity_eci_m_s: None,
@@ -742,6 +816,14 @@ impl FcBridge {
             mag_hard_iron_body_nt: None,
             baro_pressure_pa: None,
             baro_bias_pa: None,
+            airdata_static_pressure_pa: None,
+            airdata_impact_pressure_pa: None,
+            airdata_mach: None,
+            airdata_calibrated_airspeed_m_s: None,
+            airdata_true_airspeed_m_s: None,
+            airdata_angle_of_attack_rad: None,
+            airdata_sideslip_rad: None,
+            airdata_pressure_altitude_m: None,
             star_tracker_attitude_eci_to_body_xyzw: None,
         };
         let mut has_bridge_measurement = false;
@@ -749,10 +831,12 @@ impl FcBridge {
 
         for index in 0..self.sensors.len() {
             let sensor_id = self.sensors[index].sensor_id();
-            let mut measurement = {
+            let (mut measurement, imu_increment_window) = {
                 let sensor = &mut self.sensors[index];
                 sensor.prime(truth, step, self.scenario_seed);
-                sensor.read()?
+                let measurement = sensor.read()?;
+                let window = sensor.imu_increment_window(measurement.time, true);
+                (measurement, window)
             };
             // Open-loop SIL fault injection at the read -> publish seam.
             // With no armed fault the schedule is empty, so this draws
@@ -774,10 +858,17 @@ impl FcBridge {
                 continue;
             }
             if use_transport {
-                has_bridge_measurement =
+                has_bridge_measurement |=
                     append_bridge_measurement(&mut bridge_packet, &measurement.value)?;
+                if let Some(window) = imu_increment_window {
+                    append_bridge_imu_increment_window(&mut bridge_packet, &window);
+                    has_bridge_measurement = true;
+                }
             } else {
                 self.publish_measurement(&measurement);
+                if let Some(window) = imu_increment_window {
+                    self.runner.publish_imu_increment_window(window);
+                }
             }
         }
         self.runner.publish_environment(EnvironmentEstimate {
@@ -797,15 +888,19 @@ impl FcBridge {
                             .to_owned(),
                 });
             }
-            Some(self.step_controller_via_transport(bridge_packet, truth.time, step)?)
+            self.step_controller_via_transport(bridge_packet)?
         } else {
             self.step_controller_direct(truth.time, step)?;
             None
         };
         let evidence_command = if let Some(command) = transport_command.as_ref() {
             Some(command.clone())
+        } else if !use_transport {
+            self.runner
+                .latest_bridge_command_packet(truth.time, step)
+                .ok()
         } else {
-            self.latest_bridge_command_packet(truth.time, step).ok()
+            None
         };
         if let Some(command) = evidence_command {
             self.actuator_stream.push(command);
@@ -819,7 +914,7 @@ impl FcBridge {
         }
         if let Some(command) = transport_command {
             self.apply_transport_command(&command, effectors, engines)?;
-        } else {
+        } else if !use_transport {
             if let Some(commands) = self.runner.latest_effector_command_set()
                 && !effectors.is_empty()
             {
@@ -850,87 +945,132 @@ impl FcBridge {
     fn step_controller_via_transport(
         &mut self,
         sensor: SensorPacket,
-        time: openbmp_core::SimTime,
-        step: StepIndex,
-    ) -> Result<ActuatorCommandPacket, RunnerError> {
-        let mut session =
-            self.transport_session
-                .take()
-                .ok_or_else(|| RunnerError::UnsupportedScenario {
-                    what: "fc.transport session was not configured".to_owned(),
-                })?;
+    ) -> Result<Option<ActuatorCommandPacket>, RunnerError> {
+        let current_step = sensor.step;
+        self.enqueue_sensor_for_comm_delivery(sensor)?;
 
-        let result = (|| {
-            session.ensure_handshake()?;
-            if session.has_external_controller() {
-                let mut transmitted_sensor = sensor.clone();
-                self.apply_sensor_transport_faults(&mut transmitted_sensor)?;
-                session
-                    .simulator
-                    .send(&BridgeMessage::Sensor(transmitted_sensor))?;
-            } else {
-                session
-                    .simulator
-                    .send(&BridgeMessage::Sensor(sensor.clone()))?;
-
-                let BridgeMessage::Sensor(received_sensor) =
-                    session.local_controller_mut()?.recv()?
-                else {
-                    return Err(RunnerError::UnsupportedScenario {
-                        what: "fc.transport expected sensor frame on controller endpoint"
-                            .to_owned(),
-                    });
-                };
-                let mut received_sensor = received_sensor;
-                self.apply_sensor_transport_faults(&mut received_sensor)?;
-                self.publish_bridge_sensor_packet(&received_sensor);
-                self.step_controller_direct(time, step)?;
-                let command = self.latest_bridge_command_packet(time, step)?;
-                session
-                    .local_controller_mut()?
-                    .send(&BridgeMessage::Command(command))?;
-            }
-
-            let command = match session.simulator.recv()? {
-                BridgeMessage::Command(command) => command,
-                BridgeMessage::Ack(ack) => {
-                    validate_ack_for_sensor(&sensor, &ack).map_err(|err| {
-                        RunnerError::UnsupportedScenario {
-                            what: format!("fc.transport lockstep validation failed: {err}"),
-                        }
+        if let Some(delivered_sensor) = self.comm_frame_queues.pop_due_sensor(current_step) {
+            let mut session =
+                self.transport_session
+                    .take()
+                    .ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "fc.transport session was not configured".to_owned(),
                     })?;
-                    ActuatorCommandPacket {
-                        sim_time_s: ack.sim_time_s,
-                        step: ack.step,
-                        effector_commands: Vec::new(),
-                        engine_throttles: Vec::new(),
-                        engine_commands: Vec::new(),
-                    }
-                }
-                BridgeMessage::Fault(fault) => {
-                    return Err(RunnerError::UnsupportedScenario {
-                        what: format!("fc.transport peer reported fault: {:?}", fault.code),
-                    });
-                }
-                _ => {
-                    return Err(RunnerError::UnsupportedScenario {
-                        what: "fc.transport expected command frame on simulator endpoint"
-                            .to_owned(),
-                    });
-                }
-            };
-            let mut command = command;
-            self.apply_command_transport_faults(&mut command)?;
-            validate_command_for_sensor(&sensor, &command).map_err(|err| {
-                RunnerError::UnsupportedScenario {
-                    what: format!("fc.transport lockstep validation failed: {err}"),
-                }
-            })?;
-            Ok(command)
-        })();
+            let result = self.step_delivered_sensor_via_transport(&mut session, &delivered_sensor);
+            self.transport_session = Some(session);
+            let command = result?;
+            self.enqueue_command_for_comm_delivery(command, current_step)?;
+        }
 
-        self.transport_session = Some(session);
-        result
+        Ok(self.comm_frame_queues.pop_due_command(current_step))
+    }
+
+    fn step_delivered_sensor_via_transport(
+        &mut self,
+        session: &mut FcTransportSession,
+        sensor: &SensorPacket,
+    ) -> Result<ActuatorCommandPacket, RunnerError> {
+        session.ensure_handshake()?;
+        if session.has_external_controller() {
+            let mut transmitted_sensor = sensor.clone();
+            self.apply_sensor_transport_faults(&mut transmitted_sensor)?;
+            session
+                .simulator
+                .send(&BridgeMessage::Sensor(transmitted_sensor))?;
+        } else {
+            session
+                .simulator
+                .send(&BridgeMessage::Sensor(sensor.clone()))?;
+
+            let BridgeMessage::Sensor(received_sensor) = session.local_controller_mut()?.recv()?
+            else {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: "fc.transport expected sensor frame on controller endpoint".to_owned(),
+                });
+            };
+            let mut received_sensor = received_sensor;
+            self.apply_sensor_transport_faults(&mut received_sensor)?;
+            let command = self.runner.step_bridge_packet(&received_sensor)?;
+            session
+                .local_controller_mut()?
+                .send(&BridgeMessage::Command(command))?;
+        }
+
+        let command = match session.simulator.recv()? {
+            BridgeMessage::Command(command) => command,
+            BridgeMessage::Ack(ack) => {
+                validate_ack_for_sensor(sensor, &ack).map_err(|err| {
+                    RunnerError::UnsupportedScenario {
+                        what: format!("fc.transport lockstep validation failed: {err}"),
+                    }
+                })?;
+                ActuatorCommandPacket {
+                    sim_time_s: ack.sim_time_s,
+                    step: ack.step,
+                    effector_commands: Vec::new(),
+                    engine_throttles: Vec::new(),
+                    engine_commands: Vec::new(),
+                }
+            }
+            BridgeMessage::Fault(fault) => {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: format!("fc.transport peer reported fault: {:?}", fault.code),
+                });
+            }
+            _ => {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: "fc.transport expected command frame on simulator endpoint".to_owned(),
+                });
+            }
+        };
+        let mut command = command;
+        self.apply_command_transport_faults(&mut command)?;
+        validate_command_for_sensor(sensor, &command).map_err(|err| {
+            RunnerError::UnsupportedScenario {
+                what: format!("fc.transport lockstep validation failed: {err}"),
+            }
+        })?;
+        Ok(command)
+    }
+
+    fn enqueue_sensor_for_comm_delivery(
+        &mut self,
+        sensor: SensorPacket,
+    ) -> Result<(), RunnerError> {
+        let arrival_step = if let Some(effects) = &self.comm_link_effects {
+            apply_comm_link_packet_effect(
+                "sensor",
+                sensor.step,
+                &effects.link_id,
+                &effects.sensor,
+            )?;
+            comm_arrival_step(sensor.step, effects.sensor.latency_s, self.bridge_dt_s)?
+        } else {
+            sensor.step
+        };
+        self.comm_frame_queues.enqueue_sensor(arrival_step, sensor);
+        Ok(())
+    }
+
+    fn enqueue_command_for_comm_delivery(
+        &mut self,
+        command: ActuatorCommandPacket,
+        transmit_step: u64,
+    ) -> Result<(), RunnerError> {
+        let arrival_step = if let Some(effects) = &self.comm_link_effects {
+            apply_comm_link_packet_effect(
+                "command",
+                command.step,
+                &effects.link_id,
+                &effects.command,
+            )?;
+            comm_arrival_step(transmit_step, effects.command.latency_s, self.bridge_dt_s)?
+        } else {
+            transmit_step
+        };
+        self.comm_frame_queues
+            .enqueue_command(arrival_step, command);
+        Ok(())
     }
 
     fn apply_sensor_transport_faults(&self, sensor: &mut SensorPacket) -> Result<(), RunnerError> {
@@ -1018,123 +1158,6 @@ impl FcBridge {
         }
     }
 
-    fn latest_bridge_command_packet(
-        &self,
-        time: openbmp_core::SimTime,
-        step: StepIndex,
-    ) -> Result<ActuatorCommandPacket, RunnerError> {
-        let mut effector_commands = Vec::new();
-        if let Some(commands) = self.runner.latest_effector_command_set() {
-            for command in commands.commands.iter().take(usize::from(commands.count)) {
-                let effector_id = u32::try_from(command.effector_id).map_err(|_| {
-                    RunnerError::UnsupportedScenario {
-                        what: format!(
-                            "fc.transport effector id {} exceeds bridge u32 id range",
-                            command.effector_id
-                        ),
-                    }
-                })?;
-                effector_commands.push((effector_id, command.command));
-            }
-        }
-
-        let mut engine_throttles = Vec::new();
-        if let Some(commands) = self.runner.latest_engine_command_set() {
-            for command in commands.commands.iter().take(usize::from(commands.count)) {
-                let engine_id = u32::try_from(command.engine_id).map_err(|_| {
-                    RunnerError::UnsupportedScenario {
-                        what: format!(
-                            "fc.transport engine id {} exceeds bridge u32 id range",
-                            command.engine_id
-                        ),
-                    }
-                })?;
-                engine_throttles.push((engine_id, command.throttle_unit));
-            }
-        }
-
-        Ok(ActuatorCommandPacket {
-            sim_time_s: time.as_seconds(),
-            step: step.value(),
-            effector_commands,
-            engine_throttles,
-            engine_commands: self.latest_bridge_engine_commands()?,
-        })
-    }
-
-    fn latest_bridge_engine_commands(&self) -> Result<Vec<BridgeEngineCommandPacket>, RunnerError> {
-        let mut engine_commands = Vec::new();
-        if let Some(commands) = self.runner.latest_engine_command_set() {
-            for command in commands.commands.iter().take(usize::from(commands.count)) {
-                let engine_id = u32::try_from(command.engine_id).map_err(|_| {
-                    RunnerError::UnsupportedScenario {
-                        what: format!(
-                            "fc.transport engine id {} exceeds bridge u32 id range",
-                            command.engine_id
-                        ),
-                    }
-                })?;
-                engine_commands.push(BridgeEngineCommandPacket {
-                    engine_id,
-                    throttle_unit: command.throttle_unit,
-                    gimbal_pitch_rad: command.gimbal_pitch_rad,
-                    gimbal_yaw_rad: command.gimbal_yaw_rad,
-                    ignite: command.ignite,
-                    shutdown: command.shutdown,
-                });
-            }
-        }
-        Ok(engine_commands)
-    }
-
-    fn publish_bridge_sensor_packet(&self, sensor: &SensorPacket) {
-        let time = openbmp_core::SimTime::from_seconds(sensor.sim_time_s);
-        self.runner.publish_imu(ImuSample {
-            time,
-            gyro_rad_s: Vector3::from(sensor.imu_gyro_body_rad_s),
-            accel_m_s2: Vector3::from(sensor.imu_accel_body_m_s2),
-            healthy: true,
-        });
-        if let (Some(position_eci_m), Some(velocity_eci_m_s), Some(position_bias_eci_m)) = (
-            sensor.gnss_position_eci_m,
-            sensor.gnss_velocity_eci_m_s,
-            sensor.gnss_position_bias_eci_m,
-        ) {
-            self.runner.publish_gnss(GnssSample {
-                time,
-                position_eci_m: Vector3::from(position_eci_m),
-                velocity_eci_m_s: Vector3::from(velocity_eci_m_s),
-                position_bias_eci_m: Vector3::from(position_bias_eci_m),
-                healthy: true,
-            });
-        }
-        if let (Some(pressure_pa), Some(bias_pa)) = (sensor.baro_pressure_pa, sensor.baro_bias_pa) {
-            self.runner.publish_barometer(BarometerSample {
-                time,
-                pressure_pa,
-                bias_pa,
-                healthy: true,
-            });
-        }
-        if let (Some(field_body_nt), Some(hard_iron_body_nt)) =
-            (sensor.mag_body_nt, sensor.mag_hard_iron_body_nt)
-        {
-            self.runner.publish_magnetometer(MagnetometerSample {
-                time,
-                field_body_nt: Vector3::from(field_body_nt),
-                hard_iron_body_nt: Vector3::from(hard_iron_body_nt),
-                healthy: true,
-            });
-        }
-        if let Some(q) = sensor.star_tracker_attitude_eci_to_body_xyzw {
-            self.runner.publish_star_tracker(StarTrackerSample {
-                time,
-                q_eci_to_body_xyzw: q,
-                healthy: true,
-            });
-        }
-    }
-
     fn apply_transport_command(
         &self,
         command: &ActuatorCommandPacket,
@@ -1175,6 +1198,27 @@ impl FcBridge {
                 bias_pa,
                 healthy: true,
             }),
+            SensorMeasurement::AirData {
+                static_pressure_pa,
+                impact_pressure_pa,
+                mach,
+                calibrated_airspeed_m_s,
+                true_airspeed_m_s,
+                angle_of_attack_rad,
+                sideslip_rad,
+                pressure_altitude_m,
+            } => self.runner.publish_airdata(AirDataSample {
+                time: measurement.time,
+                static_pressure_pa,
+                impact_pressure_pa,
+                mach,
+                calibrated_airspeed_m_s,
+                true_airspeed_m_s,
+                angle_of_attack_rad,
+                sideslip_rad,
+                pressure_altitude_m,
+                healthy: true,
+            }),
             SensorMeasurement::Gnss {
                 position_eci_m,
                 velocity_eci_m_s,
@@ -1212,51 +1256,133 @@ impl FcBridge {
         &mut self,
         state: &PointMassState,
         gravity_eci_m_s2: Vector3<f64>,
-    ) -> SensorTruth {
+        force_truth: Option<SpecificForceTruth>,
+    ) -> Result<SensorTruth, RunnerError> {
         let attitude_body_to_eci = UnitQuaternion::identity();
-        let specific_force_eci = self.specific_force_eci(
-            state.velocity.vector,
-            state.time.as_seconds(),
-            gravity_eci_m_s2,
-        );
-        self.truth_common(
+        let (angular_velocity_body_rad_s, angular_acceleration_body_rad_s2, specific_force_body) =
+            match self.specific_force_source {
+                SpecificForceSourceConfig::FiniteDifference => {
+                    let specific_force_eci = self.specific_force_eci(
+                        state.velocity.vector,
+                        state.time.as_seconds(),
+                        gravity_eci_m_s2,
+                    );
+                    (
+                        Vector3::zeros(),
+                        Vector3::zeros(),
+                        attitude_body_to_eci.inverse() * specific_force_eci,
+                    )
+                }
+                SpecificForceSourceConfig::ForceAccumulator => {
+                    let truth = force_truth.ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "specific_force_source = \"force_accumulator\" requires runner force truth"
+                            .to_owned(),
+                    })?;
+                    (
+                        truth.omega_body_rad_s,
+                        truth.alpha_body_rad_s2,
+                        truth.f_cg_body_m_s2,
+                    )
+                }
+                SpecificForceSourceConfig::StationaryRotatingFrame => {
+                    let truth = stationary_rotating_frame_imu_truth_eci(
+                        state.position,
+                        gravity_eci_m_s2,
+                        self.frame.angular_velocity_z_at(state.time),
+                    )
+                    .map_err(|err| RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "specific_force_source = \"stationary_rotating_frame\" failed: {err}"
+                        ),
+                    })?;
+                    (
+                        attitude_body_to_eci.inverse() * truth.angular_velocity_eci_rad_s,
+                        Vector3::zeros(),
+                        attitude_body_to_eci.inverse() * truth.specific_force_eci_m_s2,
+                    )
+                }
+            };
+        Ok(self.truth_common(
             state.position,
             state.velocity,
             attitude_body_to_eci,
-            Vector3::zeros(),
-            Vector3::zeros(),
-            specific_force_eci,
+            angular_velocity_body_rad_s,
+            angular_acceleration_body_rad_s2,
+            specific_force_body,
             state.time,
-        )
+        ))
     }
 
     fn rigid_body_truth(
         &mut self,
         state: &RigidBodyState,
         gravity_eci_m_s2: Vector3<f64>,
+        force_truth: Option<SpecificForceTruth>,
         gyro_pickup_rad_s: Vector3<f64>,
-    ) -> SensorTruth {
+    ) -> Result<SensorTruth, RunnerError> {
         let attitude_body_to_eci = state.orientation.q;
-        let specific_force_eci = self.specific_force_eci(
-            state.velocity.vector,
-            state.time.as_seconds(),
-            gravity_eci_m_s2,
-        );
         // The rate gyro senses the rigid-body rate PLUS the local structural
         // bending slope rate (zero for a rigid vehicle). This is what lets the
         // autopilot — and its gyro notch — interact with the flex mode.
-        let angular_velocity_body_rad_s = state.angular_velocity.vector + gyro_pickup_rad_s;
-        let angular_acceleration_body_rad_s2 =
-            self.angular_acceleration_body(angular_velocity_body_rad_s, state.time.as_seconds());
-        self.truth_common(
+        let (angular_velocity_body_rad_s, angular_acceleration_body_rad_s2, specific_force_body) =
+            match self.specific_force_source {
+                SpecificForceSourceConfig::FiniteDifference => {
+                    let specific_force_eci = self.specific_force_eci(
+                        state.velocity.vector,
+                        state.time.as_seconds(),
+                        gravity_eci_m_s2,
+                    );
+                    let angular_velocity_body_rad_s =
+                        state.angular_velocity.vector + gyro_pickup_rad_s;
+                    let angular_acceleration_body_rad_s2 = self.angular_acceleration_body(
+                        angular_velocity_body_rad_s,
+                        state.time.as_seconds(),
+                    );
+                    (
+                        angular_velocity_body_rad_s,
+                        angular_acceleration_body_rad_s2,
+                        attitude_body_to_eci.inverse() * specific_force_eci,
+                    )
+                }
+                SpecificForceSourceConfig::ForceAccumulator => {
+                    let truth = force_truth.ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "specific_force_source = \"force_accumulator\" requires runner force truth"
+                            .to_owned(),
+                    })?;
+                    (
+                        truth.omega_body_rad_s + gyro_pickup_rad_s,
+                        truth.alpha_body_rad_s2,
+                        truth.f_cg_body_m_s2,
+                    )
+                }
+                SpecificForceSourceConfig::StationaryRotatingFrame => {
+                    let truth = stationary_rotating_frame_imu_truth_eci(
+                        state.position,
+                        gravity_eci_m_s2,
+                        self.frame.angular_velocity_z_at(state.time),
+                    )
+                    .map_err(|err| RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "specific_force_source = \"stationary_rotating_frame\" failed: {err}"
+                        ),
+                    })?;
+                    (
+                        attitude_body_to_eci.inverse() * truth.angular_velocity_eci_rad_s
+                            + gyro_pickup_rad_s,
+                        Vector3::zeros(),
+                        attitude_body_to_eci.inverse() * truth.specific_force_eci_m_s2,
+                    )
+                }
+            };
+        Ok(self.truth_common(
             state.position,
             state.velocity,
             attitude_body_to_eci,
             angular_velocity_body_rad_s,
             angular_acceleration_body_rad_s2,
-            specific_force_eci,
+            specific_force_body,
             state.time,
-        )
+        ))
     }
 
     // Assembles one full truth-state record; the eight components
@@ -1270,7 +1396,7 @@ impl FcBridge {
         attitude_body_to_eci: UnitQuaternion<f64>,
         angular_velocity_body_rad_s: Vector3<f64>,
         angular_acceleration_body_rad_s2: Vector3<f64>,
-        specific_force_eci_m_s2: Vector3<f64>,
+        specific_force_body_m_s2: Vector3<f64>,
         time: openbmp_core::SimTime,
     ) -> SensorTruth {
         let altitude_m =
@@ -1278,9 +1404,9 @@ impl FcBridge {
         let atmosphere = self.sample_atmosphere(altitude_m, time);
         let static_pressure_pa = atmosphere.pressure_pa;
         let attitude_eci_to_body = attitude_body_to_eci.inverse();
-        let specific_force_body_m_s2 = attitude_eci_to_body * specific_force_eci_m_s2;
         let magnetic_field_body_nt =
             attitude_eci_to_body * self.magnetic.field_eci_nt(position.vector, time);
+        let air_relative_velocity_body_m_s = attitude_eci_to_body * velocity.vector;
         SensorTruth {
             position_eci: position,
             velocity_eci: velocity,
@@ -1289,6 +1415,9 @@ impl FcBridge {
             angular_acceleration_body_rad_s2,
             specific_force_body_m_s2,
             static_pressure_pa,
+            atmosphere_density_kg_m3: atmosphere.density_kg_m3,
+            speed_of_sound_m_s: atmosphere.speed_of_sound_m_s,
+            air_relative_velocity_body_m_s,
             altitude_geometric_m: altitude_m,
             magnetic_field_body_nt,
             time,
@@ -1347,6 +1476,70 @@ impl FcBridge {
     }
 }
 
+fn apply_comm_link_packet_effect(
+    frame_kind: &'static str,
+    step: u64,
+    link_id: &str,
+    effect: &LinkPacketEffect,
+) -> Result<(), RunnerError> {
+    match effect.disposition {
+        LinkPacketDisposition::Deliver => Ok(()),
+        LinkPacketDisposition::Drop => Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "comm link `{link_id}` dropped fc.transport {frame_kind} frame step {step} (latency_s = {:.17e}, fer_draw = {})",
+                effect.latency_s,
+                format_optional_draw(effect.error_draw),
+            ),
+        }),
+        LinkPacketDisposition::BitFlip { mask } => Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "comm link `{link_id}` corrupted fc.transport {frame_kind} frame step {step} with bit-flip mask 0x{mask:02x} (latency_s = {:.17e}, fer_draw = {})",
+                effect.latency_s,
+                format_optional_draw(effect.error_draw),
+            ),
+        }),
+    }
+}
+
+fn comm_arrival_step(transmit_step: u64, latency_s: f64, dt_s: f64) -> Result<u64, RunnerError> {
+    let delay_steps = comm_latency_step_delay(latency_s, dt_s)?;
+    transmit_step
+        .checked_add(delay_steps)
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!(
+                "comm link frame latency overflows step index: transmit_step = {transmit_step}, delay_steps = {delay_steps}"
+            ),
+        })
+}
+
+fn comm_latency_step_delay(latency_s: f64, dt_s: f64) -> Result<u64, RunnerError> {
+    if !latency_s.is_finite() || latency_s < 0.0 {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "comm link frame latency must be finite and non-negative, got {latency_s}"
+            ),
+        });
+    }
+    if !dt_s.is_finite() || dt_s <= 0.0 {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!("comm link frame delay requires positive finite dt_s, got {dt_s}"),
+        });
+    }
+    let delay_steps = (latency_s / dt_s).floor();
+    if delay_steps > u64::MAX as f64 {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "comm link frame latency is too large for step-index delay: latency_s = {latency_s}, dt_s = {dt_s}"
+            ),
+        });
+    }
+    Ok(delay_steps as u64)
+}
+
+fn format_optional_draw(draw: Option<f64>) -> String {
+    draw.map_or_else(|| "none".to_owned(), |value| format!("{value:.17e}"))
+}
+
 pub(crate) fn propellant_state_from_tanks(
     time: openbmp_core::SimTime,
     tanks: &BTreeMap<openbmp_core::TankId, openbmp_vehicle::PropellantTankState>,
@@ -1396,7 +1589,7 @@ fn build_transport_session(
             has_imu = true;
         } else if !matches!(
             sensor.kind.as_str(),
-            "gnss" | "magnetometer" | "barometer" | "star_tracker"
+            "gnss" | "magnetometer" | "barometer" | "airdata" | "star_tracker"
         ) {
             return Err(RunnerError::UnsupportedScenario {
                 what: format!(
@@ -1503,6 +1696,23 @@ fn bridge_fault_signal(signal: &FcTransportFaultSignalConfig) -> BridgeScalarSig
         }
         FcTransportFaultSignalConfig::ImuGyroBodyRadS { axis } => {
             BridgeScalarSignal::ImuGyroBodyRadS(vector_axis(*axis))
+        }
+        FcTransportFaultSignalConfig::ImuIncrementDeltaThetaRad { sample_index, axis } => {
+            BridgeScalarSignal::ImuIncrementDeltaThetaRad {
+                sample_index: *sample_index,
+                axis: vector_axis(*axis),
+            }
+        }
+        FcTransportFaultSignalConfig::ImuIncrementDeltaVMs { sample_index, axis } => {
+            BridgeScalarSignal::ImuIncrementDeltaVMs {
+                sample_index: *sample_index,
+                axis: vector_axis(*axis),
+            }
+        }
+        FcTransportFaultSignalConfig::ImuIncrementDtS { sample_index } => {
+            BridgeScalarSignal::ImuIncrementDtS {
+                sample_index: *sample_index,
+            }
         }
         FcTransportFaultSignalConfig::BaroAltitudeM => BridgeScalarSignal::BaroAltitudeM,
         FcTransportFaultSignalConfig::BaroPressurePa => BridgeScalarSignal::BaroPressurePa,
@@ -1642,6 +1852,26 @@ fn append_bridge_measurement(
             packet.baro_bias_pa = Some(*bias_pa);
             Ok(true)
         }
+        SensorMeasurement::AirData {
+            static_pressure_pa,
+            impact_pressure_pa,
+            mach,
+            calibrated_airspeed_m_s,
+            true_airspeed_m_s,
+            angle_of_attack_rad,
+            sideslip_rad,
+            pressure_altitude_m,
+        } => {
+            packet.airdata_static_pressure_pa = Some(*static_pressure_pa);
+            packet.airdata_impact_pressure_pa = Some(*impact_pressure_pa);
+            packet.airdata_mach = Some(*mach);
+            packet.airdata_calibrated_airspeed_m_s = Some(*calibrated_airspeed_m_s);
+            packet.airdata_true_airspeed_m_s = Some(*true_airspeed_m_s);
+            packet.airdata_angle_of_attack_rad = Some(*angle_of_attack_rad);
+            packet.airdata_sideslip_rad = Some(*sideslip_rad);
+            packet.airdata_pressure_altitude_m = Some(*pressure_altitude_m);
+            Ok(true)
+        }
         SensorMeasurement::Gnss {
             position_eci_m,
             velocity_eci_m_s,
@@ -1681,6 +1911,27 @@ fn append_bridge_measurement(
             what: "[fc.transport] does not support ideal_state sensor packets".to_owned(),
         }),
     }
+}
+
+fn append_bridge_imu_increment_window(packet: &mut SensorPacket, window: &ImuIncrementWindow) {
+    packet.imu_increments = window
+        .increments
+        .iter()
+        .map(|increment| ImuIncrementPacket {
+            delta_theta_rad: [
+                increment.delta_theta_rad.x,
+                increment.delta_theta_rad.y,
+                increment.delta_theta_rad.z,
+            ],
+            delta_v_m_s: [
+                increment.delta_v_m_s.x,
+                increment.delta_v_m_s.y,
+                increment.delta_v_m_s.z,
+            ],
+            dt_s: increment.dt_s,
+            seq: increment.seq,
+        })
+        .collect();
 }
 
 fn effector_command_set_from_packet(
@@ -1777,6 +2028,8 @@ fn engine_command_set_from_packet(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod fc_transport_packet_tests {
+    use openbmp_bridge::EngineCommandPacket as BridgeEngineCommandPacket;
+
     use super::*;
 
     #[test]
@@ -1836,6 +2089,20 @@ mod fc_transport_packet_tests {
             step: 2,
             imu_accel_body_m_s2: [1.0, 2.0, 3.0],
             imu_gyro_body_rad_s: [0.01, 0.02, 0.026],
+            imu_increments: vec![
+                ImuIncrementPacket {
+                    delta_theta_rad: [1.0e-4, 2.0e-4, 3.0e-4],
+                    delta_v_m_s: [0.001, 0.002, 0.003],
+                    dt_s: 0.00025,
+                    seq: 20,
+                },
+                ImuIncrementPacket {
+                    delta_theta_rad: [4.0e-4, 5.0e-4, 6.0e-4],
+                    delta_v_m_s: [0.004, 0.005, 0.006],
+                    dt_s: 0.00025,
+                    seq: 21,
+                },
+            ],
             baro_pressure_pa: Some(100_000.0),
             ..SensorPacket::default()
         };
@@ -1872,6 +2139,37 @@ mod fc_transport_packet_tests {
                 }),
             ),
             BridgeFaultRule::new(
+                "dtheta-y-bias",
+                2,
+                Some(2),
+                bridge_fault_signal(&FcTransportFaultSignalConfig::ImuIncrementDeltaThetaRad {
+                    sample_index: 1,
+                    axis: FcTransportVectorAxisConfig::Y,
+                }),
+                bridge_fault_transform(FcTransportFaultTransformConfig::AdditiveBias {
+                    offset: 1.0e-5,
+                }),
+            ),
+            BridgeFaultRule::new(
+                "dv-z-scale",
+                2,
+                Some(2),
+                bridge_fault_signal(&FcTransportFaultSignalConfig::ImuIncrementDeltaVMs {
+                    sample_index: 0,
+                    axis: FcTransportVectorAxisConfig::Z,
+                }),
+                bridge_fault_transform(FcTransportFaultTransformConfig::Scale { factor: -2.0 }),
+            ),
+            BridgeFaultRule::new(
+                "increment-dt-stuck",
+                2,
+                Some(2),
+                bridge_fault_signal(&FcTransportFaultSignalConfig::ImuIncrementDtS {
+                    sample_index: 1,
+                }),
+                bridge_fault_transform(FcTransportFaultTransformConfig::Stuck { value: 0.0005 }),
+            ),
+            BridgeFaultRule::new(
                 "gyro-y-noise",
                 2,
                 Some(2),
@@ -1894,6 +2192,9 @@ mod fc_transport_packet_tests {
                 "imu-x-bias",
                 "gyro-z-quantize",
                 "baro-drift",
+                "dtheta-y-bias",
+                "dv-z-scale",
+                "increment-dt-stuck",
                 "gyro-y-noise"
             ]
         );
@@ -1910,6 +2211,18 @@ mod fc_transport_packet_tests {
         assert_eq!(
             packet.baro_pressure_pa.map(f64::to_bits),
             Some(100_016.0_f64.to_bits())
+        );
+        assert_eq!(
+            packet.imu_increments[1].delta_theta_rad[1].to_bits(),
+            5.1e-4_f64.to_bits()
+        );
+        assert_eq!(
+            packet.imu_increments[0].delta_v_m_s[2].to_bits(),
+            (-0.006_f64).to_bits()
+        );
+        assert_eq!(
+            packet.imu_increments[1].dt_s.to_bits(),
+            0.0005_f64.to_bits()
         );
     }
 
@@ -2093,6 +2406,7 @@ mod fc_transport_packet_tests {
 enum BridgeSensor {
     Imu(SyntheticSensorAdapter<SyntheticImu>),
     Barometer(SyntheticSensorAdapter<SyntheticBarometer>),
+    AirData(SyntheticSensorAdapter<SyntheticAirData>),
     Gnss(SyntheticSensorAdapter<SyntheticGnss>),
     Magnetometer(SyntheticSensorAdapter<SyntheticMagnetometer>),
     StarTracker(SyntheticSensorAdapter<SyntheticStarTracker>),
@@ -2106,6 +2420,7 @@ impl BridgeSensor {
         match self {
             Self::Imu(s) => s.sensor_id(),
             Self::Barometer(s) => s.sensor_id(),
+            Self::AirData(s) => s.sensor_id(),
             Self::Gnss(s) => s.sensor_id(),
             Self::Magnetometer(s) => s.sensor_id(),
             Self::StarTracker(s) => s.sensor_id(),
@@ -2117,6 +2432,7 @@ impl BridgeSensor {
         match self {
             Self::Imu(s) => s.prime(truth, step, seed),
             Self::Barometer(s) => s.prime(truth, step, seed),
+            Self::AirData(s) => s.prime(truth, step, seed),
             Self::Gnss(s) => s.prime(truth, step, seed),
             Self::Magnetometer(s) => s.prime(truth, step, seed),
             Self::StarTracker(s) => s.prime(truth, step, seed),
@@ -2128,6 +2444,7 @@ impl BridgeSensor {
         match self {
             Self::Imu(s) => s.read(),
             Self::Barometer(s) => s.read(),
+            Self::AirData(s) => s.read(),
             Self::Gnss(s) => s.read(),
             Self::Magnetometer(s) => s.read(),
             Self::StarTracker(s) => s.read(),
@@ -2135,6 +2452,33 @@ impl BridgeSensor {
         }
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("synthetic sensor read failed: {err}"),
+        })
+    }
+
+    fn imu_increment_window(
+        &self,
+        time: openbmp_core::SimTime,
+        healthy: bool,
+    ) -> Option<ImuIncrementWindow> {
+        let Self::Imu(sensor) = self else {
+            return None;
+        };
+        let increments = sensor.inner().last_high_rate_increments();
+        if increments.is_empty() {
+            return None;
+        }
+        Some(ImuIncrementWindow {
+            time,
+            increments: increments
+                .iter()
+                .map(|increment| ImuInertialIncrement {
+                    delta_theta_rad: increment.delta_theta_rad,
+                    delta_v_m_s: increment.delta_v_m_s,
+                    dt_s: increment.dt_s,
+                    seq: increment.seq,
+                })
+                .collect(),
+            healthy,
         })
     }
 }
@@ -2172,12 +2516,11 @@ fn bridge_sensor_altitude_m(
 /// magnetometer truth are ECI quantities, and barometric pressure now uses
 /// the same frame-aware altitude helper as the kernel atmosphere path.
 ///
-/// `iers-tabulated` is treated identically: it differs from
-/// `wgs84-uniform-rotation` only in the ECI↔ECEF transform (IAU precession +
-/// nutation, tabulated UT1-UTC / polar motion / LOD), which the KERNEL
+/// `iers-tabulated` and `iers-cio` are treated identically: they differ from
+/// `wgs84-uniform-rotation` only in the ECI↔ECEF transform, which the KERNEL
 /// applies to the dynamics (atmospheric co-rotation, gravity). The bridge
-/// sensor truth is derived in ECI and so is identical under either rotating
-/// frame.
+/// sensor truth is derived in ECI and so is identical under these rotating
+/// frames.
 fn bridge_frame_supported(
     frame_profile: &str,
     _atmosphere: &str,
@@ -2185,10 +2528,10 @@ fn bridge_frame_supported(
 ) -> Result<(), String> {
     match frame_profile {
         "toy-fixed-earth" => Ok(()),
-        "wgs84-uniform-rotation" | "iers-tabulated" => Ok(()),
+        "wgs84-uniform-rotation" | "iers-tabulated" | "iers-cio" => Ok(()),
         other => Err(format!(
             "[fc] bridge requires frame_profile = \"toy-fixed-earth\", \
-             \"wgs84-uniform-rotation\", or \"iers-tabulated\"; got `{other}`"
+             \"wgs84-uniform-rotation\", \"iers-tabulated\", or \"iers-cio\"; got `{other}`"
         )),
     }
 }
@@ -2489,6 +2832,24 @@ fn magnetic_field_settings_for_estimator(
     }
 }
 
+fn bridge_specific_force_source(document: &ScenarioDocument) -> SpecificForceSourceConfig {
+    document
+        .sensors
+        .as_ref()
+        .and_then(|sensors| {
+            sensors
+                .values()
+                .filter(|sensor| sensor.kind == "imu")
+                .filter_map(|sensor| sensor.specific_force_source)
+                .max_by_key(|source| match source {
+                    SpecificForceSourceConfig::FiniteDifference => 0,
+                    SpecificForceSourceConfig::ForceAccumulator => 1,
+                    SpecificForceSourceConfig::StationaryRotatingFrame => 2,
+                })
+        })
+        .unwrap_or_default()
+}
+
 fn build_sensors(
     document: &ScenarioDocument,
     resolved_files: &BTreeMap<String, ResolvedFile>,
@@ -2521,13 +2882,26 @@ fn build_sensor(
         ))),
         "imu" => {
             let budget = ImuNoiseBudget::load_from_str(sensor_text(name, resolved_files)?)?;
-            let sensor = SyntheticImu::new(id, budget)?;
+            let mut sensor = SyntheticImu::new(id, budget)?;
+            if let Some(high_rate) = config.high_rate {
+                let high_rate = HighRateImuConfig::new(
+                    high_rate.sub_samples,
+                    high_rate.delta_theta_lsb_rad,
+                    high_rate.delta_v_lsb_m_s,
+                )?;
+                sensor = sensor.with_high_rate(high_rate);
+            }
             Ok(BridgeSensor::Imu(SyntheticSensorAdapter::new(sensor)))
         }
         "barometer" => {
             let budget = parse_baro_budget(sensor_text(name, resolved_files)?, dt_s)?;
             let sensor = SyntheticBarometer::new(id, budget.0, budget.1, budget.2, dt_s)?;
             Ok(BridgeSensor::Barometer(SyntheticSensorAdapter::new(sensor)))
+        }
+        "airdata" => {
+            let budget = AirDataNoiseBudget::load_from_str(sensor_text(name, resolved_files)?)?;
+            let sensor = SyntheticAirData::new(id, budget);
+            Ok(BridgeSensor::AirData(SyntheticSensorAdapter::new(sensor)))
         }
         "gnss" => {
             let budget = parse_gnss_budget(sensor_text(name, resolved_files)?, dt_s)?;
@@ -2787,6 +3161,123 @@ mod tests {
     ));
 
     #[test]
+    fn comm_latency_step_delay_quantizes_by_runner_dt() {
+        assert_eq!(comm_latency_step_delay(0.0, 0.001).unwrap(), 0);
+        assert_eq!(comm_latency_step_delay(0.000_999, 0.001).unwrap(), 0);
+        assert_eq!(comm_latency_step_delay(0.001, 0.001).unwrap(), 1);
+        assert_eq!(comm_latency_step_delay(0.003_9, 0.001).unwrap(), 3);
+        assert_eq!(comm_arrival_step(10, 0.003_9, 0.001).unwrap(), 13);
+    }
+
+    #[test]
+    fn comm_latency_step_delay_rejects_invalid_inputs() {
+        assert!(matches!(
+            comm_latency_step_delay(f64::NAN, 0.001),
+            Err(RunnerError::UnsupportedScenario { .. })
+        ));
+        assert!(matches!(
+            comm_latency_step_delay(-0.001, 0.001),
+            Err(RunnerError::UnsupportedScenario { .. })
+        ));
+        assert!(matches!(
+            comm_latency_step_delay(0.001, 0.0),
+            Err(RunnerError::UnsupportedScenario { .. })
+        ));
+        assert!(matches!(
+            comm_arrival_step(u64::MAX, 0.001, 0.001),
+            Err(RunnerError::UnsupportedScenario { .. })
+        ));
+    }
+
+    #[test]
+    fn comm_frame_queue_releases_oldest_due_sensor_and_command() {
+        let mut queues = CommLinkFrameQueues::default();
+        queues.enqueue_sensor(
+            3,
+            SensorPacket {
+                step: 30,
+                ..SensorPacket::default()
+            },
+        );
+        queues.enqueue_sensor(
+            1,
+            SensorPacket {
+                step: 10,
+                ..SensorPacket::default()
+            },
+        );
+        queues.enqueue_command(
+            2,
+            ActuatorCommandPacket {
+                step: 20,
+                sim_time_s: 0.02,
+                effector_commands: Vec::new(),
+                engine_throttles: Vec::new(),
+                engine_commands: Vec::new(),
+            },
+        );
+
+        assert!(queues.pop_due_sensor(0).is_none());
+        assert_eq!(queues.pop_due_sensor(1).expect("due sensor").step, 10);
+        assert!(queues.pop_due_sensor(2).is_none());
+        assert_eq!(queues.pop_due_command(2).expect("due command").step, 20);
+        assert_eq!(queues.pop_due_sensor(3).expect("later sensor").step, 30);
+        assert!(queues.pop_due_command(3).is_none());
+    }
+
+    #[test]
+    fn comm_link_effect_drops_sensor_frame_fail_closed() {
+        let err = apply_comm_link_packet_effect(
+            "sensor",
+            4,
+            "s-band",
+            &LinkPacketEffect {
+                disposition: LinkPacketDisposition::Drop,
+                propagation_delay_s: 1.0,
+                processing_delay_s: 0.0,
+                latency_s: 1.0,
+                error_draw: Some(0.25),
+            },
+        )
+        .expect_err("drop disposition fails closed");
+        assert!(
+            matches!(
+                err,
+                RunnerError::UnsupportedScenario { ref what }
+                    if what.contains("comm link `s-band` dropped fc.transport sensor frame step 4")
+                        && what.contains("fer_draw = 2.50000000000000000e-1")
+            ),
+            "expected comm-link drop UnsupportedScenario, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn comm_link_effect_corrupts_command_frame_fail_closed() {
+        let err = apply_comm_link_packet_effect(
+            "command",
+            7,
+            "s-band",
+            &LinkPacketEffect {
+                disposition: LinkPacketDisposition::BitFlip { mask: 0xa5 },
+                propagation_delay_s: 1.0,
+                processing_delay_s: 0.02,
+                latency_s: 1.02,
+                error_draw: Some(0.75),
+            },
+        )
+        .expect_err("bit-flip disposition fails closed");
+        assert!(
+            matches!(
+                err,
+                RunnerError::UnsupportedScenario { ref what }
+                    if what.contains("comm link `s-band` corrupted fc.transport command frame step 7")
+                        && what.contains("bit-flip mask 0xa5")
+            ),
+            "expected comm-link bit-flip UnsupportedScenario, got {err:?}"
+        );
+    }
+
+    #[test]
     fn allocator_builder_rejects_even_tiny_asymmetric_limits() {
         let toml = ALLOCATOR_SCENARIO.replacen(
             "limits           = { min = -0.2, max = 0.2",
@@ -2867,6 +3358,170 @@ estimator = "ekf"
     }
 
     #[test]
+    fn build_sensor_accepts_airdata_budget() {
+        let budget = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/sensors/airdata-textbook.toml"
+        ));
+        let config = SensorConfig {
+            kind: "airdata".to_owned(),
+            specific_force_source: None,
+            high_rate: None,
+            file: Some("airdata-textbook.toml".into()),
+            file_sha256: None,
+        };
+        let resolved = BTreeMap::from([(
+            "sensors.airdata.file".to_owned(),
+            ResolvedFile::from_bytes("airdata-textbook.toml", budget.as_bytes().to_vec()),
+        )]);
+
+        let sensor = build_sensor("airdata", &config, 0.01, &resolved).expect("airdata sensor");
+
+        assert!(matches!(sensor, BridgeSensor::AirData(_)));
+    }
+
+    #[test]
+    fn build_sensor_accepts_imu_high_rate_config() {
+        let budget = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/openbmp-sensors/tests/fixtures/minimal-imu-budget.toml"
+        ));
+        let config = SensorConfig {
+            kind: "imu".to_owned(),
+            specific_force_source: None,
+            high_rate: Some(openbmp_scenario::SensorHighRateImuConfig {
+                sub_samples: 4,
+                delta_theta_lsb_rad: 1.0e-6,
+                delta_v_lsb_m_s: 1.0e-5,
+            }),
+            file: Some("minimal-imu-budget.toml".into()),
+            file_sha256: None,
+        };
+        let resolved = BTreeMap::from([(
+            "sensors.imu.file".to_owned(),
+            ResolvedFile::from_bytes("minimal-imu-budget.toml", budget.as_bytes().to_vec()),
+        )]);
+
+        let sensor = build_sensor("imu", &config, 0.01, &resolved).expect("imu sensor");
+
+        let BridgeSensor::Imu(sensor) = sensor else {
+            panic!("expected imu sensor");
+        };
+        assert_eq!(
+            sensor.inner().high_rate_config(),
+            Some(HighRateImuConfig::new(4, 1.0e-6, 1.0e-5).unwrap())
+        );
+    }
+
+    #[test]
+    fn bridge_sensor_reports_imu_increment_window_after_read() {
+        let budget = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/openbmp-sensors/tests/fixtures/minimal-imu-budget.toml"
+        ));
+        let config = SensorConfig {
+            kind: "imu".to_owned(),
+            specific_force_source: None,
+            high_rate: Some(openbmp_scenario::SensorHighRateImuConfig {
+                sub_samples: 4,
+                delta_theta_lsb_rad: 1.0e-6,
+                delta_v_lsb_m_s: 1.0e-5,
+            }),
+            file: Some("minimal-imu-budget.toml".into()),
+            file_sha256: None,
+        };
+        let resolved = BTreeMap::from([(
+            "sensors.imu.file".to_owned(),
+            ResolvedFile::from_bytes("minimal-imu-budget.toml", budget.as_bytes().to_vec()),
+        )]);
+        let mut sensor = build_sensor("imu", &config, 0.001, &resolved).expect("imu sensor");
+        let time = openbmp_core::SimTime::from_seconds(0.125);
+        let truth = SensorTruth {
+            position_eci: Position3::new(0.0, 0.0, 0.0),
+            velocity_eci: Velocity3::new(0.0, 0.0, 0.0),
+            attitude_eci_to_body: UnitQuaternion::identity(),
+            angular_velocity_body_rad_s: Vector3::new(0.2, -0.4, 0.8),
+            angular_acceleration_body_rad_s2: Vector3::zeros(),
+            specific_force_body_m_s2: Vector3::new(8.0, -4.0, 2.0),
+            static_pressure_pa: 101_325.0,
+            atmosphere_density_kg_m3: 1.225,
+            speed_of_sound_m_s: 340.3,
+            air_relative_velocity_body_m_s: Vector3::zeros(),
+            altitude_geometric_m: 0.0,
+            magnetic_field_body_nt: Vector3::zeros(),
+            time,
+        };
+
+        sensor.prime(truth, StepIndex::new(7), 42);
+        let measurement = sensor.read().expect("imu measurement");
+        let window = sensor
+            .imu_increment_window(measurement.time, true)
+            .expect("increment window");
+
+        assert_eq!(window.time, time);
+        assert!(window.healthy);
+        assert_eq!(window.increments.len(), 4);
+        assert_eq!(window.increments[0].seq, 28);
+        assert_eq!(window.increments[3].seq, 31);
+        assert_eq!(window.increments[0].dt_s.to_bits(), 0.00025_f64.to_bits());
+        assert!(
+            (window.increments[0].delta_theta_rad - Vector3::new(50.0e-6, -100.0e-6, 200.0e-6))
+                .norm()
+                < 1.0e-15
+        );
+        assert!(
+            (window.increments[0].delta_v_m_s - Vector3::new(0.002, -0.001, 0.0005)).norm()
+                < 1.0e-15
+        );
+        assert!(window.increments[0].delta_theta_rad == window.increments[3].delta_theta_rad);
+        assert!(window.increments[0].delta_v_m_s == window.increments[3].delta_v_m_s);
+    }
+
+    #[test]
+    fn append_bridge_measurement_serializes_airdata_fields() {
+        let mut packet = SensorPacket::default();
+        let measurement = SensorMeasurement::AirData {
+            static_pressure_pa: 88_500.0,
+            impact_pressure_pa: 1_250.0,
+            mach: 0.15,
+            calibrated_airspeed_m_s: 51.0,
+            true_airspeed_m_s: 52.0,
+            angle_of_attack_rad: 0.02,
+            sideslip_rad: -0.01,
+            pressure_altitude_m: 1_100.0,
+        };
+
+        let representable =
+            append_bridge_measurement(&mut packet, &measurement).expect("append airdata");
+
+        assert!(representable);
+        assert_eq!(
+            packet.airdata_static_pressure_pa.map(f64::to_bits),
+            Some(88_500.0_f64.to_bits())
+        );
+        assert_eq!(
+            packet.airdata_impact_pressure_pa.map(f64::to_bits),
+            Some(1_250.0_f64.to_bits())
+        );
+        assert_eq!(
+            packet.airdata_mach.map(f64::to_bits),
+            Some(0.15_f64.to_bits())
+        );
+        assert_eq!(
+            packet.airdata_angle_of_attack_rad.map(f64::to_bits),
+            Some(0.02_f64.to_bits())
+        );
+        assert_eq!(
+            packet.airdata_sideslip_rad.map(f64::to_bits),
+            Some((-0.01_f64).to_bits())
+        );
+        assert_eq!(
+            packet.airdata_pressure_altitude_m.map(f64::to_bits),
+            Some(1_100.0_f64.to_bits())
+        );
+    }
+
+    #[test]
     fn propellant_state_from_tanks_reports_remaining_fraction() {
         let tanks = BTreeMap::from([
             (
@@ -2921,12 +3576,15 @@ estimator = "ekf"
         );
         assert!(bridge_frame_supported("wgs84-uniform-rotation", "us_standard_1976", true).is_ok());
 
-        // iers-tabulated shares the rotating-Earth bridge contract: the
-        // sensor truth is frame-invariant in ECI, so it is accepted under
+        // IERS profiles share the rotating-Earth bridge contract: the
+        // sensor truth is frame-invariant in ECI, so they are accepted under
         // the same conditions as wgs84-uniform-rotation.
         assert!(bridge_frame_supported("iers-tabulated", "none", true).is_ok());
         assert!(bridge_frame_supported("iers-tabulated", "us_standard_1976", false).is_ok());
         assert!(bridge_frame_supported("iers-tabulated", "us_standard_1976", true).is_ok());
+        assert!(bridge_frame_supported("iers-cio", "none", true).is_ok());
+        assert!(bridge_frame_supported("iers-cio", "us_standard_1976", false).is_ok());
+        assert!(bridge_frame_supported("iers-cio", "us_standard_1976", true).is_ok());
 
         // A genuinely unsupported frame is still rejected.
         let err = bridge_frame_supported("spice-reference", "none", false)

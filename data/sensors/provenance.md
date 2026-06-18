@@ -211,6 +211,61 @@ verification:
 - **No real fielded data.** Per `safety-boundaries.md`, the budget
   is a textbook envelope, not a port of any vendor's data sheet.
 
+## `data/sensors/airdata-textbook.toml`
+
+```yaml
+dataset_id:       openbmp.sensors.airdata_textbook.v1
+files:
+  - data/sensors/airdata-textbook.toml
+source_class:     synthetic-openbmp
+source_title:     >-
+  Synthetic OpenBMP-authored Pitot-static and alpha/beta vane
+  textbook budget, parameterised as independent pressure and angle
+  Gaussian channels plus fixed latency.
+source_authors:   OpenBMP (Dmitri Arekhta)
+source_id:        synthetic; not transcribed from any vendor data sheet.
+publication_date: 2026-06-18
+methodology_reference: >-
+  Gracey, "Measurement of Aircraft Speed and Altitude," NASA RP-1046,
+  and standard compressible Pitot-static relations for subsonic
+  total pressure and Rayleigh Pitot pressure behind a normal shock.
+  This budget is zero-noise analytic evidence for those equations,
+  not a fielded probe model.
+methodology_urls:
+  - https://ntrs.nasa.gov/citations/19800015804
+license_or_terms: >-
+  Synthetic OpenBMP-authored content; CC0 / public domain. The
+  numerical budget is intentionally zero-noise so validation isolates
+  the Pitot/Mach/CAS/pressure-altitude and vane geometry equations.
+retrieved_utc:    2026-06-18
+transformation:
+  method: >-
+    The OpenBMP TOML schema stores pressure stddev (Pa), angle stddev
+    (rad), and fixed latency (s). The synthetic sensor consumes
+    runner-supplied static pressure, density, speed of sound, and
+    body-frame air-relative velocity, then applies the deterministic
+    compressible Pitot and vane transforms.
+verification:
+  method: >-
+    The air-data unit tests
+    (`crates/openbmp-sensors/src/airdata.rs::tests`) assert subsonic
+    Pitot pressure against closed form, supersonic Mach inversion,
+    calibrated airspeed at sea-level reference, pressure altitude at
+    ISA sea level, alpha/beta vane recovery, zero-noise measurement
+    output, parser rejection, and fixed-latency timestamp reporting on
+    a non-GNSS sensor.
+```
+
+### Air-data known limitations
+
+- **Probe plumbing omitted.** No pneumatic line dynamics, probe
+  installation offsets, heating, icing, or local flow-angle distortion.
+- **FADS deferred.** Flush air-data least-squares pressure-port
+  solving is a later WP-09 extension.
+- **External transport deferred.** The runner can construct and step
+  the sensor in direct FC mode, but the openbmp-bridge `SensorPacket`
+  has no air-data fields yet.
+
 ## `data/sensors/magnetometer-textbook.toml`
 
 ```yaml

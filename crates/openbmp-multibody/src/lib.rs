@@ -2846,15 +2846,21 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize)]
-    struct SpatialV2CompatibleOracleFixture {
+    struct SpatialV2CompatibleOracleFixtureMatrix {
         source: SpatialV2CompatibleOracleSource,
+        cases: Vec<SpatialV2CompatibleOracleCase>,
+        tolerances: SpatialV2CompatibleOracleThresholds,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SpatialV2CompatibleOracleCase {
+        case: String,
         q: Vec<f64>,
         qd: Vec<f64>,
         generalized_forces: Vec<f64>,
         root_acceleration: SpatialMotionFixture,
         external_forces: Vec<SpatialForceFixture>,
         expected_qdd: Vec<f64>,
-        tolerances: SpatialV2CompatibleOracleThresholds,
     }
 
     #[derive(Debug, Deserialize)]
@@ -2912,7 +2918,7 @@ mod tests {
         .expect("ABA tolerance fixture parses")
     }
 
-    fn load_spatial_v2_compatible_oracle_fixture() -> SpatialV2CompatibleOracleFixture {
+    fn load_spatial_v2_compatible_oracle_fixture() -> SpatialV2CompatibleOracleFixtureMatrix {
         toml::from_str(include_str!(
             "../tests/expected/spatial-v2-compatible-aba-oracle-chain-v1.toml"
         ))
@@ -4171,7 +4177,7 @@ mod tests {
     }
 
     #[test]
-    fn forward_dynamics_aba_matches_spatial_v2_compatible_oracle_fixture() {
+    fn forward_dynamics_aba_matches_spatial_v2_compatible_fixture_matrix() {
         let fixture = load_spatial_v2_compatible_oracle_fixture();
         let tree = sample_tree();
         assert_eq!(fixture.source.export_format, "spatial-v2-aba-qdd-v1");
@@ -4183,35 +4189,57 @@ mod tests {
                 .notes
                 .contains("not an independent Featherstone Spatial_v2 run")
         );
-        assert_eq!(fixture.q.len(), tree.n_q());
-        assert_eq!(fixture.qd.len(), tree.n_qd());
-        assert_eq!(fixture.generalized_forces.len(), tree.n_qd());
-        assert_eq!(fixture.expected_qdd.len(), tree.n_qd());
-        assert_eq!(fixture.external_forces.len(), tree.bodies().len());
+        assert_eq!(fixture.cases.len(), 3);
 
-        let state = MultibodyState::new(SimTime::ZERO, fixture.q, fixture.qd);
-        let root_acceleration = motion_from_fixture(&fixture.root_acceleration);
-        let external_forces: Vec<SpatialForce> = fixture
-            .external_forces
-            .iter()
-            .map(force_from_fixture)
-            .collect();
+        for fixture_case in &fixture.cases {
+            assert_eq!(fixture_case.q.len(), tree.n_q(), "{}", fixture_case.case);
+            assert_eq!(fixture_case.qd.len(), tree.n_qd(), "{}", fixture_case.case);
+            assert_eq!(
+                fixture_case.generalized_forces.len(),
+                tree.n_qd(),
+                "{}",
+                fixture_case.case
+            );
+            assert_eq!(
+                fixture_case.expected_qdd.len(),
+                tree.n_qd(),
+                "{}",
+                fixture_case.case
+            );
+            assert_eq!(
+                fixture_case.external_forces.len(),
+                tree.bodies().len(),
+                "{}",
+                fixture_case.case
+            );
 
-        let aba = tree
-            .forward_dynamics_aba_at_state(
-                &state,
-                &fixture.generalized_forces,
-                root_acceleration,
-                &external_forces,
-            )
-            .unwrap();
+            let state = MultibodyState::new(
+                SimTime::ZERO,
+                fixture_case.q.clone(),
+                fixture_case.qd.clone(),
+            );
+            let root_acceleration = motion_from_fixture(&fixture_case.root_acceleration);
+            let external_forces: Vec<SpatialForce> = fixture_case
+                .external_forces
+                .iter()
+                .map(force_from_fixture)
+                .collect();
 
-        assert_max_abs_diff(
-            &aba,
-            &fixture.expected_qdd,
-            fixture.tolerances.qdd_max_abs,
-            "Spatial_v2-compatible ABA oracle qdd",
-        );
+            let qdd = tree
+                .forward_dynamics_aba_at_state(
+                    &state,
+                    &fixture_case.generalized_forces,
+                    root_acceleration,
+                    &external_forces,
+                )
+                .unwrap();
+            assert_max_abs_diff(
+                &qdd,
+                &fixture_case.expected_qdd,
+                fixture.tolerances.qdd_max_abs,
+                &format!("Spatial_v2-compatible ABA oracle qdd {}", fixture_case.case),
+            );
+        }
     }
 
     #[test]

@@ -1530,6 +1530,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbmp-afts"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "num-traits",
+ "openbmp-core",
+ "openbmp-physics",
+ "openbmp-state",
+ "thiserror 2.0.18",
+ "toml",
+ "uom",
+]
+
+[[package]]
 name = "openbmp-bridge"
 version = "0.0.1"
 dependencies = [
@@ -1577,6 +1591,18 @@ dependencies = [
  "toml_edit",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "openbmp-comm"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "openbmp-core",
+ "sgp4",
+ "sha2",
+ "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]
@@ -1734,6 +1760,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "openbmp-pil"
+version = "0.0.1"
+dependencies = [
+ "nalgebra",
+ "openbmp-bridge",
+ "openbmp-core",
+ "openbmp-fc",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "openbmp-plume"
 version = "0.0.1"
 dependencies = [
@@ -1773,7 +1810,9 @@ dependencies = [
  "nalgebra",
  "openbmp-aero",
  "openbmp-aerothermal",
+ "openbmp-afts",
  "openbmp-bridge",
+ "openbmp-comm",
  "openbmp-contact",
  "openbmp-core",
  "openbmp-fc",
@@ -1782,6 +1821,7 @@ dependencies = [
  "openbmp-mission",
  "openbmp-multibody",
  "openbmp-physics",
+ "openbmp-pil",
  "openbmp-plume",
  "openbmp-propulsion",
  "openbmp-rt",
@@ -1916,6 +1956,7 @@ version = "0.0.1"
 dependencies = [
  "approx",
  "nalgebra",
+ "openbmp-afts",
  "openbmp-core",
  "openbmp-mc",
  "openbmp-physics",
@@ -1924,6 +1965,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "toml",
  "trybuild",

@@ -43,39 +43,49 @@
 //! ```
 
 #![deny(missing_docs)]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
 
 pub mod codec;
 pub mod error;
+#[cfg(feature = "std")]
 pub mod fault;
 pub mod lockstep;
 pub mod packet;
+#[cfg(feature = "std")]
 pub mod ports;
+#[cfg(feature = "std")]
 pub mod transport;
 pub mod zoh;
 
-pub use codec::{decode, deframe, encode, frame};
+pub use codec::{decode, deframe, encode, encode_into, frame, frame_into};
 pub use error::BridgeError;
+#[cfg(feature = "std")]
 pub use fault::{
     BridgeFaultApplication, BridgeFaultError, BridgeFaultRule, BridgeFaultTransformSet,
     BridgePacketDirection, BridgePacketDisposition, BridgePacketFaultRule, BridgePacketTransform,
     BridgeScalarSignal, BridgeScalarTransform, QuaternionAxis, VectorAxis,
 };
+#[cfg(feature = "std")]
+pub use lockstep::{LockstepResponse, LockstepSimMaster};
 pub use lockstep::{
-    LockstepResponse, LockstepSimMaster, validate_ack_for_sensor, validate_command_for_sensor,
-    validate_protocol_version,
+    validate_ack_for_sensor, validate_command_for_sensor, validate_protocol_version,
 };
 pub use packet::{
     ActuatorCommandPacket, BridgeEndpointRole, BridgeFaultCode, BridgeFaultPacket,
-    BridgeHelloPacket, BridgeMessage, EngineCommandPacket, PROTOCOL_VERSION, SensorPacket,
-    StepAckPacket, StepAckStatus,
+    BridgeHelloPacket, BridgeMessage, EngineCommandPacket, ImuIncrementPacket, PROTOCOL_VERSION,
+    SensorPacket, StepAckPacket, StepAckStatus,
 };
+#[cfg(feature = "std")]
 pub use ports::{
     CaptureHandle, CaptureTrigger, EesPort, ElectricalErrorType, FaultWindow, MaPort, PinId,
     SignalBinding, SignalDescription, SignalId, SignalMapping, StimHandle, TestbenchLifecycle,
     TestbenchState, TestbenchTransition, XilPortError, XilValue,
 };
-#[cfg(unix)]
+#[cfg(all(feature = "std", unix))]
 pub use transport::UnixBridgeListener;
+#[cfg(feature = "std")]
 pub use transport::{
     InProcessTransport, SplitStreamTransport, StreamTransport, TcpBridgeListener, Transport,
     in_process_transport_pair,

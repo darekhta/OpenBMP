@@ -326,6 +326,7 @@ fn parse_stimulation_json(text: &str) -> PyResult<SilStimulation> {
         .collect::<PyResult<Vec<_>>>()?;
     Ok(SilStimulation {
         faults,
+        afts_zones: Vec::new(),
         parameter_overrides,
         command_writes,
     })

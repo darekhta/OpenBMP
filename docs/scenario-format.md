@@ -39,6 +39,7 @@ fields over compact syntax.
 | `[forces]` | no | Optional force and moment model ordering override; omitted scenarios derive `["gravity", "thrust"?, "aero"?]` from the assembly and model blocks |
 | `[contact]` | no | Schema-v3 opt-in compliant half-space contact force |
 | `[telemetry]` | yes | Output files and schema options |
+| `[comm]` | no | Schema-v3 ground-site geometry for telemetry/RF visibility studies |
 | `[validation]` | yes | Runtime validation rules |
 | `[epoch]` | no | Absolute time metadata |
 | `[frames]` | no | Frame profile and local origins |
@@ -331,6 +332,243 @@ task budgets for the runner's Liu-Layland rate-monotonic schedulability
 advisory; the advisory is reported outside canonical telemetry with the timing
 record.
 
+### Communications Geometry
+
+`[comm]` is optional and schema-v3. It declares ground-site geometry for the
+WP-20.1 communications visibility/pass-table substrate. The parser validates
+site ids, geodetic degrees, minimum elevation, and optional azimuth-binned
+terrain masks. Runner paths sample primary-body truth states through the
+selected frame profile and expose deterministic pass-table CSV bytes through
+`RunOutcome.comm`. They also publish per-site `comm.<site>.slant_range_m`,
+`.range_rate_m_s`, `.elevation_rad`, `.azimuth_rad`, `.mask_elevation_rad`,
+and `.visible` telemetry channels. `[[comm.antennas]]` may declare
+WP-20.2 gain/body-mask deck files with optional SHA-256 pins; these decks
+are resolved, hashed, parsed from resolved bytes, validated by the runner,
+summarized in `RunOutcome.comm`, and applied to link budgets by rotating the
+vehicle-to-site line of sight into the body frame. `[[comm.links]]` declares
+WP-20.3 free-space link-budget constants plus pinned FER, atmospheric-loss,
+and rain-loss decks; runner paths resolve the decks, compute one `LinkState`
+per declared link/site sample, and publish
+`comm.link.<link>.free_space_loss_db`, `.c_n0_dbhz`, `.eb_n0_db`,
+`.margin_db`, `.fer`, `.visible`, `.blackout`, `.antenna_gain_dbi`, and
+`.body_blocked` telemetry channels. Links may also declare a packet-effect
+processing delay, errored-frame action, and optional packet loss-rate gate; the
+runner validates and reports that model and fails closed if a declared loss-rate
+gate falls outside its exact binomial interval. Links may additionally declare a
+downlink `data_loss_timeout_s`; the runner latches and reports the first
+continuous data-loss gap exceeding that timeout. When `[fc.transport]` is
+active, the runner applies the selected comm link's packet model to FC bridge
+sensor and command frames in fail-closed mode for drop or bit-flip effects and
+queues delivered frames by step-quantized link latency. `[comm]` can select the
+bridge link by declaration order or by current best visible margin, with an
+optional dB hysteresis deadband for best-margin handover, or by declared
+pass-plan windows. Blackout physics, relay budgets, and per-pass reporting are
+later WP-20 blocks.
+
+```toml
+[comm]
+bridge_link_selection = "first_declared" # optional; "best_margin" or "declared_plan"
+bridge_link_hysteresis_db = 0.0          # optional, best_margin deadband
+
+[[comm.sites]]
+id = "ksc"
+latitude_deg = 28.572872
+longitude_deg = -80.648981
+altitude_m = 3.0
+min_elevation_deg = 5.0
+terrain_mask = [
+  { azimuth_deg = 0.0, min_elevation_deg = 6.0 },
+  { azimuth_deg = 180.0, min_elevation_deg = 8.0 },
+]
+
+[[comm.antennas]]
+id = "s-band-low-gain"
+gain_deck = "data/comm/antenna-body-mask-v1.toml"
+gain_deck_sha256 = "<64 hex chars>"       # optional
+body_mask_deck = "data/comm/body-mask.toml"
+body_mask_deck_sha256 = "<64 hex chars>"  # optional
+
+[[comm.links]]
+id = "s-band-ksc"
+site_id = "ksc"
+antenna_id = "s-band-low-gain"
+eirp_dbw = -40.0
+receiver_g_over_t_db_k = 0.0
+frequency_hz = 2.0e9
+bit_rate_bps = 1000.0
+required_eb_n0_db = 3.0
+atmospheric_loss_db = 1.0
+atmospheric_loss_deck = "data/comm/attenuation-loss-v1.toml"
+atmospheric_loss_deck_sha256 = "<64 hex chars>"  # optional
+rain_loss_db = 0.5
+rain_loss_deck = "data/comm/attenuation-loss-v1.toml"
+rain_loss_deck_sha256 = "<64 hex chars>"         # optional
+pointing_loss_db = 0.25
+polarization_loss_db = 0.1
+implementation_loss_db = 0.0
+fer_curve_deck = "data/comm/link-budget-fer-v1.toml"
+fer_curve_deck_sha256 = "<64 hex chars>"  # optional
+packet_processing_delay_s = 0.02          # optional, default 0.0
+packet_error_action = { kind = "drop" }   # optional; or { kind = "bit_flip", mask = 165 }
+packet_loss_rate_gate = { packet_count = 2048, alpha = 0.001 } # optional
+data_loss_timeout_s = 1.5                 # optional downlink continuity latch
+
+[[comm.bridge_pass_plan]]
+link_id = "s-band-ksc"
+start_s = 0.0
+end_s = 120.0
+```
+
+`latitude_deg` must be in `[-90, 90]`, `longitude_deg` in `[-180, 180]`,
+and elevation fields in `[-90, 90]`. Terrain-mask `azimuth_deg` values are
+accepted in `[0, 360]` and are interpreted as degrees from north toward east.
+Link `site_id` and `antenna_id` must reference declared comm site and antenna
+ids. Frequency and bit rate must be positive; loss fields must be finite and
+non-negative. Loss decks are optional and additive to the constant loss
+fields. If a `*_loss_deck_sha256` pin is present, the matching deck path must
+also be present. `packet_processing_delay_s` must be finite and non-negative.
+`bridge_link_selection` defaults to `first_declared`; `best_margin` selects the
+visible, non-blackout declared link with the highest current margin and falls
+back to the first declared link when no link is usable so the bridge still fails
+closed. `declared_plan` selects the active `[[comm.bridge_pass_plan]]` window by
+latest observation time; plan gaps keep comm effects active and drop bridge
+packets fail-closed. `bridge_link_hysteresis_db` must be finite and
+non-negative; when it is positive and `best_margin` is active, the previously
+selected visible non-blackout link is retained until the best candidate exceeds
+its margin by more than the declared deadband. Each pass-plan `link_id` must
+reference a declared link, `start_s` must be finite and non-negative, `end_s`
+must be greater than `start_s`, and windows must not overlap.
+`bridge_link_selection = "declared_plan"` requires at least one pass-plan
+window. `[[comm.relays]]` declares GEO relay nodes with `id`, `longitude_deg`,
+optional `altitude_m`, optional `min_elevation_deg`, relay-to-ground budget
+constants, and a relay downlink `fer_curve_deck`; `[[comm.links]].relay_id`
+references one of those relay ids and makes the runner compose the
+vehicle-to-relay and relay-to-ground budgets into one two-hop `LinkState` using
+bottleneck margin and combined independent-hop FER. The
+`packet_error_action.kind` value `"bit_flip"` requires a non-zero `mask`;
+omitted packet settings default to zero processing delay and `drop` on errored
+FER draws. `packet_loss_rate_gate.packet_count` must be in `[1, 1000000]`, and
+`packet_loss_rate_gate.alpha` must be in `(0, 1)`. When present, the runner
+evaluates both downlink and uplink deterministic packet streams against the
+latest computed `LinkState` sample and records the gate evidence in
+`RunOutcome.comm.links[*].packet_loss_rate_gate`. `data_loss_timeout_s` must be
+positive when present; the runner records delivered/lost downlink sample counts,
+the first loss, first timeout trigger, and maximum continuous loss gap in
+`RunOutcome.comm.links[*].data_loss_timeout`. Bridge packet-effect selections
+are summarized in `RunOutcome.comm.bridge_selections` as contiguous link or
+scheduled-gap intervals with step/time spans, sample counts, and sensor/command
+drop or bit-flip counts. Link/gap transitions are summarized in
+`RunOutcome.comm.bridge_handovers`. Sampled visible/non-blackout link passes are
+summarized in `RunOutcome.comm.link_passes` with step/time spans, duration,
+sample count, min/max/mean margin, sampled margin profile, and bridge packet
+drop or bit-flip counts attributed to each pass. Relay declarations consumed by
+a link are summarized in `RunOutcome.comm.links[*].relay`.
+
+### AFTS Containment Rules
+
+`[afts]` is optional and v3-only. It declares forward containment-monitor rule
+tables for `openbmp-afts`. The parser validates the table, and the runner
+samples telemetry-aligned truth states into an optional `RunOutcome.afts`
+sidecar report. This observer does not alter the simulator's kernel
+`StopReason`.
+
+```toml
+[afts]
+enabled = true
+
+[afts.propagator]
+surface = "wgs84_ellipsoid" # "wgs84_sphere" | "wgs84_ellipsoid"; default "wgs84_sphere"
+earth_rotation = "wgs84_uniform" # "frame_profile" | "disabled" | "wgs84_uniform"; default "frame_profile"
+step_s = 0.25               # optional positive RK4 step override
+max_time_s = 7200.0         # optional positive forward horizon override
+radius_tolerance_m = 0.001  # optional non-negative impact-surface tolerance
+
+[afts.propagator.drag]
+reference_density_kg_m3 = 0.01
+scale_height_m = 8500.0
+ballistic_coefficient_kg_m2 = 250.0
+
+[[afts.keep_inside]]
+id = "range_box"
+evidence = "data/afts/range-box/provenance.md"
+evidence_file = "data/afts/range-box/provenance.md"
+evidence_file_sha256 = "<64 hex chars>"
+vertices = [
+  { latitude_deg = -1.0, longitude_deg = -1.0 },
+  { latitude_deg = -1.0, longitude_deg =  1.0 },
+  { latitude_deg =  1.0, longitude_deg =  1.0 },
+  { latitude_deg =  1.0, longitude_deg = -1.0 },
+]
+
+[[afts.keep_out]]
+id = "hazard_zone"
+evidence = "data/afts/hazard-zone/provenance.md"
+vertices = [
+  { latitude_deg = -0.2, longitude_deg = -0.2 },
+  { latitude_deg = -0.2, longitude_deg =  0.2 },
+  { latitude_deg =  0.2, longitude_deg =  0.2 },
+  { latitude_deg =  0.2, longitude_deg = -0.2 },
+]
+
+[[afts.corridor]]
+id = "entry_speed_band"
+evidence = "data/afts/entry-speed-band/provenance.md"
+metric = "speed_m_s"     # "altitude_m" | "speed_m_s" | "flight_path_angle_rad"
+min_speed_m_s = 0.0      # optional inclusive lower bound for speed_m_s
+max_speed_m_s = 2200.0   # optional inclusive upper bound for speed_m_s
+
+[[afts.gate]]
+id = "iip_zero_longitude_gate"
+evidence = "data/afts/iip-gate/provenance.md"
+start = { latitude_deg = -1.0, longitude_deg = 0.0 }
+end = { latitude_deg = 1.0, longitude_deg = 0.0 }
+direction = "any"        # "any" | "negative_to_positive" | "positive_to_negative"
+
+[[afts.zone]]
+id = "population_red_zone"
+evidence = "data/afts/population-red-zone/provenance.md"
+color = "red"            # "green" | "red"
+vertices = [
+  { latitude_deg = -0.5, longitude_deg = -0.5 },
+  { latitude_deg = -0.5, longitude_deg =  0.5 },
+  { latitude_deg =  0.5, longitude_deg =  0.5 },
+  { latitude_deg =  0.5, longitude_deg = -0.5 },
+]
+```
+
+`[afts.propagator]` is optional. When omitted, the monitor preserves the
+original WGS84 semi-major-axis spherical surface and uses `environment.frame_profile`
+to decide whether to apply WGS84 uniform-rotation longitude correction. `surface =
+"wgs84_ellipsoid"` switches IIP surface detection and reported geodetic latitude
+to the WGS84 oblate ellipsoid. `[afts.propagator.drag]` is optional and adds a
+deterministic exponential ballistic-drag perturbation to the forward IIP
+integration; omit the table for vacuum central gravity.
+
+When `enabled = true`, at least one `[[afts.keep_inside]]` or
+`[[afts.keep_out]]` or `[[afts.corridor]]` or `[[afts.gate]]` or
+`[[afts.zone]]` rule is required. Keep-inside rules fire when the predicted IIP
+exits the polygon; keep-out rules fire when the predicted IIP enters the
+polygon; corridor rules fire when the sampled truth state leaves an inclusive
+scalar bound; gate rules fire when successive predicted IIP samples cross the
+declared gate segment. Red zones fire when the predicted IIP enters the
+polygon; green zones form a safe-zone union, so when any green zones are
+declared the IIP must stay inside at least one green zone. Corridor
+`metric` is one of `"altitude_m"`, `"speed_m_s"`, or
+`"flight_path_angle_rad"` and must declare at least one matching unit-suffixed
+bound: `min_altitude_m`/`max_altitude_m`, `min_speed_m_s`/`max_speed_m_s`, or
+`min_flight_path_angle_rad`/`max_flight_path_angle_rad`. Gate `direction`
+defaults to `"any"` and can restrict crossings to `"negative_to_positive"` or
+`"positive_to_negative"` relative to the directed `start` -> `end` segment.
+Rule ids and evidence strings must be nonempty, rule ids must be unique across
+all AFTS rule lists, each polygon must have at least three vertices, latitudes
+must be in `[-90, 90]` degrees, longitudes in `[-180, 180]` degrees, and
+polygon/gate segments must not cross the antimeridian. Red zones are evaluated
+before the green-zone union. `evidence` remains a human-readable provenance
+label; `evidence_file` is optional, but when present it is resolved and SHA-256
+pinned through the standard scenario file resolver. The monitor is
+forward-only: the schema does not carry an aimpoint, target coordinate, or
+inverse burn-to-reach surface.
+
 `stop_s` remains the upper time bound; a descending local-altitude
 trajectory that crosses `position.z <= 0` stops earlier with a
 `ground-impact` stop reason, even without a manual mission event.
@@ -412,16 +650,22 @@ leap_second_table = "data/time/leap_seconds_2026a.toml"
 leap_second_table_sha256 = "<64 hex chars>"
 eop = "data/earth_orientation/example-eop.toml"
 eop_sha256 = "<64 hex chars>"
+cio_xys = "data/earth_orientation/example-cio-xys.toml"
+cio_xys_sha256 = "<64 hex chars>"
 
 [frames]
-profile = "iers-tabulated"
+profile = "iers-cio"
 ```
 
 Accepted frame profiles are `toy-fixed-earth`, `wgs84-uniform-rotation`,
-`iers-tabulated`, and validation-only `spice-reference`.
-`iers-tabulated` requires `[epoch]`, `epoch.scale = "UTC"`, and
-`epoch.eop`; the EOP file is loaded through the same SHA-256-pinned
-resolved-file path used for aero decks and motor curves.
+`iers-tabulated`, `iers-cio`, and validation-only `spice-reference`.
+`iers-tabulated` requires `[epoch]`, `epoch.scale = "UTC"`, and `epoch.eop`.
+`iers-cio` additionally requires a leap-second source via
+`epoch.leap_second_table` or a NAIF LSK in `environment.ephemeris_meta_kernel`.
+It generates IAU 2006/2000A CIO X/Y/s internally by default; if
+`epoch.cio_xys` is supplied, that pinned table is used instead. These files are
+loaded through the same SHA-256-pinned resolved-file path used for aero decks
+and motor curves.
 
 The EOP table format currently consumed by the runner is deterministic
 TOML with scenario-relative sample times:
@@ -434,6 +678,8 @@ time_s = 0.0
 ut1_minus_utc_s = 0.102
 x_pole_arcsec = 0.045
 y_pole_arcsec = 0.312
+cip_offset_x_arcsec = 0.001
+cip_offset_y_arcsec = -0.002
 lod_s = 0.001
 
 [[samples]]
@@ -441,21 +687,64 @@ time_s = 60.0
 ut1_minus_utc_s = 0.103
 x_pole_arcsec = 0.045
 y_pole_arcsec = 0.312
+cip_offset_x_arcsec = 0.001
+cip_offset_y_arcsec = -0.002
 lod_s = 0.001
 ```
 
 Samples must be strictly time-ordered and cover `[time.start_s,
-time.stop_s]`. OpenBMP linearly interpolates polar motion. UT1-UTC uses
-linear interpolation unless both bracketing samples include optional
-`lod_s`; with `lod_s`, it uses length-of-day-constrained Hermite
-interpolation and reports the corresponding sampled Earth spin rate.
+time.stop_s]`. OpenBMP linearly interpolates polar motion and the optional
+`cip_offset_x_arcsec` / `cip_offset_y_arcsec` celestial-pole-offset pair.
+UT1-UTC uses linear interpolation unless both bracketing samples include
+optional `lod_s`; with `lod_s`, it uses length-of-day-constrained Hermite
+interpolation and reports the corresponding sampled Earth spin rate. EOP rows
+may omit both CIP-offset fields for legacy equinox-frame scenarios, but a row
+that declares only one of the two offset fields is rejected.
+The checked `data/eop/finals2000a-2017-001-004-openbmp-eop-v1.toml` fixture is
+a provenance-pinned real-data example clipped from IERS/USNO `finals2000A.data`.
+The runner also accepts raw fixed-width `finals2000A.data` rows directly in
+`epoch.eop`; for that path it converts row MJD UTC to scenario-relative
+`time_s` using `epoch.iso8601`, uses Bulletin B final columns when present, and
+falls back to Bulletin A columns otherwise. `data/eop/finals2000a-2017-001-004.raw`
+is the matching raw fixture.
+The runner also accepts raw IERS EOP 14 C04 IAU2000A text with the published
+header and daily rows. For that path it consumes MJD, x/y pole, UT1-UTC, LOD,
+and dX/dY in the published C04 units and converts row MJD UTC to
+scenario-relative `time_s`. `data/eop/eopc04-14-iau2000a-2017-001-004.raw`
+is the checked C04 raw fixture.
 The transform applies compact IAU 1976 mean precession and IAU 1980
 nutation from J2000 to date, uses the scenario UTC epoch to compute IAU
 Earth Rotation Angle, and applies a compact polar-motion rotation in the
 ECI/ECEF transform.
 Velocity transforms include the finite-difference rate of the full
-J2000-to-ECEF orientation chain. It does not yet implement SPICE frame
-chains or IAU 2006/2000A CIO-based transforms.
+J2000-to-ECEF orientation chain.
+
+`iers-cio` uses the CIO product `RPOM * R3(ERA) * RC2I`. By default the runner
+generates ERFA-compatible IAU 2006/2000A X/Y/s from TT. Scenarios may instead
+provide deterministic TOML X/Y/s tables:
+
+```toml
+format = "openbmp-cio-xys-v1"
+
+[[samples]]
+time_s = 0.0
+x_rad = 0.0010
+y_rad = -0.000002
+s_rad = 0.000000001
+
+[[samples]]
+time_s = 60.0
+x_rad = 0.0011
+y_rad = -0.000003
+s_rad = 0.000000002
+```
+
+Samples must be strictly time-ordered and cover `[time.start_s, time.stop_s]`.
+OpenBMP linearly interpolates X, Y, and s, adds EOP dX/dY to X/Y before
+constructing `RC2I`, derives UT1 and TT through the pinned EOP and leap-second
+tables, and applies polar motion. Generated mode computes X/Y/s from TT, still
+adds EOP dX/dY offsets to X/Y, and keeps the same ERA, TIO, and polar-motion
+construction. This profile does not implement SPICE frame chains.
 
 When `epoch.leap_second_table` is declared, the runner loads it through
 the same resolved-file path and optional SHA-256 pin as other external
@@ -481,9 +770,11 @@ tai_minus_utc_s = 37
 
 Entries must be strictly time-ordered. UTC ephemeris epochs use the
 latest entry at or before `epoch.iso8601` to convert UTC -> TT -> TDB;
-TT epochs are converted to TDB with the runner's compact deterministic
-periodic correction. SPK ephemeris epochs may use `TDB`, `TT`, or
-`UTC`; `UTC` requires either `epoch.leap_second_table` pointing at an
+TT epochs are converted to TDB with the shared `TimeScaleBridge` ERFA
+`eraDtdb`-compatible helper. If `[frames.local_origin]` is present, its
+WGS84 geodetic origin supplies the topocentric dtdb observer geometry;
+otherwise conversion uses geocentric observer geometry. SPK ephemeris epochs
+may use `TDB`, `TT`, or `UTC`; `UTC` requires either `epoch.leap_second_table` pointing at an
 OpenBMP TOML leap-second table / NAIF LSK file such as `naif0012.tls`,
 or a NAIF LSK in the selected SPK meta-kernel.
 
@@ -642,14 +933,16 @@ consumers.
 ### Gravity coefficients
 
 `[environment].gravity` selects one of `constant`, `point_mass`, `j2`,
-`egm2008`, or `third_body`, each with its own required-coefficient set:
+`egm2008`, `tesseral`, or `third_body`, each with its own
+required-coefficient set:
 
 | `gravity` | Required | Rejected |
 |---|---|---|
 | `"constant"` | `gravity_m_s2` | `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files`, `ephemeris_meta_kernel` |
 | `"point_mass"` | `mu_m3_s2` | `gravity_m_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files`, `ephemeris_meta_kernel` |
 | `"j2"` | `mu_m3_s2`, `r_e_m` | `gravity_m_s2` |
-| `"egm2008"` | — pinned WGS84 / EGM2008 zonal constants | `gravity_m_s2`, `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files`, `ephemeris_meta_kernel` |
+| `"egm2008"` | — pinned WGS84 / EGM2008 zonal constants; or `egm2008_coefficients_file` plus either `egm2008_degree`/`egm2008_order` or `egm2008_tier` for opt-in coefficient-file mode | `gravity_m_s2`, `mu_m3_s2`, `r_e_m`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files`, `ephemeris_meta_kernel` |
+| `"tesseral"` | `mu_m3_s2`, `r_e_m`, `tesseral_degree`, `tesseral_order`, `tesseral_c20`, `tesseral_c21`, `tesseral_s21`, `tesseral_c22`, `tesseral_s22` | `gravity_m_s2`, `j2`, `gravity_base`, `third_bodies`, `ephemeris`, `ephemeris_file`, `ephemeris_files`, `ephemeris_meta_kernel` |
 | `"third_body"` | `gravity_base`, `third_bodies`; plus the selected base coefficients | `gravity_m_s2` |
 
 For `gravity = "j2"` the dimensionless `j2` coefficient defaults to the
@@ -658,7 +951,8 @@ WGS84 value (1.082626683 × 10⁻³) when omitted.
 `gravity = "third_body"` wraps a central Earth gravity model and adds
 Sun/Moon point-mass perturbations using
 `a_3 = mu_b * ((r_b - r) / |r_b - r|^3 - r_b / |r_b|^3)`.
-`gravity_base` is one of `point_mass`, `j2`, or `egm2008`. The
+`gravity_base` is one of `point_mass`, `j2`, `egm2008`, or
+`tesseral`. The
 `third_bodies` list accepts `"sun"` and/or `"moon"` and must be unique.
 `ephemeris = "low_precision_sun_moon"` selects the built-in
 deterministic analytical ephemeris; if `[epoch]` is omitted the
@@ -1225,6 +1519,12 @@ does not shift RNG streams.
 kind         = "imu"
 file         = "../../data/sensors/imu-tactical.toml"
 file_sha256  = "537d60b57650f3d7569b338b6de2de97119b4401f2f244d173330be7aa37454e"
+specific_force_source = "finite_difference"
+
+[sensors.imu.high_rate]
+sub_samples = 4
+delta_theta_lsb_rad = 1.0e-6
+delta_v_lsb_m_s = 1.0e-5
 
 [sensors.barometer]
 kind = "barometer"
@@ -1244,6 +1544,10 @@ file = "../../data/sensors/magnetometer-textbook.toml"
 [sensors.star]
 kind = "star_tracker"
 file = "../../data/sensors/star-tracker-textbook.toml"
+
+[sensors.airdata]
+kind = "airdata"
+file = "../../data/sensors/airdata-textbook.toml"
 ```
 
 `kind = "ideal_state"` carries no noise budget and rejects `file`;
@@ -1252,8 +1556,30 @@ all other kinds require `file`. The base set is `imu` /
 receiver-output noise: per-axis Gaussian on position + velocity
 plus an OU position-bias drift), `magnetometer` (per-axis
 Gaussian on the body-frame WMM 2025 truth field plus constant
-3×3 soft-iron and 3-vector hard-iron biases), and `star_tracker`
-(small-angle Gaussian rotation-vector perturbation per axis).
+3×3 soft-iron and 3-vector hard-iron biases), `star_tracker`
+(small-angle Gaussian rotation-vector perturbation per axis), and
+`airdata` (compressible Pitot-static impact pressure, calibrated
+airspeed, pressure altitude, and alpha/beta vanes from runner-supplied
+air-relative truth).
+
+For IMUs, `specific_force_source` is optional and defaults to
+`"finite_difference"` for byte continuity. Schema v3 also accepts
+`"force_accumulator"`, which makes the FC bridge fill IMU truth from
+the runner's non-gravity force accumulator and rigid-body moment
+accumulator, and `"stationary_rotating_frame"`, a validation source
+that fills body-frame accelerometer and gyro truth from the closed-form
+stationary rotating-frame oracle. Non-IMU sensors reject
+`specific_force_source`.
+
+`[sensors.<imu>.high_rate]` is optional and IMU-only. It enables
+deterministic high-rate strapdown increment-window generation inside
+the synthetic IMU while preserving the existing `sensor.imu` averaged
+sample output. The direct FC bus path publishes those windows as
+`sensor.imu_increments`, and bridge/PIL packet transport carries them in
+protocol v4 `imu_increments` frames. `sub_samples` is a count per IMU sample
+and must be positive; `delta_theta_lsb_rad` and `delta_v_lsb_m_s` are
+non-negative quantization LSBs, with `0` disabling the corresponding
+quantization channel. Non-IMU sensors reject `high_rate`.
 
 ### Force model registry
 
@@ -1313,6 +1639,30 @@ friction_coefficient = 0.1
 friction_regularization_speed_m_s = 0.01
 effective_mass_kg = 1.0
 substeps = 32
+
+[[contact.mechanism]]
+id = "deploy-lower-stop"
+coordinate = "gear.deploy_angle_rad"
+kind = "stop"       # "stop" | "backlash" | "latch"
+side = "lower"     # stop only: "lower" | "upper"
+limit_rad = 0.0
+stiffness_n_m = 1000.0
+damping_n_s_m = 2.0
+
+[[contact.mechanism]]
+id = "drive-backlash"
+coordinate = "gear.drive_angle_rad"
+kind = "backlash"
+center_rad = 0.0
+dead_zone_width_rad = 0.05
+stiffness_n_m = 500.0
+
+[[contact.mechanism]]
+id = "lock-latch"
+coordinate = "gear.lock_angle_rad"
+kind = "latch"
+center_rad = 1.0
+half_width_rad = 0.01
 ```
 
 For `normal_law = "hertz"`, use `stiffness_n_m_3_2` plus
@@ -1334,6 +1684,11 @@ For `friction_law = "anchored_stiction"`, replace
 so repeated RK-stage force evaluations at the same timestamp do not advance
 the tangential anchor twice.
 
+`[[contact.mechanism]]` entries are schema-level scalar mechanism fixtures for
+angular stops, backlash, and engage-once latches. They are validated and traced
+under `[contact]`, but they are not yet force-coupled into doc-`01` tree joints
+or CFE loop constraints.
+
 Contact remains off by default. With `[contact]` present, the point-mass
 and rigid-body runners disable the default `GroundImpact` stop and
 publish the standard per-force telemetry channels
@@ -1352,7 +1707,9 @@ closure error. The report is not part of canonical telemetry bytes.
 Every external file referenced by the scenario can carry an optional
 `*_sha256` companion field (`aero.deck_sha256`,
 `propulsion.motor.file_sha256`, `sensors.<name>.file_sha256`,
-`epoch.eop_sha256`, `environment.ephemeris_file_sha256`, or ordered
+`epoch.eop_sha256`, `afts.keep_inside[*].evidence_file_sha256`,
+`environment.egm2008_coefficients_file_sha256`,
+`environment.ephemeris_file_sha256`, or ordered
 `environment.ephemeris_files_sha256`,
 `environment.ephemeris_meta_kernel_sha256`, and
 `environment.ephemeris_meta_kernel_files_sha256`). When present, the
@@ -1369,6 +1726,7 @@ openbmp check: ok — niskanen-2009-chapter6 (Checked)
   telemetry.output.parquet -> .../out/niskanen-2009-chapter6.parquet
   aero.deck -> .../data/aero/...toml (sha256:cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27)
   propulsion.motor.file -> .../data/motors/estes-c6-eng-derived.toml (sha256:da8272d3a7a135046c614e51b279971d37cac376f7aaaffdedc3ccc14d50ad4e)
+  environment.egm2008_coefficients_file -> .../data/gravity/egm2008-degree10-normalized-icgem-v1.gfc (sha256:...)
   environment.ephemeris_file -> .../data/ephemeris/de440s.bsp (sha256:...)
   environment.ephemeris_files[1] -> .../data/ephemeris/mission-overlay.bsp (sha256:...)
   environment.ephemeris_meta_kernel -> .../data/ephemeris/mission.tm (sha256:...)
@@ -1821,14 +2179,47 @@ command_schedule = { kind = "step_at", time_s = 0.5, before = 0.0, after = 0.087
 
 #### Effector kinds
 
-`kind.kind` is tagged on the inner `kind` field. Two variants are
+`kind.kind` is tagged on the inner `kind` field. Three variants are
 currently wired; nonlinear / multi-axis / smart actuators are possible
 extensions.
 
 | `kind.kind` | Required fields | Semantics |
 |---|---|---|
 | `linear_actuator` | `tau_s: f64` (optional, default `0.0`) | First-order lag with rate clamp + saturation + deadband + pure-delay buffer. `tau_s = 0` collapses to a rate-clamped tracker (no lag). The latency must be an integer multiple of the scenario's `time.dt_s` (sub-`dt` latency is rejected at construction). |
-| `direct_torque` | `axis: "roll" \| "pitch" \| "yaw"`, `effectiveness_n_m_per_rad: f64` | v3 rigid-body effector interpreted as a body-axis torque command by the moment-model layer. It uses the same actuator limits and command schedules as `linear_actuator`. |
+| `second_order_servo` | `natural_frequency_rad_s: f64`, `damping_ratio: f64`, `max_accel_per_s2: f64`, `backlash_half_width: f64` | Finite-bandwidth second-order servo with command-side rate and acceleration limiting, backlash dead zone, saturation, pure-delay buffer, and the canonical effector fault modes. Valid anywhere `linear_actuator` is valid. |
+| `direct_torque` | `axis: "roll" \| "pitch" \| "yaw"`, `effectiveness_n_m_per_rad: f64`, optional `rcs` table | v3 rigid-body effector interpreted as a body-axis torque command by the moment-model layer. By default it uses the same continuous actuator limits and command schedules as `linear_actuator`; with `rcs`, the runner quantizes the command through the legacy scalar MIB/PWPF pulse effector, an independent body-frame thruster bank, or a grouped coupled-bank allocator before the direct-torque moment adapter consumes the average output. |
+
+`direct_torque.rcs` is optional. The legacy scalar shorthand remains valid:
+`rcs = { minimum_impulse_n_s, nominal_thrust_n, pwpf = { ... } }`. The scalar
+form may also declare `mode = "scalar"` explicitly. An independent physical
+bank declares `mode = "bank"` plus `thrusters = [{ ... }]`; each thruster
+carries `id`, `position_body_m`, `direction_body`, `minimum_impulse_n_s`,
+`nominal_thrust_n`, and optional `blowdown = { initial_pressure_pa,
+minimum_pressure_pa, usable_impulse_n_s, pressure_exponent = 1.0 }` and
+`feed = { tank, specific_impulse_s, pressure_exponent = 1.0 }`. The bank
+allocator uses deterministic declared order, computes body-axis torque from
+`position_body_m x direction_body`, applies per-thruster MIB quantization,
+optional thruster-local blowdown pressure scaling, and optional live tank-feed
+pressure scaling, and reports equivalent direct-torque command units so
+`effectiveness_n_m_per_rad` semantics stay unchanged. A
+coupled physical bank declares `mode = "coupled_bank"`, `group = "<id>"`, and
+the same `thrusters` list on exactly one roll, one pitch, and one yaw
+`direct_torque` effector. The runner groups those effectors, allocates the
+three-axis requested body torque impulse once through the shared physical bank,
+then publishes equivalent per-axis direct-torque command units through the
+ordinary effector snapshot path. Optional `pwpf` on scalar, bank, or
+coupled-bank members carries `gain`, `time_constant_s`, `on_threshold`, and
+`off_threshold` with `0 <= off_threshold < on_threshold`; coupled-bank PWPF
+gates each member axis before the shared vector allocation.
+
+`feed` is available only on physical RCS thrusters (`mode = "bank"` or
+`mode = "coupled_bank"`). The named `tank` must be declared under
+`[[vehicle.assembly.tanks]]`, must carry an `ullage` block, and must share the
+effector body when the effector has `mounted_to`. Each step, the runner samples
+the tank's isentropic ullage pressure scale, raises it by
+`pressure_exponent`, multiplies that thruster's nominal thrust by the result,
+and drains propellant from the tank as
+`abs(actual_impulse_n_s) / (specific_impulse_s * g0)`.
 
 #### Limits vocabulary
 
@@ -1882,6 +2273,7 @@ not supported.
 | `runaway` | `rate_per_s: f64` (finite) | Actual position drifts at the constant signed rate, clamped to `[min, max]`. |
 | `reduced_rate` | `factor: f64` (in `[0, 1]`) | Effective `max_rate_per_s` is scaled by `factor`. Saturation, deadband, and lag remain in effect. |
 | `hardover` | `to: f64` (in `[min, max]`) | Actual position slews at `max_rate_per_s` toward `to` regardless of command. |
+| `oscillatory` | `amplitude: f64` (non-negative), `frequency_hz: f64` (> 0), `phase_rad: f64` | Adds a deterministic sinusoidal offset to the incoming command before normal actuator dynamics, RCS quantization, and saturation. |
 
 #### Telemetry
 
@@ -1913,8 +2305,19 @@ Enforced at scenario-parse time:
 - `mounted_to`, when present, must reference a declared body. It is
   required for every effector when `[multi_body]` is declared so
   post-separation aero-axis and direct-torque ownership is explicit.
-- `kind.kind` is a wired variant (`linear_actuator` or v3
-  `direct_torque`).
+- `kind.kind` is a wired variant (`linear_actuator`, `second_order_servo`, or
+	  v3 `direct_torque`); `direct_torque.rcs`, when present, is scalar
+	  (`minimum_impulse_n_s` and `nominal_thrust_n` positive), bank mode
+	  (non-empty `thrusters`, finite non-zero `direction_body`, positive MIB and
+	  nominal thrust, body-axis authority matching command limits, optional
+	  positive blowdown pressures/usable impulse/exponent, and optional
+	  `feed` whose tank exists, declares ullage, and has positive Isp/exponent),
+	  or coupled-bank mode
+	  (non-empty `group`, identical thruster bank on exactly one roll, pitch, and
+	  yaw member, shared mounted body, and signed authority for every member axis).
+  Scalar, bank, and coupled-bank `pwpf` blocks require positive `gain`,
+  `time_constant_s`, and `on_threshold` plus `0 <= off_threshold <
+  on_threshold`.
 - `limits.{min, max, max_rate_per_s, deadband, latency_s}` finite;
   `min < max`; `max_rate_per_s > 0`; `deadband >= 0` and
   `deadband <= (max - min)`; `latency_s >= 0`.
@@ -1924,7 +2327,9 @@ Enforced at scenario-parse time:
   non-empty with strictly increasing `time_s` entries.
 - `unit`, when present, non-empty.
 - `fault` when present: `jam.at` and `hardover.to` in `[min, max]`;
-  `runaway.rate_per_s` finite; `reduced_rate.factor` in `[0, 1]`.
+  `runaway.rate_per_s` finite; `reduced_rate.factor` in `[0, 1]`;
+  `oscillatory.amplitude >= 0`, `oscillatory.frequency_hz > 0`, and finite
+  `oscillatory.phase_rad`.
 - `linear_actuator.tau_s` (when present) finite and `>= 0`.
 
 `openbmp check` rejects any latency that is not an integer multiple of
@@ -2316,6 +2721,26 @@ cavitation_compliance_m3_per_pa = 0.000000001
 accumulator_compliance_m3_per_pa = 0.0
 require_stable = true
 ```
+
+Rigid-body scenarios with a `[vehicle.bending]` first-mode block can use that
+structural modal data directly:
+
+```toml
+[propulsion.pogo]
+mode_source = "vehicle_bending"
+open_loop_gain_rad2_s2 = 500.0
+feed_time_constant_s = 0.02
+mass_flow_gain_time_s = 0.004
+cavitation_compliance_m3_per_pa = 0.000000001
+accumulator_compliance_m3_per_pa = 0.0
+require_stable = true
+```
+
+When `mode_source = "vehicle_bending"`, omit
+`mode_natural_frequency_rad_s` and `mode_damping_ratio`; the runner derives
+them from `[vehicle.bending].frequency_hz` and
+`[vehicle.bending].damping_ratio` and fails closed if no bending block is
+declared.
 
 #### Mount geometry
 
@@ -3185,6 +3610,7 @@ engine_cg_body_m           = [0.0, 0.0, -0.4]
 engine_inertia_body_kg_m2  = [[9.0, 0.0, 0.0], [0.0, 17.0, 0.0], [0.0, 0.0, 14.0]]
 thrust_application_body_m  = [0.2, 0.0, -0.4]
 neutral_thrust_body        = [0.0, 0.0, 1.0]
+mechanism_id               = "center-pitch-stop" # optional [contact] scalar mechanism
 initial_angle_rad          = 0.0
 initial_rate_rad_s         = 0.0
 ```
@@ -3204,6 +3630,12 @@ one-axis revolute coordinate from a nonzero live thrust vector. The stored
 coordinate follows the multibody child-from-parent sign convention, so it may
 have the opposite sign of a propulsion pitch/yaw command depending on the
 chosen axis.
+`mechanism_id` is optional. When present, it must name a
+`[[contact.mechanism]]` entry whose `coordinate` equals this gimbal
+`engine_id`; the rigid runner evaluates that scalar stop/backlash/latch
+mechanism against the primary gimbal coordinate and rate, then injects the
+resulting generalized force into the primary articulated joint. For a two-axis
+gimbal this first binding applies to the primary axis only.
 `secondary_axis_body` is optional. When present, the parser treats the
 declaration as a two-axis articulated gimbal shadow: `axis_body`,
 `secondary_axis_body`, and `neutral_thrust_body` must be mutually orthogonal,
@@ -3279,7 +3711,7 @@ command = "path/to/fc-peer" # required only for mode = "external_process"
 args = ["--bridge-stdio"] # optional, external_process only
 working_dir = "." # optional, external_process only
 max_payload_len = 4096 # optional, bytes
-peer_protocol_version = 2 # optional; normally omit
+peer_protocol_version = 3 # optional; normally omit
 ```
 
 `[fc.transport]` is v3-only. When absent, `[fc]` uses the legacy direct
@@ -3294,8 +3726,8 @@ modes validate the bridge hello before exchanging sensor and actuator frames.
 
 The current runner wiring is deliberately lossless: opt-in transport scenarios
 must include an IMU and may also carry GNSS position/velocity/bias, barometer
-pressure/bias, magnetometer nT/hard-iron state, and star-tracker attitude
-through the bridge packet. Effector commands and full engine throttle, gimbal,
+pressure/bias, Pitot-static air-data, magnetometer nT/hard-iron state, and
+star-tracker attitude through the bridge packet. Effector commands and full engine throttle, gimbal,
 ignition, and shutdown commands are carried in the actuator packet.
 The runner reports an actuator command-stream SHA-256 digest outside canonical
 telemetry so direct, in-process, and TCP-loopback paths can be compared without
@@ -3335,6 +3767,12 @@ end_step   = 300
 signal     = { kind = "imu_gyro_body_rad_s", axis = "z" }
 transform  = { kind = "noise_burst", amplitude = 0.01, seed = 42 }
 
+[[fc.transport_faults.rules]]
+id         = "imu-increment-dtheta-y-bias"
+start_step = 260
+signal     = { kind = "imu_increment_delta_theta_rad", sample_index = 1, axis = "y" }
+transform  = { kind = "additive_bias", offset = 1.0e-6 }
+
 [[fc.transport_faults.packet_rules]]
 id         = "drop-first-sensor-frame"
 start_step = 0
@@ -3373,13 +3811,19 @@ direction  = "command"
 transform  = { kind = "time_offset", offset_s = 0.001 }
 ```
 
-`[fc.transport_faults]` is v3-only and requires `[fc.transport]`. Rules are
+`[fc.transport_faults]` is schema-v3 and requires `[fc.transport]`. Rules are
 evaluated in declaration order while `start_step <= step <= end_step` (or with
 no upper bound when `end_step` is omitted). The runner translates these rules
 to `openbmp-bridge` scalar transforms at the FC transport boundary: sensor
 rules mutate `SensorPacket` fields before the controller consumes them, and
 command rules mutate `ActuatorCommandPacket` fields before the simulator
 applies them.
+
+High-rate IMU increment signals use zero-based `sample_index` inside the
+bridge packet's `imu_increments` window. Supported increment signals are
+`imu_increment_delta_theta_rad`, `imu_increment_delta_v_m_s`, and
+`imu_increment_dt_s`; absent sample indices are skipped the same way absent
+optional sensor channels are skipped.
 
 Supported transforms are `additive_bias`, `scale`, `stuck`, `saturate`,
 `reverse_sign`, deterministic scalar `quantize`, deterministic time-ramp
@@ -3541,14 +3985,60 @@ gravity = "egm2008"
 Selects the EGM2008 **zonal-only** gravity model,
 `openbmp_physics::Egm2008ZonalGravity`, truncated to degrees 2 through
 6. The model pins WGS84 `µ`, WGS84 `R_e`, and the public `J_2..J_6`
-zonal coefficients in source; there are no per-scenario `degree`,
-`order`, or `coefficients_path` overrides in the shipped surface. v2
-scenarios that name `egm2008` fail closed with a schema-version
-diagnostic.
+zonal coefficients in source. v2 scenarios that name `egm2008` fail
+closed with a schema-version diagnostic.
 
-Tesseral / sectoral terms, Cunningham recursion, full coefficient-file
-loading, and scenario-selectable degree/order are deferred to a future
-gravity slice.
+Schema v3 can opt into the current coefficient-file transition path:
+
+```toml
+[environment]
+frame_profile = "wgs84-uniform-rotation" # or another rotating Earth frame
+gravity = "egm2008"
+egm2008_coefficients_file = "data/gravity/egm2008-degree10-normalized-icgem-v1.gfc"
+egm2008_coefficients_file_sha256 = "<64 hex chars>" # optional
+egm2008_degree = 10
+egm2008_order = 10
+# Or use one named tier instead of egm2008_degree / egm2008_order:
+# egm2008_tier = "degree70" # "degree120" or "degree360"
+egm2008_finite_difference_step_m = 10.0 # optional; defaults to 10 m
+```
+
+The runner resolves and optionally SHA-pins the ICGEM `.gfc` text,
+parses the source `earth_gravity_constant` and `radius`, strips the
+central `Cbar00` term, builds
+`openbmp_physics::FiniteDifferencePinesGravity`, and wraps it in
+`EarthFixedGravity` so the body-fixed harmonic field is evaluated through
+the selected frame. The current checked-in runtime fixture is the
+provenance-pinned clipped EGM2008 degree-10/order-10 block. Named
+`egm2008_tier` requests fail closed unless the source file declares enough
+degree/order coverage. The full degree-70/120/360 analytic Pines/Gottlieb
+kernel and NGA HARMONIC_SYNTH
+acceptance tables remain deferred.
+
+#### `gravity = "tesseral"`
+
+```toml
+[environment]
+frame_profile = "wgs84-uniform-rotation" # or "iers-cio" with [epoch] inputs
+gravity = "tesseral"
+mu_m3_s2 = 3.986004418e14
+r_e_m = 6378137.0
+tesseral_degree = 2
+tesseral_order = 2
+tesseral_c20 = -1.082626683e-3
+tesseral_c21 = 0.0
+tesseral_s21 = 0.0
+tesseral_c22 = 1.0e-7
+tesseral_s22 = 0.0
+tesseral_tide_system = "tide_free" # optional; defaults to tide_free
+```
+
+Selects the current bounded degree-2 Earth-fixed tesseral/sectoral
+gravity path. The runner builds `openbmp_physics::TesseralGravity`,
+wraps it in `EarthFixedGravity`, and evaluates it through the scenario
+`FrameContext`. The current evaluator accepts only `tesseral_degree = 0`
+or `2`, and `tesseral_order <= degree <= 2`; higher-degree Pines/Gottlieb
+runtime synthesis remains deferred.
 
 #### `atmosphere = "piecewise_exponential"`
 

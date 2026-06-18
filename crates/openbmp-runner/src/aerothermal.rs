@@ -23,6 +23,7 @@ use openbmp_scenario::{
 };
 use openbmp_sim::{EnvironmentSample, ForceContext, ForceModel, ModelEvalError};
 use openbmp_state::{PointMassState, RigidBodyState};
+use openbmp_uq::{CorrelatedErrorBudget, CredibilityLevel, aerothermal_model_margin_source};
 
 use crate::atmosphere::{RuntimeAtmosphere, build_document_runtime_atmosphere};
 use crate::error::RunnerError;
@@ -461,6 +462,48 @@ impl LiveAerothermalDriver {
     }
 }
 
+/// Gather source-tagged UQ declared by `[aerothermal.uq]`.
+///
+/// # Errors
+///
+/// Returns [`RunnerError`] if the credibility level or heat-flux band cannot be
+/// converted into a validated UQ source.
+pub fn upstream_uq_budget(
+    document: &ScenarioDocument,
+) -> Result<CorrelatedErrorBudget, RunnerError> {
+    let Some(uq) = document
+        .aerothermal
+        .as_ref()
+        .and_then(|aerothermal| aerothermal.uq.as_ref())
+    else {
+        return Ok(CorrelatedErrorBudget::default());
+    };
+    let level = CredibilityLevel::from_value(uq.credibility_level).ok_or_else(|| {
+        RunnerError::UnsupportedScenario {
+            what: format!(
+                "[aerothermal.uq] credibility_level {} is outside 0..=4",
+                uq.credibility_level
+            ),
+        }
+    })?;
+    let source = aerothermal_model_margin_source(
+        uq.deck_id.clone(),
+        "q_conv_w_m2",
+        uq.q_conv_lower_w_m2,
+        uq.q_conv_nominal_w_m2,
+        uq.q_conv_upper_w_m2,
+        level,
+        uq.evidence.clone(),
+    )
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("[aerothermal.uq] invalid: {err}"),
+    })?;
+    Ok(CorrelatedErrorBudget {
+        sources: vec![source],
+        correlation: None,
+    })
+}
+
 fn build_thermal_toy(config: &AerothermalThermalToyConfig) -> Result<OneDThermalToy, RunnerError> {
     let n_nodes =
         usize::try_from(config.n_nodes).map_err(|_| RunnerError::UnsupportedScenario {
@@ -564,5 +607,95 @@ fn ablator_material(name: &str) -> ToyAblator {
             vaporisation_temperature_k: 1200.0,
             surface_emissivity: 0.85,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openbmp_scenario::Scenario;
+
+    const AEROTHERMAL_UQ_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "aerothermal-uq-test"
+description = "Synthetic aerothermal UQ smoke test."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 1
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 80000.0]
+initial_velocity_eci_m_s = [7600.0, 0.0, -100.0]
+
+[vehicle.assembly]
+id = "aerothermal-uq-test"
+
+[[vehicle.assembly.bodies]]
+id = "capsule"
+geometry = { kind = "cylinder", length_m = 1.0, diameter_m = 1.0 }
+dry_mass_kg = 100.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "piecewise_exponential"
+wind = "none"
+
+[atmosphere]
+kind = "piecewise_exponential"
+
+[aerothermal]
+stagnation_kind = "sutton_graves"
+nose_radius_m = 0.5
+wall_temperature_k = 1500.0
+wall_catalysis = "fully_catalytic"
+
+[aerothermal.uq]
+deck_id = "sutton_graves_earth.v1"
+q_conv_lower_w_m2 = 900000.0
+q_conv_nominal_w_m2 = 1000000.0
+q_conv_upper_w_m2 = 1200000.0
+credibility_level = 2
+evidence = "docs/parity/04-aerothermal-realgas-and-tps.md#sutton-graves"
+
+[forces]
+models = ["gravity", "aerothermal_diagnostics"]
+
+[telemetry]
+output.csv = "out/aerothermal-uq-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
+    #[test]
+    fn aerothermal_upstream_uq_budget_reads_declared_q_conv_band() {
+        let scenario = Scenario::from_toml_str(AEROTHERMAL_UQ_SCENARIO).unwrap();
+        let budget = upstream_uq_budget(&scenario.document).unwrap();
+
+        assert_eq!(budget.sources.len(), 1);
+        assert_eq!(
+            budget.sources[0].source_id,
+            "04.aerothermal.sutton_graves_earth.v1.q_conv_w_m2"
+        );
+        assert_eq!(
+            budget.sources[0].class,
+            openbmp_uq::UncertaintyClass::Epistemic
+        );
+        assert_eq!(
+            budget.sources[0].credibility.binding_level(),
+            openbmp_uq::CredibilityLevel::L2
+        );
+        assert!((budget.sources[0].one_sigma - 200000.0).abs() < 1.0e-9);
     }
 }

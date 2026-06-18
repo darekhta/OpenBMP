@@ -8,8 +8,8 @@
 //!   `IntegratedWhiteNoise`. Building blocks of the IEEE 952
 //!   five-component IMU noise model.
 //!
-//! Also provides `SyntheticGnss`, `SyntheticMagnetometer`, and
-//! `SyntheticStarTracker`.
+//! Also provides `SyntheticAirData`, `SyntheticGnss`,
+//! `SyntheticMagnetometer`, and `SyntheticStarTracker`.
 //!
 //! # Determinism
 //!
@@ -50,7 +50,7 @@ pub mod stimulus;
 pub mod parser;
 
 pub use error::SensorError;
-pub use sensor::{Sensor, SensorMeasurement, SensorTruth, Timestamped};
+pub use sensor::{Sensor, SensorMeasurement, SensorTruth, SpecificForceTruth, Timestamped};
 #[cfg(feature = "synthetic")]
 pub use sensor::{SyntheticSensor, SyntheticSensorAdapter};
 pub use stimulus::MeasurementStimulus;
@@ -58,6 +58,8 @@ pub use stimulus::MeasurementStimulus;
 // Synthetic noise infrastructure — gated by the `synthetic` feature.
 // Default-on for the simulator binary; hardware adopters disable
 // via `default-features = false`.
+#[cfg(feature = "synthetic")]
+pub mod airdata;
 #[cfg(feature = "synthetic")]
 pub mod barometer;
 #[cfg(feature = "synthetic")]
@@ -72,7 +74,15 @@ pub mod magnetometer;
 pub mod noise;
 #[cfg(feature = "synthetic")]
 pub mod star_tracker;
+#[cfg(feature = "synthetic")]
+pub mod strapdown;
 
+#[cfg(feature = "synthetic")]
+pub use airdata::{
+    AirDataNoiseBudget, SyntheticAirData, calibrated_airspeed_from_impact_pressure,
+    mach_from_pitot_impact_pressure, pitot_impact_pressure_pa,
+    pressure_altitude_from_static_pressure, vane_angles_from_body_velocity,
+};
 #[cfg(feature = "synthetic")]
 pub use barometer::SyntheticBarometer;
 #[cfg(feature = "synthetic")]
@@ -87,3 +97,10 @@ pub use magnetometer::{MagnetometerNoiseBudget, SyntheticMagnetometer};
 pub use noise::{BoxMullerGaussian, IntegratedWhiteNoise, OrnsteinUhlenbeck};
 #[cfg(feature = "synthetic")]
 pub use star_tracker::{ARCSEC_TO_RAD, StarTrackerNoiseBudget, SyntheticStarTracker};
+#[cfg(feature = "synthetic")]
+pub use strapdown::{
+    ConingScullingAlgo, ConingScullingWindow, HighRateImuConfig, IncrementQuantization,
+    InertialIncrement, coning_sculling_update, coning_sculling_window,
+    inertial_increment_from_constant_truth, integrate_constant_truth_window,
+    quantize_increment_vector,
+};

@@ -1,5 +1,7 @@
 //! `postcard` encode/decode plus length-prefixed stream framing.
 
+use alloc::vec::Vec;
+
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -12,6 +14,20 @@ use crate::error::BridgeError;
 /// Returns [`BridgeError::Encode`] if serialization fails.
 pub fn encode<T: Serialize>(message: &T) -> Result<Vec<u8>, BridgeError> {
     postcard::to_allocvec(message).map_err(BridgeError::Encode)
+}
+
+/// Encode a message to caller-owned `postcard` bytes.
+///
+/// Returns the number of bytes written to `output`.
+///
+/// # Errors
+///
+/// Returns [`BridgeError::Encode`] if serialization fails or `output`
+/// is too small for the encoded message.
+pub fn encode_into<T: Serialize>(message: &T, output: &mut [u8]) -> Result<usize, BridgeError> {
+    postcard::to_slice(message, output)
+        .map(|used| used.len())
+        .map_err(BridgeError::Encode)
 }
 
 /// Decode a message from `postcard` bytes.
@@ -36,6 +52,38 @@ pub fn frame(payload: &[u8]) -> Vec<u8> {
     framed.extend_from_slice(&len.to_le_bytes());
     framed.extend_from_slice(payload);
     framed
+}
+
+/// Prefix a payload with its `u32` little-endian length into caller-owned
+/// storage.
+///
+/// Returns the number of bytes written.
+///
+/// # Errors
+///
+/// Returns [`BridgeError::PayloadTooLarge`] when `payload` cannot fit in
+/// the 32-bit frame-length prefix or `output` is too small for the prefix
+/// plus payload.
+pub fn frame_into(payload: &[u8], output: &mut [u8]) -> Result<usize, BridgeError> {
+    let len = u32::try_from(payload.len()).map_err(|_| BridgeError::PayloadTooLarge {
+        max: u32::MAX as usize,
+        got: payload.len(),
+    })?;
+    let needed = 4usize
+        .checked_add(payload.len())
+        .ok_or(BridgeError::PayloadTooLarge {
+            max: usize::MAX - 4,
+            got: payload.len(),
+        })?;
+    if output.len() < needed {
+        return Err(BridgeError::PayloadTooLarge {
+            max: output.len().saturating_sub(4),
+            got: payload.len(),
+        });
+    }
+    output[..4].copy_from_slice(&len.to_le_bytes());
+    output[4..needed].copy_from_slice(payload);
+    Ok(needed)
 }
 
 /// Read one length-prefixed frame from the front of `buf`.
@@ -68,7 +116,7 @@ pub fn deframe(buf: &[u8]) -> Result<(&[u8], usize), BridgeError> {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::packet::{ActuatorCommandPacket, SensorPacket};
+    use crate::packet::{ActuatorCommandPacket, ImuIncrementPacket, SensorPacket};
 
     #[test]
     fn sensor_packet_round_trips() {
@@ -77,6 +125,20 @@ mod tests {
             step: 250,
             imu_accel_body_m_s2: [0.1, -0.2, 9.81],
             imu_gyro_body_rad_s: [0.01, 0.02, -0.03],
+            imu_increments: vec![
+                ImuIncrementPacket {
+                    delta_theta_rad: [1.0e-4, 0.0, -1.0e-4],
+                    delta_v_m_s: [0.001, 0.002, 0.003],
+                    dt_s: 0.00025,
+                    seq: 12,
+                },
+                ImuIncrementPacket {
+                    delta_theta_rad: [2.0e-4, 1.0e-4, 0.0],
+                    delta_v_m_s: [0.004, 0.005, 0.006],
+                    dt_s: 0.00025,
+                    seq: 13,
+                },
+            ],
             baro_altitude_m: Some(1234.5),
             gnss_position_eci_m: Some([1.0e6, 2.0e6, 3.0e6]),
             gnss_velocity_eci_m_s: None,
@@ -86,6 +148,14 @@ mod tests {
             mag_hard_iron_body_nt: Some([10.0, -5.0, 2.0]),
             baro_pressure_pa: Some(89_000.0),
             baro_bias_pa: Some(12.0),
+            airdata_static_pressure_pa: Some(88_500.0),
+            airdata_impact_pressure_pa: Some(1_250.0),
+            airdata_mach: Some(0.15),
+            airdata_calibrated_airspeed_m_s: Some(51.0),
+            airdata_true_airspeed_m_s: Some(52.0),
+            airdata_angle_of_attack_rad: Some(0.02),
+            airdata_sideslip_rad: Some(-0.01),
+            airdata_pressure_altitude_m: Some(1_100.0),
             star_tracker_attitude_eci_to_body_xyzw: Some([0.0, 0.0, 0.0, 1.0]),
         };
         let bytes = encode(&pkt).unwrap();
@@ -115,12 +185,74 @@ mod tests {
     }
 
     #[test]
+    fn command_packet_encodes_into_caller_buffer() {
+        let cmd = ActuatorCommandPacket {
+            sim_time_s: 1.0,
+            step: 100,
+            effector_commands: vec![(0, 0.5), (1, -0.5)],
+            engine_throttles: vec![(0, 1.0)],
+            engine_commands: vec![crate::packet::EngineCommandPacket {
+                engine_id: 7,
+                throttle_unit: 0.8,
+                gimbal_pitch_rad: 0.01,
+                gimbal_yaw_rad: -0.02,
+                ignite: true,
+                shutdown: false,
+            }],
+        };
+
+        let mut bytes = [0u8; 256];
+        let len = encode_into(&cmd, &mut bytes).unwrap();
+        let back: ActuatorCommandPacket = decode(&bytes[..len]).unwrap();
+
+        assert_eq!(cmd, back);
+    }
+
+    #[test]
+    fn encode_into_reports_small_output_buffer() {
+        let cmd = ActuatorCommandPacket {
+            sim_time_s: 1.0,
+            step: 100,
+            effector_commands: vec![(0, 0.5), (1, -0.5)],
+            engine_throttles: vec![],
+            engine_commands: vec![],
+        };
+        let mut bytes = [0u8; 1];
+
+        assert!(matches!(
+            encode_into(&cmd, &mut bytes),
+            Err(BridgeError::Encode(_))
+        ));
+    }
+
+    #[test]
     fn frame_deframe_recovers_payload() {
         let payload = b"hello-hil";
         let framed = frame(payload);
         let (recovered, consumed) = deframe(&framed).unwrap();
         assert_eq!(recovered, payload);
         assert_eq!(consumed, framed.len());
+    }
+
+    #[test]
+    fn frame_into_recovers_payload() {
+        let payload = b"hello-hil";
+        let mut framed = [0u8; 32];
+        let written = frame_into(payload, &mut framed).unwrap();
+        let (recovered, consumed) = deframe(&framed[..written]).unwrap();
+
+        assert_eq!(recovered, payload);
+        assert_eq!(consumed, written);
+    }
+
+    #[test]
+    fn frame_into_reports_small_output_buffer() {
+        let mut framed = [0u8; 5];
+
+        assert!(matches!(
+            frame_into(b"payload", &mut framed),
+            Err(BridgeError::PayloadTooLarge { max: 1, got: 7 })
+        ));
     }
 
     #[test]

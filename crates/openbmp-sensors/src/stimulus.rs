@@ -52,7 +52,9 @@ fn apply_bias(measurement: &mut SensorMeasurement, offset: Vector3<f64>) {
         SensorMeasurement::Gnss { position_eci_m, .. } => *position_eci_m += offset,
         SensorMeasurement::Magnetometer { field_body_nt, .. } => *field_body_nt += offset,
         SensorMeasurement::Barometer { pressure_pa, .. } => *pressure_pa += offset.x,
-        SensorMeasurement::StarTracker { .. } | SensorMeasurement::IdealState(_) => {}
+        SensorMeasurement::AirData { .. }
+        | SensorMeasurement::StarTracker { .. }
+        | SensorMeasurement::IdealState(_) => {}
     }
 }
 

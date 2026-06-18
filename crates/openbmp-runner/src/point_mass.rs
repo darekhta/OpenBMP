@@ -41,17 +41,17 @@
 
 use std::collections::BTreeMap;
 
-use nalgebra::Vector3;
+use nalgebra::{UnitQuaternion, Vector3};
 use openbmp_aero::AeroDeck;
 use openbmp_core::{ChannelId, Duration, ModelId, Position3, RecoveryId, SimTime, Velocity3};
-use openbmp_physics::{
-    AtmosphereModel, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
-};
+use openbmp_physics::{AtmosphereModel, J2Gravity, PointMassGravity, WGS84_J2};
 use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
+use openbmp_sensors::SpecificForceTruth;
 use openbmp_sim::{
-    AnyStop, ConstantGravityForce, ConstantMass, EndTime, ForceContext, ForceModel, GroundImpact,
-    MassModel, ScenarioScriptAction, SimulationConfig, SimulationKernel, StopReason,
+    AnyStop, ConstantGravityForce, ConstantMass, EffectorActualsView, EndTime, EngineSnapshotView,
+    ForceContext, ForceModel, GroundImpact, MassModel, RecoverySnapshotView, ScenarioScriptAction,
+    SimulationConfig, SimulationKernel, StopReason, TankSnapshotView,
 };
 use openbmp_state::PointMassState;
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
@@ -310,6 +310,23 @@ pub fn run(
     let mut fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
     let mut mission_region_trace =
         crate::MissionRegionTraceState::new(&crate::mission_region_declarations(document));
+    let mut afts_monitor = crate::afts::RunnerAftsMonitor::maybe_new(document)?;
+    let mut comm_accumulator =
+        crate::comm::CommRunAccumulator::maybe_new(document, resolved_files)?;
+    let initial_comm_observation = comm_accumulator
+        .as_mut()
+        .map(|accumulator| {
+            let state = kernel.current_state();
+            accumulator.observe_eci(
+                &frame,
+                kernel.current_step(),
+                state.time,
+                state.position,
+                state.velocity,
+                UnitQuaternion::identity(),
+            )
+        })
+        .transpose()?;
     record_step(
         document,
         &mut table,
@@ -323,10 +340,18 @@ pub fn run(
         geocentric_surface_radius_m,
         aerothermal_driver.as_ref().map(|driver| driver.output()),
         fc_bridge.as_ref(),
+        initial_comm_observation.as_ref(),
         &[],
         &mut mission_region_trace,
         &initial_snapshot,
     )?;
+    if let Some(monitor) = &mut afts_monitor {
+        monitor.observe_point_mass(
+            kernel.current_step().value(),
+            kernel.current_time().as_seconds(),
+            kernel.current_state(),
+        )?;
+    }
     let mut pending_effector_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> =
         Vec::new();
     let mut pending_engine_events: Vec<openbmp_sim::FiredEvent<ScenarioScriptAction>> = Vec::new();
@@ -344,14 +369,31 @@ pub fn run(
         }
         if let Some(bridge) = &mut fc_bridge {
             let gravity = kernel.current_environment_sample()?.gravity_eci_m_s2;
+            let specific_force_truth = if bridge.uses_force_accumulator_truth() {
+                Some(point_mass_specific_force_truth(
+                    &kernel,
+                    &breakdown_vehicle,
+                )?)
+            } else {
+                None
+            };
             let propellant_state = crate::fc_bridge::propellant_state_from_tanks(
                 kernel.current_time(),
                 &tank_rack.propellant_tank_states(document),
             );
+            let comm_link_effects = comm_accumulator
+                .as_mut()
+                .map(|accumulator| {
+                    accumulator.bridge_packet_effects(document.time.seed, kernel.current_step())
+                })
+                .transpose()?
+                .flatten();
+            bridge.set_comm_link_effects(comm_link_effects);
             bridge.tick_point_mass(
                 kernel.current_state(),
                 kernel.current_step(),
                 gravity,
+                specific_force_truth,
                 propellant_state,
                 &mut effector_rack,
                 &mut engine_rack,
@@ -384,7 +426,11 @@ pub fn run(
             engine_rack.apply_propellant_budget(&report)?;
         }
         if !effector_rack.is_empty() {
-            effector_rack.step(kernel.current_time())?;
+            let tank_states = tank_rack.propellant_tank_states(document);
+            effector_rack.step_with_tanks(kernel.current_time(), &tank_states)?;
+        }
+        if !tank_rack.is_empty() {
+            tank_rack.set_rcs_feed_drain_rates(effector_rack.rcs_feed_drain_rates());
         }
         if !engine_rack.is_empty() {
             let cavitation_events = feed_network_rack.cavitation_events();
@@ -452,6 +498,20 @@ pub fn run(
             driver.evaluate_point_mass(kernel.current_state(), &environment, kernel_step_s)?;
         }
         let snapshot = effector_rack.snapshot();
+        let comm_observation = comm_accumulator
+            .as_mut()
+            .map(|accumulator| {
+                let state = kernel.current_state();
+                accumulator.observe_eci(
+                    &frame,
+                    kernel.current_step(),
+                    state.time,
+                    state.position,
+                    state.velocity,
+                    UnitQuaternion::identity(),
+                )
+            })
+            .transpose()?;
         record_step(
             document,
             &mut table,
@@ -465,10 +525,18 @@ pub fn run(
             geocentric_surface_radius_m,
             aerothermal_driver.as_ref().map(|driver| driver.output()),
             fc_bridge.as_ref(),
+            comm_observation.as_ref(),
             &mission_fired,
             &mut mission_region_trace,
             &snapshot,
         )?;
+        if let Some(monitor) = &mut afts_monitor {
+            monitor.observe_point_mass(
+                kernel.current_step().value(),
+                kernel.current_time().as_seconds(),
+                kernel.current_state(),
+            )?;
+        }
         // Partition the typed script-action fired
         // queue (engine commands -> engine rack, recovery deploys
         // -> recovery rack, effector overrides -> effector rack).
@@ -503,6 +571,16 @@ pub fn run(
         .map(crate::contact::ContactRunAccumulator::finish)
         .transpose()?
         .flatten();
+    let mut upstream_uq = engine_rack.upstream_uq_budget();
+    upstream_uq
+        .sources
+        .extend(crate::aero::upstream_uq_budget(document)?.sources);
+    upstream_uq
+        .sources
+        .extend(crate::aerothermal::upstream_uq_budget(document)?.sources);
+    let comm = comm_accumulator
+        .map(crate::comm::CommRunAccumulator::finish)
+        .transpose()?;
 
     Ok(RunOutcome {
         final_step: kernel.current_step().value(),
@@ -513,7 +591,9 @@ pub fn run(
         actuator_stream,
         contact,
         landing_gear: None,
-        upstream_uq: engine_rack.upstream_uq_budget(),
+        afts: afts_monitor.map(crate::afts::RunnerAftsMonitor::finish),
+        comm,
+        upstream_uq,
     })
 }
 
@@ -536,11 +616,11 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     }
     if !matches!(
         document.environment.gravity.as_str(),
-        "constant" | "point_mass" | "j2" | "egm2008" | "third_body"
+        "constant" | "point_mass" | "j2" | "egm2008" | "third_body" | "tesseral"
     ) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
-                "environment.gravity = {} (wired: constant, point_mass, j2, egm2008, third_body)",
+                "environment.gravity = {} (wired: constant, point_mass, j2, egm2008, third_body, tesseral)",
                 document.environment.gravity
             ),
         });
@@ -671,7 +751,7 @@ fn build_initial_state(
 /// The `constant` arm intentionally retains the legacy
 /// `ConstantGravityForce` to keep byte-for-byte
 /// reproducibility on every existing point-mass scenario. The other arms
-/// (`point_mass`, `j2`, `egm2008`) route through
+/// (`point_mass`, `j2`, `egm2008`, `tesseral`) route through
 /// `GravityForceAdapter`, which wraps the corresponding
 /// `openbmp_physics::GravityModel`.
 fn build_gravity_force_adapter_point_mass(
@@ -736,11 +816,7 @@ fn build_gravity_force_adapter_point_mass(
             )))
         }
         "egm2008" => {
-            // Zonal-only EGM2008 (degrees 2-6), pinned to
-            // WGS84 µ / R_e and the Pavlis et al. 2012 J_n table. No
-            // per-scenario overrides are accepted, matching the parser
-            // contract in `EnvironmentConfig::validate`.
-            let model = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+            let model = crate::celestial::build_egm2008_gravity(document, resolved_files)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
                 POINT_MASS_GRAVITY_MODEL_ID,
@@ -748,6 +824,13 @@ fn build_gravity_force_adapter_point_mass(
         }
         "third_body" => {
             let model = crate::celestial::build_third_body_gravity(document, resolved_files)?;
+            Ok(Box::new(GravityForceAdapter::new(
+                model,
+                POINT_MASS_GRAVITY_MODEL_ID,
+            )))
+        }
+        "tesseral" => {
+            let model = crate::celestial::build_tesseral_gravity(document, resolved_files)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
                 POINT_MASS_GRAVITY_MODEL_ID,
@@ -1102,6 +1185,7 @@ struct PointMassChannelSet {
     mass: TelemetryChannel<f64>,
     mission_phase: Option<TelemetryChannel<String>>,
     mission_regions: Vec<(crate::MissionRegionDeclaration, TelemetryChannel<String>)>,
+    comm: Option<crate::comm::CommTelemetryChannels>,
     has_atmosphere: bool,
     atmosphere_density: Option<TelemetryChannel<f64>>,
     atmosphere_pressure: Option<TelemetryChannel<f64>>,
@@ -1173,6 +1257,7 @@ impl PointMassChannelSet {
             )?;
             mission_regions.push((declaration, channel));
         }
+        let comm = crate::comm::CommTelemetryChannels::maybe_new(document, &mut alloc)?;
 
         let fc_reference = if document.fc.is_some() {
             Some(FcReferenceTelemetryChannels {
@@ -1472,6 +1557,7 @@ impl PointMassChannelSet {
             mass,
             mission_phase,
             mission_regions,
+            comm,
             has_atmosphere,
             atmosphere_density,
             atmosphere_pressure,
@@ -1504,6 +1590,9 @@ impl PointMassChannelSet {
         }
         for (_, region) in &self.mission_regions {
             channels.push(region.metadata().clone());
+        }
+        if let Some(comm) = &self.comm {
+            comm.push_metadata(&mut channels);
         }
         if let Some(reference) = &self.fc_reference {
             channels.push(reference.valid.metadata().clone());
@@ -1578,6 +1667,50 @@ impl PointMassChannelSet {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn point_mass_specific_force_truth<I, F, MM, E, SC>(
+    kernel: &SimulationKernel<PointMassState, I, F, MM, E, SC>,
+    breakdown_vehicle: &KernelVehicle<PointMassState>,
+) -> Result<SpecificForceTruth, RunnerError>
+where
+    I: openbmp_sim::Integrator<PointMassState>,
+    F: ForceModel<PointMassState>,
+    MM: openbmp_sim::MassModel,
+    E: openbmp_sim::EnvironmentModel,
+    SC: openbmp_sim::StopCondition<PointMassState>,
+{
+    let state = kernel.current_state();
+    let environment = kernel.current_environment_sample()?;
+    let mass_kg = state.mass.get::<kilogram>();
+    let ctx = ForceContext {
+        state,
+        environment: &environment,
+        mass_kg,
+        time: state.time,
+        active_body: None,
+        phase_id: kernel.current_phase().map(|phase| phase.value()),
+        effector_actuals: EffectorActualsView::new(kernel.effector_actuals()),
+        engine_snapshot: EngineSnapshotView::new(kernel.engine_snapshot()),
+        tank_snapshot: TankSnapshotView::new(kernel.tank_snapshot()),
+        recovery_snapshot: RecoverySnapshotView::new(kernel.recovery_snapshot()),
+    };
+    let breakdown = breakdown_vehicle
+        .evaluate_force_breakdown(ctx)
+        .map_err(|e| RunnerError::UnsupportedScenario {
+            what: format!("force-accumulator sensor truth evaluation failed: {e}"),
+        })?;
+    let gravity_force = breakdown
+        .components
+        .iter()
+        .filter(|(name, _)| name == "gravity")
+        .fold(Vector3::zeros(), |sum, (_, force)| sum + *force);
+    Ok(SpecificForceTruth {
+        f_cg_body_m_s2: (breakdown.total - gravity_force) / mass_kg,
+        omega_body_rad_s: Vector3::zeros(),
+        alpha_body_rad_s2: Vector3::zeros(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn record_step<I, F, MM, E, SC>(
     document: &ScenarioDocument,
     table: &mut TelemetryTable,
@@ -1591,6 +1724,7 @@ fn record_step<I, F, MM, E, SC>(
     geocentric_surface_radius_m: Option<f64>,
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
     fc_bridge: Option<&crate::fc_bridge::FcBridge>,
+    comm_observation: Option<&crate::comm::CommObservation>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
     mission_region_trace: &mut crate::MissionRegionTraceState,
     effector_snapshot: &[openbmp_vehicle::EffectorState],
@@ -1621,6 +1755,9 @@ where
     mission_region_trace.apply_fired_events(fired_events);
     for (declaration, channel) in &channels.mission_regions {
         row.insert(channel, mission_region_trace.label(declaration))?;
+    }
+    if let (Some(comm_channels), Some(observation)) = (&channels.comm, comm_observation) {
+        comm_channels.insert_samples(&mut row, observation)?;
     }
     insert_fc_reference_channels(&mut row, &channels.fc_reference, fc_bridge)?;
 
@@ -1861,6 +1998,7 @@ fn insert_recovery_state_channels(
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use approx::assert_abs_diff_eq;
     use openbmp_telemetry::TelemetryValue;
 
     use super::*;
@@ -2197,6 +2335,110 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const TESSERAL_POINT_MASS_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "tesseral-point-mass-test"
+description = "Synthetic point-mass run with frame-coupled degree-2 tesseral gravity."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 1.0
+seed = 13
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [6900000.0, 400000.0, 300000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "tesseral-point-mass-test"
+
+[[vehicle.assembly.bodies]]
+id = "mass"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 2.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity = "tesseral"
+mu_m3_s2 = 3.986004418e14
+r_e_m = 6378137.0
+tesseral_degree = 2
+tesseral_order = 2
+tesseral_c20 = -1.082626683e-3
+tesseral_c21 = 2.0e-7
+tesseral_s21 = -3.0e-7
+tesseral_c22 = 1.0e-7
+tesseral_s22 = -2.0e-7
+tesseral_tide_system = "tide_free"
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/tesseral-point-mass-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
+    const EGM2008_PINES_POINT_MASS_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "egm2008-pines-point-mass-test"
+description = "Synthetic point-mass run with file-backed EGM2008 finite-difference Pines gravity."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 1.0
+seed = 14
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [6900000.0, 400000.0, 300000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "egm2008-pines-point-mass-test"
+
+[[vehicle.assembly.bodies]]
+id = "mass"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 2.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity = "egm2008"
+egm2008_coefficients_file = "data/gravity/egm2008-degree10-normalized-icgem-v1.gfc"
+egm2008_degree = 10
+egm2008_order = 10
+egm2008_finite_difference_step_m = 10.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/egm2008-pines-point-mass-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn workspace_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -2261,6 +2503,13 @@ require_monotonic_time = true
         }
     }
 
+    fn first_row_bool(outcome: &RunOutcome, name: &str) -> bool {
+        match first_row_value(outcome, name) {
+            TelemetryValue::Bool(value) => *value,
+            other => panic!("unexpected first-row value for {name}: {other:?}"),
+        }
+    }
+
     fn f64_column(outcome: &RunOutcome, name: &str) -> Vec<f64> {
         let channel = outcome
             .table
@@ -2287,6 +2536,399 @@ require_monotonic_time = true
             .iter()
             .map(|row| row.time.as_seconds())
             .collect()
+    }
+
+    fn point_mass_afts_outside_range_scenario() -> Scenario {
+        let radius_m = openbmp_physics::WGS84_A_M + 1_000.0;
+        let mu_m3_s2 = openbmp_physics::WGS84_MU_M3_S2;
+        let toml = format!(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-afts-outside-range-test"
+description = "Synthetic point-mass AFTS range-containment regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 12
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [{radius_m}, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-afts-outside-range-test"
+
+[[vehicle.assembly.bodies]]
+id = "body"
+geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 1.0 }}
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "point_mass"
+mu_m3_s2 = {mu_m3_s2}
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[afts]
+enabled = true
+
+[[afts.keep_inside]]
+id = "north-box"
+evidence = "tests/fixtures/afts/north-box.md#synthetic"
+vertices = [
+  {{ latitude_deg = 10.0, longitude_deg = 10.0 }},
+  {{ latitude_deg = 10.0, longitude_deg = 20.0 }},
+  {{ latitude_deg = 20.0, longitude_deg = 20.0 }},
+  {{ latitude_deg = 20.0, longitude_deg = 10.0 }},
+]
+
+[telemetry]
+output.csv = "out/point-mass-afts-outside-range-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#
+        );
+        Scenario::from_toml_str(&toml).expect("AFTS point-mass scenario must parse")
+    }
+
+    fn point_mass_afts_keep_out_scenario() -> Scenario {
+        let radius_m = openbmp_physics::WGS84_A_M + 1_000.0;
+        let mu_m3_s2 = openbmp_physics::WGS84_MU_M3_S2;
+        let toml = format!(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-afts-keep-out-test"
+description = "Synthetic point-mass AFTS keep-out regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 13
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [{radius_m}, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-afts-keep-out-test"
+
+[[vehicle.assembly.bodies]]
+id = "body"
+geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 1.0 }}
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "point_mass"
+mu_m3_s2 = {mu_m3_s2}
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[afts]
+enabled = true
+
+[[afts.keep_out]]
+id = "hazard-zone"
+evidence = "tests/fixtures/afts/hazard-zone.md#synthetic"
+vertices = [
+  {{ latitude_deg = -1.0, longitude_deg = -1.0 }},
+  {{ latitude_deg = -1.0, longitude_deg = 1.0 }},
+  {{ latitude_deg = 1.0, longitude_deg = 1.0 }},
+  {{ latitude_deg = 1.0, longitude_deg = -1.0 }},
+]
+
+[telemetry]
+output.csv = "out/point-mass-afts-keep-out-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#
+        );
+        Scenario::from_toml_str(&toml).expect("AFTS keep-out point-mass scenario must parse")
+    }
+
+    fn point_mass_afts_corridor_scenario() -> Scenario {
+        let radius_m = openbmp_physics::WGS84_A_M + 1_000.0;
+        let mu_m3_s2 = openbmp_physics::WGS84_MU_M3_S2;
+        let toml = format!(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-afts-corridor-test"
+description = "Synthetic point-mass AFTS corridor regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 14
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [{radius_m}, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-afts-corridor-test"
+
+[[vehicle.assembly.bodies]]
+id = "body"
+geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 1.0 }}
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "point_mass"
+mu_m3_s2 = {mu_m3_s2}
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[afts]
+enabled = true
+
+[[afts.corridor]]
+id = "altitude-band"
+evidence = "tests/fixtures/afts/altitude-band.md#synthetic"
+metric = "altitude_m"
+min_altitude_m = 0.0
+max_altitude_m = 100.0
+
+[telemetry]
+output.csv = "out/point-mass-afts-corridor-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#
+        );
+        Scenario::from_toml_str(&toml).expect("AFTS corridor point-mass scenario must parse")
+    }
+
+    fn point_mass_afts_gate_scenario() -> Scenario {
+        let radius_m = openbmp_physics::WGS84_A_M;
+        let mu_m3_s2 = openbmp_physics::WGS84_MU_M3_S2;
+        let toml = format!(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-afts-gate-test"
+description = "Synthetic point-mass AFTS gate-crossing regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.2
+dt_s = 0.1
+seed = 15
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [{radius_m}, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 10.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-afts-gate-test"
+
+[[vehicle.assembly.bodies]]
+id = "body"
+geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 1.0 }}
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "point_mass"
+mu_m3_s2 = {mu_m3_s2}
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[afts]
+enabled = true
+
+[[afts.gate]]
+id = "zero-longitude-gate"
+evidence = "tests/fixtures/afts/zero-longitude-gate.md#synthetic"
+start = {{ latitude_deg = -1.0, longitude_deg = 0.0 }}
+end = {{ latitude_deg = 1.0, longitude_deg = 0.0 }}
+direction = "any"
+
+[telemetry]
+output.csv = "out/point-mass-afts-gate-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#
+        );
+        Scenario::from_toml_str(&toml).expect("AFTS gate point-mass scenario must parse")
+    }
+
+    fn point_mass_afts_red_zone_scenario() -> Scenario {
+        let radius_m = openbmp_physics::WGS84_A_M + 1_000.0;
+        let mu_m3_s2 = openbmp_physics::WGS84_MU_M3_S2;
+        let toml = format!(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-afts-red-zone-test"
+description = "Synthetic point-mass AFTS red-zone regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 16
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [{radius_m}, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-afts-red-zone-test"
+
+[[vehicle.assembly.bodies]]
+id = "body"
+geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 1.0 }}
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "point_mass"
+mu_m3_s2 = {mu_m3_s2}
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[afts]
+enabled = true
+
+[[afts.zone]]
+id = "red-zone"
+evidence = "tests/fixtures/afts/red-zone.md#synthetic"
+color = "red"
+vertices = [
+  {{ latitude_deg = -1.0, longitude_deg = -1.0 }},
+  {{ latitude_deg = -1.0, longitude_deg = 1.0 }},
+  {{ latitude_deg = 1.0, longitude_deg = 1.0 }},
+  {{ latitude_deg = 1.0, longitude_deg = -1.0 }},
+]
+
+[telemetry]
+output.csv = "out/point-mass-afts-red-zone-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#
+        );
+        Scenario::from_toml_str(&toml).expect("AFTS red-zone point-mass scenario must parse")
+    }
+
+    fn point_mass_afts_ellipsoid_corridor_scenario() -> Scenario {
+        let polar_radius_m = openbmp_physics::WGS84_A_M * (1.0 - openbmp_physics::WGS84_FLATTENING);
+        let initial_z_m = polar_radius_m + 1_000.0;
+        let mu_m3_s2 = openbmp_physics::WGS84_MU_M3_S2;
+        let toml = format!(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-afts-ellipsoid-corridor-test"
+description = "Synthetic point-mass AFTS ellipsoid corridor regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 17
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, {initial_z_m}]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-afts-ellipsoid-corridor-test"
+
+[[vehicle.assembly.bodies]]
+id = "body"
+geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 1.0 }}
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "point_mass"
+mu_m3_s2 = {mu_m3_s2}
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[afts]
+enabled = true
+
+[afts.propagator]
+surface = "wgs84_ellipsoid"
+earth_rotation = "disabled"
+
+[[afts.corridor]]
+id = "ellipsoid-altitude-band"
+evidence = "tests/fixtures/afts/ellipsoid-altitude-band.md#synthetic"
+metric = "altitude_m"
+min_altitude_m = 500.0
+max_altitude_m = 1500.0
+
+[telemetry]
+output.csv = "out/point-mass-afts-ellipsoid-corridor-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#
+        );
+        Scenario::from_toml_str(&toml).expect("AFTS ellipsoid corridor scenario must parse")
     }
 
     #[test]
@@ -2322,6 +2964,54 @@ require_monotonic_time = true
             stagnation_temperature.iter().any(|value| *value > 0.0),
             "live aerothermal driver should emit stagnation temperature: {stagnation_temperature:?}"
         );
+    }
+
+    #[test]
+    fn point_mass_upstream_uq_gathers_aero_and_aerothermal_bands() {
+        let toml = POINT_MASS_ENTRY_SCENARIO
+            .replace(
+                "[aerothermal]\n",
+                "[aero]\n\
+                 \n\
+                 [aero.uq]\n\
+                 deck_id = \"synthetic_finned_cylinder.v1\"\n\
+                 coefficient_id = \"cd\"\n\
+                 coefficient_lower = 0.18\n\
+                 coefficient_nominal = 0.20\n\
+                 coefficient_upper = 0.23\n\
+                 credibility_level = 2\n\
+                 evidence = \"data/aero/synthetic-finned-cylinder.toml#coefficient=cd\"\n\
+                 \n\
+                 [aerothermal]\n",
+            )
+            .replace(
+                "[forces]\n",
+                "[aerothermal.uq]\n\
+                 deck_id = \"sutton_graves_earth.v1\"\n\
+                 q_conv_lower_w_m2 = 900000.0\n\
+                 q_conv_nominal_w_m2 = 1000000.0\n\
+                 q_conv_upper_w_m2 = 1200000.0\n\
+                 credibility_level = 2\n\
+                 evidence = \"docs/parity/04-aerothermal-realgas-and-tps.md#sutton-graves\"\n\
+                 \n\
+                 [forces]\n",
+            );
+        let scenario = Scenario::from_toml_str(&toml).expect("point-mass UQ scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("point-mass UQ run succeeds");
+
+        let upstream_sources = &outcome.upstream_uq.sources;
+        assert_eq!(upstream_sources.len(), 2);
+        assert_eq!(
+            upstream_sources[0].source_id,
+            "03.aero.synthetic_finned_cylinder.v1.cd"
+        );
+        assert!((upstream_sources[0].one_sigma - 0.03).abs() < 1.0e-15);
+        assert_eq!(
+            upstream_sources[1].source_id,
+            "04.aerothermal.sutton_graves_earth.v1.q_conv_w_m2"
+        );
+        assert!((upstream_sources[1].one_sigma - 200000.0).abs() < 1.0e-9);
     }
 
     #[test]
@@ -2384,6 +3074,487 @@ require_monotonic_time = true
                 ..
             } if ground_altitude_m == 0.0
         ));
+    }
+
+    #[test]
+    fn point_mass_afts_report_latches_without_changing_kernel_stop_reason() {
+        let scenario = point_mass_afts_outside_range_scenario();
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("AFTS run succeeds");
+
+        assert!(
+            matches!(outcome.stop_reason, StopReason::EndTime { .. }),
+            "AFTS observer must not replace the kernel stop reason: {:?}",
+            outcome.stop_reason
+        );
+        let report = outcome.afts.as_ref().expect("AFTS report is present");
+        assert_eq!(report.samples as usize, outcome.table.rows().len());
+        assert!(report.terminate);
+        assert_eq!(report.rule_id.as_deref(), Some("north-box"));
+        assert_eq!(
+            report.rule_evidence.as_deref(),
+            Some("tests/fixtures/afts/north-box.md#synthetic")
+        );
+        assert_eq!(report.first_trigger_step, Some(0));
+        assert_eq!(report.first_trigger_time_s, Some(0.0));
+        assert!(
+            report
+                .impact_latitude_rad
+                .is_some_and(|latitude| latitude.abs() < 1.0e-12)
+        );
+        assert!(
+            report
+                .impact_longitude_rad
+                .is_some_and(|longitude| longitude.abs() < 1.0e-12)
+        );
+    }
+
+    #[test]
+    fn point_mass_afts_keep_out_report_latches_inside_forbidden_polygon() {
+        let scenario = point_mass_afts_keep_out_scenario();
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("AFTS keep-out run succeeds");
+
+        assert!(
+            matches!(outcome.stop_reason, StopReason::EndTime { .. }),
+            "AFTS observer must not replace the kernel stop reason: {:?}",
+            outcome.stop_reason
+        );
+        let report = outcome.afts.as_ref().expect("AFTS report is present");
+        assert!(report.terminate);
+        assert_eq!(report.rule_id.as_deref(), Some("hazard-zone"));
+        assert_eq!(report.rule_table.len(), 1);
+        assert_eq!(report.rule_table[0].kind, "keep_out");
+        assert_eq!(
+            report.rule_evidence.as_deref(),
+            Some("tests/fixtures/afts/hazard-zone.md#synthetic")
+        );
+    }
+
+    #[test]
+    fn point_mass_afts_corridor_report_latches_without_iip_rule() {
+        let scenario = point_mass_afts_corridor_scenario();
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("AFTS corridor run succeeds");
+
+        assert!(
+            matches!(outcome.stop_reason, StopReason::EndTime { .. }),
+            "AFTS observer must not replace the kernel stop reason: {:?}",
+            outcome.stop_reason
+        );
+        let report = outcome.afts.as_ref().expect("AFTS report is present");
+        assert!(report.terminate);
+        assert_eq!(report.rule_id.as_deref(), Some("altitude-band"));
+        assert_eq!(report.rule_table.len(), 1);
+        assert_eq!(report.rule_table[0].kind, "corridor");
+        assert_eq!(report.rule_table[0].metric.as_deref(), Some("altitude_m"));
+        assert_eq!(report.rule_table[0].max_value, Some(100.0));
+        assert_eq!(
+            report.rule_evidence.as_deref(),
+            Some("tests/fixtures/afts/altitude-band.md#synthetic")
+        );
+        assert_eq!(report.first_trigger_step, Some(0));
+        assert_eq!(report.first_trigger_time_s, Some(0.0));
+        assert!(report.impact_latitude_rad.is_none());
+        assert!(
+            report
+                .altitude_m
+                .is_some_and(|altitude| (altitude - 1_000.0).abs() < 1.0e-9)
+        );
+    }
+
+    #[test]
+    fn point_mass_afts_gate_report_latches_on_iip_crossing() {
+        let scenario = point_mass_afts_gate_scenario();
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("AFTS gate run succeeds");
+
+        assert!(
+            matches!(outcome.stop_reason, StopReason::EndTime { .. }),
+            "AFTS observer must not replace the kernel stop reason: {:?}",
+            outcome.stop_reason
+        );
+        let report = outcome.afts.as_ref().expect("AFTS report is present");
+        assert!(report.terminate);
+        assert_eq!(report.rule_id.as_deref(), Some("zero-longitude-gate"));
+        assert_eq!(report.rule_table.len(), 1);
+        assert_eq!(report.rule_table[0].kind, "gate");
+        assert_eq!(report.rule_table[0].direction.as_deref(), Some("any"));
+        assert_eq!(
+            report.rule_evidence.as_deref(),
+            Some("tests/fixtures/afts/zero-longitude-gate.md#synthetic")
+        );
+        assert_eq!(report.first_trigger_step, Some(1));
+        assert_eq!(report.first_trigger_time_s, Some(0.1));
+        assert!(
+            report
+                .impact_longitude_rad
+                .is_some_and(|longitude| longitude > 0.0)
+        );
+    }
+
+    #[test]
+    fn point_mass_afts_zone_report_latches_inside_red_zone() {
+        let scenario = point_mass_afts_red_zone_scenario();
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("AFTS red-zone run succeeds");
+
+        assert!(
+            matches!(outcome.stop_reason, StopReason::EndTime { .. }),
+            "AFTS observer must not replace the kernel stop reason: {:?}",
+            outcome.stop_reason
+        );
+        let report = outcome.afts.as_ref().expect("AFTS report is present");
+        assert!(report.terminate);
+        assert_eq!(report.rule_id.as_deref(), Some("red-zone"));
+        assert_eq!(report.rule_table.len(), 1);
+        assert_eq!(report.rule_table[0].kind, "zone");
+        assert_eq!(report.rule_table[0].zone_color.as_deref(), Some("red"));
+        assert_eq!(
+            report.rule_evidence.as_deref(),
+            Some("tests/fixtures/afts/red-zone.md#synthetic")
+        );
+        assert_eq!(report.first_trigger_step, Some(0));
+        assert_eq!(report.first_trigger_time_s, Some(0.0));
+    }
+
+    #[test]
+    fn point_mass_afts_ellipsoid_corridor_uses_surface_altitude() {
+        let scenario = point_mass_afts_ellipsoid_corridor_scenario();
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome =
+            run(&scenario, &resolved_files, None).expect("AFTS ellipsoid corridor run succeeds");
+
+        assert!(matches!(outcome.stop_reason, StopReason::EndTime { .. }));
+        let report = outcome.afts.as_ref().expect("AFTS report is present");
+        assert!(!report.terminate);
+        assert_eq!(report.rule_id, None);
+        assert_eq!(report.rule_table.len(), 1);
+        assert_eq!(report.rule_table[0].kind, "corridor");
+        assert_eq!(report.rule_table[0].id, "ellipsoid-altitude-band");
+        assert!(
+            matches!(report.altitude_m, Some(altitude_m) if (999.0..=1000.0).contains(&altitude_m)),
+            "ellipsoid altitude should stay near the declared 1000 m polar height: {report:?}"
+        );
+    }
+
+    #[test]
+    fn point_mass_comm_report_contains_byte_stable_pass_table() {
+        let scenario = Scenario::from_toml_str_with_source_dir(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-comm-pass-table-test"
+description = "Synthetic comm pass table regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 7
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [6379137.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-comm-pass-table-test"
+
+[[vehicle.assembly.bodies]]
+id = "stage"
+geometry = { kind = "cylinder", length_m = 1.0, diameter_m = 1.0 }
+dry_mass_kg = 10.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/point-mass-comm-pass-table-test.csv"
+
+[comm]
+[[comm.sites]]
+id = "equator-zero"
+latitude_deg = 0.0
+longitude_deg = 0.0
+altitude_m = 0.0
+min_elevation_deg = 5.0
+
+[[comm.antennas]]
+id = "s-band-low-gain"
+gain_deck = "data/comm/antenna-link-budget-v1.toml"
+body_mask_deck = "data/comm/antenna-link-budget-v1.toml"
+
+[[comm.links]]
+id = "s-band-equator"
+site_id = "equator-zero"
+antenna_id = "s-band-low-gain"
+eirp_dbw = -40.0
+receiver_g_over_t_db_k = 0.0
+frequency_hz = 2.0e9
+bit_rate_bps = 1000.0
+required_eb_n0_db = 3.0
+atmospheric_loss_db = 1.0
+atmospheric_loss_deck = "data/comm/attenuation-loss-v1.toml"
+rain_loss_db = 0.5
+rain_loss_deck = "data/comm/attenuation-loss-v1.toml"
+pointing_loss_db = 0.25
+polarization_loss_db = 0.1
+implementation_loss_db = 0.0
+fer_curve_deck = "data/comm/link-budget-fer-v1.toml"
+packet_processing_delay_s = 0.02
+packet_error_action = { kind = "bit_flip", mask = 165 }
+packet_loss_rate_gate = { packet_count = 64, alpha = 0.001 }
+data_loss_timeout_s = 1.0
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#,
+            Some(workspace_root()),
+        )
+        .unwrap();
+
+        let outcome = crate::run(&scenario).unwrap();
+        let report = outcome.comm.as_ref().expect("comm report");
+
+        assert_eq!(
+            std::str::from_utf8(&report.pass_table_csv).unwrap(),
+            "site_id,aos_s,los_s,max_elevation_rad\nequator-zero,0.00000000000000000e0,1.00000000000000006e-1,1.57079632679489656e0\n"
+        );
+        assert_abs_diff_eq!(
+            first_row_f64(&outcome, "comm.equator-zero.slant_range_m"),
+            1000.0,
+            epsilon = 1.0e-9
+        );
+        assert_abs_diff_eq!(
+            first_row_f64(&outcome, "comm.equator-zero.elevation_rad"),
+            core::f64::consts::FRAC_PI_2,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            first_row_f64(&outcome, "comm.equator-zero.mask_elevation_rad"),
+            5.0_f64.to_radians(),
+            epsilon = 1.0e-15
+        );
+        assert!(first_row_bool(&outcome, "comm.equator-zero.visible"));
+        assert_eq!(report.antenna_decks.len(), 1);
+        let antenna_deck = &report.antenna_decks[0];
+        assert_eq!(antenna_deck.antenna_id, "s-band-low-gain");
+        assert_eq!(antenna_deck.gain_sample_count, 3);
+        assert_eq!(antenna_deck.body_mask_sample_count, 3);
+        assert_eq!(
+            antenna_deck.gain_deck_file_sha256_hex,
+            antenna_deck.body_mask_deck_file_sha256_hex
+        );
+        let body_mask_digest = antenna_deck
+            .body_mask_derived_sha256_hex
+            .as_ref()
+            .expect("derived body-mask digest");
+        assert_eq!(body_mask_digest.len(), 64);
+        assert!(
+            body_mask_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        );
+        assert_eq!(report.links.len(), 1);
+        let link = &report.links[0];
+        assert_eq!(link.link_id, "s-band-equator");
+        assert_eq!(link.site_id, "equator-zero");
+        assert_eq!(link.antenna_id, "s-band-low-gain");
+        assert_eq!(link.fer_curve_code_id, "synthetic-log-linear");
+        assert_eq!(link.fer_curve_sample_count, 3);
+        assert_eq!(link.fer_curve_deck_file_sha256_hex.len(), 64);
+        assert_eq!(link.atmospheric_loss_sample_count, 3);
+        assert_eq!(link.rain_loss_sample_count, 3);
+        assert_eq!(link.packet_processing_delay_s.to_bits(), 0.02_f64.to_bits());
+        assert_eq!(link.packet_error_action, "bit_flip");
+        assert_eq!(link.packet_error_bit_flip_mask, Some(165));
+        let loss_gate = link
+            .packet_loss_rate_gate
+            .as_ref()
+            .expect("packet loss-rate gate report");
+        assert_eq!(loss_gate.packet_count, 64);
+        assert_eq!(loss_gate.alpha.to_bits(), 0.001_f64.to_bits());
+        assert_eq!(loss_gate.sample_step, outcome.final_step);
+        assert!(loss_gate.downlink.passed);
+        assert!(loss_gate.uplink.passed);
+        assert_eq!(loss_gate.downlink.direction, "downlink");
+        assert_eq!(loss_gate.uplink.direction, "uplink");
+        let data_loss = link
+            .data_loss_timeout
+            .as_ref()
+            .expect("data-loss timeout report");
+        assert_eq!(data_loss.timeout_s.to_bits(), 1.0_f64.to_bits());
+        assert!(!data_loss.triggered);
+        assert_eq!(data_loss.first_trigger_step, None);
+        assert!(data_loss.delivered_sample_count > 0);
+        assert_eq!(
+            link.atmospheric_loss_deck_file_sha256_hex
+                .as_deref()
+                .map(str::len),
+            Some(64)
+        );
+        assert_eq!(
+            link.rain_loss_deck_file_sha256_hex.as_deref().map(str::len),
+            Some(64)
+        );
+        assert_abs_diff_eq!(
+            first_row_f64(&outcome, "comm.link.s-band-equator.free_space_loss_db"),
+            98.468_383_135_163,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            first_row_f64(&outcome, "comm.link.s-band-equator.antenna_gain_dbi"),
+            3.0,
+            epsilon = 1.0e-12
+        );
+        assert!(!first_row_bool(
+            &outcome,
+            "comm.link.s-band-equator.body_blocked"
+        ));
+        assert_abs_diff_eq!(
+            first_row_f64(&outcome, "comm.link.s-band-equator.c_n0_dbhz"),
+            91.030_784_038_054_7,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            first_row_f64(&outcome, "comm.link.s-band-equator.eb_n0_db"),
+            61.030_784_038_054_7,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            first_row_f64(&outcome, "comm.link.s-band-equator.margin_db"),
+            58.030_784_038_054_7,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            first_row_f64(&outcome, "comm.link.s-band-equator.fer"),
+            6.220_756_362_024_405e-5,
+            epsilon = 1.0e-15
+        );
+        assert_abs_diff_eq!(
+            loss_gate.downlink.expected_error_rate,
+            6.220_756_362_024_405e-5,
+            epsilon = 1.0e-15
+        );
+        assert!(first_row_bool(&outcome, "comm.link.s-band-equator.visible"));
+        assert!(!first_row_bool(
+            &outcome,
+            "comm.link.s-band-equator.blackout"
+        ));
+    }
+
+    #[test]
+    fn point_mass_comm_data_loss_timeout_latches_on_no_link() {
+        let scenario = Scenario::from_toml_str_with_source_dir(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-comm-data-loss-timeout-test"
+description = "Synthetic comm data-loss timeout regression."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.2
+dt_s = 0.1
+seed = 7
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [6379137.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-comm-data-loss-timeout-test"
+
+[[vehicle.assembly.bodies]]
+id = "stage"
+geometry = { kind = "cylinder", length_m = 1.0, diameter_m = 1.0 }
+dry_mass_kg = 10.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/point-mass-comm-data-loss-timeout-test.csv"
+
+[comm]
+[[comm.sites]]
+id = "opposite-side"
+latitude_deg = 0.0
+longitude_deg = 180.0
+altitude_m = 0.0
+min_elevation_deg = 5.0
+
+[[comm.antennas]]
+id = "s-band-low-gain"
+gain_deck = "data/comm/antenna-link-budget-v1.toml"
+body_mask_deck = "data/comm/antenna-link-budget-v1.toml"
+
+[[comm.links]]
+id = "s-band-opposite"
+site_id = "opposite-side"
+antenna_id = "s-band-low-gain"
+eirp_dbw = -40.0
+receiver_g_over_t_db_k = 0.0
+frequency_hz = 2.0e9
+bit_rate_bps = 1000.0
+required_eb_n0_db = 3.0
+atmospheric_loss_db = 1.0
+atmospheric_loss_deck = "data/comm/attenuation-loss-v1.toml"
+rain_loss_db = 0.5
+rain_loss_deck = "data/comm/attenuation-loss-v1.toml"
+pointing_loss_db = 0.25
+polarization_loss_db = 0.1
+implementation_loss_db = 0.0
+fer_curve_deck = "data/comm/link-budget-fer-v1.toml"
+data_loss_timeout_s = 0.05
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#,
+            Some(workspace_root()),
+        )
+        .unwrap();
+
+        let outcome = crate::run(&scenario).unwrap();
+        let report = outcome.comm.as_ref().expect("comm report");
+        let link = &report.links[0];
+        let data_loss = link
+            .data_loss_timeout
+            .as_ref()
+            .expect("data-loss timeout report");
+
+        assert!(data_loss.triggered);
+        assert_eq!(data_loss.first_loss_step, Some(0));
+        assert_eq!(data_loss.first_loss_time_s, Some(0.0));
+        assert_eq!(data_loss.first_trigger_step, Some(1));
+        assert_eq!(data_loss.first_trigger_time_s, Some(0.1));
+        assert_eq!(data_loss.delivered_sample_count, 0);
+        assert!(data_loss.lost_sample_count >= 2);
+        assert!(data_loss.max_loss_gap_s > data_loss.timeout_s);
     }
 
     #[test]
@@ -2641,6 +3812,56 @@ require_monotonic_time = true
         assert!(
             gravity_y.iter().any(|value| value.abs() > 1.0e-8),
             "lunar third-body force should produce a measurable cross-axis component: {gravity_y:?}"
+        );
+    }
+
+    #[test]
+    fn point_mass_wires_frame_coupled_tesseral_gravity() {
+        let scenario = Scenario::from_toml_str(TESSERAL_POINT_MASS_SCENARIO)
+            .expect("tesseral scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("tesseral run succeeds");
+
+        let gravity_y = f64_column(&outcome, "force.gravity.y_n");
+        assert!(
+            gravity_y.iter().any(|value| value.abs() > 1.0e-3),
+            "tesseral gravity should produce a finite cross-axis force: {gravity_y:?}"
+        );
+    }
+
+    #[test]
+    fn point_mass_wires_file_backed_egm2008_pines_gravity() {
+        let source_dir = workspace_root();
+        let scenario = Scenario::from_toml_str_with_source_dir(
+            EGM2008_PINES_POINT_MASS_SCENARIO,
+            Some(&source_dir),
+        )
+        .expect("file-backed EGM2008 scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        assert!(resolved_files.contains_key("environment.egm2008_coefficients_file"));
+        let outcome = run(&scenario, &resolved_files, None).expect("EGM2008 Pines run succeeds");
+
+        let legacy_toml = EGM2008_PINES_POINT_MASS_SCENARIO
+            .replace(
+                "egm2008_coefficients_file = \"data/gravity/egm2008-degree10-normalized-icgem-v1.gfc\"\n",
+                "",
+            )
+            .replace("egm2008_degree = 10\n", "")
+            .replace("egm2008_order = 10\n", "")
+            .replace("egm2008_finite_difference_step_m = 10.0\n", "");
+        let legacy = Scenario::from_toml_str_with_source_dir(&legacy_toml, Some(&source_dir))
+            .expect("legacy EGM2008 scenario must parse");
+        let legacy_files = legacy.resolved_files().expect("resolve legacy files");
+        let legacy_outcome =
+            run(&legacy, &legacy_files, None).expect("legacy EGM2008 run succeeds");
+
+        let x = f64_column(&outcome, "force.gravity.x_n");
+        let legacy_x = f64_column(&legacy_outcome, "force.gravity.x_n");
+        assert!(
+            x.iter()
+                .zip(legacy_x)
+                .any(|(actual, legacy)| (actual - legacy).abs() > 1.0e-6),
+            "file-backed EGM2008 should not silently use the legacy zonal model"
         );
     }
 

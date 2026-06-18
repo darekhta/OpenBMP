@@ -130,10 +130,11 @@ pub fn run(
             floor: *floor,
             report_md: report_md.as_deref(),
         });
-    let credibility = credibility
-        .or(manifest_credibility)
-        .map(mc::evaluate_credibility_options)
-        .transpose()?;
+    let credibility =
+        mc::evaluate_campaign_credibility_contract(mc::CampaignCredibilityInputs::new(
+            credibility.or(manifest_credibility),
+            &report.upstream_uq,
+        ))?;
     let (credibility, credibility_report_md) = match credibility {
         Some((report, report_path)) => (Some(report), report_path),
         None => (None, None),

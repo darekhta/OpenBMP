@@ -5,7 +5,10 @@
 use std::fs;
 
 use openbmp_cli::commands::mc;
-use openbmp_uq::CredibilityLevel;
+use openbmp_uq::{
+    CorrelatedErrorBudget, CorrelationMatrix, CredibilityFactor, CredibilityLevel,
+    CredibilityRecord, UncertaintyClass, UncertaintySource,
+};
 use tempfile::Builder;
 
 const MC_ENGINE_SCENARIO: &str = include_str!("fixtures/mc-scheduled-engine-fault.toml");
@@ -155,6 +158,125 @@ fault = { kind = "hard_off" }
             .contains("05.propulsion.thermochem.fa3ff43bc91d.c_star_efficiency")
     );
     assert!(output.exists());
+}
+
+#[test]
+fn mc_campaign_credibility_inputs_emit_upstream_only_report() {
+    let upstream = CorrelatedErrorBudget {
+        sources: vec![
+            uq_source(
+                "03.aero.deck.cn_band",
+                3.0,
+                UncertaintyClass::Epistemic,
+                CredibilityLevel::L1,
+            ),
+            uq_source(
+                "05.propulsion.thermochem.c_star_efficiency",
+                4.0,
+                UncertaintyClass::Epistemic,
+                CredibilityLevel::L1,
+            ),
+        ],
+        correlation: Some(
+            CorrelationMatrix::new(2, vec![1.0, 0.5, 0.5, 1.0]).expect("correlation"),
+        ),
+    };
+
+    let (report, report_path) = mc::evaluate_campaign_credibility_inputs(None, &upstream)
+        .expect("evaluate upstream")
+        .expect("upstream report");
+
+    assert_eq!(report_path, None);
+    assert_eq!(report.floor, CredibilityLevel::L0);
+    assert_eq!(report.binding_level, CredibilityLevel::L1);
+    assert!(report.accepted);
+    assert!((report.aggregate_one_sigma - 37.0_f64.sqrt()).abs() < 1.0e-12);
+    assert_eq!(report.aleatory_one_sigma.to_bits(), 0.0_f64.to_bits());
+    assert!((report.epistemic_one_sigma - 37.0_f64.sqrt()).abs() < 1.0e-12);
+    assert!(
+        report
+            .markdown
+            .contains("05.propulsion.thermochem.c_star_efficiency")
+    );
+}
+
+#[test]
+fn mc_campaign_credibility_inputs_merge_sidecar_and_upstream_sources() {
+    let temp = Builder::new()
+        .prefix("openbmp_mc_upstream_uq")
+        .tempdir()
+        .expect("tempdir");
+    let uq = temp.path().join("uq.toml");
+    let report_md = temp.path().join("reports").join("credibility.md");
+    fs::write(&uq, uq_budget_toml(2)).expect("write uq");
+    let upstream = CorrelatedErrorBudget {
+        sources: vec![uq_source(
+            "04.aerothermal.q_conv_w_m2_band",
+            12.0,
+            UncertaintyClass::Epistemic,
+            CredibilityLevel::L1,
+        )],
+        correlation: None,
+    };
+
+    let (report, report_path) = mc::evaluate_campaign_credibility_inputs(
+        Some(mc::McCredibilityOptions {
+            uq_toml: &uq,
+            floor: CredibilityLevel::L1,
+            report_md: Some(&report_md),
+        }),
+        &upstream,
+    )
+    .expect("evaluate merged")
+    .expect("merged report");
+
+    assert_eq!(report_path.as_deref(), Some(report_md.as_path()));
+    assert_eq!(report.binding_level, CredibilityLevel::L1);
+    assert!(report.accepted);
+    assert!((report.aggregate_one_sigma - 13.0).abs() < 1.0e-12);
+    assert!((report.aleatory_one_sigma - 3.0).abs() < 1.0e-12);
+    assert!((report.epistemic_one_sigma - 160.0_f64.sqrt()).abs() < 1.0e-12);
+    let markdown = fs::read_to_string(&report_md).expect("read report");
+    assert!(markdown.contains("04.aerothermal.q_conv_w_m2_band"));
+}
+
+#[test]
+fn mc_campaign_credibility_contract_merges_sidecar_and_upstream_sources() {
+    let temp = Builder::new()
+        .prefix("openbmp_mc_upstream_uq_contract")
+        .tempdir()
+        .expect("tempdir");
+    let uq = temp.path().join("uq.toml");
+    fs::write(&uq, uq_budget_toml(2)).expect("write uq");
+    let upstream = CorrelatedErrorBudget {
+        sources: vec![uq_source(
+            "03.aero.deck.cl_band",
+            5.0,
+            UncertaintyClass::Epistemic,
+            CredibilityLevel::L1,
+        )],
+        correlation: None,
+    };
+
+    let (report, report_path) =
+        mc::evaluate_campaign_credibility_contract(mc::CampaignCredibilityInputs::new(
+            Some(mc::McCredibilityOptions {
+                uq_toml: &uq,
+                floor: CredibilityLevel::L1,
+                report_md: None,
+            }),
+            &upstream,
+        ))
+        .expect("evaluate contract")
+        .expect("contract report");
+
+    assert_eq!(report_path, None);
+    assert_eq!(report.binding_level, CredibilityLevel::L1);
+    assert!(report.accepted);
+    assert!((report.aggregate_one_sigma - 50.0_f64.sqrt()).abs() < 1.0e-12);
+    assert!((report.aleatory_one_sigma - 3.0).abs() < 1.0e-12);
+    assert!((report.epistemic_one_sigma - 41.0_f64.sqrt()).abs() < 1.0e-12);
+    assert!(report.markdown.contains("03.aero.deck.cl_band"));
 }
 
 #[test]
@@ -785,6 +907,29 @@ fn uq_budget_toml(level: u8) -> String {
         text.push('\n');
     }
     text
+}
+
+fn uq_source(
+    source_id: &str,
+    one_sigma: f64,
+    class: UncertaintyClass,
+    level: CredibilityLevel,
+) -> UncertaintySource {
+    UncertaintySource {
+        source_id: source_id.to_owned(),
+        one_sigma,
+        class,
+        credibility: credibility_record(level),
+        justification: "synthetic upstream deck band".to_owned(),
+    }
+}
+
+fn credibility_record(level: CredibilityLevel) -> CredibilityRecord {
+    let mut record = CredibilityRecord::new();
+    for factor in CredibilityFactor::ALL {
+        record = record.with_score(factor, level, format!("V-{factor:?}"));
+    }
+    record
 }
 
 fn thermochemical_mc_scenario() -> String {

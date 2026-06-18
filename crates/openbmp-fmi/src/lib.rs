@@ -379,6 +379,24 @@ pub struct Fmi3StepResult {
     pub current_time_s: f64,
 }
 
+/// One FMI Clock activation published by the single-FMU master.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Fmi3ClockScheduleActivation {
+    /// Clock variable name from `modelDescription.xml`.
+    pub name: String,
+    /// FMI Clock value reference.
+    pub value_reference: Fmi3ValueReferenceRaw,
+    /// Boolean activation value sent to `fmi3SetClock`.
+    pub active: bool,
+}
+
+/// Report from publishing deterministic periodic FMI input clocks.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Fmi3ClockScheduleReport {
+    /// Scheduled input-clock activations in modelDescription order.
+    pub activations: Vec<Fmi3ClockScheduleActivation>,
+}
+
 /// FMU-state rollback policy for checkpointed master steps.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Fmi3RollbackPolicy {
@@ -752,6 +770,53 @@ impl<'a> Fmi3SingleFmuMaster<'a> {
         self.current_time_s
     }
 
+    /// Publish deterministic periodic input clocks at a communication point.
+    ///
+    /// Constant, fixed, and tunable input clocks with finite positive
+    /// `intervalDecimal` are scheduled at macro-step boundaries using
+    /// optional `shiftDecimal`. Triggered, changing, countdown, output,
+    /// and local clocks are ignored by this scoped scheduler.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FmiImportError`] when the communication point is not
+    /// finite, scheduled clock metadata is invalid, or `fmi3SetClock`
+    /// fails.
+    pub fn publish_periodic_input_clocks_at(
+        &self,
+        current_time_s: f64,
+    ) -> Result<Fmi3ClockScheduleReport, FmiImportError> {
+        if !current_time_s.is_finite() {
+            return Err(invalid_clock_schedule(
+                "communication point",
+                format!("time is not finite: {current_time_s}"),
+            ));
+        }
+
+        let mut value_references = Vec::new();
+        let mut values = Vec::new();
+        let mut activations = Vec::new();
+        for clock in &self.plan.variables.clocks {
+            let Some(active) = periodic_input_clock_activation(clock, current_time_s)? else {
+                continue;
+            };
+            value_references.push(clock.value_reference);
+            values.push(active);
+            activations.push(Fmi3ClockScheduleActivation {
+                name: clock.name.clone(),
+                value_reference: clock.value_reference,
+                active,
+            });
+        }
+
+        if !value_references.is_empty() {
+            self.library
+                .set_clock(self.instance, &value_references, &values)?;
+        }
+
+        Ok(Fmi3ClockScheduleReport { activations })
+    }
+
     /// Perform one typed single-FMU communication step.
     ///
     /// # Errors
@@ -774,6 +839,8 @@ impl<'a> Fmi3SingleFmuMaster<'a> {
             self.plan.variables.int32_inputs.len(),
             inputs.int32.len(),
         )?;
+
+        self.publish_periodic_input_clocks_at(self.current_time_s)?;
 
         let float64_input_refs = raw_value_references(&self.plan.variables.float64_inputs);
         let int32_input_refs = raw_value_references(&self.plan.variables.int32_inputs);
@@ -948,6 +1015,15 @@ pub struct Fmi3MultiFmuStepResult {
     pub outputs: Vec<Fmi3OutputSample>,
     /// Per-node master times after the step.
     pub current_times_s: Vec<f64>,
+}
+
+/// Result from one checkpointed predictor/corrector multi-FMU macro step.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fmi3PredictorCorrectorStepResult {
+    /// First pass from the previous-output cache.
+    pub predictor: Fmi3MultiFmuStepResult,
+    /// Second pass from the same macro-step start, seeded by predictor outputs.
+    pub corrector: Fmi3MultiFmuStepResult,
 }
 
 /// Minimal multi-FMU co-simulation master with typed connection routing.
@@ -1131,6 +1207,58 @@ impl<'a> Fmi3MultiFmuMaster<'a> {
         })
     }
 
+    /// Perform one checkpointed predictor/corrector multi-FMU macro step.
+    ///
+    /// The predictor pass runs from the previous-output cache. The master
+    /// then restores every FMU and master clock to the macro-step start,
+    /// seeds the connection cache from predictor outputs, and runs the
+    /// corrector pass. The final master state is the corrector state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FmiImportError`] when the input sample vector is invalid,
+    /// when any FMU-state snapshot/restore/free operation fails, or when
+    /// either underlying multi-FMU step fails.
+    pub fn step_predictor_corrector(
+        &mut self,
+        inputs: &[Fmi3InputSample],
+    ) -> Result<Fmi3PredictorCorrectorStepResult, FmiImportError> {
+        ensure_sample_count("FMU node input sample", self.masters.len(), inputs.len())?;
+
+        let start_times_s = self
+            .masters
+            .iter()
+            .map(Fmi3SingleFmuMaster::current_time_s)
+            .collect::<Vec<_>>();
+        let start_outputs = self.last_outputs.clone();
+        let mut start_states = self.capture_fmu_states()?;
+
+        let predictor = match self.step(inputs) {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self.restore_fmu_states(&start_states, &start_times_s);
+                let _ = self.free_fmu_states(&mut start_states);
+                self.last_outputs = start_outputs;
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = self.restore_fmu_states(&start_states, &start_times_s) {
+            let _ = self.free_fmu_states(&mut start_states);
+            self.last_outputs = start_outputs;
+            return Err(error);
+        }
+        self.free_fmu_states(&mut start_states)?;
+
+        self.last_outputs = predictor.outputs.clone();
+        let corrector = self.step(inputs)?;
+
+        Ok(Fmi3PredictorCorrectorStepResult {
+            predictor,
+            corrector,
+        })
+    }
+
     fn validate_output_samples(
         &self,
         outputs: &[Fmi3OutputSample],
@@ -1290,6 +1418,48 @@ impl<'a> Fmi3MultiFmuMaster<'a> {
 
         Ok(())
     }
+
+    fn capture_fmu_states(&self) -> Result<Vec<Fmi3FmuState>, FmiImportError> {
+        let mut states = Vec::with_capacity(self.masters.len());
+        for master in &self.masters {
+            match master.library.get_fmu_state(master.instance) {
+                Ok(state) => states.push(state),
+                Err(error) => {
+                    for (master, state) in self.masters.iter().zip(&mut states) {
+                        let _ = master.library.free_fmu_state(master.instance, state);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(states)
+    }
+
+    fn restore_fmu_states(
+        &mut self,
+        states: &[Fmi3FmuState],
+        times_s: &[f64],
+    ) -> Result<(), FmiImportError> {
+        ensure_sample_count("FMU-state snapshot", self.masters.len(), states.len())?;
+        ensure_sample_count(
+            "FMU-state clock snapshot",
+            self.masters.len(),
+            times_s.len(),
+        )?;
+        for ((master, state), time_s) in self.masters.iter_mut().zip(states).zip(times_s) {
+            master.library.set_fmu_state(master.instance, *state)?;
+            master.current_time_s = *time_s;
+        }
+        Ok(())
+    }
+
+    fn free_fmu_states(&self, states: &mut [Fmi3FmuState]) -> Result<(), FmiImportError> {
+        ensure_sample_count("FMU-state snapshot", self.masters.len(), states.len())?;
+        for (master, state) in self.masters.iter().zip(states) {
+            master.library.free_fmu_state(master.instance, state)?;
+        }
+        Ok(())
+    }
 }
 
 /// Error raised by the host FMI dynamic-library probe.
@@ -1392,6 +1562,14 @@ pub enum FmiImportError {
     /// A multi-FMU typed connection references an invalid node or variable.
     #[error("FMI multi-FMU connection is invalid: {reason}")]
     InvalidConnection {
+        /// Human-readable validation reason.
+        reason: String,
+    },
+    /// FMI Clock metadata cannot be scheduled by the scoped master.
+    #[error("FMI clock schedule for {clock} is invalid: {reason}")]
+    InvalidClockSchedule {
+        /// Clock name or scheduler field.
+        clock: String,
         /// Human-readable validation reason.
         reason: String,
     },
@@ -2152,6 +2330,13 @@ fn invalid_connection(reason: String) -> FmiImportError {
     FmiImportError::InvalidConnection { reason }
 }
 
+fn invalid_clock_schedule(clock: impl Into<String>, reason: String) -> FmiImportError {
+    FmiImportError::InvalidClockSchedule {
+        clock: clock.into(),
+        reason,
+    }
+}
+
 fn default_output_sample(plan: &Fmi3MasterPlan) -> Fmi3OutputSample {
     Fmi3OutputSample {
         float64: vec![0.0; plan.variables.float64_outputs.len()],
@@ -2165,6 +2350,74 @@ fn raw_value_references(bindings: &[Fmi3ValueReference]) -> Vec<Fmi3ValueReferen
         .iter()
         .map(|binding| binding.value_reference)
         .collect()
+}
+
+fn periodic_input_clock_activation(
+    clock: &Fmi3ClockBinding,
+    current_time_s: f64,
+) -> Result<Option<bool>, FmiImportError> {
+    if clock.causality != FmiVariableCausality::Input {
+        return Ok(None);
+    }
+
+    match clock.interval_variability {
+        FmiClockIntervalVariability::Constant
+        | FmiClockIntervalVariability::Fixed
+        | FmiClockIntervalVariability::Tunable => {
+            let interval_s =
+                parse_clock_decimal(clock, clock.interval_decimal.as_deref(), "intervalDecimal")?;
+            if interval_s <= 0.0 {
+                return Err(invalid_clock_schedule(
+                    clock.name.clone(),
+                    format!("intervalDecimal must be positive, got {interval_s}"),
+                ));
+            }
+            let shift_s = match clock.shift_decimal.as_deref() {
+                Some(shift) => parse_clock_decimal(clock, Some(shift), "shiftDecimal")?,
+                None => 0.0,
+            };
+            Ok(Some(clock_is_active_at(
+                current_time_s,
+                interval_s,
+                shift_s,
+            )))
+        }
+        FmiClockIntervalVariability::Changing
+        | FmiClockIntervalVariability::Countdown
+        | FmiClockIntervalVariability::Triggered => Ok(None),
+    }
+}
+
+fn parse_clock_decimal(
+    clock: &Fmi3ClockBinding,
+    value: Option<&str>,
+    field: &'static str,
+) -> Result<f64, FmiImportError> {
+    let value = value.ok_or_else(|| {
+        invalid_clock_schedule(clock.name.clone(), format!("{field} is required"))
+    })?;
+    let parsed = value.parse::<f64>().map_err(|source| {
+        invalid_clock_schedule(
+            clock.name.clone(),
+            format!("{field} {value:?} is not a valid finite f64: {source}"),
+        )
+    })?;
+    if !parsed.is_finite() {
+        return Err(invalid_clock_schedule(
+            clock.name.clone(),
+            format!("{field} must be finite, got {parsed}"),
+        ));
+    }
+    Ok(parsed)
+}
+
+fn clock_is_active_at(current_time_s: f64, interval_s: f64, shift_s: f64) -> bool {
+    if current_time_s < shift_s {
+        return false;
+    }
+    let phase = (current_time_s - shift_s) / interval_s;
+    let nearest_tick = phase.round();
+    (phase - nearest_tick).abs() <= 1.0e-9
 }
 
 fn continuable_status(
@@ -2572,6 +2825,65 @@ mod tests {
                 clock_references: vec![100],
             }]
         );
+    }
+
+    #[test]
+    fn single_fmu_master_publishes_periodic_input_clock_schedule() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let library_path = compile_fixture_library(temp.path());
+        let library = Fmi3DynamicLibrary::open(&library_path).expect("open fixture library");
+        let fmu_path = temp.path().join("clocked-step.fmu");
+        let model_description = br#"<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription fmiVersion="3.0" modelName="clocked">
+  <CoSimulation modelIdentifier="fixture"/>
+  <ModelVariables>
+    <Clock name="sample_clock" valueReference="100" causality="input" intervalVariability="constant" intervalDecimal="0.5" shiftDecimal="0.25"/>
+    <Float64 name="u" valueReference="10" causality="input"/>
+    <Float64 name="sampled_y" valueReference="20" causality="output" clocks="100"/>
+  </ModelVariables>
+</fmiModelDescription>
+"#;
+        write_stored_zip(
+            &fmu_path,
+            &[("modelDescription.xml", model_description.as_slice())],
+        )
+        .expect("write clocked fixture fmu");
+        let archive = FmuArchive::load(&fmu_path).expect("load fixture fmu");
+        let plan = Fmi3MasterPlan::from_archive(&archive, 0.5, Fmi3CouplingOrder::Jacobi)
+            .expect("build master plan");
+        let mut master = Fmi3SingleFmuMaster::new(&library, std::ptr::null_mut(), plan);
+
+        let first = master
+            .step(&Fmi3InputSample {
+                float64: vec![2.0],
+                int32: Vec::new(),
+                uint64: Vec::new(),
+            })
+            .expect("first clocked step");
+        assert_eq!(
+            library
+                .get_clock(std::ptr::null_mut(), &[100])
+                .expect("get clock"),
+            vec![false],
+            "shifted clock is inactive at t=0.0",
+        );
+        assert_eq!(first.current_time_s.to_bits(), 0.25_f64.to_bits());
+
+        let second = master
+            .step(&Fmi3InputSample {
+                float64: vec![3.0],
+                int32: Vec::new(),
+                uint64: Vec::new(),
+            })
+            .expect("second clocked step");
+        assert_eq!(
+            library
+                .get_clock(std::ptr::null_mut(), &[100])
+                .expect("get clock"),
+            vec![true],
+            "shifted clock activates at t=0.25",
+        );
+        assert_eq!(second.outputs.float64[0].to_bits(), 3.0_f64.to_bits());
     }
 
     #[test]
@@ -3031,6 +3343,79 @@ mod tests {
     }
 
     #[test]
+    fn multi_fmu_master_predictor_corrector_restores_then_corrects_jacobi_step() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let library_a_path = compile_named_fixture_library(temp.path(), "fixture_pc_a");
+        let library_b_path = compile_named_fixture_library(temp.path(), "fixture_pc_b");
+        let library_a = Fmi3DynamicLibrary::open(&library_a_path).expect("open fixture library A");
+        let library_b = Fmi3DynamicLibrary::open(&library_b_path).expect("open fixture library B");
+        let fmu_path = temp.path().join("fixture.fmu");
+        let archive = write_float64_fixture_fmu(&fmu_path);
+        let plan = Fmi3MasterPlan::from_archive(&archive, 0.5, Fmi3CouplingOrder::Jacobi)
+            .expect("build master plan");
+        let mut master = Fmi3MultiFmuMaster::with_initial_outputs(
+            vec![
+                Fmi3FmuNode::new(&library_a, std::ptr::null_mut(), plan.clone()),
+                Fmi3FmuNode::new(&library_b, std::ptr::null_mut(), plan),
+            ],
+            Fmi3CouplingOrder::Jacobi,
+            vec![
+                Fmi3OutputSample {
+                    float64: vec![1.0],
+                    int32: Vec::new(),
+                    uint64: Vec::new(),
+                },
+                Fmi3OutputSample {
+                    float64: vec![0.0],
+                    int32: Vec::new(),
+                    uint64: Vec::new(),
+                },
+            ],
+        )
+        .expect("build seeded multi-FMU master");
+        master
+            .add_float64_connection(Fmi3Float64Connection {
+                source_node: 0,
+                source_output: 0,
+                target_node: 1,
+                target_input: 0,
+            })
+            .expect("add connection");
+
+        let result = master
+            .step_predictor_corrector(&[
+                Fmi3InputSample {
+                    float64: vec![2.0],
+                    int32: Vec::new(),
+                    uint64: Vec::new(),
+                },
+                Fmi3InputSample {
+                    float64: vec![9.0],
+                    int32: Vec::new(),
+                    uint64: Vec::new(),
+                },
+            ])
+            .expect("step predictor/corrector multi-FMU master");
+
+        assert_eq!(
+            result.predictor.outputs[1].float64[0].to_bits(),
+            1.0_f64.to_bits(),
+            "predictor uses the previous-output cache",
+        );
+        assert_eq!(
+            result.corrector.outputs[1].float64[0].to_bits(),
+            2.0_f64.to_bits(),
+            "corrector uses predictor output from node 0",
+        );
+        assert_eq!(
+            result.corrector.current_times_s,
+            vec![0.25_f64, 0.25_f64],
+            "the corrector is restored to the macro-step start before stepping",
+        );
+        assert_eq!(master.last_outputs(), result.corrector.outputs.as_slice());
+    }
+
+    #[test]
     fn multi_fmu_master_rejects_invalid_float64_connection() {
         let temp = tempfile::tempdir().expect("tempdir");
         let library_path = compile_fixture_library(temp.path());
@@ -3211,6 +3596,7 @@ struct Snapshot {
     float_value_bits: u64,
     int_value: i32,
     uint_value: u64,
+    clock_value: bool,
 }
 
 struct FixtureInstance {
@@ -3466,6 +3852,7 @@ pub extern "C" fn fmi3GetFMUState(
         float_value_bits: FLOAT_VALUE_BITS.load(Ordering::SeqCst),
         int_value: INT_VALUE.load(Ordering::SeqCst),
         uint_value: UINT_VALUE.load(Ordering::SeqCst),
+        clock_value: CLOCK_VALUE.load(Ordering::SeqCst),
     });
     unsafe {
         *state = Box::into_raw(snapshot).cast();
@@ -3485,6 +3872,7 @@ pub extern "C" fn fmi3SetFMUState(
     FLOAT_VALUE_BITS.store(snapshot.float_value_bits, Ordering::SeqCst);
     INT_VALUE.store(snapshot.int_value, Ordering::SeqCst);
     UINT_VALUE.store(snapshot.uint_value, Ordering::SeqCst);
+    CLOCK_VALUE.store(snapshot.clock_value, Ordering::SeqCst);
     FMI3_OK
 }
 

@@ -2,7 +2,7 @@
 //!
 //! First-order linear actuator with rate clamp, position
 //! saturation, deadband, and fixed-depth circular-buffer pure
-//! delay. The four canonical [`EffectorFault`] modes are honoured
+//! delay. The canonical [`EffectorFault`] modes are honoured
 //! per Stevens & Lewis 2015 §10.4.2 *Actuator Models* and Patton,
 //! Frank & Clark 1989 *Fault Diagnosis in Dynamic Systems*.
 //!
@@ -18,6 +18,8 @@
 //!      `[min, max]`).
 //!    - `ReducedRate{factor}` → use a scaled `max_rate_per_s` for
 //!      the rate clamp this step.
+//!    - `Oscillatory{...}` → add a deterministic sinusoidal command
+//!      offset before the normal actuator path.
 //! 3. Push the latest command on the latency buffer back; pop the
 //!    front to get the `delayed_cmd` fed into the actuator.
 //! 4. Apply deadband: if `|delayed_cmd - actual| < deadband`, hold.
@@ -53,6 +55,8 @@ pub struct LinearActuator {
     last_state: EffectorState,
     /// Active fault.
     fault: Option<EffectorFault>,
+    /// Local elapsed time for deterministic oscillatory faults.
+    fault_elapsed_s: f64,
 }
 
 impl LinearActuator {
@@ -105,6 +109,7 @@ impl LinearActuator {
             tau_s,
             last_state,
             fault: None,
+            fault_elapsed_s: 0.0,
         })
     }
 
@@ -153,6 +158,27 @@ impl LinearActuator {
                     });
                 }
             }
+            EffectorFault::Oscillatory {
+                amplitude,
+                frequency_hz,
+                phase_rad,
+            } => {
+                if !amplitude.is_finite() || amplitude < 0.0 {
+                    return Err(EffectorError::InvalidFault {
+                        reason: "Oscillatory.amplitude must be finite and non-negative",
+                    });
+                }
+                if !frequency_hz.is_finite() || frequency_hz <= 0.0 {
+                    return Err(EffectorError::InvalidFault {
+                        reason: "Oscillatory.frequency_hz must be finite and strictly positive",
+                    });
+                }
+                if !phase_rad.is_finite() {
+                    return Err(EffectorError::InvalidFault {
+                        reason: "Oscillatory.phase_rad must be finite",
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -197,11 +223,24 @@ impl ControlEffector for LinearActuator {
         if !cmd.is_finite() {
             return Err(EffectorError::NonFiniteCommand { value: cmd });
         }
+        let effective_cmd = if let Some(fault) = self.fault {
+            if let Some(offset) = fault.oscillatory_offset(self.fault_elapsed_s) {
+                let value = cmd + offset;
+                if !value.is_finite() {
+                    return Err(EffectorError::NonFiniteCommand { value });
+                }
+                self.fault_elapsed_s += got_s;
+                value
+            } else {
+                cmd
+            }
+        } else {
+            cmd
+        };
 
         // Step 2: fault dispatch — handle Jam / Hardover / Runaway
         // up-front because they short-circuit the linear-actuator
-        // path. ReducedRate is applied later by scaling the
-        // rate clamp.
+        // path. ReducedRate and Oscillatory fall through.
         if let Some(fault) = self.fault {
             match fault {
                 EffectorFault::Jam { at } => {
@@ -257,17 +296,20 @@ impl ControlEffector for LinearActuator {
                     // Falls through to the linear-actuator path with
                     // a scaled max-rate.
                 }
+                EffectorFault::Oscillatory { .. } => {
+                    // Falls through with the sinusoidal command offset applied.
+                }
             }
         }
 
         // Step 3: latency buffer.
         let delayed_cmd = if self.latency_buffer.is_empty() {
-            cmd
+            effective_cmd
         } else {
-            self.latency_buffer.push_back(cmd);
+            self.latency_buffer.push_back(effective_cmd);
             // SAFETY: we just pushed to a non-empty (capacity-pinned)
             // buffer; pop is guaranteed to return Some.
-            self.latency_buffer.pop_front().unwrap_or(cmd)
+            self.latency_buffer.pop_front().unwrap_or(effective_cmd)
         };
 
         // Step 4: deadband.
@@ -310,7 +352,7 @@ impl ControlEffector for LinearActuator {
         self.actual = self.actual.clamp(self.limits.min, self.limits.max);
 
         let state = EffectorState {
-            commanded: cmd,
+            commanded: effective_cmd,
             actual: self.actual,
             saturated,
             rate_limited,
@@ -447,6 +489,29 @@ mod tests {
         assert!((state.actual - 0.349).abs() < 1e-9);
         assert!(state.saturated);
         assert!(matches!(state.fault, Some(EffectorFault::Jam { .. })));
+    }
+
+    #[test]
+    fn oscillatory_fault_adds_deterministic_command_offset() {
+        let limits = EffectorLimits {
+            max_rate_per_s: 1_000.0,
+            ..make_limits()
+        };
+        let mut a =
+            LinearActuator::new(EffectorId::from_path("test.osc"), limits, dt(), 0.0, 0.0).unwrap();
+        a.inject_fault(EffectorFault::Oscillatory {
+            amplitude: 0.1,
+            frequency_hz: 2.0,
+            phase_rad: std::f64::consts::FRAC_PI_2,
+        })
+        .unwrap();
+        let state = a.step(0.0, dt()).unwrap();
+        assert!((state.commanded - 0.1).abs() <= 1.0e-12);
+        assert!((state.actual - 0.1).abs() <= 1.0e-12);
+        assert!(matches!(
+            state.fault,
+            Some(EffectorFault::Oscillatory { .. })
+        ));
     }
 
     #[test]

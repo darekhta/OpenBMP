@@ -11,11 +11,15 @@
 //! - [`EffectorLimits`] — position min/max, max rate, deadband,
 //!   pure-delay latency.
 //! - [`EffectorState`] — per-step output snapshot.
-//! - [`EffectorFault`] — four canonical fault modes (`Jam`,
-//!   `Runaway`, `ReducedRate`, `Hardover`).
+//! - [`EffectorFault`] — five canonical fault modes (`Jam`,
+//!   `Runaway`, `ReducedRate`, `Hardover`, `Oscillatory`).
 //! - [`linear::LinearActuator`] — first-order linear actuator with
 //!   rate clamp + position saturation + deadband + fixed-depth
 //!   circular-buffer pure delay.
+//! - [`second_order::SecondOrderServo`] — finite-bandwidth second-order
+//!   servo with rate/acceleration limiting and backlash.
+//! - [`rcs::RcsMinimumImpulseBit`] and [`rcs::PwpfModulator`] —
+//!   deterministic RCS minimum-impulse-bit and PWPF pulse primitives.
 //!
 //! # Determinism
 //!
@@ -34,8 +38,20 @@
 //! contract.
 
 pub mod linear;
+pub mod rcs;
+pub mod second_order;
 
 pub use linear::LinearActuator;
+pub use rcs::{
+    PulsePolarity, PwpfModulator, PwpfParams, PwpfStep, RcsBlowdownParams, RcsCoupledAllocation,
+    RcsCoupledAllocator, RcsCoupledThrusterPulse, RcsError, RcsMinimumImpulseBit, RcsPulse,
+    RcsPulseEffector, RcsPulseEffectorParams, RcsThrusterBankEffector,
+    RcsThrusterBankEffectorParams, RcsThrusterBankPulse, RcsThrusterConfig,
+};
+pub use second_order::{
+    RateLimitBacklashDescribingFunction, SecondOrderServo, SecondOrderServoParams,
+    rate_limit_backlash_describing_function,
+};
 
 use openbmp_core::{Duration, EffectorId};
 use thiserror::Error;
@@ -142,7 +158,8 @@ impl EffectorState {
 }
 
 /// Canonical fault modes drawn from Patton, Frank & Clark 1989
-/// *Fault Diagnosis in Dynamic Systems*.
+/// *Fault Diagnosis in Dynamic Systems* plus deterministic sinusoidal
+/// injection for oscillatory actuator faults.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EffectorFault {
     /// Effector locked at `at`, ignoring all subsequent commands.
@@ -168,6 +185,36 @@ pub enum EffectorFault {
         /// Target deflection.
         to: f64,
     },
+    /// Add a deterministic sinusoidal offset to the incoming command before
+    /// normal actuator dynamics, saturation, and quantization.
+    Oscillatory {
+        /// Sinusoid amplitude in effector command units.
+        amplitude: f64,
+        /// Sinusoid frequency, Hz.
+        frequency_hz: f64,
+        /// Initial phase, rad.
+        phase_rad: f64,
+    },
+}
+
+impl EffectorFault {
+    /// Deterministic command offset for [`EffectorFault::Oscillatory`].
+    #[must_use]
+    pub fn oscillatory_offset(self, elapsed_s: f64) -> Option<f64> {
+        match self {
+            Self::Oscillatory {
+                amplitude,
+                frequency_hz,
+                phase_rad,
+            } => Some(
+                amplitude * (phase_rad + std::f64::consts::TAU * frequency_hz * elapsed_s).sin(),
+            ),
+            Self::Jam { .. }
+            | Self::Runaway { .. }
+            | Self::ReducedRate { .. }
+            | Self::Hardover { .. } => None,
+        }
+    }
 }
 
 /// Errors produced by effector construction or step evaluation.
@@ -201,7 +248,7 @@ pub enum EffectorError {
     },
     /// A fault payload is invalid (e.g. `Jam{at}` outside `[min, max]`,
     /// `ReducedRate{factor}` outside `[0, 1]`, `Runaway{rate}` not
-    /// finite).
+    /// finite, or invalid oscillatory amplitude/frequency/phase).
     #[error("effector fault invalid: {reason}")]
     InvalidFault {
         /// Human-readable reason.
@@ -235,6 +282,24 @@ pub trait ControlEffector: std::fmt::Debug + Send + Sync {
 
     /// Return the configured limits.
     fn limits(&self) -> EffectorLimits;
+
+    /// Apply per-thruster feed pressure scales before the next step.
+    ///
+    /// Non-RCS effectors ignore the call; physical RCS banks use the scales to
+    /// couple live tank pressure into per-thruster nominal thrust.
+    fn set_rcs_thruster_feed_pressure_scales(
+        &mut self,
+        _scales: &[f64],
+    ) -> Result<(), EffectorError> {
+        Ok(())
+    }
+
+    /// Physical RCS bank pulses emitted by the most recent step.
+    ///
+    /// Non-RCS effectors return an empty slice.
+    fn rcs_last_thruster_pulses(&self) -> &[RcsThrusterBankPulse] {
+        &[]
+    }
 
     /// Inject a fault. Replaces any prior fault after validating the
     /// fault payload against this effector's limits.

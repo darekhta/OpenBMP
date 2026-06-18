@@ -180,6 +180,10 @@ produces an actuator command" — range-safety post-processing only. `openbmp-mc
 should generalise *this* interface (sample table + summary writer + scenario
 gate), not the orbit test's bespoke shape. The footprint MC is the proof that
 the project already has the right boundary; the new crate makes it reusable.
+It now also carries runner-gathered upstream UQ sources on the footprint report
+and feeds them through the shared campaign credibility helper, so
+scenario-declared discipline uncertainty can produce footprint MC credibility
+evidence without a separate campaign sidecar.
 
 ### 2.5 The UQ error budget — L1 substrate plus MC campaign wiring
 
@@ -918,9 +922,10 @@ reviewable commit (`13` §5).
   tested under `REQ-UQ-001` / `V-UQ-001`. The generic scalar
   `openbmp mc summarize --uq-toml ... --credibility-floor ...
   --credibility-report-md ...`, `openbmp footprint-mc`, and
-  `openbmp mc propulsion-faults` paths now consume that substrate, emit
-  deterministic credibility reports, and fail-close below the requested floor
-  under `REQ-UQ-002` / `V-UQ-002`. Footprint MC also supports the scenario-owned
+  `openbmp mc propulsion-faults` paths now consume that substrate through the
+  shared campaign credibility helper, emit deterministic credibility reports,
+  and fail-close below the requested floor under `REQ-UQ-002` / `V-UQ-002`.
+  Footprint MC also supports the scenario-owned
   `[landing_footprint.monte_carlo.uq]` manifest table, and propulsion-fault
   campaigns support the fault-library `[uq]` manifest table. Remaining work:
   require future MC drivers to emit the same report automatically.
@@ -1020,6 +1025,10 @@ reviewable commit (`13` §5).
   `REQ-MC-011` / `V-MC-011`. `openbmp verify-order --method all` reports
   RK4 `p≈4.05/4.03` and DOP853 `p≈8.17/8.13` on the current step schedule,
   with deterministic TOML evidence available via `--output-toml`.
+  `openbmp verify-order --campaign-cases N` now runs a bounded deterministic
+  MMS lambda sweep as method-case campaign evidence, writes each case id and
+  source-term coefficient into the same TOML report, and fails closed for empty
+  or oversized campaign requests.
 - **approach:** §3.2.6 (MMS source-term derivation; `h, h/2, h/4` log-ratio; GCI with `Fs=1.25`).
 - **acceptance:**
   - RK4 observed `p ∈ [3.8, 4.2]`; DOP853 observed `p ∈ [7.5, 8.5]` (tolerance tables, `research`).
@@ -1066,12 +1075,20 @@ reviewable commit (`13` §5).
   <path> --pack strict|leo-research` writes compare-telemetry mappings for the
   exported CSV columns, and the strict pack round-trips through
   `compare-telemetry` against an OpenBMP-generated reference.
+  The LOCAL-only workflow slice is implemented under `REQ-MC-017` /
+  `V-MC-017`: `openbmp reconstruct local-workflow <scenario.toml>
+  --output-toml <path> --trajectory-csv <path> --mapping-toml <path>
+  --external-reference-csv <local.csv> --pack leo-research` writes a
+  deterministic manifest containing the export, mapping, and
+  `compare-telemetry` commands plus explicit guardrails that the external
+  reference remains local-only, is not read by the writer, is not copied into
+  the repository, and is not a flight or targeting input.
   The current closed-loop attitude-hold scenario is useful diagnostic input but
   not a validation claim; its mag NIS and some NEES channels are visibly
   out-of-family. Remaining WP-11.6 work: expose/full-consume full covariance and
   transition histories for real-FC RTS smoothing, add actual external
-  tool-specific code-to-code evidence around the export/compare flow, and keep
-  open-telemetry BET comparisons LOCAL-only.
+  tool-specific code-to-code evidence around the export/compare flow, and run
+  any open-telemetry BET comparisons only through the LOCAL workflow.
 - **approach:** §3.2.7 (RTS recursion; batch GN normal equations via `argmin`; NEES/NIS chi-square bounds). Open-telemetry ingest LOCAL-only (§8, §6b).
 - **acceptance:**
   - NEES/NIS on a linear-Gaussian truth (known `Q,R`): in-bounds fraction ∈ [0.93, 0.97] (tolerance table, `research`).
@@ -1096,14 +1113,23 @@ reviewable commit (`13` §5).
   order when applying an optional correlation matrix. Crate-level helpers now
   map doc-02 structural bending, doc-03 aerodynamic coefficient, doc-04
   aerothermal model, and doc-05 thermochemistry `c_star_efficiency` bands into
-  epistemic budget sources with credibility evidence. `EngineRack` now gathers
-  resolved thermochemical liquid-engine `c_star_efficiency` bands into upstream
-  UQ sources, and `RunOutcome.upstream_uq` exposes the gathered budget without
-  changing nominal engine performance. Sampled propulsion-fault Monte-Carlo
-  campaigns now merge runner-gathered upstream UQ into campaign credibility
-  reports before final CSV evidence is written. Generalized MC consumption and
-  runner gathering for the remaining structural/aero/aerothermal bands are
-  still future work.
+  epistemic budget sources with credibility evidence. `[vehicle.bending.uq]`
+  can declare structural frequency evidence, `[aero.uq]` can declare
+  coefficient evidence, `[aerothermal.uq]` can declare stagnation `q_conv_w_m2`
+  evidence, `StructuralRack`/aero/aerothermal runner helpers gather those
+  sources, `EngineRack` gathers resolved thermochemical liquid-engine
+  `c_star_efficiency` bands, and `RunOutcome.upstream_uq` exposes the gathered
+  budget without changing nominal dynamics or engine performance. The MC CLI
+  now exposes a typed `CampaignCredibilityInputs` contract plus a reusable
+  `evaluate_campaign_credibility_contract` helper that evaluates optional
+  sidecar budgets plus runner-gathered upstream UQ budgets, preserving
+  upstream-only correlation matrices and appending sidecar/upstream blocks as
+  independent sources when both are present. Scalar `openbmp mc summarize` uses
+  the same contract for sidecar-only credibility; sampled propulsion-fault
+  Monte-Carlo campaigns use it before final CSV evidence is written; and
+  `openbmp footprint-mc` uses it with the footprint report's upstream UQ budget
+  before final sample/summary outputs are accepted. Future MC campaign drivers
+  still need to keep this same typed contract.
 - **goal:** Close the loop: consume the per-entry bias/random margins the aero (`03`), aerothermal (`04`), propulsion (`05`), and structural (`02`) database objects produce, mapping them into the source-tagged error budget as epistemic model-form bands, so a campaign's credibility report reflects the *actual* upstream uncertainty rather than hand-set figures.
 - **fidelity_tier:** T4
 - **depends_on:** [WP-11.2, WP-11.3]
@@ -1130,8 +1156,12 @@ reviewable commit (`13` §5).
   through `run_scalar_campaign_parallel` / REQ-MC-008 and scalar JSON
   checkpoint/resume through `run_scalar_campaign_resumable` plus
   `openbmp mc resume-scalar` / REQ-MC-009. Offline footprint MC also supports
-  checkpoint/resume via `openbmp footprint-mc --checkpoint-json`; campaign-scale
-  cross-arch byte identity remains open.
+  checkpoint/resume via `openbmp footprint-mc --checkpoint-json`. `openbmp-mc`
+  now has a scalar campaign report byte encoder that serializes samples,
+  reducer state, success stats, and convergence trace as explicit
+  f64-bit-pattern bytes, checks serial vs worker-pool identity, and pins a
+  report digest that the native aarch64 determinism job runs; full campaign
+  cross-arch byte-diff output remains open.
 - **fidelity_tier:** T5
 - **depends_on:** [WP-11.0, WP-11.1]
 - **new_crates:** [] (the real-time/compute substrate is owned by `12-determinism-realtime-and-compute.md`)

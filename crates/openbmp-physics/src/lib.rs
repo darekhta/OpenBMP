@@ -11,7 +11,7 @@
 //!   `WGS84_OMEGA_RAD_S`).
 //! * [`gravity`] — `GravityModel` trait + `ConstantGravity`,
 //!   `PointMassGravity`, `J2Gravity`, `TesseralGravity`,
-//!   `FiniteDifferencePinesGravity`, `Egm2008ZonalGravity`,
+//!   `FiniteDifferencePinesGravity`, `EarthFixedGravity`, `Egm2008ZonalGravity`,
 //!   `RelativisticCorrection`, plus standard-gravity, J2, SRP, and EGM2008
 //!   zonal-harmonic constants.
 //! * [`atmosphere`] — `AtmosphereModel` trait + `IsothermalAtmosphere`,
@@ -58,6 +58,8 @@ extern crate alloc;
 pub mod atmosphere;
 #[cfg(feature = "std")]
 pub mod ephemeris;
+mod erfa_dtdb_data;
+mod erfa_nut00a_data;
 pub mod error;
 #[cfg(feature = "std")]
 pub mod external_reference;
@@ -98,24 +100,35 @@ pub use external_reference::{
     EnvelopeBounds, ExternalReferencePackage, ProvenanceBlock, ReferencePackageKind, ReferenceQuery,
 };
 pub use frames::{
-    ARCSECOND_TO_RAD, EARTH_ROTATION_ANGLE_RATE_RAD_S, EarthOrientationSample,
-    EarthOrientationTable, FrameContext, FrameProfile, FrameTransform, LocalGeodeticOrigin,
-    WGS84_A_M, WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING, WGS84_INV_FLATTENING, WGS84_MU_M3_S2,
-    WGS84_OMEGA_RAD_S,
+    ARCSECOND_TO_RAD, CioFrameModel, CioFrameSample, CioXysCoordinates, CioXysSample, CioXysTable,
+    EARTH_ROTATION_ANGLE_RATE_RAD_S, EarthOrientationSample, EarthOrientationTable, FrameContext,
+    FrameProfile, FrameTransform, FukushimaWilliamsAngles, LocalGeodeticOrigin,
+    StationaryRotatingFrameImuTruth, TT_MINUS_TAI_S, TimeScaleBridge, WGS84_A_M,
+    WGS84_ECCENTRICITY_SQUARED, WGS84_FLATTENING, WGS84_INV_FLATTENING, WGS84_MU_M3_S2,
+    WGS84_OMEGA_RAD_S, bias_precession_nutation_matrix_iau2006a,
+    bias_precession_nutation_matrix_iau2006a_parts, cio_celestial_to_intermediate_matrix,
+    cio_celestial_to_terrestrial_matrix, cio_locator_s06, cio_locator_s06_parts, cio_xys_iau2006a,
+    cio_xys_iau2006a_parts, cip_xy_from_bias_precession_nutation_matrix,
+    earth_rotation_angle_iau2000, earth_rotation_angle_iau2000_parts,
+    fukushima_williams_angles_iau2006, fukushima_williams_angles_iau2006_parts,
+    fukushima_williams_matrix, mean_obliquity_iau2006, mean_obliquity_iau2006_parts,
+    nutation_angles_iau2000a, nutation_angles_iau2000a_parts, nutation_angles_iau2006a,
+    nutation_angles_iau2006a_parts, polar_motion_matrix_iau2000,
+    stationary_rotating_frame_imu_truth_eci, tio_locator_sp00, tio_locator_sp00_parts,
 };
 pub use gravity::{
     ConstantGravity, DegreeTwoTesseralCoefficients, EGM2008_J3, EGM2008_J4, EGM2008_J5, EGM2008_J6,
-    EGM2008_MAX_DEGREE, Egm2008ZonalGravity, FiniteDifferencePinesGravity, GottliebPotentialSum,
-    GravityModel, HARMONIC_LONGITUDE_MAX_ORDER, HARMONIC_SYNTHESIS_EGM2008_DEGREE_70,
-    HARMONIC_SYNTHESIS_EGM2008_DEGREE_120, HARMONIC_SYNTHESIS_EGM2008_DEGREE_360,
-    HarmonicLongitudeTrigonometry, HarmonicSynthesisPlan, HarmonicSynthesisTier,
-    HarmonicTruncation, J2Gravity, NormalizedHarmonicCoefficient, NormalizedHarmonicField,
-    NormalizedHarmonicFieldIter, PINES_LEGENDRE_MAX_DEGREE, PinesLegendreTable,
-    PinesLongitudePolynomials, PinesPotentialSum, PinesSynthesisPoint, PointMassGravity,
-    RelativisticCorrection, SOLAR_RADIATION_PRESSURE_1_AU_N_M2, SPEED_OF_LIGHT_M_S,
-    STANDARD_GRAVITY_M_S2, TESSERAL_GRAVITY_MAX_DEGREE, TESSERAL_GRAVITY_MAX_ORDER,
-    TesseralGravity, TideSystem, WGS84_J2, fully_normalized_to_unnormalized_scale,
-    standard_down_z_eci_m_s2,
+    EGM2008_MAX_DEGREE, EarthFixedGravity, Egm2008ZonalGravity, FiniteDifferencePinesGravity,
+    GottliebPotentialSum, GravityModel, HARMONIC_LONGITUDE_MAX_ORDER,
+    HARMONIC_SYNTHESIS_EGM2008_DEGREE_70, HARMONIC_SYNTHESIS_EGM2008_DEGREE_120,
+    HARMONIC_SYNTHESIS_EGM2008_DEGREE_360, HarmonicLongitudeTrigonometry, HarmonicSynthesisPlan,
+    HarmonicSynthesisTier, HarmonicTruncation, J2Gravity, NormalizedHarmonicCoefficient,
+    NormalizedHarmonicField, NormalizedHarmonicFieldIter, PINES_LEGENDRE_MAX_DEGREE,
+    PinesLegendreTable, PinesLongitudePolynomials, PinesPotentialSum, PinesSynthesisPoint,
+    PointMassGravity, RelativisticCorrection, SOLAR_RADIATION_PRESSURE_1_AU_N_M2,
+    SPEED_OF_LIGHT_M_S, STANDARD_GRAVITY_M_S2, TESSERAL_GRAVITY_MAX_DEGREE,
+    TESSERAL_GRAVITY_MAX_ORDER, TesseralGravity, TideSystem, WGS84_J2,
+    fully_normalized_to_unnormalized_scale, standard_down_z_eci_m_s2,
 };
 #[cfg(feature = "std")]
 pub use gravity::{

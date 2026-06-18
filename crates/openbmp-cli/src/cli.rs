@@ -65,6 +65,9 @@ pub enum Command {
         /// Integrator method to verify.
         #[arg(long = "method", value_enum, default_value_t = VerifyOrderMethod::All)]
         method: VerifyOrderMethod,
+        /// Number of deterministic MMS campaign cases to run.
+        #[arg(long = "campaign-cases", default_value_t = 1)]
+        campaign_cases: u32,
         /// Optional deterministic TOML evidence output path.
         #[arg(long = "output-toml")]
         output_toml: Option<PathBuf>,
@@ -240,6 +243,26 @@ pub enum ReconstructCommand {
         output_toml: PathBuf,
         /// Tolerance pack to write.
         #[arg(long = "pack", value_enum, default_value_t = TrajectoryTolerancePack::Strict)]
+        pack: TrajectoryTolerancePack,
+    },
+    /// Write a LOCAL-only BET/code-to-code comparison workflow manifest.
+    LocalWorkflow {
+        /// Scenario TOML file to export from OpenBMP.
+        scenario: PathBuf,
+        /// Deterministic workflow TOML output path.
+        #[arg(long = "output-toml")]
+        output_toml: PathBuf,
+        /// Local OpenBMP trajectory CSV path to produce with export-trajectory.
+        #[arg(long = "trajectory-csv")]
+        trajectory_csv: PathBuf,
+        /// Local compare-telemetry mapping TOML path to produce.
+        #[arg(long = "mapping-toml")]
+        mapping_toml: PathBuf,
+        /// Local external reference CSV path. This file is not read or copied.
+        #[arg(long = "external-reference-csv")]
+        external_reference_csv: PathBuf,
+        /// Tolerance pack to reference in the workflow.
+        #[arg(long = "pack", value_enum, default_value_t = TrajectoryTolerancePack::LeoResearch)]
         pack: TrajectoryTolerancePack,
     },
 }

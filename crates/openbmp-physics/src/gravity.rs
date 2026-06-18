@@ -41,7 +41,7 @@ use openbmp_core::{Eci, Position3, SimTime, Velocity3};
 #[cfg(feature = "std")]
 use crate::ephemeris::{ASTRONOMICAL_UNIT_M, CelestialBody, EphemerisModel};
 use crate::error::PhysicsError;
-use crate::frames::{WGS84_A_M, WGS84_MU_M3_S2};
+use crate::frames::{FrameContext, WGS84_A_M, WGS84_MU_M3_S2};
 
 /// WGS84 unnormalised J2 zonal-harmonic coefficient.
 ///
@@ -89,6 +89,82 @@ pub trait GravityModel {
         position_eci: Position3<Eci>,
         time: SimTime,
     ) -> Result<Vector3<f64>, PhysicsError>;
+}
+
+// ---------------------------------------------------------------------
+// EarthFixedGravity
+// ---------------------------------------------------------------------
+
+/// Frame adapter for gravity models whose coefficients are Earth-fixed.
+///
+/// The wrapped model is evaluated in body-fixed axes after rotating the query
+/// position from ECI to ECEF through a [`FrameContext`]. Its acceleration output
+/// is then rotated back to ECI. This is the force-stack bridge for static
+/// harmonic gravity models such as [`TesseralGravity`] and
+/// [`FiniteDifferencePinesGravity`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct EarthFixedGravity<G> {
+    body_fixed: G,
+    frame: FrameContext,
+}
+
+impl<G> EarthFixedGravity<G> {
+    /// Construct an Earth-fixed gravity adapter.
+    #[must_use]
+    pub const fn new(body_fixed: G, frame: FrameContext) -> Self {
+        Self { body_fixed, frame }
+    }
+
+    /// Wrapped body-fixed gravity model.
+    #[must_use]
+    pub const fn body_fixed_model(&self) -> &G {
+        &self.body_fixed
+    }
+
+    /// Frame context used to rotate between ECI and ECEF.
+    #[must_use]
+    pub const fn frame_context(&self) -> &FrameContext {
+        &self.frame
+    }
+
+    /// Split the adapter into its wrapped model and frame context.
+    #[must_use]
+    pub fn into_inner(self) -> (G, FrameContext) {
+        (self.body_fixed, self.frame)
+    }
+}
+
+impl<G> GravityModel for EarthFixedGravity<G>
+where
+    G: GravityModel,
+{
+    fn gravity_eci_m_s2(
+        &self,
+        position_eci: Position3<Eci>,
+        time: SimTime,
+    ) -> Result<Vector3<f64>, PhysicsError> {
+        let position_ecef = self.frame.eci_to_ecef_position(time, position_eci);
+        if !position_ecef.is_finite() {
+            return Err(PhysicsError::NonFinite {
+                reason: "Earth-fixed gravity frame transform produced non-finite ECEF position",
+            });
+        }
+        let acceleration_ecef = self
+            .body_fixed
+            .gravity_eci_m_s2(Position3::<Eci>::from_vector(position_ecef.vector), time)?;
+        if !acceleration_ecef.iter().all(|value| value.is_finite()) {
+            return Err(PhysicsError::NonFinite {
+                reason: "Earth-fixed gravity body-fixed model produced non-finite acceleration",
+            });
+        }
+        let acceleration_eci = self.frame.ecef_to_eci_vector(time, acceleration_ecef);
+        if !acceleration_eci.iter().all(|value| value.is_finite()) {
+            return Err(PhysicsError::NonFinite {
+                reason: "Earth-fixed gravity frame transform produced non-finite ECI acceleration",
+            });
+        }
+        Ok(acceleration_eci)
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1665,6 +1741,23 @@ pub enum HarmonicSynthesisTier {
 }
 
 impl HarmonicSynthesisTier {
+    /// Parse a scenario-facing EGM2008 tier tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if `tag` is not one of
+    /// `degree70`, `degree120`, or `degree360`.
+    pub fn from_egm2008_tag(tag: &str) -> Result<Self, PhysicsError> {
+        match tag {
+            "degree70" | "egm2008-degree70" => Ok(Self::Egm2008Degree70),
+            "degree120" | "egm2008-degree120" => Ok(Self::Egm2008Degree120),
+            "degree360" | "egm2008-degree360" => Ok(Self::Egm2008Degree360),
+            _ => Err(PhysicsError::InvalidParameter {
+                reason: "unsupported EGM2008 harmonic synthesis tier",
+            }),
+        }
+    }
+
     /// Inclusive maximum harmonic degree for this tier.
     #[must_use]
     pub const fn degree(&self) -> usize {
@@ -3448,6 +3541,41 @@ impl FiniteDifferencePinesGravity {
         )
     }
 
+    /// Construct directly from an ICGEM `.gfc` coefficient block using a named
+    /// EGM2008 synthesis tier.
+    ///
+    /// This is the tier-facing companion to [`Self::new_from_icgem_gfc_str`].
+    /// It parses the GFC block to the tier's degree/order envelope, strips the
+    /// central `Cbar00` term, and validates the requested tier against the
+    /// parsed field and bounded scratch tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError::InvalidParameter`] if the GFC input is malformed,
+    /// if the source header does not cover `tier`, or if the tier exceeds the
+    /// checked synthesis envelopes.
+    #[cfg(feature = "std")]
+    pub fn new_from_icgem_gfc_str_with_synthesis_tier(
+        input: &str,
+        tier: HarmonicSynthesisTier,
+        finite_difference_step_m: f64,
+    ) -> Result<Self, PhysicsError> {
+        let parsed = NormalizedHarmonicField::from_icgem_gfc_str_with_metadata(
+            input,
+            tier.degree(),
+            tier.order(),
+        )?;
+        let mu_m3_s2 = parsed.gravity_constant_m3_s2();
+        let reference_radius_m = parsed.reference_radius_m();
+        Self::new_with_synthesis_tier(
+            mu_m3_s2,
+            reference_radius_m,
+            parsed.into_field().without_central_term(),
+            tier,
+            finite_difference_step_m,
+        )
+    }
+
     /// Construct from a pre-resolved harmonic synthesis plan.
     ///
     /// The plan is revalidated against `field` so callers cannot accidentally
@@ -4382,8 +4510,14 @@ impl GravityModel for Egm2008ZonalGravity {
 )]
 mod tests {
     use super::*;
-    use crate::ephemeris::{CelestialBody, LowPrecisionSunMoonEphemeris};
+    use crate::ephemeris::{CelestialBody, J2000_JULIAN_DATE, LowPrecisionSunMoonEphemeris};
+    use crate::frames::{
+        ARCSECOND_TO_RAD, EarthOrientationSample, EarthOrientationTable, FrameContext,
+    };
     use approx::assert_abs_diff_eq;
+
+    const EGM2008_GFC_MU_M3_S2: f64 = 0.3986004415e15;
+    const EGM2008_GFC_RADIUS_M: f64 = 0.63781363e7;
 
     fn at_x(x: f64) -> Position3<Eci> {
         Position3::new(x, 0.0, 0.0)
@@ -4391,6 +4525,19 @@ mod tests {
 
     fn at_z(z: f64) -> Position3<Eci> {
         Position3::new(0.0, 0.0, z)
+    }
+
+    fn synthetic_order_two_tesseral() -> TesseralGravity {
+        let coefficients = DegreeTwoTesseralCoefficients::new(
+            -WGS84_J2,
+            2.0e-7,
+            -3.0e-7,
+            1.0e-7,
+            -2.0e-7,
+            TideSystem::TideFree,
+        )
+        .unwrap();
+        TesseralGravity::new(WGS84_MU_M3_S2, WGS84_A_M, coefficients, 2, 2).unwrap()
     }
 
     fn load_wgs84_normalized_degree_two_fixture() -> NormalizedDegreeTwoTesseralCoefficients {
@@ -4510,6 +4657,13 @@ mod tests {
         ))
     }
 
+    fn egm2008_degree10_icgem_fixture() -> &'static str {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../data/gravity/egm2008-degree10-normalized-icgem-v1.gfc"
+        ))
+    }
+
     fn load_synthetic_icgem_degree4_field_fixture(
         max_degree: usize,
         max_order: usize,
@@ -4520,6 +4674,18 @@ mod tests {
             max_order,
         )
         .expect("finite synthetic ICGEM normalized field")
+    }
+
+    fn load_egm2008_degree10_icgem_field_fixture(
+        max_degree: usize,
+        max_order: usize,
+    ) -> NormalizedHarmonicField {
+        NormalizedHarmonicField::from_icgem_gfc_str(
+            egm2008_degree10_icgem_fixture(),
+            max_degree,
+            max_order,
+        )
+        .expect("finite EGM2008 degree-10 ICGEM normalized field")
     }
 
     #[derive(Copy, Clone, Debug)]
@@ -5056,6 +5222,52 @@ mod tests {
     }
 
     #[test]
+    fn tesseral_normalized_harmonic_field_parses_egm2008_degree10_icgem_pin() {
+        let parsed = NormalizedHarmonicField::from_icgem_gfc_str_with_metadata(
+            egm2008_degree10_icgem_fixture(),
+            10,
+            10,
+        )
+        .unwrap();
+        let field = parsed.field();
+        let field_from_plain_parser = load_egm2008_degree10_icgem_field_fixture(10, 10);
+
+        assert_eq!(
+            parsed.gravity_constant_m3_s2().to_bits(),
+            EGM2008_GFC_MU_M3_S2.to_bits()
+        );
+        assert_eq!(
+            parsed.reference_radius_m().to_bits(),
+            EGM2008_GFC_RADIUS_M.to_bits()
+        );
+        assert_eq!(parsed.source_max_degree(), 10);
+        assert_eq!(field.max_degree(), 10);
+        assert_eq!(field.max_order(), 10);
+        assert_eq!(field.tide_system(), TideSystem::TideFree);
+        assert_eq!(field.coefficient_count(), 64);
+        assert_eq!(field.storage_len(), 66);
+        assert_eq!(field.coefficient(0, 0).unwrap(), (1.0, 0.0));
+        assert_eq!(field.coefficient(1, 0).unwrap(), (0.0, 0.0));
+        assert_eq!(field.coefficient(1, 1).unwrap(), (0.0, 0.0));
+        assert_eq!(
+            field.coefficient(2, 0).unwrap(),
+            (-0.484165143790815e-03, 0.0)
+        );
+        assert_eq!(
+            field.coefficient(10, 10).unwrap(),
+            (0.100435991936118e-06, -0.238596204211893e-07)
+        );
+        assert_eq!(
+            field_from_plain_parser.coefficient(10, 10).unwrap(),
+            field.coefficient(10, 10).unwrap()
+        );
+
+        let correction_field = field.without_central_term();
+        assert_eq!(correction_field.coefficient_count(), 63);
+        assert_eq!(correction_field.coefficient(0, 0).unwrap(), (0.0, 0.0));
+    }
+
+    #[test]
     fn tesseral_normalized_harmonic_field_parses_icgem_gfc_metadata_pin() {
         let parsed = NormalizedHarmonicField::from_icgem_gfc_str_with_metadata(
             synthetic_icgem_degree4_fixture(),
@@ -5440,6 +5652,18 @@ mod tests {
     #[test]
     fn tesseral_harmonic_synthesis_plan_validates_runtime_tiers() {
         let tier = HarmonicSynthesisTier::Egm2008Degree70;
+        assert_eq!(
+            HarmonicSynthesisTier::from_egm2008_tag("degree70").unwrap(),
+            tier
+        );
+        assert_eq!(
+            HarmonicSynthesisTier::from_egm2008_tag("egm2008-degree120").unwrap(),
+            HarmonicSynthesisTier::Egm2008Degree120
+        );
+        assert!(matches!(
+            HarmonicSynthesisTier::from_egm2008_tag("degree10"),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
         assert_eq!(tier.degree(), HARMONIC_SYNTHESIS_EGM2008_DEGREE_70);
         assert_eq!(tier.order(), HARMONIC_SYNTHESIS_EGM2008_DEGREE_70);
         assert_eq!(
@@ -6301,6 +6525,59 @@ mod tests {
     }
 
     #[test]
+    fn finite_difference_pines_gravity_builds_from_egm2008_degree10_icgem_pin() {
+        let degree10 = FiniteDifferencePinesGravity::new_from_icgem_gfc_str(
+            egm2008_degree10_icgem_fixture(),
+            10,
+            10,
+            10.0,
+        )
+        .unwrap();
+        let degree2 = FiniteDifferencePinesGravity::new_from_icgem_gfc_str(
+            egm2008_degree10_icgem_fixture(),
+            2,
+            2,
+            10.0,
+        )
+        .unwrap();
+
+        assert_eq!(
+            degree10.mu_m3_s2().to_bits(),
+            EGM2008_GFC_MU_M3_S2.to_bits()
+        );
+        assert_eq!(
+            degree10.reference_radius_m().to_bits(),
+            EGM2008_GFC_RADIUS_M.to_bits()
+        );
+        assert_eq!(
+            degree10.truncation(),
+            HarmonicTruncation::new(10, 10).unwrap()
+        );
+        assert_eq!(degree10.field().coefficient(0, 0).unwrap(), (0.0, 0.0));
+        assert_eq!(degree10.field().coefficient_count(), 63);
+
+        let position = Position3::new(6_900_000.0, -1_100_000.0, 1_700_000.0);
+        let acceleration10 = degree10.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        let acceleration2 = degree2.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
+        let delta_norm = (acceleration10 - acceleration2).norm();
+
+        assert!(acceleration10.iter().all(|value| value.is_finite()));
+        assert!(
+            delta_norm > 1.0e-7,
+            "degree-10 EGM2008 terms should affect acceleration; delta was {delta_norm}"
+        );
+
+        assert!(matches!(
+            FiniteDifferencePinesGravity::new_from_icgem_gfc_str_with_synthesis_tier(
+                egm2008_degree10_icgem_fixture(),
+                HarmonicSynthesisTier::Egm2008Degree70,
+                10.0,
+            ),
+            Err(PhysicsError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
     fn finite_difference_pines_gravity_accepts_resolved_runtime_tier() {
         let field_70 = NormalizedHarmonicField::new(
             HARMONIC_SYNTHESIS_EGM2008_DEGREE_70,
@@ -6492,22 +6769,101 @@ mod tests {
 
     #[test]
     fn tesseral_gravity_tesseral_terms_are_finite_near_pole() {
-        let coefficients = DegreeTwoTesseralCoefficients::new(
-            -WGS84_J2,
-            2.0e-7,
-            -3.0e-7,
-            1.0e-7,
-            -2.0e-7,
-            TideSystem::TideFree,
-        )
-        .unwrap();
-        let tesseral = TesseralGravity::new(WGS84_MU_M3_S2, WGS84_A_M, coefficients, 2, 2).unwrap();
+        let tesseral = synthetic_order_two_tesseral();
         let position = Position3::new(1.0, -2.0, WGS84_A_M + 500_000.0);
 
         let acceleration = tesseral.gravity_eci_m_s2(position, SimTime::ZERO).unwrap();
 
         assert!(acceleration.iter().all(|value| value.is_finite()));
         assert!(acceleration.z < 0.0);
+    }
+
+    #[test]
+    fn earth_fixed_gravity_toy_frame_matches_body_fixed_model() {
+        let tesseral = synthetic_order_two_tesseral();
+        let frame = FrameContext::toy_fixed_earth();
+        let gravity = EarthFixedGravity::new(tesseral, frame);
+        let position = Position3::new(6_900_000.0, 900_000.0, 400_000.0);
+        let time = SimTime::from_seconds(1_000.0);
+
+        let actual = gravity.gravity_eci_m_s2(position, time).unwrap();
+        let expected = tesseral.gravity_eci_m_s2(position, time).unwrap();
+
+        for axis in 0..3 {
+            assert_eq!(actual[axis].to_bits(), expected[axis].to_bits());
+        }
+    }
+
+    #[test]
+    fn earth_fixed_gravity_wgs84_rotates_body_fixed_model_through_frame() {
+        let tesseral = synthetic_order_two_tesseral();
+        let frame = FrameContext::wgs84_uniform_rotation(None);
+        let gravity = EarthFixedGravity::new(tesseral, frame.clone());
+        let time = SimTime::from_seconds(4_321.0);
+        let position_eci = Position3::new(6_900_000.0, 1_200_000.0, -500_000.0);
+
+        let position_ecef = frame.eci_to_ecef_position(time, position_eci);
+        let acceleration_ecef = tesseral
+            .gravity_eci_m_s2(Position3::<Eci>::from_vector(position_ecef.vector), time)
+            .unwrap();
+        let expected = frame.ecef_to_eci_vector(time, acceleration_ecef);
+        let actual = gravity.gravity_eci_m_s2(position_eci, time).unwrap();
+
+        for axis in 0..3 {
+            assert_abs_diff_eq!(actual[axis], expected[axis], epsilon = 1.0e-15);
+        }
+    }
+
+    #[test]
+    fn earth_fixed_gravity_iers_cio_generated_xys_rotates_tesseral_through_frame() {
+        let earth_orientation = EarthOrientationTable::new(vec![
+            EarthOrientationSample::new(
+                0.0,
+                0.1,
+                0.080_406 * ARCSECOND_TO_RAD,
+                0.263_110 * ARCSECOND_TO_RAD,
+            )
+            .unwrap(),
+            EarthOrientationSample::new(
+                7_200.0,
+                0.2,
+                0.080_606 * ARCSECOND_TO_RAD,
+                0.263_310 * ARCSECOND_TO_RAD,
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+        let frame = FrameContext::iers_cio_iau2006a(
+            J2000_JULIAN_DATE - 0.25,
+            37.0,
+            None,
+            earth_orientation,
+        )
+        .unwrap();
+        assert!(
+            frame
+                .cio_frame_model()
+                .unwrap()
+                .uses_generated_iau2006a_xys()
+        );
+
+        let tesseral = synthetic_order_two_tesseral();
+        let gravity = EarthFixedGravity::new(tesseral, frame.clone());
+        let time = SimTime::from_seconds(3_600.0);
+        let position_eci = Position3::new(7_100_000.0, -800_000.0, 650_000.0);
+
+        let position_ecef = frame.eci_to_ecef_position(time, position_eci);
+        let acceleration_ecef = tesseral
+            .gravity_eci_m_s2(Position3::<Eci>::from_vector(position_ecef.vector), time)
+            .unwrap();
+        let expected = frame.ecef_to_eci_vector(time, acceleration_ecef);
+        let actual = gravity.gravity_eci_m_s2(position_eci, time).unwrap();
+
+        assert!(actual.iter().all(|value| value.is_finite()));
+        assert!((actual - acceleration_ecef).norm() > 1.0e-5);
+        for axis in 0..3 {
+            assert_abs_diff_eq!(actual[axis], expected[axis], epsilon = 1.0e-12);
+        }
     }
 
     #[test]

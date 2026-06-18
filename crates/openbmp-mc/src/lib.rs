@@ -3531,6 +3531,7 @@ fn scalar_campaign_report_from_samples(
 mod tests {
     use super::*;
     use openbmp_uq::{CredibilityFactor, CredibilityRecord, UncertaintyClass, UncertaintySource};
+    use std::fmt::Write as _;
     use tempfile::Builder;
 
     const MC_ENGINE_SCENARIO: &str = r#"
@@ -4033,6 +4034,27 @@ require_monotonic_time = true
     }
 
     #[test]
+    fn scalar_campaign_report_bytes_match_across_worker_counts() {
+        let serial = run_scalar_campaign(0xB17E, 65, 4, scalar_parallel_test_outcome).unwrap();
+        let serial_bytes = campaign_report_bytes(&serial);
+        for worker_count in [1, 2, 4, 8] {
+            let parallel =
+                run_scalar_campaign_parallel(0xB17E, 65, 4, worker_count, |sample_index, rng| {
+                    scalar_parallel_test_outcome(sample_index, rng)
+                })
+                .unwrap();
+            assert_eq!(serial_bytes, campaign_report_bytes(&parallel));
+        }
+    }
+
+    #[test]
+    fn scalar_campaign_report_bytes_match_pinned_golden() {
+        let report = run_scalar_campaign(0xB17E, 65, 4, scalar_parallel_test_outcome).unwrap();
+        let digest = fnv1a64(&campaign_report_bytes(&report));
+        assert_eq!(format!("{digest:016x}"), "e5c90b1286aebc3d");
+    }
+
+    #[test]
     fn campaign_credibility_report_accepts_floor_and_splits_sources() {
         let budget = credibility_budget();
         let report = evaluate_campaign_credibility(&budget, CredibilityLevel::L2).unwrap();
@@ -4407,6 +4429,75 @@ require_monotonic_time = true
                 optional_f64_bits(right.standard_error),
             );
         }
+    }
+
+    fn campaign_report_bytes(report: &ScalarCampaignReport) -> Vec<u8> {
+        let mut out = String::new();
+        let _ = writeln!(out, "openbmp.scalar_campaign_report.v1");
+        let _ = writeln!(out, "samples,{}", report.samples.len());
+        let _ = write!(
+            out,
+            "value_stats,{},{:016x},{:016x},",
+            report.value_stats.count(),
+            report.value_stats.mean().to_bits(),
+            report.value_stats.m2().to_bits()
+        );
+        push_optional_f64_bits(&mut out, report.value_stats.sample_variance());
+        out.push(',');
+        push_optional_f64_bits(&mut out, report.value_stats.standard_error());
+        out.push('\n');
+        let _ = write!(
+            out,
+            "success_stats,{},{}",
+            report.success_stats.trials(),
+            report.success_stats.successes()
+        );
+        out.push(',');
+        push_optional_f64_bits(&mut out, report.success_stats.fraction());
+        out.push('\n');
+        for sample in &report.samples {
+            let _ = writeln!(
+                out,
+                "sample,{},{:016x},{}",
+                sample.sample_index,
+                sample.value.to_bits(),
+                u8::from(sample.success)
+            );
+        }
+        for row in &report.convergence_trace {
+            let _ = write!(
+                out,
+                "trace,{},{},{:016x},",
+                row.sample_index,
+                row.count,
+                row.mean.to_bits()
+            );
+            push_optional_f64_bits(&mut out, row.sample_variance);
+            out.push(',');
+            push_optional_f64_bits(&mut out, row.standard_error);
+            out.push('\n');
+        }
+        out.into_bytes()
+    }
+
+    fn push_optional_f64_bits(out: &mut String, value: Option<f64>) {
+        if let Some(bits) = optional_f64_bits(value) {
+            let _ = write!(out, "{bits:016x}");
+        } else {
+            out.push_str("none");
+        }
+    }
+
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        const FNV_OFFSET_BASIS_64: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME_64: u64 = 0x100_0000_01b3;
+
+        let mut hash = FNV_OFFSET_BASIS_64;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME_64);
+        }
+        hash
     }
 
     fn optional_f64_bits(value: Option<f64>) -> Option<u64> {

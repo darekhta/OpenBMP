@@ -72,6 +72,7 @@ fn session_stepping_matches_one_shot_run_bytes() {
         format!("{:?}", stepped.stop_reason)
     );
     assert_eq!(one_shot.actuator_stream, stepped.actuator_stream);
+    assert_eq!(one_shot.afts, stepped.afts);
 }
 
 #[test]

@@ -1,0 +1,42 @@
+openbmp.comm_link_budget_fer = 1
+
+[meta]
+dataset_id = "openbmp.comm.link_budget_fer.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic link budget and FER tolerance table"
+provenance = "OpenBMP synthetic analytic fixture for deterministic S-band free-space budget arithmetic and log-linear FER interpolation."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[tolerances]
+db = 1.0e-12
+fer = 1.0e-15
+
+[budget_case]
+name = "one_km_s_band_visible"
+eirp_dbw = -40.0
+receiver_g_over_t_db_k = 0.0
+slant_range_m = 1000.0
+frequency_hz = 2.0e9
+bit_rate_bps = 1000.0
+required_eb_n0_db = 3.0
+atmospheric_loss_db = 1.0
+rain_loss_db = 0.5
+pointing_loss_db = 0.25
+polarization_loss_db = 0.1
+implementation_loss_db = 0.0
+visible = true
+blackout = false
+expected_free_space_loss_db = 9.84683831351629948e1
+expected_c_n0_dbhz = 8.82807840380546907e1
+expected_eb_n0_db = 5.82807840380546907e1
+expected_margin_db = 5.52807840380546907e1
+expected_fer = 2.20720764840621840e-4
+
+[fer_curve]
+code_id = "synthetic-log-linear"
+samples = [
+  { eb_n0_db = 50.0, fer = 1.0e-2 },
+  { eb_n0_db = 60.0, fer = 1.0e-4 },
+  { eb_n0_db = 70.0, fer = 1.0e-6 },
+]

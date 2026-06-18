@@ -18,10 +18,9 @@ use std::collections::BTreeMap;
 use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{Ecef, ModelId, Ned, SimTime, Velocity3};
 use openbmp_physics::{
-    AtmosphereModel, AtmosphereSample, ConstantGravity, Egm2008ZonalGravity, ExoatmosphericPolicy,
-    FrameContext, FrameProfile, GravityModel, J2Gravity, Nrlmsis2Compat, Nrlmsise00Full,
-    Nrlmsise00Inputs, PhysicsError, PiecewiseExponentialAtmosphere, PointMassGravity,
-    UsStandard1976, WGS84_J2,
+    AtmosphereModel, AtmosphereSample, ConstantGravity, ExoatmosphericPolicy, FrameContext,
+    FrameProfile, GravityModel, J2Gravity, Nrlmsis2Compat, Nrlmsise00Full, Nrlmsise00Inputs,
+    PhysicsError, PiecewiseExponentialAtmosphere, PointMassGravity, UsStandard1976, WGS84_J2,
 };
 use openbmp_scenario::{AtmosphereConfig, ResolvedFile, ScenarioDocument};
 use openbmp_sim::{EnvironmentModel, EnvironmentQuery, EnvironmentSample, ModelEvalError};
@@ -55,8 +54,10 @@ pub(crate) enum RuntimeGravity {
     PointMass(PointMassGravity),
     /// J2 central gravity.
     J2(J2Gravity),
-    /// Pinned zonal-only EGM2008 gravity.
-    Egm2008(Egm2008ZonalGravity),
+    /// Pinned or coefficient-file EGM2008 gravity.
+    Egm2008(crate::celestial::RuntimeEgm2008Gravity),
+    /// Frame-coupled degree-2 tesseral/sectoral Earth gravity.
+    Tesseral(openbmp_physics::EarthFixedGravity<openbmp_physics::TesseralGravity>),
     /// Central gravity plus configured third-body perturbations.
     ThirdBody(crate::celestial::RuntimeThirdBodyGravity),
 }
@@ -72,6 +73,7 @@ impl GravityModel for RuntimeGravity {
             Self::PointMass(model) => model.gravity_eci_m_s2(position_eci, time),
             Self::J2(model) => model.gravity_eci_m_s2(position_eci, time),
             Self::Egm2008(model) => model.gravity_eci_m_s2(position_eci, time),
+            Self::Tesseral(model) => model.gravity_eci_m_s2(position_eci, time),
             Self::ThirdBody(model) => model.gravity_eci_m_s2(position_eci, time),
         }
     }
@@ -211,7 +213,10 @@ pub(crate) fn build_document_runtime_gravity(
             Ok(RuntimeGravity::J2(J2Gravity::new(mu, r_e, j2)?))
         }
         "egm2008" => Ok(RuntimeGravity::Egm2008(
-            Egm2008ZonalGravity::wgs84_egm2008_zonal(),
+            crate::celestial::build_egm2008_gravity(document, resolved_files)?,
+        )),
+        "tesseral" => Ok(RuntimeGravity::Tesseral(
+            crate::celestial::build_tesseral_gravity(document, resolved_files)?,
         )),
         "third_body" => Ok(RuntimeGravity::ThirdBody(
             crate::celestial::build_third_body_gravity(document, resolved_files)?,
@@ -504,6 +509,7 @@ mod tests {
     use super::*;
     use openbmp_core::Position3;
     use openbmp_physics::{LocalGeodeticOrigin, WGS84_A_M, WGS84_OMEGA_RAD_S};
+    use openbmp_scenario::Scenario;
 
     fn zero_gravity() -> RuntimeGravity {
         RuntimeGravity::Constant(ConstantGravity::down_z(0.0).unwrap())
@@ -633,5 +639,79 @@ mod tests {
             .unwrap();
 
         assert_eq!(sample.gravity_eci_m_s2, Vector3::new(0.0, 0.0, -9.80665));
+    }
+
+    #[test]
+    fn environment_sample_reports_tesseral_gravity() {
+        let scenario = Scenario::from_toml_str(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "tesseral-environment-test"
+description = "Synthetic runtime-environment tesseral gravity test."
+validation = "validated-toy"
+provenance = "synthetic runner unit test"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 1.0
+seed = 1
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [6900000.0, 400000.0, 300000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "tesseral-environment-test"
+
+[[vehicle.assembly.bodies]]
+id = "mass"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "wgs84-uniform-rotation"
+gravity = "tesseral"
+mu_m3_s2 = 3.986004418e14
+r_e_m = 6378137.0
+tesseral_degree = 2
+tesseral_order = 2
+tesseral_c20 = -1.082626683e-3
+tesseral_c21 = 2.0e-7
+tesseral_s21 = -3.0e-7
+tesseral_c22 = 1.0e-7
+tesseral_s22 = -2.0e-7
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/tesseral-environment-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#,
+        )
+        .unwrap();
+        let frame = FrameContext::wgs84_uniform_rotation(None);
+        let environment =
+            RuntimeEnvironment::from_document(&scenario.document, &BTreeMap::new(), &frame)
+                .unwrap();
+        let sample = environment
+            .sample(EnvironmentQuery {
+                time: SimTime::ZERO,
+                position_eci: Position3::new(6_900_000.0, 400_000.0, 300_000.0),
+            })
+            .unwrap();
+
+        assert!(sample.gravity_eci_m_s2.y.is_finite());
+        assert!(sample.gravity_eci_m_s2.y.abs() > 1.0e-6);
     }
 }

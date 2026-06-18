@@ -1,0 +1,18 @@
+# Pitot-static and vane air-data textbook noise budget (Schema 1).
+#
+# Synthetic OpenBMP-authored envelope for a noiseless analytic
+# Pitot-static/vane fixture. Realistic pressure and vane noise, probe
+# position effects, thermal lag, pneumatic line dynamics, and local
+# flow-angle distortion are future schema extensions.
+
+openbmp.airdata_noise_budget = 1
+
+[meta]
+name       = "airdata-textbook"
+provenance = "synthetic OpenBMP-authored zero-noise analytic air-data fixture"
+validation = "validated-toy"
+
+[budget]
+pressure_stddev_pa = 0.0
+angle_stddev_rad   = 0.0
+fixed_latency_s    = 0.0

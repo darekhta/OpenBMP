@@ -102,6 +102,49 @@ safety_review:
     coefficients, vehicle data, target data, or operational scenario data.
 ```
 
+```yaml
+dataset_id:       openbmp.egm2008.gravity.degree10-normalized-icgem.v1
+files:
+  - data/gravity/egm2008-degree10-normalized-icgem-v1.gfc
+source_class:     public-standard
+source_title:     EGM2008 ICGEM fully-normalized GFC coefficient block
+source_authors:   Pavlis, N. K.; Holmes, S. A.; Kenyon, S. C.; Factor, J. K.
+source_id:        EGM2008 / ICGEM static model 104
+publication_date: 2008 / 2012-04-11
+source_urls:
+  - https://icgem.gfz.de/tom_longtime
+  - https://icgem.gfz.de/getmodel/gfc/c50128797a9cb62e936337c890e4425f03f0461d7329b09a8cc8561504465340/EGM2008.gfc
+license_or_terms: ICGEM unrestricted public access to global gravity field models.
+retrieved_utc:    2026-06-18
+transformation:
+  method: >-
+    Copied the EGM2008 header constants and static fully-normalized gfc rows
+    through degree/order 10 from the ICGEM GFC distribution, then changed the
+    checked-in fixture header max_degree to 10 so requests beyond the clipped
+    rows fail closed. The original ICGEM listing identifies EGM2008 as a
+    degree-2190 static model; this file is intentionally a small parser and
+    transition-model fixture, not the complete EGM2008 distribution.
+  script: none
+verification:
+  method: >-
+    Unit tests in openbmp-physics parse the clipped fixture through
+    NormalizedHarmonicField::from_icgem_gfc_str_with_metadata, check the
+    source gravity constant, reference radius, source max_degree, central
+    Cbar00, representative degree-2 and degree-10 coefficients, Cbar00
+    stripping, and construction of FiniteDifferencePinesGravity from the
+    GFC text. The model-level regression proves the degree-10 real EGM2008
+    block changes acceleration relative to the degree-2 truncation while
+    preserving the explicit no-analytic-kernel scope.
+  test:   crates/openbmp-physics/src/gravity.rs
+validation_status: validated-public-fixture
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Public global gravity field coefficients from ICGEM. The clipped fixture
+    contains no vehicle, target, trajectory, or operational mission data.
+```
+
 ## Context
 
 These constants describe the WGS84 reference ellipsoid and its
@@ -117,6 +160,12 @@ The synthetic degree-4 normalized-field and ICGEM-style fixtures are separate
 from the public-standard WGS84/EGM2008 pins. They exist only to prove the
 general non-zonal TOML schema, GFC coefficient ingestion, and normalized-field
 iteration/synthesis paths without claiming any physical Earth-gravity fidelity.
+
+The clipped EGM2008 degree-10 ICGEM fixture is the first real non-zonal
+EGM2008 coefficient block in the repository. It proves source-metadata parsing
+and finite-difference Pines transition-model plumbing for real tesseral and
+sectoral rows, but it is not a substitute for the full degree-70/120/360
+runtime-tier data, analytic gradients, or NGA HARMONIC_SYNTH benchmark tables.
 
 ## Why public-standard, not synthetic-openbmp
 

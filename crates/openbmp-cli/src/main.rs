@@ -89,6 +89,13 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                     actuator_stream.packet_count, actuator_stream.sha256_hex,
                 );
             }
+            if let Some(afts) = &report.afts {
+                let rule = afts.rule_id.as_deref().unwrap_or("none");
+                println!(
+                    "  AFTS: samples={}, terminate={}, rule={}",
+                    afts.samples, afts.terminate, rule,
+                );
+            }
             for path in &report.written {
                 println!("  wrote {}", path.display());
             }
@@ -174,16 +181,20 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
         }
         Command::VerifyOrder {
             method,
+            campaign_cases,
             output_toml,
         } => {
-            let report = verify_order::run(method, output_toml.as_deref())?;
+            let report =
+                verify_order::run_campaign(method, campaign_cases, output_toml.as_deref())?;
             println!(
-                "openbmp verify-order: ok - {} method(s)",
-                report.methods.len()
+                "openbmp verify-order: ok - {} method-case(s), {} campaign case(s)",
+                report.methods.len(),
+                report.campaign_cases,
             );
             for method in &report.methods {
                 println!(
-                    "  {}: p(coarse/medium)={:.6}, p(medium/fine)={:.6}, gci_fine={:.12e}, passed={}",
+                    "  {} {}: p(coarse/medium)={:.6}, p(medium/fine)={:.6}, gci_fine={:.12e}, passed={}",
+                    method.case_id,
                     method.report.method,
                     method.report.observed_order_coarse_medium,
                     method.report.observed_order_medium_fine,
@@ -274,6 +285,30 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                     "  wrote trajectory mapping {}",
                     report.output_toml.display()
                 );
+                Ok(())
+            }
+            ReconstructCommand::LocalWorkflow {
+                scenario,
+                output_toml,
+                trajectory_csv,
+                mapping_toml,
+                external_reference_csv,
+                pack,
+            } => {
+                let report = reconstruct::run_local_workflow(
+                    &scenario,
+                    &output_toml,
+                    &trajectory_csv,
+                    &mapping_toml,
+                    &external_reference_csv,
+                    pack,
+                )?;
+                println!(
+                    "openbmp reconstruct local-workflow: ok - pack={:?}, commands={}, local_only=true",
+                    report.pack,
+                    report.commands.len(),
+                );
+                println!("  wrote local workflow {}", report.output_toml.display());
                 Ok(())
             }
         },

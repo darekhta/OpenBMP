@@ -31,6 +31,14 @@ mod tests {
                 <StarTrackerSample as Topic>::INDEX,
             ),
             (
+                <AirDataSample as Topic>::NAME,
+                <AirDataSample as Topic>::INDEX,
+            ),
+            (
+                <ImuIncrementWindow as Topic>::NAME,
+                <ImuIncrementWindow as Topic>::INDEX,
+            ),
+            (
                 <SensorStatus as Topic>::NAME,
                 <SensorStatus as Topic>::INDEX,
             ),

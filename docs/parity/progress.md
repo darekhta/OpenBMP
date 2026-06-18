@@ -3,7 +3,7 @@
 **Status:** `experimental` (tracking document; ships no code).
 **Snapshot:** 2026-06-12, current branch state. Verified by code inspection
 against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (110 requirement ids).
+traceability (164 requirement ids).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -22,8 +22,8 @@ same PR as any WP merge.
 ## 1. Roll-up
 
 Across the series: **207 work packages** (108 in `01`–`12`, 99 in `14`–`25`).
-As of this snapshot: **22 implemented · 21 partial · 0 in progress ·
-164 not started.**
+As of this snapshot: **27 implemented · 26 partial · 0 in progress ·
+154 not started.**
 
 | Doc | Dimension | Position on its tier ladder | WPs impl/partial/total | Next unblocked WP |
 |---|---|---|---|---|
@@ -34,18 +34,18 @@ As of this snapshot: **22 implemented · 21 partial · 0 in progress ·
 | 05 | Propulsion high-fidelity | **T1+T2 implemented**; T3 partial; T4/T5 wired-substrate partial | 3/6/9 | finish WP-05.3 (CEARUN/Cantera tolerance tables) |
 | 06 | Coupled MIMO GNC | T0 (+ lane-voting diagnostic improvement) | 0/0/10 | WP-06.1 (after 01) |
 | 07 | Trajectory optimization | **T0-T1 implemented**; STM/multiple-shooting substrate closed with cross-tier tolerance evidence | 2/0/8 | WP-07.2 |
-| 08 | Environment, gravity, frames | T0 plus WP-08.1 degree-2 tesseral substrate and WP-08.2 Battin third-body/SRP/Schwarzschild analytic pieces; high-degree Pines/Gottlieb and Orekit force-stack validation still open | 0/2/7 | finish WP-08.1 or WP-08.2 |
-| 09 | Sensors, nav, actuators | T0 (specific force still finite-difference) | 0/0/12 | WP-09.1 |
-| 10 | Flight SW in the loop (XIL) | **T1–T3 implemented**; T4 partial | 3/2/8 | finish WP-10.4, or WP-10.6 in parallel |
-| 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial | 3/5/9 | WP-11.7 |
-| 12 | Determinism, real-time, compute | **substantially implemented**; Linux aarch64 bit-stable CI lane present; GPU offload boundary pending | 9/0/10 | WP-12.4-b |
-| 14 | Contact, touchdown, landing | WP-14.1 crate + runner force/diagnostic path present; WP-14.2 crate primitives landed; WP-14.3 implemented; WP-14.4 massless oleo/crush gear with per-pad ContactPair footpads implemented | 2/2/10 | WP-14.5 after WP-09.7, or WP-14.7 after terrain substrate |
+| 08 | Environment, gravity, frames | T0 plus WP-08.3 time-scale/EOP ingestion implemented; WP-08.1 degree-2 tesseral substrate, frame-coupled `EarthFixedGravity`, v3 tesseral selector, and degree-10 ICGEM-backed EGM2008 Pines transition runtime path partial; WP-08.2 Battin third-body/SRP/Schwarzschild analytic pieces and WP-08.4 CIO matrix primitives partial; full high-degree Pines/Gottlieb and Orekit force-stack validation still open | 1/3/7 | finish WP-08.1, WP-08.2, or WP-08.4 |
+| 09 | Sensors, nav, actuators | T0 plus partial WP-09.1 opt-in force-accumulator IMU truth and stationary rotating-frame runner validation source; WP-09.2 selectable second-order servo, deterministic oscillatory actuator faults, direct-torque RCS MIB/PWPF runtime path with scalar, bank/blowdown, coupled-bank multi-axis schema/runner modes, and direct tank feed pressure/drain coupling; WP-09.4 strapdown increment and two-sample coning/sculling substrate; finite-difference remains default | 0/3/12 | finish WP-09.1, WP-09.2, or WP-09.4 |
+| 10 | Flight SW in the loop (XIL) | **T1–T3 implemented**; T4 partial; T5 entry partial; A0 partial | 3/4/7 | finish WP-10.4, or WP-10.7 Renode coupling |
+| 11 | Monte Carlo, UQ, validation | **T0–T1 implemented**; T2–T4 partial with WP-11.5 campaign-scale code verification closed | 4/4/9 | WP-11.7 |
+| 12 | Determinism, real-time, compute | **implemented through T4**; Linux aarch64 bit-stable CI lane plus offline GPU-deck boundary present | 10/0/10 | keep determinism gates green |
+| 14 | Contact, touchdown, landing | WP-14.1 half-space substrate + runner force/diagnostic path implemented; WP-14.2 crate primitives landed; WP-14.3 implemented; WP-14.4 massless oleo/crush gear with per-pad ContactPair footpads implemented | 3/1/10 | WP-14.5 after WP-09.7, or WP-14.7 after terrain substrate |
 | 15 | Plume & SRP | WP-15.1 L2 substrate plus point-mass solid-motor and rigid-body thermochemical liquid telemetry with documented MFR, point-mass nozzle-derived geometry, active mount-derived spacing, and off-byte-goldens landed | 0/1/12 | finish WP-15.1 liquid calibration/rigid full geometry |
 | 16 | Parachute & recovery | T0 baseline (`recovery/` rack) | 0/0/11 | WP-16.1 |
 | 17 | Cryogenic fluid management | not started | 0/0/8 | WP-17.1 |
 | 18 | Ground segment & countdown | not started | 0/0/8 | WP-18.1 |
 | 19 | Day-of-launch winds & commit | not started (WP-19.2 now has WP-07.0 prerequisite) | 0/0/6 | WP-19.1 |
-| 20 | Telemetry, RF links, network | dictionary export exists; physics not started | 0/1/8 | WP-20.1 |
+| 20 | Telemetry, RF links, network | WP-20.1 comm geometry/pass substrate implemented; WP-20.2 antenna/body-mask deck substrate partial with runner budget use; WP-20.3 link-budget/FER substrate partial with LinkState telemetry; WP-20.4 link-channel packet-effect substrate partial with FC transport fail-closed binding, latency queues, and best-margin bridge-link selection with hysteresis; WP-20.6 declared bridge pass-plan handover, sampled per-link pass reports, and declared GEO relay two-hop budgets partial; dictionary export partial | 1/5/8 | finish WP-20.2 mesh/BVH binding or WP-20.5 blackout |
 | 21 | Run-data, regression, visualization | not started | 0/0/8 | WP-21.1 |
 | 22 | Acoustics & overpressure | not started | 0/0/7 | WP-22.1 |
 | 23 | EPS & avionics emulation | not started | 0/0/6 | WP-23.1 |
@@ -229,10 +229,10 @@ The same forecast path now projects articulated root slots back into
 `RigidBodyState`, preserving parent mass properties and proving powered
 translational and angular root response (`REQ-MULTIBODY-037`).
 The multibody crate now also ingests a provenance-bearing
-Spatial_v2-compatible ABA oracle fixture for the sample tree and compares ABA
-accelerations against the checked static vector (`REQ-MULTIBODY-038`); the
-fixture is explicitly labeled self-consistency, so it does not claim an
-independent Featherstone Spatial_v2 run.
+Spatial_v2-compatible ABA oracle fixture matrix for three deterministic
+sample-tree cases and compares ABA accelerations against checked static vectors
+(`REQ-MULTIBODY-038`); the matrix is explicitly labeled self-consistency, so it
+does not claim an independent Featherstone Spatial_v2 run.
 The scenario schema and rigid runner now also expose guarded
 `propagation_authority = "primary_root_free_flyer"` mode, which rejects
 separated/articulated combinations, replaces the primary rigid state with the
@@ -283,8 +283,9 @@ WP-02.4-a/-b (POGO/CSI, structural half): **not started** — but the feed
 half this capstone joins (doc 05 WP-05.5-a) landed its substrate today
 (`crates/openbmp-feedsystem/src/pogo.rs`, `crates/openbmp-runner/src/pogo.rs`
 with `PogoStabilityVerdict`, scenario `propulsion.pogo` block), so the
-cross-doc prerequisite is no longer hypothetical. The structural
-longitudinal modal model remains the missing half.
+cross-doc prerequisite is no longer hypothetical. The feed half can now consume
+the parsed `[vehicle.bending]` first-mode frequency and damping; full structural
+modal ingestion/CLA remains the missing half.
 
 ### 03 — Aerodynamic database & CFD coupling
 
@@ -309,11 +310,11 @@ WP-04.1-a … WP-04.4-b: **not started**.
 | WP-05.1 pressure-thrust + altitude | **implemented** | `NozzlePerformance` in `crates/openbmp-propulsion/src/motor.rs`; scenario `ambient_pressure_correction = "pressure_thrust"`; `crates/openbmp-runner/tests/pressure_thrust.rs` + fixture; REQ-PROP-001/V-PROP-001 |
 | WP-05.2-a nozzle separation clipping | **implemented** | `NozzleSeparationCriterion::{Summerfield,Schmucker}`; scenario opt-in; test in `pressure_thrust.rs`; REQ-PROP-002 |
 | WP-05.2-b transient solid ballistics | **implemented** | `TransientChamber` pc(t) ODE + erosive hook in `grain.rs`; `[propulsion.motor.grain] mode = "transient"`; test; REQ-PROP-003 |
-| WP-05.3 thermochem deck ingestion | **partial** | crate + parser + scenario block + SHA pin + fixtures + inline grain, reduced feed-network, liquid-engine thermochemical runtime consumption, empirical `c_star_efficiency` band propagation, and a provenance-recorded Cantera 3.2.0 `gri30.yaml` LOX/LCH4 reference tolerance table with corner plus in-deck midpoint interpolation coverage landed; `LiquidEnginePerformance` derives thrust, nominal choked mass flow, `Isp`, and mass-flow/`Isp` envelopes from looked-up thermochemical state + nozzle geometry; missing: full CEARUN/Cantera tolerance-table matrix for LOX/RP-1, LOX/LH2, NTO/MMH, and broader externally generated LOX/LCH4 coverage |
+| WP-05.3 thermochem deck ingestion | **partial** | crate + parser + scenario block + SHA pin + fixtures + inline grain, reduced feed-network, liquid-engine thermochemical runtime consumption, empirical `c_star_efficiency` band propagation, and provenance-recorded Cantera 3.2.0 LOX/LCH4, LOX/LH2, and LOX/RP-1 n-dodecane-surrogate reference tolerance tables over 20-point 1-30 MPa grids plus multiple in-deck interpolation cases landed; `LiquidEnginePerformance` derives thrust, nominal choked mass flow, `Isp`, and mass-flow/`Isp` envelopes from looked-up thermochemical state + nozzle geometry; missing: NTO/MMH tolerance-table matrix and non-surrogate RP-1 evidence |
 | WP-05.4-a feed network + transient chamber | **partial** | `openbmp-feedsystem` (graph/network/line/chamber/control/transient) + `crates/openbmp-runner/src/feed_network.rs` + scenario `propulsion.feed_networks` validation + synthetic steady feed-network tolerance table for reduced and graph solves + synthetic transient chamber/dual-valve tolerance table + synthetic throttle/MR controller tolerance table; missing: GFSSP worked-case evidence |
 | WP-05.4-b turbopump map + NPSH | **partial** | `pump.rs` (`Turbopump`, normalized map, design point) + scenario pump blocks + runner pressure/cavitation coupling + synthetic provenance-backed tolerance table; missing: public real-pump calibration |
 | WP-05.4-c MOC line transients | **partial** | `line.rs` (`MocLine`) + scenario line blocks + runner pressure perturbation coupling + synthetic provenance-backed Joukowsky tolerance table; missing: richer boundary library, standalone line topology, public benchmark tables |
-| WP-05.5-a POGO feed half | **partial** | `pogo.rs` (feedsystem + runner) + `propulsion.pogo` schema + synthetic provenance-backed stability tolerance table; missing: structural modal-data consumption and public Saturn V/Titan case-history evidence |
+| WP-05.5-a POGO feed half | **partial** | `pogo.rs` (feedsystem + runner) + `propulsion.pogo` schema, `mode_source = "vehicle_bending"` consumption of `[vehicle.bending]`, and synthetic provenance-backed stability tolerance table; missing: full transfer-matrix assembly and public Saturn V/Titan case-history evidence |
 | WP-05.5-b engine-out & fault library | **partial** | `crates/openbmp-sil/tests/propulsion_stimulus.rs`; `openbmp mc` propulsion-fault campaign path with UQ flags; full doc fault set unverified |
 
 ### 06 — Coupled MIMO GNC
@@ -400,14 +401,26 @@ path, parses the synthetic non-zonal
 `data/gravity/synthetic-degree4-normalized-field-v1.toml` fixture through the
 general normalized-field schema, parses
 `data/gravity/synthetic-degree4-normalized-icgem-v1.gfc` through the
-ICGEM-style static coefficient-and-metadata schema, keeps the degree-2/order-0 WGS84 J2
-path byte-identical to `J2Gravity`,
-stays finite near the pole, and rejects unsupported
+ICGEM-style static coefficient-and-metadata schema, parses the provenance-pinned
+clipped `data/gravity/egm2008-degree10-normalized-icgem-v1.gfc` real EGM2008
+degree-10/order-10 block through the same source-metadata path, builds
+`FiniteDifferencePinesGravity` directly from that GFC text, and proves the
+degree-10 real non-zonal block changes acceleration relative to the degree-2
+truncation. Schema-v3 `gravity = "egm2008"` scenarios can now optionally
+resolve that ICGEM GFC text through `environment.egm2008_coefficients_file`,
+custom `egm2008_degree`/`egm2008_order`, or the named `egm2008_tier`
+selectors (`degree70`, `degree120`, `degree360`); the runner builds the
+source-constant finite-difference Pines transition model, wraps it in
+`EarthFixedGravity`, and point-mass coverage proves the file-backed path differs
+from the legacy zonal-only EGM2008 path. Synthetic degree-70 tier coverage also
+proves named tiers resolve through the same GFC+Pines path and reject undersized
+source headers fail-closed. The degree-2/order-0 WGS84 J2 path remains
+byte-identical to `J2Gravity`, stays finite near the pole, and rejects unsupported
 degree/order/duplicate/out-of-envelope coefficient requests fail-closed
 (`REQ-ENV-001`). Missing for full WP-08.1:
-full runtime high-degree Pines synthesis over real EGM2008 coefficient blocks,
-full analytic normalized Gottlieb acceleration-gradient oracle, high-degree EGM2008
-coefficient ingestion/provenance/tripwire, and NGA HARMONIC_SYNTH benchmark
+full runtime degree-70/120/360 Pines synthesis over real EGM2008 coefficient blocks,
+full analytic normalized Gottlieb acceleration-gradient oracle, full high-degree
+EGM2008 coefficient-block provenance/tripwire, and NGA HARMONIC_SYNTH benchmark
 tables. IAU 1976/1980 equinox frames remain
 the frame path (no CIO); NRLMSISE-00/HWM14 means only (no perturbed-atmosphere
 decorator); WMM2025 remains the magnetic path (no IGRF-14, no gradient); SPK
@@ -419,15 +432,104 @@ opt-in cannonball SRP with conical Earth shadow, and `RelativisticCorrection`
 adds the Schwarzschild first-post-Newtonian acceleration with named `c`
 (`REQ-ENV-003`). Missing for full WP-08.2: the Orekit code-to-code
 Sun/Moon/SRP force-stack fixture and its ≤1 m/day secular growth evidence.
-No tides, SRP macro-models, Lense-Thirring, or de Sitter terms yet. WP-08.3 …
-WP-08.7: **not started**.
+WP-08.3 is now **implemented**: `EarthOrientationSample` carries
+`cip_offset_x_rad`/`cip_offset_y_rad`, legacy constructors default both fields
+to exact zero, `with_cip_offsets` rejects non-finite offsets fail-closed, and
+`EarthOrientationTable::sample` interpolates dX/dY alongside UT1-UTC, polar
+motion, and optional LOD. The runner `openbmp-eop-v1` parser accepts optional
+`cip_offset_x_arcsec`/`cip_offset_y_arcsec` pairs and rejects rows that declare
+only one offset. `TimeScaleBridge` now exposes pinned UTC↔UT1/TAI/TT
+conversions plus the compact TT↔TDB approximation, and an ERFA `eraDtdb`-
+compatible TT↔TDB path backed by the transcribed Fairhead-Bretagnon coefficient
+table with upstream C reference pins. Runner celestial UTC/TT/TDB epoch
+conversion now uses the ERFA-compatible helper, supplies topocentric dtdb
+observer geometry from `[frames.local_origin]` when present, and samples
+`epoch.eop` UT1-UTC for UTC-to-TDB phase when available. Four-day provenance-pinned
+finals2000A-derived raw and equivalent `openbmp-eop-v1` fixtures exercise real
+polar motion, UT1-UTC, LOD, dX/dY parser reachability, and fixed-width row MJD
+to scenario-relative time conversion. A four-day provenance-pinned EOP 14 C04
+fixture exercises raw C04 header/data ingestion in the same path (`REQ-ENV-004`).
+No tides, SRP macro-models, Lense-Thirring, or
+de Sitter terms yet. WP-08.4 is now **partial**: the HAL-portable physics frame
+layer exposes ERFA-pinned CIO primitive helpers for ERA (`eraEra00`), TIO
+locator `s'` (`eraSp00`), CIO locator `s` from caller-provided X/Y (`eraS06`),
+CIO-adjacent IAU 2006 Fukushima-Williams pieces (`eraObl06`, `eraPfw06`,
+`eraFw2m`, `eraBpn2xy`), IAU 2000A/2006 nutation (`eraNut00a`,
+`eraNut06a`), matrix-backed X/Y/s generation (`eraPnm06a`, `eraXys06a`),
+C2I from caller-provided X/Y/s (`eraC2ixys`), polar motion (`eraPom00`), and
+`RPOM * R3(ERA) * RC2I` assembly (`eraC2tcio`, `REQ-ENV-005`). `CioXysTable` and
+`CioFrameModel` now compose caller-provided or generated X/Y/s with pinned EOP
+dX/dY, UT1/TT dates, ERA, TIO `s'`, and polar motion into GCRS↔ITRS matrices.
+`FrameProfile::IersCio` and runner `frame_profile = "iers-cio"` wiring consume
+SHA-pinned `epoch.eop` and leap-second inputs, default to generated IAU
+2006/2000A X/Y/s, and still accept SHA-pinned `epoch.cio_xys` tables while
+leaving `IersTabulated` unchanged. Full generated GCRS→ITRS matrices are pinned
+against a three-case ERFA UTC/EOP grid, and generated X/Y/s is checked against
+IERS TN36 Ch.5 electronic Tables 5.2a, 5.2b, and 5.2d reference values.
+`EarthFixedGravity` now rotates the degree-2 tesseral substrate through
+ToyFixedEarth, WGS84 uniform rotation, and generated-X/Y/s `IersCio` frame
+contexts, and schema-v3 runner scenarios can consume the same bounded
+degree-2 model through `environment.gravity = "tesseral"` or
+`gravity_base = "tesseral"` under third-body gravity. CIO primitive/profile
+substrate is now **partial** because the
+tesseral-gravity-through-`IersCio` Orekit force-stack acceptance remains open.
+WP-08.5 … WP-08.7: **not started**.
 
 ### 09 — Sensors, navigation & actuators
 
-Baseline confirmed: specific-force truth is still finite-difference
-(`crates/openbmp-runner/src/fc_bridge.rs`, velocity delta minus gravity);
-GNSS is a position oracle; actuators first-order.
-WP-09.1 … WP-09.12: **not started**.
+Baseline confirmed: GNSS is still a position oracle and actuators remain
+first-order. WP-09.1 is now **partial**: `openbmp-sensors::SpecificForceTruth`
+exists, `[sensors.<imu>] specific_force_source = "force_accumulator"` is
+accepted only for IMUs, and the runner FC bridge can fill IMU truth from
+non-gravity force/mass plus rigid-body moment-derived angular acceleration.
+The `stationary_rotating_frame` validation source covers the rotating-Earth
+stationary body-frame acceptance case. The finite-difference source remains
+default. WP-09.2 is now **partial**: `openbmp-vehicle::SecondOrderServo` exists
+as a deterministic second-order bandwidth/rate/acceleration/backlash substrate,
+and `[[vehicle.assembly.effectors]] kind = "second_order_servo"` is parsed and
+built by the runner rack; `openbmp-vehicle::RcsMinimumImpulseBit` and
+`PwpfModulator` provide the deterministic RCS MIB/PWPF substrate, and schema v3
+`direct_torque` effectors can opt into scalar RCS pulse quantization or a
+body-frame bank with deterministic geometry allocation and per-thruster
+blowdown scaling built by the runner rack. Physical RCS thrusters can also bind
+to declared ullage tanks, use live tank-pressure scale to derate thrust, and
+emit additive tank drain from actual impulse. `openbmp-vehicle::RcsCoupledAllocator`
+adds a vehicle-level vector torque-impulse allocation substrate over physical
+thruster geometry, and schema v3 `mode = "coupled_bank"` groups one roll, pitch,
+and yaw `direct_torque` effector through that allocator in the runner rack.
+Optional coupled-bank PWPF gates each member axis before shared vector
+allocation. Load-time oscillatory effector faults now inject deterministic
+sinusoidal command offsets before the normal actuator path. A deterministic
+rate-limit/backlash describing-function helper now anchors the WP-09.2
+first-harmonic limit-cycle evidence. Resonant actuator extensions remain open.
+WP-09.3 is now **partial**: `openbmp-sensors::SyntheticAirData` exposes
+compressible subsonic/Rayleigh Pitot impact pressure, Mach inversion, calibrated
+airspeed, ISA pressure-altitude inversion, alpha/beta vane geometry, and
+fixed-latency `capture_time` evidence on a non-GNSS sensor. Schema validation
+and the runner bridge can build `kind = "airdata"` from
+`data/sensors/airdata-textbook.toml`; `AirDataSample`, `FcStepInput::with_airdata`,
+`AirDataIngest`, `VotedAirDataIngest`, and `openbmp-bridge` protocol v4 now
+carry the Pitot/static/vane channels across direct FC publication, redundant
+FC ingestion, and bridge packets. Estimator fusion of air-data remains open.
+WP-09.4 is now **partial**: `openbmp-sensors::strapdown` exposes
+`InertialIncrement`, deterministic delta-theta/delta-v quantization,
+constant-truth and RK4 time-varying high-rate window generation with locked
+sequence numbers, and a two-sample coning/sculling reference that reports
+coning, velocity-rotation, and sculling correction terms before applying the
+quaternion update.
+`SyntheticImu::with_high_rate` can now stash configured high-rate increment
+windows without changing the legacy `SensorMeasurement::Imu` output: the first
+or non-advancing timestamp window uses constant truth, and later advancing
+timestamps use RK4 over linearly interpolated successive runner truth samples.
+Schema/runner wiring accepts IMU-only `[sensors.<imu>.high_rate]` blocks with
+sub-sample count plus delta-theta/delta-v LSBs. `openbmp-msgs` exposes the
+`sensor.imu_increments` topic, the runner publishes `ImuIncrementWindow` on the
+direct FC bus path, and bridge protocol v4 carries `ImuIncrementPacket` windows
+through the runner and PIL packet adapters into `FcStepInput` before dispatch;
+transport-fault scalar rules can target per-increment delta-theta, delta-v, and
+dt fields by sample index. Kernel RK-stage truth export, three/four-sample
+algorithms, and Schuler-period free-INS validation remain open. WP-09.5 …
+WP-09.12 are **not started**.
 
 ### 10 — Flight-software-in-the-loop (XIL)
 
@@ -436,10 +538,10 @@ WP-09.1 … WP-09.12: **not started**.
 | WP-10.1 SIL over transport | **implemented** | `Transport` + in-process/stream/child-stdio backends, `LockstepSimMaster`, SHA-256 determinism gate, ZOH tolerance table, 12 tests in `crates/openbmp-runner/tests/fc_transport.rs` |
 | WP-10.2 fault library + XIL ports | **implemented** | `fault.rs` (13 scalar + 5 bus transforms), `MaPort`/`EesPort`, lifecycle FSM, `[fc.transport_faults]`, empty-schedule byte-identity, `crates/openbmp-sil/src/xil.rs` evidence adapters |
 | WP-10.3 soft-real-time bench | **implemented** | `openbmp-rt` pacer (FreeRun/RealTime/Paced, jitter histogram p50/p99/p99.9, overrun count), runner `rt.rs`, `[realtime]` schema, byte-identity across modes (`tests/realtime.rs`) |
-| WP-10.4 FMI 3.0 importer | **partial** | typed instance access, modelDescription parsing, single+multi masters, 5 pinned Reference FMUs + FMPy cross-check scripts; missing: clocked event scheduling, predictor/corrector co-sim loop |
+| WP-10.4 FMI 3.0 importer | **partial** | typed instance access, modelDescription parsing, single+multi masters, periodic input-clock activation, checkpointed multi-FMU predictor/corrector macro step, 5 pinned Reference FMUs + FMPy cross-check scripts; missing: complete clocked event scheduling and complete Reference-FMU matrix |
 | WP-10.5 FMI 3.0 exporter | **partial** | `export.rs` + `export_abi.rs` (C ABI, XSD validation, point-mass FMU + trace tolerance table); missing: full plant mapping to value references |
-| WP-10.6 AFTS containment monitor | **not started** | no `openbmp-afts`, no IIP propagator, no rule table |
-| WP-10.7 PIL on emulated ISA | **not started** | no factored `fc_step` entry, no Renode coupling |
+| WP-10.6 AFTS containment monitor | **partial** | `openbmp-afts` L2 crate now exposes WGS84-spherical and WGS84-ellipsoid central-gravity `IipPropagator` options, optional WGS84 uniform-rotation longitude correction, optional deterministic `ExponentialAtmosphericDrag`, `ContainmentPolygon`, `ContainmentRule` keep-inside/keep-out modes, scalar `CorridorRule` checks for altitude/speed/flight-path-angle bounds, geospatial `GateRule` checks over successive IIP samples, red/green `ZoneRule` checks with red-zone priority and green-zone union semantics, and latched `AftsMonitor`; schema v3 parses and validates `[afts.propagator]` plus `[afts]` keep-inside, keep-out, corridor, gate, and zone rule tables with evidence strings and optional `evidence_file` SHA pins; the runner samples telemetry-aligned point-mass/rigid-body truth states into a sidecar `AftsRunReport` without changing kernel stop reasons; SIL evidence bundles and the CLI surface include that report; native `SilStimulation` can append AFTS zone rules in memory without mutating package scenario files. Tests cover radial closed-form IIP, a non-radial rotating-Earth closed-form IIP tolerance-table fixture under `data/afts/`, WGS84 Earth-rotation correction, WGS84 ellipsoid geodetic latitude, exponential-drag IIP perturbation, hand-computed point-in-polygon cases, keep-out firing, corridor firing, gate crossing, green/red zone firing, latch behavior, no-impact horizon, no FC dependency, trybuild no-inverse `solve_burn_to_reach` rejection, AFTS parser validation/resolved-file hashing, runner-side latching including ellipsoid corridor altitude, and SIL AFTS zone stimulation. Remaining ceiling: simulation evidence only, not certified range-safety qualification. |
+| WP-10.7 PIL on emulated ISA | **partial** | `openbmp-fc::fc_step` now exposes a hardware-portable topic-level step facade (`FcStepInput` -> `FcStepOutput`) that publishes sensor topics, dispatches one tick, captures actuator/health/status outputs, fails closed on missing topic registration, and keeps bridge/runner dependencies out of `openbmp-fc`; `openbmp-bridge` now checks packet/codec/lockstep-validator modules on `thumbv7em-none-eabihf` without default features while host transports/faults/XIL ports remain `std`-gated, and exposes `encode_into`/`frame_into` for caller-owned target buffers; `openbmp-pil` adds a no-std-capable byte/mailbox/framed-endpoint/frame-pump/byte-poll shim that decodes bridge `SensorPacket` bytes or length-prefixed frames, calls `fc_step`, encodes `ActuatorCommandPacket` bytes into caller storage, exposes a `repr(C)` mailbox with status/error codes and a `PilMailboxLayout` offset report for downstream GDB-symbol wrappers, exposes a `PilFrameIo` complete-frame read-step-write loop for downstream UART/semihosting wrappers, exposes a fixed-buffer `PilFramePump` for UART-like byte streams that waits for complete frames and preserves queued/pending frames, exposes `poll_byte_stream_endpoint_once` over `PilByteIo` so a target poll loop can read one chunk, drive the pump, write a completed command frame, and retry pending output after write failure, exposes a safe `PilFirmware` wrapper plus `PilFirmwareSymbolContract` advisory mailbox/step symbol names for downstream target storage, and exposes `PilWcetBudget` / `PilWcetReport` integer instruction-count × CPI deadline evidence helpers; `openbmp-runner::FcRunner::step_bridge_packet` adapts `SensorPacket`/`ActuatorCommandPacket` frames through that facade for host bridge transport while preserving timing instrumentation, `pil_framed_endpoint_matches_runner_bridge_packet_adapter` proves framed PIL command bytes match the runner adapter under the host oracle, `openbmp-runner::pil::RenodePilPlan` renders a validated socket-UART Renode `.resc` plan with telnet negotiation disabled, optional GDB server, and deterministic microsecond global quantum, `GdbPilSymbolBinding` resolves mailbox and step-entry addresses from target ELF32/ELF64 symtab/dynsym bytes or files, `GdbPilMailboxPlan` maps the resolved target mailbox address plus `PilMailboxLayout` into deterministic GDB Remote Serial Protocol memory read/write/breakpoint packets and target-read decoders, `GdbRspSession` drives checked RSP packet exchange over caller-owned streams with ack/checksum handling, target-error handling, memory reads/writes, breakpoint insert/remove, continue, mailbox sensor loading, and mailbox status/command reads, and `PilFrameStream`/`RenodeSocketPilClient` provide the host raw-frame socket client for that UART stream with payload limits and command step/time validation; missing: downstream-exported linked target image, live Renode target execution/equivalence, real UART driver, and measured WCET evidence |
 | WP-10.8 cFS in the loop | **not started** | no cFS wiring |
 
 ### 11 — Monte Carlo, UQ & validation
@@ -448,13 +550,13 @@ WP-09.1 … WP-09.12: **not started**.
 |---|---|---|
 | WP-11.0 MC substrate | **implemented** | `openbmp-mc` (Welford, Clopper-Pearson, samples table + convergence trace), `DeterministicRng::for_mc_sample` domain |
 | WP-11.1 DoE + sizing | **implemented** | LHS, native Sobol (pinned Joe-Kuo direction numbers under `data/sobol/` + provenance), Owen scrambling, Iman-Conover, Wilks sizing, convergence gate + R-hat, `openbmp mc` subcommands + `tests/mc_cli.rs` |
-| WP-11.2 credibility + error budget | **partial** | `openbmp-uq` complete (correlated error budget, aleatory/epistemic classes, 8-factor credibility record, min-is-binding, floor flags wired into `mc summarize`/footprint/fault campaigns); missing: auto-emission by future drivers |
+| WP-11.2 credibility + error budget | **partial** | `openbmp-uq` complete (correlated error budget, aleatory/epistemic classes, 8-factor credibility record, min-is-binding, floor flags wired through the shared campaign credibility helper into `mc summarize`/footprint/fault campaigns); missing: auto-emission by future drivers |
 | WP-11.3 nested aleatory/epistemic | **partial** | probability-box + variance split, nested footprint execution, `mc nested-summarize`; missing: generalized nested orchestration beyond landing-footprint |
 | WP-11.4 rare events | **implemented** | subset simulation (Au-Beck) + cross-entropy IS on sealed synthetic limit states; compile-fail tripwire `crates/openbmp-testkit/tests/limit_state_no_aimpoint_compile_fail.rs` + UI test |
-| WP-11.5 MMS + order verification | **partial** | manufactured ODE + observed-order/Richardson/GCI (`openbmp verify-order`, testkit verification module); campaign-scale integration pending |
-| WP-11.6 BET reconstruction | **partial** | RTS smoother + batch Gauss-Newton + NEES/NIS in `crates/openbmp-testkit/src/reconstruction.rs`; `openbmp reconstruct` CLI; pseudo-flight campaign + LOCAL workflow documentation pending |
-| WP-11.7 cross-discipline UQ wiring | **partial** | `openbmp-uq::UpstreamMargin`, `CorrelatedErrorBudget::from_upstream_margins`, and doc-02/03/04/05 helper adapters can convert structural bending, aerodynamic coefficient, aerothermal model, and thermochemistry `c_star_efficiency` bands into ordered source-tagged epistemic budget inputs with credibility evidence; `EngineRack` gathers resolved thermochemical liquid-engine `c_star_efficiency` bands, `RunOutcome.upstream_uq` exposes the gathered budget, and sampled propulsion-fault MC merges runner-gathered upstream UQ into campaign credibility reports; missing: generalized MC consumption plus runner gathering for the remaining structural/aero/aerothermal bands |
-| WP-11.8 campaign determinism/real-time | **partial** | delivered through doc 12's reducers/checkpointing; ensemble byte-diff gate extension pending |
+| WP-11.5 MMS + order verification | **implemented** | manufactured ODE + observed-order/Richardson/GCI (`openbmp verify-order`, testkit verification module) plus bounded deterministic multi-case MMS lambda campaign evidence through `--campaign-cases` |
+| WP-11.6 BET reconstruction | **partial** | RTS smoother + batch Gauss-Newton + NEES/NIS in `crates/openbmp-testkit/src/reconstruction.rs`; `openbmp reconstruct synthetic-linear`, `observe-fc`, `export-trajectory`, `export-trajectory-mapping`, and `local-workflow` CLI surfaces; deterministic LOCAL-only workflow manifests record export/mapping/compare commands and guardrails that external references are not read, copied into the repo, or used as flight/targeting input. Remaining gap: full covariance/transition histories for real-FC RTS smoothing and actual external-tool evidence around the export/compare flow |
+| WP-11.7 cross-discipline UQ wiring | **partial** | `openbmp-uq::UpstreamMargin`, `CorrelatedErrorBudget::from_upstream_margins`, and doc-02/03/04/05 helper adapters can convert structural bending, aerodynamic coefficient, aerothermal model, and thermochemistry `c_star_efficiency` bands into ordered source-tagged epistemic budget inputs with credibility evidence; `[vehicle.bending.uq]`, `[aero.uq]`, `[aerothermal.uq]`, `StructuralRack`, aero/aerothermal runner helpers, and `EngineRack` gather structural frequency, aerodynamic coefficient, aerothermal `q_conv_w_m2`, and resolved thermochemical liquid-engine `c_star_efficiency` bands into `RunOutcome.upstream_uq`; footprint MC reports also carry runner-gathered upstream UQ for campaign credibility; `CampaignCredibilityInputs` plus `evaluate_campaign_credibility_contract` give MC campaign drivers a typed sidecar-plus-upstream-UQ credibility path, preserving upstream-only correlation matrices and merging sidecar/upstream blocks as independent sources; scalar `mc summarize`, sampled propulsion-fault MC, and `openbmp footprint-mc` use that contract before final evidence is written; missing: future campaign additions still need review/traceability to keep that typed contract |
+| WP-11.8 campaign determinism/real-time | **partial** | delivered through doc 12's reducers/checkpointing plus `openbmp-mc` scalar-report byte identity across worker counts and pinned native aarch64 digest coverage; full campaign cross-arch byte gate pending |
 
 ### 12 — Determinism, real-time & compute
 
@@ -467,27 +569,37 @@ WP-09.1 … WP-09.12: **not started**.
 | WP-12.2-a parallel fan-out | **implemented** | worker-count-invariant campaigns (tests at 1/2/4/8 workers) |
 | WP-12.2-b checkpoint/resume | **implemented** | `FileCheckpointStore`, resume byte-identity, footprint `--checkpoint-json` |
 | WP-12.3-a frame pacer | **implemented** | `openbmp-rt` (shared with doc 10) |
-| WP-12.3-b aarch64 CI lane | **implemented** | native `ubuntu-24.04-arm` `determinism-gate (aarch64)` downloads the same-run x86_64 reference artifact and byte-diffs the fixed-step canonical scenario outputs; traced by REQ-DET-004/V-DET-004 |
+| WP-12.3-b aarch64 CI lane | **implemented** | native `ubuntu-24.04-arm` `determinism-gate (aarch64)` downloads the same-run x86_64 reference artifact, checks the pinned `openbmp-mc` scalar-report digest, and byte-diffs the fixed-step canonical scenario outputs; traced by REQ-DET-004/V-DET-004 |
 | WP-12.4-a dense output | **implemented** | `advance_with_dense_output` for Dopri54/853, state-stable opt-in, off the bit-stable path |
-| WP-12.4-b GPU offload boundary | **not started** | no ingested-deck GPU pathway |
+| WP-12.4-b GPU offload boundary | **implemented** | synthetic offline atmosphere-density deck under `data/atmosphere/gpu-offline-density-subset-v1.toml` carries no-live-GPU metadata, UQ band, sibling provenance record, and SHA-256 pin; `crates/openbmp-testkit/tests/gpu_offload_boundary.rs` reproduces the sampled subset through `AtmosphereModel` + `PiecewiseExponentialAtmosphere`, verifies the provenance hash pin, and scans workspace manifests for known GPU framework dependencies; traced by `REQ-DET-005`/`V-DET-005` |
 
 ### 14 — Contact dynamics, touchdown & landing
 
-WP-14.1: **partial** — `openbmp-contact` crate landed (`e4a1a4d`:
+WP-14.1: **implemented** — `openbmp-contact` crate landed (`e4a1a4d`:
 half-space geometry, Kelvin-Voigt/Hertz/Hunt-Crossley normal laws,
 regularized Coulomb, fixed sub-step stability bound, energy audit;
 REQ-CONTACT-001). Scenario `[contact]` schema (`ContactConfig`) and runner
 force-adapter wiring are present (`crates/openbmp-runner/src/contact.rs` plus
 point-mass/rigid-body/vehicle edits), with contact diagnostics telemetry,
-`RunOutcome.contact` endpoint classification, run-level energy audit, and
-substep-driven kernel step sizing, plus point-mass golden-stability proof.
-Missing for full acceptance: gear-leg assemblies.
+`RunOutcome.contact` endpoint classification, run-level energy audit,
+substep-driven kernel step sizing, and point-mass golden-stability proof.
+The former gear-leg assembly acceptance gap is closed by WP-14.4's validated
+landing-gear rack, per-pad `ContactPair` footpads, pinned four-leg drop
+fixture, rest classification, force/moment adapters, section-load recovery,
+and <1% energy-audit closure (`REQ-CONTACT-006`/`REQ-CONTACT-007`).
 WP-14.2: **partial** — `openbmp-contact` now exposes one-sided scalar
-stops, two-sided backlash gaps, and monotone latch primitives with validation,
-unilateral force clamping, backlash dead-zone width evidence, Kelvin-Voigt
-closed-form stop restitution evidence, and engage-once latch property tests
-(`REQ-CONTACT-003`). Scenario/joint fixtures remain future work with the
-articulated mechanism wiring.
+stops, two-sided backlash gaps, monotone latch primitives, and an allocation-free
+scalar mechanism evaluator with validation, unilateral force clamping, backlash
+dead-zone width evidence, Kelvin-Voigt closed-form stop restitution evidence,
+declaration-order latch state updates, and engage-once latch property tests
+(`REQ-CONTACT-003`). Schema-v3 `[contact]` can now declare optional
+`[[contact.mechanism]]` angular stop/backlash/latch fixtures with kind-specific
+fail-closed validation and duplicate-id rejection; schema-v3
+`[[multi_body.gimbal_joint]]` can bind one contact mechanism by `mechanism_id`
+when the mechanism coordinate matches the engine id; and the rigid runner feeds
+that mechanism response into primary-axis articulated gimbal generalized force
+during shadow derivative/forecast evaluation. Remaining gap: CFE loop-constraint
+dynamics, multi-axis mechanism routing, and broader doc-01 tree-joint authority.
 WP-14.3: **implemented** — `openbmp-contact` now exposes anchored stick/slip
 friction with static cone breakaway, kinetic sliding, Karnopp restick window,
 deterministic anchor state updates, tangential anchor elastic-energy reporting,
@@ -567,11 +679,87 @@ now has its WP-07.0 wired-corrector prerequisite; WP-19.1 is unblocked.
 
 ### 20 — Telemetry, RF links & ground network
 
+WP-20.1 comm geometry: **implemented** — `openbmp-comm` now exposes WGS84
+ground-site geometry, ENU visibility samples, azimuth-binned terrain masks,
+rise/set event extraction, deterministic pass intervals, and byte-stable CSV
+pass-table serialization; schema-v3 `[comm]` / `[[comm.sites]]` parser
+validation accepts site geometry and mask bins, and `openbmp-runner` emits
+deterministic pass-table bytes through `RunOutcome.comm` plus `comm.<site>.*`
+telemetry channels for sampled point-mass and rigid-body primary states.
+`data/comm/` now records a provenance-backed fixed-Earth line-scan tolerance
+table for geometric visibility and rise/set extraction plus an SGP4/TLE
+external-library LEO visibility tolerance table for rise/set extraction.
+WP-20.2 antenna/body masking: **partial** — `openbmp-comm` now exposes
+axisymmetric antenna gain decks, triangle-ray-cast body-mask deck precompute,
+nearest-direction runtime lookup, and deterministic mesh-hash-bound deck
+hashing, backed by a provenance-recorded synthetic fixture under
+`data/comm/`. Schema-v3 `[comm]` now binds `[[comm.antennas]]`
+gain/body-mask deck paths with SHA-256 pins through the standard
+resolved-file mechanism. Runner point-mass and rigid-body setup now parses
+declared decks from resolved bytes, validates them through `openbmp-comm`,
+precomputes body masks, and reports resolved/derived deck hashes plus sample
+counts in `RunOutcome.comm`. Runner link budgets now rotate vehicle-to-site
+line of sight into the body frame, add sampled antenna gain to EIRP, and gate
+link visibility when the body-mask lookup is blocked. Missing: doc-03
+watertight mesh/BVH integration and real mesh-derived deck regeneration
+tooling.
 WP-20.8 dictionary export: **partial** — a channel-dictionary export with
 JSON and XTCE-shaped formats already ships (`openbmp dict`,
 `crates/openbmp-cli/src/commands/dict.rs`); the CCSDS-shaped frame stream
 and round-trip tests from the design are absent.
-WP-20.1 … WP-20.7: **not started** (no `openbmp-comm`, no link physics).
+WP-20.3 link budget/FER: **partial** — `openbmp-comm` now exposes
+`LinkBudgetInput`, `LinkState`, `free_space_path_loss_db`,
+`evaluate_link_budget`, `FerCurveDeck`, `FerCurveSample`, `ElevationLossDeck`,
+and `ElevationLossSample` for deterministic free-space budget arithmetic, dB
+operand ordering, log-linear FER interpolation, elevation-indexed additive
+atmospheric/rain losses, no-link FER behavior, and fail-closed out-of-envelope
+rejection, backed by `data/comm/link-budget-fer-v1.toml` and
+`data/comm/attenuation-loss-v1.toml` provenance. Schema-v3 `[comm]` now binds
+`[[comm.links]]` budget constants, FER curve decks, atmospheric loss decks,
+and rain loss decks with SHA-256 pins, and the point-mass/rigid-body runner
+paths publish `comm.link.<link>.*` `LinkState` telemetry channels, including
+`antenna_gain_dbi` and `body_blocked` evidence from the linked antenna decks.
+Missing: blackout attenuation.
+WP-20.4 link-driven telemetry effects: **partial** — `openbmp-comm` now
+exposes `LinkChannelModel`, `LinkPacketContext`, `LinkPacketEffect`,
+`LinkPacketDisposition`, `LinkErrorAction`, `LinkPacketDirection`, and
+`link_stream_id_from_id` for deterministic packet-effect evaluation from
+`LinkState`. The model validates context/state, computes one-way light-time
+plus declared processing delay, maps no-visibility/blackout to packet drop,
+and maps FER Bernoulli draws from a domain-keyed deterministic RNG to drop or
+bit-flip dispositions, backed by `data/comm/link-channel-model-v1.toml`
+provenance. It also exposes an exact-binomial loss-rate gate over deterministic
+packet streams, with no-link/blackout treated as expected 100% errored packets.
+Schema-v3 `[[comm.links]]` now accepts `packet_processing_delay_s` and
+`packet_error_action` plus optional `packet_loss_rate_gate` and
+`data_loss_timeout_s`, validates them fail-closed, and the runner reports the
+validated model, downlink/uplink loss-rate gate evidence, and monotone downlink
+data-loss timeout latch evidence in `RunOutcome.comm`. The runner also
+evaluates the selected comm link for FC bridge sensor and command frames,
+supports default first-declared selection plus opt-in greedy `best_margin`
+selection across visible non-blackout declared links with configurable margin
+hysteresis plus a declared pass-plan selector for bridge handover windows,
+queues delivered frames by step-quantized downlink/uplink latency, preserves
+zero-step delivered comm-link determinism, and fails closed on drop, bit-flip,
+or scheduled pass-plan gap packet effects at the `[fc.transport]` seam.
+Missing: blackout attenuation.
+WP-20.6 station network handover: **partial** — schema-v3 `[comm]` accepts
+`bridge_link_selection = "declared_plan"` with non-overlapping
+`[[comm.bridge_pass_plan]]` windows keyed to declared link ids, validates
+references and times fail-closed, and the runner selects the active declared
+link by latest observation time while dropping bridge packets fail-closed during
+schedule gaps. `RunOutcome.comm.bridge_selections` records contiguous
+link/gap-selection intervals with step/time spans, sample counts, and
+sensor/command drop or bit-flip counts, and `RunOutcome.comm.bridge_handovers`
+records explicit link/gap transition events. `RunOutcome.comm.link_passes`
+records each sampled visible/non-blackout link pass with step/time span,
+duration, sample count, min/max/mean margin, sampled margin profile, and bridge
+packet drop/bit-flip counts attributed to the pass. Declared `[[comm.relays]]`
+GEO nodes plus per-link `relay_id` compose vehicle-to-relay and relay-to-ground
+budgets into a two-hop `LinkState` using bottleneck margin and combined
+independent-hop FER. Missing: richer relay scheduling and
+continuous/interpolated pass-profile artifacts.
+WP-20.5 and WP-20.7: **not started** (no blackout or tracking observables).
 
 ### 21 — Run-data, regression & visualization
 
@@ -616,7 +804,7 @@ verifier, or capture logic.
 - **Determinism toolchain hardened:** FP-environment guard (x86_64 +
   aarch64 code paths), FMA contraction ban, provenance check in CI; the
   aarch64 CI determinism lane is the one outstanding piece (WP-12.3-b).
-- **Traceability:** 110 requirement ids in `requirements.toml`, including
+- **Traceability:** 155 requirement ids in `requirements.toml`, including
   the REQ-PROP, REQ-MC, REQ-CONTACT, REQ-PLUME, and REQ-TRAJOPT families.
 - **Byte-stable-by-default pattern observed** in everything that landed:
   pressure-thrust, transient grain, transports, realtime, contact, and
@@ -626,8 +814,8 @@ verifier, or capture logic.
 
 ## 4. Recommended next moves (from this snapshot)
 
-1. **Close the open partials before opening new fronts:** WP-05.3 runtime
-   deck consumption; WP-14.1 gear-leg closure; WP-12.4-b GPU boundary.
+1. **Close the open partials before opening new fronts:** WP-05.3 remaining
+   NTO/MMH/non-surrogate RP-1 evidence; WP-14.2 articulated mechanism wiring.
 2. **Advance the Phase-A gates:** finish WP-01.1 (spatial-vector tree) and
    finish WP-08.1 (high-degree Pines/Gottlieb tesseral gravity) — they block
    most of Phase B/C (02, 06, 07 closed-loop quality).

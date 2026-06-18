@@ -247,7 +247,8 @@ jobs:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
       - run: rustup target add thumbv7em-none-eabihf
-      - run: cargo check -p openbmp-core -p openbmp-state -p openbmp-models -p openbmp-mission -p openbmp-physics -p openbmp-propulsion -p openbmp-aero -p openbmp-sensors -p openbmp-hal -p openbmp-fc --no-default-features --target thumbv7em-none-eabihf --locked
+      - run: cargo check -p openbmp-core -p openbmp-state -p openbmp-models -p openbmp-mission -p openbmp-physics -p openbmp-propulsion -p openbmp-aero -p openbmp-afts -p openbmp-sensors -p openbmp-hal -p openbmp-fc --no-default-features --target thumbv7em-none-eabihf --locked
+      - run: cargo check -p openbmp-bridge -p openbmp-pil --no-default-features --target thumbv7em-none-eabihf --locked
       - run: cargo check -p openbmp-hal --no-default-features --locked
       - run: cargo test -p openbmp-hal flight_record --locked
       - run: cargo build -p openbmp-fc --no-default-features --features std --locked
@@ -730,6 +731,8 @@ jobs:
           rustc -vV
           test "$(rustc -vV | sed -n 's/^host: //p')" = "aarch64-unknown-linux-gnu"
           cargo test -p openbmp-core fp --locked
+      - name: Verify aarch64 MC scalar report bytes
+        run: cargo test -p openbmp-mc scalar_campaign_report_bytes_match_pinned_golden --locked
       - name: Build release binary
         run: cargo build --release --workspace --locked
       - name: Run native aarch64 canonical scenarios

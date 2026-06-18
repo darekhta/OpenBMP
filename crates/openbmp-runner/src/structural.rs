@@ -12,6 +12,9 @@
 use nalgebra::Vector3;
 use openbmp_core::Duration;
 use openbmp_scenario::ScenarioDocument;
+use openbmp_uq::{
+    CorrelatedErrorBudget, CredibilityLevel, UncertaintySource, structural_bending_margin_source,
+};
 use openbmp_vehicle::structural::BendingMode;
 
 use crate::error::RunnerError;
@@ -38,6 +41,7 @@ pub struct ActiveBending {
     /// FC also reads from `current_state`).
     pickup_rad_s: Vector3<f64>,
     reaction_moment_body_n_m: Vector3<f64>,
+    upstream_uq_sources: Vec<UncertaintySource>,
 }
 
 impl StructuralRack {
@@ -51,6 +55,33 @@ impl StructuralRack {
         let Some(cfg) = document.vehicle.bending.as_ref() else {
             return Ok(Self::Inactive);
         };
+        let upstream_uq_sources = cfg
+            .uq
+            .as_ref()
+            .map(|uq| {
+                structural_bending_margin_source(
+                    uq.deck_id.clone(),
+                    "frequency_hz",
+                    uq.frequency_lower_hz,
+                    cfg.frequency_hz,
+                    uq.frequency_upper_hz,
+                    CredibilityLevel::from_value(uq.credibility_level).ok_or_else(|| {
+                        RunnerError::UnsupportedScenario {
+                            what: format!(
+                                "[vehicle.bending.uq] credibility_level {} is outside 0..=4",
+                                uq.credibility_level
+                            ),
+                        }
+                    })?,
+                    uq.evidence.clone(),
+                )
+                .map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!("[vehicle.bending.uq] invalid: {err}"),
+                })
+            })
+            .transpose()?
+            .into_iter()
+            .collect();
         let omega_b = core::f64::consts::TAU * cfg.frequency_hz;
         let mode = BendingMode::new(
             omega_b,
@@ -68,6 +99,7 @@ impl StructuralRack {
             driver_accel_body: Vector3::zeros(),
             pickup_rad_s: Vector3::zeros(),
             reaction_moment_body_n_m: Vector3::zeros(),
+            upstream_uq_sources,
         }))
     }
 
@@ -133,6 +165,24 @@ impl StructuralRack {
         match self {
             Self::Inactive => Vector3::zeros(),
             Self::Active(a) => a.reaction_moment_body_n_m,
+        }
+    }
+
+    /// Source-tagged upstream UQ sources declared by the bending-mode deck.
+    #[must_use]
+    pub fn upstream_uq_sources(&self) -> &[UncertaintySource] {
+        match self {
+            Self::Inactive => &[],
+            Self::Active(a) => &a.upstream_uq_sources,
+        }
+    }
+
+    /// Gathered upstream UQ budget for the structural rack.
+    #[must_use]
+    pub fn upstream_uq_budget(&self) -> CorrelatedErrorBudget {
+        CorrelatedErrorBudget {
+            sources: self.upstream_uq_sources().to_vec(),
+            correlation: None,
         }
     }
 }

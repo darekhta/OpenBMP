@@ -1,0 +1,47 @@
+openbmp.gpu_offload_boundary_deck = 1
+
+[meta]
+dataset_id = "openbmp.det.gpu_offline.atmosphere_density.v1"
+title = "Synthetic offline GPU-boundary atmosphere density subset"
+producer = "external-gpu-offline-synthetic"
+source_model = "openbmp.physics.PiecewiseExponentialAtmosphere"
+provenance = "data/atmosphere/provenance.md"
+validation_status = "checked"
+no_live_gpu_path = true
+uq_relative = 0.005
+uq_evidence = "synthetic 0.5 percent relative band for offline deck-reproduction boundary testing"
+
+[[sample]]
+altitude_m = 0.0
+density_kg_m3 = 1.22500000000000009e+00
+reproduce = true
+
+[[sample]]
+altitude_m = 25000.0
+density_kg_m3 = 3.89899999999999969e-02
+reproduce = true
+
+[[sample]]
+altitude_m = 100000.0
+density_kg_m3 = 5.29699999999999985e-07
+reproduce = true
+
+[[sample]]
+altitude_m = 250000.0
+density_kg_m3 = 6.60360366521644702e-11
+reproduce = true
+
+[[sample]]
+altitude_m = 400000.0
+density_kg_m3 = 1.15907090545212265e-12
+reproduce = true
+
+[[sample]]
+altitude_m = 700000.0
+density_kg_m3 = 3.06999999999999979e-14
+reproduce = true
+
+[[sample]]
+altitude_m = 900000.0
+density_kg_m3 = 6.16964528026802066e-15
+reproduce = true

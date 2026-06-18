@@ -760,13 +760,14 @@ Effort sizes are from the research ladder.
   Schema-1 state rows now carry an optional empirical `c_star_efficiency`
   band; the deck interpolator preserves it and the liquid-engine bridge uses
   its nominal value for deterministic mass flow/`Isp` while retaining min/max
-  mass-flow and `Isp` envelope evidence. A first provenance-recorded Cantera
-  3.2.0 `gri30.yaml` LOX/LCH4 reference deck and tolerance table now checks
-  deck lookup plus liquid-engine mass-flow/thrust/`Isp` against independently
-  generated values, including a committed in-deck midpoint interpolation case
-  (`REQ-PROP-030` / `V-PROP-030`). The full CEARUN/Cantera tolerance-table
-  matrix for LOX/RP-1, LOX/LH2, NTO/MMH, and broader externally generated
-  LOX/LCH4 coverage remains future evidence before this WP is complete.
+  mass-flow and `Isp` envelope evidence. Provenance-recorded Cantera 3.2.0
+  LOX/LCH4, LOX/LH2, and LOX/RP-1 n-dodecane-surrogate reference decks and
+  tolerance tables now span 1-30 MPa chamber pressure with pair-appropriate MR
+  bands, checking every generated grid point plus multiple committed in-deck
+  interpolation cases against independently generated liquid-engine
+  mass-flow/thrust/`Isp` values (`REQ-PROP-030` / `V-PROP-030`). The full
+  CEARUN/Cantera tolerance-table matrix for NTO/MMH, plus non-surrogate RP-1
+  evidence, remains future evidence before this WP is complete.
 - **goal:** Derive `c*(pc,MR)`, `Tc`, `γ`, `MW` from a CEA/Cantera deck instead
   of hardcoded constants; enable mixture-ratio-aware liquid performance and the
   documented efficiency band.
@@ -939,9 +940,11 @@ Effort sizes are from the research ladder.
   `data/feed_system/` now covers stable, static-divergent, dynamically
   unstable, accumulator-detuned, and compliance-attenuated cases.
   Scenario-facing `[propulsion.pogo]` parsing and runner startup gating are
-  implemented and traced by `REQ-PROP-019` / `V-PROP-019`. Full
-  transfer-matrix assembly, structural modal-data consumption, and public Saturn
-  V/Titan case-history evidence remain future work before this WP is complete.
+  implemented and traced by `REQ-PROP-019` / `V-PROP-019`, including
+  `mode_source = "vehicle_bending"` consumption of the parsed
+  `[vehicle.bending]` first-mode frequency and damping. Full transfer-matrix
+  assembly and public Saturn V/Titan case-history evidence remain future work
+  before this WP is complete.
 - **goal:** Assemble `G_feed(s)` from the linearized feed network + pump
   cavitation compliance/mass-flow-gain, couple to the longitudinal structural
   mode from `02`, and run complex-eigenvalue / Nyquist stability + accumulator

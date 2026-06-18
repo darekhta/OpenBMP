@@ -1,0 +1,27 @@
+openbmp.comm_link_channel_model = 1
+
+[meta]
+dataset_id = "openbmp.comm.link_channel_model.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic link-channel packet effect fixture"
+provenance = "OpenBMP synthetic fixture for deterministic packet-effect latency and FER disposition evaluation."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[tolerances]
+latency_s = 1.0e-15
+
+[packet_case]
+link_id = "s-band-equator"
+scenario_seed = 7
+step = 11
+packet_index = 3
+direction = "downlink"
+slant_range_m = 299792.458
+processing_delay_s = 0.02
+fer = 0.0
+visible = true
+blackout = false
+expected_propagation_delay_s = 0.001
+expected_latency_s = 0.021
+expected_disposition = "deliver"

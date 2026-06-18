@@ -14,7 +14,9 @@ members = [
     "crates/openbmp-multibody",
     "crates/openbmp-aero",
     "crates/openbmp-aerothermal",
+    "crates/openbmp-afts",
     "crates/openbmp-contact",
+    "crates/openbmp-comm",
     "crates/openbmp-thermochem",
     "crates/openbmp-feedsystem",
     "crates/openbmp-propulsion",
@@ -28,6 +30,7 @@ members = [
     "crates/openbmp-sil",
     "crates/openbmp-sil-py",
     "crates/openbmp-fmi",
+    "crates/openbmp-pil",
     "crates/openbmp-testkit",
     "crates/openbmp-mc",
     "crates/openbmp-rt",
@@ -154,7 +157,9 @@ openbmp-vehicle    = { version = "0.0.1", path = "crates/openbmp-vehicle" }
 openbmp-multibody  = { version = "0.0.1", path = "crates/openbmp-multibody" }
 openbmp-aero       = { version = "0.0.1", path = "crates/openbmp-aero" }
 openbmp-aerothermal = { version = "0.0.1", path = "crates/openbmp-aerothermal" }
+openbmp-afts       = { version = "0.0.1", path = "crates/openbmp-afts" }
 openbmp-contact    = { version = "0.0.1", path = "crates/openbmp-contact" }
+openbmp-comm       = { version = "0.0.1", path = "crates/openbmp-comm" }
 openbmp-thermochem = { version = "0.0.1", path = "crates/openbmp-thermochem" }
 openbmp-feedsystem = { version = "0.0.1", path = "crates/openbmp-feedsystem" }
 openbmp-propulsion = { version = "0.0.1", path = "crates/openbmp-propulsion" }
@@ -166,6 +171,7 @@ openbmp-telemetry  = { version = "0.0.1", path = "crates/openbmp-telemetry" }
 openbmp-scenario   = { version = "0.0.1", path = "crates/openbmp-scenario" }
 openbmp-scenario-script = { version = "0.0.1", path = "crates/openbmp-scenario-script" }
 openbmp-sil        = { version = "0.0.1", path = "crates/openbmp-sil" }
+openbmp-pil        = { version = "0.0.1", path = "crates/openbmp-pil" }
 openbmp-testkit    = { version = "0.0.1", path = "crates/openbmp-testkit" }
 openbmp-mc         = { version = "0.0.1", path = "crates/openbmp-mc" }
 openbmp-rt         = { version = "0.0.1", path = "crates/openbmp-rt" }

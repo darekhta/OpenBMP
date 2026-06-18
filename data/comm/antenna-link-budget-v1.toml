@@ -1,0 +1,32 @@
+openbmp.comm_antenna_link_budget = 1
+
+[meta]
+dataset_id = "openbmp.comm.antenna_link_budget.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic antenna gain/body-mask link budget fixture"
+provenance = "OpenBMP synthetic fixture for applying a body-frame antenna gain deck and body-mask deck inside runner LinkState budget evaluation."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[antenna]
+boresight_body = [-1.0, 0.0, 0.0]
+samples = [
+  { off_boresight_deg = 0.0, gain_dbi = 3.0 },
+  { off_boresight_deg = 90.0, gain_dbi = 0.0 },
+  { off_boresight_deg = 180.0, gain_dbi = -20.0 },
+]
+
+[body_mask]
+mesh_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+antenna_position_body_m = [0.0, 0.0, 0.0]
+
+directions = [
+  { direction_body = [-1.0, 0.0, 0.0], expected_blocked = false },
+  { direction_body = [1.0, 0.0, 0.0], expected_blocked = true },
+  { direction_body = [0.0, 1.0, 0.0], expected_blocked = false },
+]
+
+triangles = [
+  { a_m = [1.0, -1.0, -1.0], b_m = [1.0, 1.0, -1.0], c_m = [1.0, 1.0, 1.0] },
+  { a_m = [1.0, -1.0, -1.0], b_m = [1.0, 1.0, 1.0], c_m = [1.0, -1.0, 1.0] },
+]

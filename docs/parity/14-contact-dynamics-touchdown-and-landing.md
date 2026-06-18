@@ -214,7 +214,7 @@ touchdown outcomes remain open.**
 |---|---|---|
 | Ground contact | `GroundImpact` default; schema-v3 `[contact]` half-space point/sphere force wired through runner with scalar diagnostics and endpoint report; `[vehicle.landing_gear]` footpads use per-pad `ContactPair` geometry/friction with external oleo/crush normal loads | T1 gear/leg contact + friction + leg/survival outcome classification |
 | Stiction / rest | none | T2 anchored stiction + rest detection |
-| Joint stops / backlash / latches | actuator-path deadband only | T1/T2 scalar penalty primitives |
+| Joint stops / backlash / latches | `openbmp-contact` scalar primitives plus declarative `[[contact.mechanism]]` angular fixtures; not force-coupled to tree joints yet | T1/T2 scalar penalty primitives |
 | Closed kinematic loops | none (doc `01` is tree-only) | T3 CFE + Baumgarte on the tree |
 | Landing gear | T2 massless oleo + crush-core legs with per-pad `ContactPair` footpads and synthetic four-leg drop evidence | T3 gear DOFs |
 | Engine-cutoff-height | runner-side truth-fed director (`separated_landing.rs`) | T2 FC-side cutoff FSM on sensed state |
@@ -791,20 +791,27 @@ sibling notation (`WP-NN.t`, doc `NN`).
 ### WP-14.1 — `openbmp-contact` substrate: ground plane + compliant normal + regularized Coulomb
 
 - **title:** New L2 contact crate with half-space contact, Hertz/Hunt-Crossley/Kelvin-Voigt normal laws, regularized Coulomb friction, fixed sub-stepping, energy audit.
-- **implementation_status:** partial substrate plus first runner integration
-  implemented and traced by `REQ-CONTACT-001` / `V-CONTACT-001` and
-  `REQ-CONTACT-002` / `V-CONTACT-002`: `openbmp-contact` exists as an L2 crate
-  with point/sphere half-space kinematics, Kelvin-Voigt, Hertz, and
-  Hunt-Crossley normal laws, regularized Coulomb friction, the fixed-step
-  stability bound, and energy-audit closure tests. Schema-v3 `[contact]` is now
-  scenario-reachable as a point/sphere half-space force in the point-mass and
-  rigid-body runners with standard force telemetry, contact diagnostics
-  telemetry, load-time stability checks, and a `RunOutcome.contact` report that
-  classifies half-space runs as `NoContact`, `Rest`, or `Unsettled` and reports
-  a deterministic elastic-energy/contact-work/dissipation closure audit.
-  `contact.substeps` now drives the runner kernel step size as well as the
-  load-time stability bound. Gear-leg assemblies remain a future slice before
-  the contact/landing tier is complete.
+- **implementation_status:** implemented for the scoped half-space substrate,
+  first runner integration, and gear-leg assembly acceptance. The contact
+  substrate and first runner integration are traced by `REQ-CONTACT-001` /
+  `V-CONTACT-001` and `REQ-CONTACT-002` / `V-CONTACT-002`: `openbmp-contact`
+  exists as an L2 crate with point/sphere half-space kinematics,
+  Kelvin-Voigt, Hertz, and Hunt-Crossley normal laws, regularized Coulomb
+  friction, the fixed-step stability bound, and energy-audit closure tests.
+  Schema-v3 `[contact]` is scenario-reachable as a point/sphere half-space
+  force in the point-mass and rigid-body runners with standard force telemetry,
+  contact diagnostics telemetry, load-time stability checks, and a
+  `RunOutcome.contact` report that classifies half-space runs as `NoContact`,
+  `Rest`, or `Unsettled` and reports a deterministic
+  elastic-energy/contact-work/dissipation closure audit. `contact.substeps`
+  drives the runner kernel step size as well as the load-time stability bound.
+  The gear-leg assembly acceptance condition is now closed by the WP-14.4
+  landing-gear rack: validated oleo/crush legs, per-pad `ContactPair`
+  footpads, scenario wiring, pinned four-leg drop fixture, rest classification,
+  force/moment adapters, telemetry, section-load recovery, and <1% energy-audit
+  closure are traced by `REQ-CONTACT-006` / `V-CONTACT-006` and
+  `REQ-CONTACT-007` / `V-CONTACT-007`. Remaining contact/landing work starts at
+  the later terrain, dispersions, sea-state deck, and implicit-solver WPs.
 - **goal:** The sim stops ending at the ground. A `ContactPair` registry on the
   existing rigid-body kernel evaluates gap/normal/friction forces into the
   force accumulator at a fixed sub-step rate, with a fail-closed
@@ -841,13 +848,22 @@ sibling notation (`WP-NN.t`, doc `NN`).
 ### WP-14.2 — Scalar stop / backlash / latch primitives
 
 - **title:** One-sided joint stops, two-sided backlash gap, monotone latch elements on scalar coordinates.
-- **implementation_status:** partial crate-level primitives implemented and
-  traced by `REQ-CONTACT-003` / `V-CONTACT-003`: `openbmp-contact` exposes
-  `ScalarStop`, `BacklashGap`, and `MonotoneLatch` with finite-input
-  validation, unilateral no-tension clamping, exact configured backlash
-  dead-zone width reporting, a closed-form Kelvin-Voigt restitution helper and
-  numerical restitution test, and an engage-once latch property test. Runner
-  scenario fixtures and tree-joint wiring remain later mechanism slices.
+- **implementation_status:** partial crate/schema implementation traced by
+  `REQ-CONTACT-003` / `V-CONTACT-003`: `openbmp-contact` exposes `ScalarStop`,
+  `BacklashGap`, `MonotoneLatch`, `ScalarMechanismElement`, and
+  `evaluate_scalar_mechanism` with finite-input validation, unilateral
+  no-tension clamping, exact configured backlash dead-zone width reporting, a
+  closed-form Kelvin-Voigt restitution helper and numerical restitution test,
+  declaration-order latch state updates through caller-owned storage, and
+  engage-once latch property tests. Schema-v3 `[contact]` accepts optional
+  `[[contact.mechanism]]` angular stop/backlash/latch fixtures with
+  kind-specific fail-closed validation and duplicate-id rejection. Schema-v3
+  `[[multi_body.gimbal_joint]]` entries can now bind one mechanism by
+  `mechanism_id` when the mechanism coordinate matches the engine id, and the
+  rigid runner injects the mechanism response as primary-axis generalized
+  gimbal force during articulated shadow derivative/forecast evaluation. CFE
+  loop-constraint dynamics, multi-axis mechanism routing, and broader doc-01
+  tree-joint authority remain later mechanism slices.
 - **goal:** The constraint-primitive vocabulary (§3.3) every articulated
   mechanism needs — gear locks, deploy stops, clearance — defined on scalar
   coordinates now (effector/strut), wired to tree joints in WP-14.6. The latch
@@ -855,15 +871,19 @@ sibling notation (`WP-NN.t`, doc `NN`).
 - **fidelity_tier:** T1
 - **depends_on:** [WP-14.1]
 - **new_crates:** none (extend `openbmp-contact`).
-- **touched:** `crates/openbmp-contact/src/{stop.rs,backlash.rs,latch.rs}(new)`,
-  unit + scenario fixtures.
+- **touched:** `crates/openbmp-contact/src/{stop.rs,backlash.rs,latch.rs,mechanism.rs}`,
+  `crates/openbmp-scenario/src/{document.rs,scenario.rs}`, `docs/scenario-format.md`.
 - **approach:** §3.3. Penalty stop with damping gated on penetration; dead-zone
   flank springs; latch capture window evaluated at step boundaries, monotone
-  engaged flag.
+  engaged flag; aggregate evaluator sums stop/backlash generalized force and
+  updates latch storage in declared order. `[[contact.mechanism]]` fixtures are
+  declarative until the doc-`01` tree/CFE integration exists.
 - **acceptance:**
   - off by default; goldens byte-identical
   - backlash dead-zone width exact; stop restitution matches closed form `< 2%`
   - latch engages exactly once and never releases within a run (property test)
+  - schema fixture accepts valid stop/backlash/latch entries and rejects
+    kind-incompatible fields
   - all `13` §2 gates green
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line.

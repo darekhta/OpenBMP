@@ -3,30 +3,58 @@
 use std::collections::BTreeMap;
 
 use nalgebra::Matrix3;
-use openbmp_core::{Eci, Position3, SimTime};
+use openbmp_core::{Eci, FrameError, Position3, SimTime};
 use openbmp_physics::{
-    CelestialBody, Egm2008ZonalGravity, EphemerisModel, EphemerisState, GravityModel, J2Gravity,
-    J2000_JULIAN_DATE, LowPrecisionSunMoonEphemeris, PointMassGravity, SpkEphemeris, SpkFixedFrame,
-    ThirdBody, ThirdBodyGravity, WGS84_J2,
+    CelestialBody, DegreeTwoTesseralCoefficients, EarthFixedGravity, Egm2008ZonalGravity,
+    EphemerisModel, EphemerisState, FiniteDifferencePinesGravity, GravityModel,
+    HarmonicSynthesisTier, J2Gravity, J2000_JULIAN_DATE, LocalGeodeticOrigin,
+    LowPrecisionSunMoonEphemeris, PointMassGravity, SpkEphemeris, SpkFixedFrame, TesseralGravity,
+    ThirdBody, ThirdBodyGravity, TideSystem, TimeScaleBridge, WGS84_J2,
 };
 use openbmp_scenario::{ResolvedFile, ScenarioDocument};
 
 use crate::error::RunnerError;
 
+#[cfg(test)]
 const SECONDS_PER_DAY: f64 = 86_400.0;
-const TT_MINUS_TAI_S: f64 = 32.184;
-const DEG_TO_RAD: f64 = std::f64::consts::PI / 180.0;
+
+const DEFAULT_PINES_FINITE_DIFFERENCE_STEP_M: f64 = 10.0;
+
+/// EGM2008 central-gravity runtime selected by the scenario.
+#[derive(Clone, Debug)]
+pub(crate) enum RuntimeEgm2008Gravity {
+    /// Legacy pinned degree-2 through degree-6 zonal-only model.
+    Zonal(Egm2008ZonalGravity),
+    /// Opt-in coefficient-file transition model evaluated through the
+    /// selected Earth-fixed frame.
+    Pines(EarthFixedGravity<FiniteDifferencePinesGravity>),
+}
+
+impl GravityModel for RuntimeEgm2008Gravity {
+    fn gravity_eci_m_s2(
+        &self,
+        position_eci: Position3<Eci>,
+        time: SimTime,
+    ) -> Result<nalgebra::Vector3<f64>, openbmp_physics::PhysicsError> {
+        match self {
+            Self::Zonal(model) => model.gravity_eci_m_s2(position_eci, time),
+            Self::Pines(model) => model.gravity_eci_m_s2(position_eci, time),
+        }
+    }
+}
 
 /// Concrete central-gravity variants available under
 /// `environment.gravity = "third_body"`.
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum RuntimeCentralGravity {
     /// Point-mass Earth central gravity.
     PointMass(PointMassGravity),
     /// J2 Earth central gravity.
     J2(J2Gravity),
-    /// Pinned zonal-only EGM2008 central gravity.
-    Egm2008(Egm2008ZonalGravity),
+    /// Pinned or coefficient-file EGM2008 central gravity.
+    Egm2008(RuntimeEgm2008Gravity),
+    /// Frame-coupled degree-2 tesseral/sectoral Earth central gravity.
+    Tesseral(EarthFixedGravity<TesseralGravity>),
 }
 
 impl GravityModel for RuntimeCentralGravity {
@@ -39,6 +67,7 @@ impl GravityModel for RuntimeCentralGravity {
             Self::PointMass(model) => model.gravity_eci_m_s2(position_eci, time),
             Self::J2(model) => model.gravity_eci_m_s2(position_eci, time),
             Self::Egm2008(model) => model.gravity_eci_m_s2(position_eci, time),
+            Self::Tesseral(model) => model.gravity_eci_m_s2(position_eci, time),
         }
     }
 }
@@ -91,7 +120,7 @@ pub(crate) fn build_third_body_gravity(
     document: &ScenarioDocument,
     resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<RuntimeThirdBodyGravity, RunnerError> {
-    let central = build_central_gravity(document)?;
+    let central = build_central_gravity(document, resolved_files)?;
     let ephemeris = build_ephemeris(document, resolved_files)?;
     let mut bodies = Vec::with_capacity(document.environment.third_bodies.len());
     for label in &document.environment.third_bodies {
@@ -624,6 +653,7 @@ fn spice_quaternion_to_matrix(q: [f64; 4]) -> Matrix3<f64> {
 
 fn build_central_gravity(
     document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<RuntimeCentralGravity, RunnerError> {
     let base = document
         .environment
@@ -662,13 +692,141 @@ fn build_central_gravity(
             let j2 = document.environment.j2.unwrap_or(WGS84_J2);
             Ok(RuntimeCentralGravity::J2(J2Gravity::new(mu, r_e, j2)?))
         }
-        "egm2008" => Ok(RuntimeCentralGravity::Egm2008(
-            Egm2008ZonalGravity::wgs84_egm2008_zonal(),
-        )),
+        "egm2008" => Ok(RuntimeCentralGravity::Egm2008(build_egm2008_gravity(
+            document,
+            resolved_files,
+        )?)),
+        "tesseral" => Ok(RuntimeCentralGravity::Tesseral(build_tesseral_gravity(
+            document,
+            resolved_files,
+        )?)),
         other => Err(RunnerError::UnsupportedScenario {
             what: format!("environment.gravity_base = {other} is not wired"),
         }),
     }
+}
+
+/// Build the EGM2008 runtime gravity selected by the scenario.
+///
+/// Without `environment.egm2008_coefficients_file`, this preserves the legacy
+/// pinned zonal-only degree-2 through degree-6 model. With a resolved ICGEM GFC
+/// file and explicit degree/order, it builds the finite-difference Pines
+/// transition model and evaluates it through the selected Earth-fixed frame.
+pub(crate) fn build_egm2008_gravity(
+    document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<RuntimeEgm2008Gravity, RunnerError> {
+    if document.environment.egm2008_coefficients_file.is_none() {
+        return Ok(RuntimeEgm2008Gravity::Zonal(
+            Egm2008ZonalGravity::wgs84_egm2008_zonal(),
+        ));
+    }
+    let resolved = resolved_files
+        .get("environment.egm2008_coefficients_file")
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "environment.egm2008_coefficients_file was not resolved".to_owned(),
+        })?;
+    let gfc = std::str::from_utf8(resolved.bytes.as_slice()).map_err(|err| {
+        RunnerError::UnsupportedScenario {
+            what: format!("environment.egm2008_coefficients_file must be UTF-8 GFC text: {err}"),
+        }
+    })?;
+    let finite_difference_step_m = document
+        .environment
+        .egm2008_finite_difference_step_m
+        .unwrap_or(DEFAULT_PINES_FINITE_DIFFERENCE_STEP_M);
+    let body_fixed =
+        if let Some(tier_tag) = &document.environment.egm2008_tier {
+            let tier = HarmonicSynthesisTier::from_egm2008_tag(tier_tag)?;
+            FiniteDifferencePinesGravity::new_from_icgem_gfc_str_with_synthesis_tier(
+                gfc,
+                tier,
+                finite_difference_step_m,
+            )?
+        } else {
+            let degree = document.environment.egm2008_degree.ok_or_else(|| {
+                RunnerError::UnsupportedScenario {
+                    what: "environment.egm2008_degree missing for EGM2008 coefficient-file gravity"
+                        .to_owned(),
+                }
+            })?;
+            let order = document.environment.egm2008_order.ok_or_else(|| {
+                RunnerError::UnsupportedScenario {
+                    what: "environment.egm2008_order missing for EGM2008 coefficient-file gravity"
+                        .to_owned(),
+                }
+            })?;
+            FiniteDifferencePinesGravity::new_from_icgem_gfc_str(
+                gfc,
+                degree,
+                order,
+                finite_difference_step_m,
+            )?
+        };
+    let frame = crate::frames::build_frame_context(document, resolved_files)?;
+    Ok(RuntimeEgm2008Gravity::Pines(EarthFixedGravity::new(
+        body_fixed, frame,
+    )))
+}
+
+/// Build the current bounded degree-2 Earth-fixed tesseral gravity model.
+///
+/// The coefficient evaluator is intentionally still the low-degree transition
+/// path from `openbmp-physics`; this runner hook only wires the existing model
+/// through the selected frame context.
+pub(crate) fn build_tesseral_gravity(
+    document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<EarthFixedGravity<TesseralGravity>, RunnerError> {
+    let mu = document
+        .environment
+        .mu_m3_s2
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "environment.mu_m3_s2 missing for tesseral gravity".to_owned(),
+        })?;
+    let r_e = document
+        .environment
+        .r_e_m
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "environment.r_e_m missing for tesseral gravity".to_owned(),
+        })?;
+    let scalar = |name: &'static str, value: Option<f64>| -> Result<f64, RunnerError> {
+        value.ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("environment.{name} missing for tesseral gravity"),
+        })
+    };
+    let tide_system = TideSystem::from_tag(
+        document
+            .environment
+            .tesseral_tide_system
+            .as_deref()
+            .unwrap_or("tide_free"),
+    )?;
+    let coefficients = DegreeTwoTesseralCoefficients::new(
+        scalar("tesseral_c20", document.environment.tesseral_c20)?,
+        scalar("tesseral_c21", document.environment.tesseral_c21)?,
+        scalar("tesseral_s21", document.environment.tesseral_s21)?,
+        scalar("tesseral_c22", document.environment.tesseral_c22)?,
+        scalar("tesseral_s22", document.environment.tesseral_s22)?,
+        tide_system,
+    )?;
+    let degree =
+        document
+            .environment
+            .tesseral_degree
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "environment.tesseral_degree missing for tesseral gravity".to_owned(),
+            })?;
+    let order =
+        document
+            .environment
+            .tesseral_order
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "environment.tesseral_order missing for tesseral gravity".to_owned(),
+            })?;
+    let body_fixed = TesseralGravity::new(mu, r_e, coefficients, degree, order)?;
+    let frame = crate::frames::build_frame_context(document, resolved_files)?;
+    Ok(EarthFixedGravity::new(body_fixed, frame))
 }
 
 fn parse_celestial_body(label: &str) -> Result<CelestialBody, RunnerError> {
@@ -691,9 +849,17 @@ fn epoch_tdb_julian_date(
     };
     let scale = epoch.scale.to_ascii_uppercase();
     let jd = parse_iso8601_julian_date(&epoch.iso8601)?;
+    let observer = dtdb_observer_geometry(document)?;
     match scale.as_str() {
         "TDB" => Ok(jd),
-        "TT" => Ok(tt_to_tdb_julian_date(jd)),
+        "TT" => TimeScaleBridge::tt_julian_date_to_tdb_erfa_approx(
+            jd,
+            0.0,
+            observer.longitude_rad,
+            observer.distance_spin_axis_km,
+            observer.distance_north_equator_km,
+        )
+        .map_err(time_scale_bridge_error),
         "UTC" => {
             let Some(table) = resolved_leap_second_table(document, resolved_files)? else {
                 if require_leap_seconds_for_utc {
@@ -703,7 +869,12 @@ fn epoch_tdb_julian_date(
                 }
                 return Ok(jd);
             };
-            Ok(utc_to_tdb_julian_date(jd, &table)?)
+            Ok(utc_to_tdb_julian_date(
+                jd,
+                &table,
+                resolved_files,
+                observer,
+            )?)
         }
         _ => Err(RunnerError::UnsupportedScenario {
             what: format!(
@@ -765,7 +936,7 @@ struct LeapSecondEntry {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct LeapSecondTable {
+pub(crate) struct LeapSecondTable {
     entries: Vec<LeapSecondEntry>,
 }
 
@@ -794,7 +965,7 @@ impl LeapSecondTable {
         Ok(Self { entries })
     }
 
-    fn tai_minus_utc_s(&self, utc_julian_date: f64) -> Result<f64, RunnerError> {
+    pub(crate) fn tai_minus_utc_s(&self, utc_julian_date: f64) -> Result<f64, RunnerError> {
         let index = self
             .entries
             .partition_point(|entry| entry.effective_utc_julian_date <= utc_julian_date);
@@ -807,7 +978,7 @@ impl LeapSecondTable {
     }
 }
 
-fn resolved_leap_second_table(
+pub(crate) fn resolved_leap_second_table(
     document: &ScenarioDocument,
     resolved_files: &BTreeMap<String, ResolvedFile>,
 ) -> Result<Option<LeapSecondTable>, RunnerError> {
@@ -1041,18 +1212,77 @@ fn naif_lsk_month_number(month: &str) -> Result<u32, RunnerError> {
 fn utc_to_tdb_julian_date(
     utc_julian_date: f64,
     leap_seconds: &LeapSecondTable,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+    observer: DtdbObserverGeometry,
 ) -> Result<f64, RunnerError> {
     let tai_minus_utc_s = leap_seconds.tai_minus_utc_s(utc_julian_date)?;
-    let tt_julian_date = utc_julian_date + (tai_minus_utc_s + TT_MINUS_TAI_S) / SECONDS_PER_DAY;
-    Ok(tt_to_tdb_julian_date(tt_julian_date))
+    let ut1_minus_utc_s = epoch_ut1_minus_utc_s(resolved_files, utc_julian_date)?.unwrap_or(0.0);
+    let bridge =
+        TimeScaleBridge::new(tai_minus_utc_s, ut1_minus_utc_s).map_err(time_scale_bridge_error)?;
+    bridge
+        .utc_julian_date_to_tdb_erfa_approx(
+            utc_julian_date,
+            observer.longitude_rad,
+            observer.distance_spin_axis_km,
+            observer.distance_north_equator_km,
+        )
+        .map_err(time_scale_bridge_error)
 }
 
-fn tt_to_tdb_julian_date(tt_julian_date: f64) -> f64 {
-    let days_since_j2000 = tt_julian_date - J2000_JULIAN_DATE;
-    let mean_anomaly_rad = (357.53 + 0.985_600_3 * days_since_j2000) * DEG_TO_RAD;
-    let tdb_minus_tt_s =
-        0.001_657 * mean_anomaly_rad.sin() + 0.000_013_85 * (2.0 * mean_anomaly_rad).sin();
-    tt_julian_date + tdb_minus_tt_s / SECONDS_PER_DAY
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct DtdbObserverGeometry {
+    longitude_rad: f64,
+    distance_spin_axis_km: f64,
+    distance_north_equator_km: f64,
+}
+
+impl DtdbObserverGeometry {
+    const GEOCENTRIC: Self = Self {
+        longitude_rad: 0.0,
+        distance_spin_axis_km: 0.0,
+        distance_north_equator_km: 0.0,
+    };
+}
+
+fn dtdb_observer_geometry(
+    document: &ScenarioDocument,
+) -> Result<DtdbObserverGeometry, RunnerError> {
+    let Some(local_origin) = document
+        .frames
+        .as_ref()
+        .and_then(|frames| frames.local_origin.as_ref())
+    else {
+        return Ok(DtdbObserverGeometry::GEOCENTRIC);
+    };
+    let origin = LocalGeodeticOrigin::new_degrees(
+        local_origin.latitude_deg,
+        local_origin.longitude_deg,
+        local_origin.height_m,
+    )
+    .map_err(|err| RunnerError::Env(err.into()))?;
+    let ecef = origin.to_ecef_position().vector;
+    Ok(DtdbObserverGeometry {
+        longitude_rad: origin.longitude_rad,
+        distance_spin_axis_km: (ecef.x * ecef.x + ecef.y * ecef.y).sqrt() * 1.0e-3,
+        distance_north_equator_km: ecef.z * 1.0e-3,
+    })
+}
+
+fn epoch_ut1_minus_utc_s(
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+    epoch_utc_julian_date: f64,
+) -> Result<Option<f64>, RunnerError> {
+    let Some(resolved) = resolved_files.get("epoch.eop") else {
+        return Ok(None);
+    };
+    let table = crate::frames::parse_earth_orientation_table(resolved, epoch_utc_julian_date)?;
+    Ok(Some(table.sample(SimTime::ZERO).ut1_minus_utc_s))
+}
+
+fn time_scale_bridge_error(err: FrameError) -> RunnerError {
+    RunnerError::UnsupportedScenario {
+        what: format!("epoch time-scale conversion failed: {err}"),
+    }
 }
 
 fn parse_i32(part: Option<&str>, original: &str, field: &str) -> Result<i32, RunnerError> {
@@ -1152,9 +1382,15 @@ mod tests {
         let table = parse_leap_second_table(&resolved_file("leaps.toml", LEAP_SECOND_TABLE))
             .expect("parse leap-second table");
         let utc = parse_iso8601_julian_date("2017-01-01T00:00:00Z").unwrap();
-        let tdb = utc_to_tdb_julian_date(utc, &table).unwrap();
+        let tdb = utc_to_tdb_julian_date(
+            utc,
+            &table,
+            &BTreeMap::new(),
+            DtdbObserverGeometry::GEOCENTRIC,
+        )
+        .unwrap();
         let offset_s = (tdb - utc) * SECONDS_PER_DAY;
-        assert!((69.18..69.19).contains(&offset_s));
+        assert!((offset_s - 69.183_950_5).abs() < 4.0e-5);
     }
 
     #[test]
@@ -1162,9 +1398,94 @@ mod tests {
         let table = parse_leap_second_table(&resolved_file("naif0012.tls", NAIF_LSK))
             .expect("parse NAIF leap-second kernel");
         let utc = parse_iso8601_julian_date("2017-01-01T00:00:00Z").unwrap();
-        let tdb = utc_to_tdb_julian_date(utc, &table).unwrap();
+        let tdb = utc_to_tdb_julian_date(
+            utc,
+            &table,
+            &BTreeMap::new(),
+            DtdbObserverGeometry::GEOCENTRIC,
+        )
+        .unwrap();
         let offset_s = (tdb - utc) * SECONDS_PER_DAY;
-        assert!((69.18..69.19).contains(&offset_s));
+        assert!((offset_s - 69.183_950_5).abs() < 4.0e-5);
+    }
+
+    #[test]
+    fn local_origin_supplies_topocentric_dtdb_geometry() {
+        let table = parse_leap_second_table(&resolved_file("leaps.toml", LEAP_SECOND_TABLE))
+            .expect("parse leap-second table");
+        let utc = parse_iso8601_julian_date("2017-01-01T00:00:00Z").unwrap();
+        let scenario = Scenario::from_toml_str(&format!(
+            "{SPK_THIRD_BODY_SCENARIO}\n\
+             [frames]\n\
+             profile = \"toy-fixed-earth\"\n\
+             [frames.local_origin]\n\
+             latitude_deg = 52.3\n\
+             longitude_deg = -80.661\n\
+             height_m = 0.0\n\
+             source = \"synthetic dtdb unit-test origin\"\n"
+        ))
+        .unwrap();
+        let observer = dtdb_observer_geometry(&scenario.document).unwrap();
+
+        assert!(observer.longitude_rad.is_sign_negative());
+        assert!(observer.distance_spin_axis_km > 3_800.0);
+        assert!(observer.distance_north_equator_km > 5_000.0);
+
+        let bridge = TimeScaleBridge::new(table.tai_minus_utc_s(utc).unwrap(), 0.0).unwrap();
+        let tt = bridge.utc_julian_date_to_tt(utc).unwrap();
+        let ut1_day_fraction = bridge.utc_julian_date_to_ut1(utc).unwrap().rem_euclid(1.0);
+        let geocentric = TimeScaleBridge::tdb_minus_tt_erfa_approx_s(
+            tt,
+            ut1_day_fraction,
+            DtdbObserverGeometry::GEOCENTRIC.longitude_rad,
+            DtdbObserverGeometry::GEOCENTRIC.distance_spin_axis_km,
+            DtdbObserverGeometry::GEOCENTRIC.distance_north_equator_km,
+        )
+        .unwrap();
+        let topocentric = TimeScaleBridge::tdb_minus_tt_erfa_approx_s(
+            tt,
+            ut1_day_fraction,
+            observer.longitude_rad,
+            observer.distance_spin_axis_km,
+            observer.distance_north_equator_km,
+        )
+        .unwrap();
+        let delta_s = topocentric - geocentric;
+
+        assert!(delta_s.abs() > 1.0e-10);
+        assert!(delta_s.abs() < 3.0e-6);
+    }
+
+    #[test]
+    fn epoch_eop_supplies_ut1_offset_for_dtdb_phase() {
+        let scenario = Scenario::from_toml_str(SPK_THIRD_BODY_SCENARIO).unwrap();
+        let epoch = parse_iso8601_julian_date("2017-01-01T00:00:00Z").unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "epoch.eop".to_owned(),
+            resolved_file(
+                "eop.toml",
+                r#"
+format = "openbmp-eop-v1"
+
+[[samples]]
+time_s = 0.0
+ut1_minus_utc_s = 0.5912975
+x_pole_arcsec = 0.080450
+y_pole_arcsec = 0.263074
+cip_offset_x_arcsec = -0.000019
+cip_offset_y_arcsec = -0.000057
+lod_s = 0.0010342
+"#,
+            ),
+        );
+
+        assert_eq!(
+            epoch_ut1_minus_utc_s(&files, epoch).unwrap(),
+            Some(0.591_297_5)
+        );
+        let geocentric_observer = dtdb_observer_geometry(&scenario.document).unwrap();
+        assert!(geocentric_observer.distance_spin_axis_km.abs() <= f64::EPSILON);
     }
 
     #[test]
@@ -1180,6 +1501,77 @@ mod tests {
             RuntimeEphemeris::Spk(spk) => assert_eq!(spk.segment_count(), 4),
             other => panic!("expected SPK ephemeris, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn builds_third_body_gravity_with_tesseral_central_model() {
+        let toml = SPK_THIRD_BODY_SCENARIO
+            .replace(
+                "gravity_base  = \"point_mass\"\nmu_m3_s2      = 3.986004418e14",
+                "gravity_base  = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 2\ntesseral_order = 2\ntesseral_c20 = -1.082626683e-3\ntesseral_c21 = 2.0e-7\ntesseral_s21 = -3.0e-7\ntesseral_c22 = 1.0e-7\ntesseral_s22 = -2.0e-7",
+            )
+            .replace(
+                "ephemeris     = \"spk\"\nephemeris_file = \"synthetic.bsp\"",
+                "ephemeris     = \"low_precision_sun_moon\"",
+            );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let gravity = build_third_body_gravity(&scenario.document, &BTreeMap::new()).unwrap();
+
+        match gravity.central() {
+            RuntimeCentralGravity::Tesseral(model) => {
+                let acceleration = model
+                    .gravity_eci_m_s2(
+                        Position3::new(6_900_000.0, 400_000.0, 300_000.0),
+                        SimTime::ZERO,
+                    )
+                    .unwrap();
+                assert!(acceleration.y.is_finite());
+                assert!(acceleration.y.abs() > 1.0e-6);
+            }
+            other => panic!("expected tesseral central gravity, got {other:?}"),
+        }
+        match gravity.ephemeris() {
+            RuntimeEphemeris::LowPrecisionSunMoon(_) => {}
+            other => panic!("expected low-precision ephemeris, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builds_file_backed_egm2008_named_tier_gravity() {
+        let scenario = Scenario::from_toml_str(EGM2008_TIER_SCENARIO).unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(
+            "environment.egm2008_coefficients_file".to_owned(),
+            resolved_file("egm70.gfc", SYNTHETIC_EGM2008_DEGREE70_GFC),
+        );
+
+        let gravity = build_egm2008_gravity(&scenario.document, &files).unwrap();
+        match gravity {
+            RuntimeEgm2008Gravity::Pines(model) => {
+                let acceleration = model
+                    .gravity_eci_m_s2(
+                        Position3::new(6_900_000.0, 400_000.0, 300_000.0),
+                        SimTime::ZERO,
+                    )
+                    .unwrap();
+                assert!(acceleration.iter().all(|value| value.is_finite()));
+            }
+            other => panic!("expected file-backed Pines EGM2008 gravity, got {other:?}"),
+        }
+
+        files.insert(
+            "environment.egm2008_coefficients_file".to_owned(),
+            resolved_file(
+                "egm10.gfc",
+                &SYNTHETIC_EGM2008_DEGREE70_GFC.replace("max_degree 70", "max_degree 10"),
+            ),
+        );
+        assert!(matches!(
+            build_egm2008_gravity(&scenario.document, &files),
+            Err(RunnerError::Env(
+                openbmp_physics::PhysicsError::InvalidParameter { .. }
+            ))
+        ));
     }
 
     #[test]
@@ -1449,6 +1841,66 @@ DELTET/DELTA_AT  = ( 10, @1972-JAN-1
                      @2017-JAN-1 )
 
 \begintext
+"#;
+
+    const EGM2008_TIER_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "egm2008-tier-test"
+description = "File-backed EGM2008 named-tier wiring test."
+validation = "validated-toy"
+provenance = "synthetic runner unit test"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 1.0
+seed = 1
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [6900000.0, 400000.0, 300000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "egm2008-tier-test"
+
+[[vehicle.assembly.bodies]]
+id          = "main"
+geometry    = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity       = "egm2008"
+egm2008_coefficients_file = "egm70.gfc"
+egm2008_tier = "degree70"
+atmosphere    = "none"
+wind          = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/egm2008-tier-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
+    const SYNTHETIC_EGM2008_DEGREE70_GFC: &str = r#"
+modelname synthetic_egm2008_degree70
+earth_gravity_constant 398600441800000.0
+radius 6378137.0
+max_degree 70
+norm fully_normalized
+tide_system tide_free
+end_of_head
+gfc 0 0 1.0 0.0
+gfc 2 0 -4.84165143790815e-4 0.0
+gfc 2 2 1.0e-7 -2.0e-7
 "#;
 
     const SPK_THIRD_BODY_SCENARIO: &str = r#"

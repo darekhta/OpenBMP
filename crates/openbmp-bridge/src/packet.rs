@@ -5,11 +5,13 @@
 //! does not reference any concrete sensor product, bus protocol, or
 //! flight-software stack.
 
+use alloc::vec::Vec;
+
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol version. Both ends compare this and reject a peer
 /// that does not match. Bump on any breaking schema change.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// Endpoint role advertised during the in-house lockstep handshake.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -60,6 +62,8 @@ pub struct SensorPacket {
     /// Angular velocity in the body frame (rad/s), as an IMU gyro would
     /// measure it.
     pub imu_gyro_body_rad_s: [f64; 3],
+    /// Optional high-rate IMU inertial increments for this sample.
+    pub imu_increments: Vec<ImuIncrementPacket>,
     /// Barometric altitude (m), when a barometer is modelled.
     pub baro_altitude_m: Option<f64>,
     /// GNSS position in the ECI frame (m), when GNSS is modelled.
@@ -82,8 +86,38 @@ pub struct SensorPacket {
     pub baro_pressure_pa: Option<f64>,
     /// Barometer bias state (Pa), preserving the FC bus value.
     pub baro_bias_pa: Option<f64>,
+    /// Air-data static pressure (Pa), when a Pitot-static/vane
+    /// sensor is modelled.
+    pub airdata_static_pressure_pa: Option<f64>,
+    /// Air-data Pitot impact pressure `p_t - p_s` (Pa).
+    pub airdata_impact_pressure_pa: Option<f64>,
+    /// Air-data Mach number.
+    pub airdata_mach: Option<f64>,
+    /// Air-data calibrated airspeed (m/s).
+    pub airdata_calibrated_airspeed_m_s: Option<f64>,
+    /// Air-data true airspeed (m/s).
+    pub airdata_true_airspeed_m_s: Option<f64>,
+    /// Air-data angle of attack (rad).
+    pub airdata_angle_of_attack_rad: Option<f64>,
+    /// Air-data sideslip angle (rad).
+    pub airdata_sideslip_rad: Option<f64>,
+    /// Air-data ISA pressure altitude (m).
+    pub airdata_pressure_altitude_m: Option<f64>,
     /// Star-tracker attitude quaternion `[x, y, z, w]` from ECI to body.
     pub star_tracker_attitude_eci_to_body_xyzw: Option<[f64; 4]>,
+}
+
+/// One high-rate IMU inertial increment carried in a bridge sensor packet.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ImuIncrementPacket {
+    /// Integrated body angular rate over the sub-interval (rad).
+    pub delta_theta_rad: [f64; 3],
+    /// Integrated body specific force over the sub-interval (m/s).
+    pub delta_v_m_s: [f64; 3],
+    /// Sub-interval duration (s).
+    pub dt_s: f64,
+    /// High-rate sample sequence number.
+    pub seq: u64,
 }
 
 /// Abstract normalized actuator commands accepted by the simulator

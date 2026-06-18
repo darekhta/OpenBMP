@@ -14,6 +14,7 @@ use openbmp_scenario::{
     AeroBuildupConfig, AeroBuildupNoseConfig, AeroFreeMolecularConfig, AeroKnudsenBridgeConfig,
     AeroMethodConfig, ResolvedFile, ScenarioDocument,
 };
+use openbmp_uq::{CorrelatedErrorBudget, CredibilityLevel, aero_coefficient_margin_source};
 
 use crate::atmosphere::build_document_runtime_atmosphere;
 use crate::error::RunnerError;
@@ -67,6 +68,44 @@ pub fn build_aero_method(
         return Ok(Some((Box::new(DeckLookup::new(deck)), reference_length_m)));
     };
     build_configured_aero_method(config, deck).map(Some)
+}
+
+/// Gather source-tagged UQ declared by `[aero.uq]`.
+///
+/// # Errors
+///
+/// Returns [`RunnerError`] if the credibility level or coefficient band cannot
+/// be converted into a validated UQ source.
+pub fn upstream_uq_budget(
+    document: &ScenarioDocument,
+) -> Result<CorrelatedErrorBudget, RunnerError> {
+    let Some(uq) = document.aero.as_ref().and_then(|aero| aero.uq.as_ref()) else {
+        return Ok(CorrelatedErrorBudget::default());
+    };
+    let level = CredibilityLevel::from_value(uq.credibility_level).ok_or_else(|| {
+        RunnerError::UnsupportedScenario {
+            what: format!(
+                "[aero.uq] credibility_level {} is outside 0..=4",
+                uq.credibility_level
+            ),
+        }
+    })?;
+    let source = aero_coefficient_margin_source(
+        uq.deck_id.clone(),
+        uq.coefficient_id.clone(),
+        uq.coefficient_lower,
+        uq.coefficient_nominal,
+        uq.coefficient_upper,
+        level,
+        uq.evidence.clone(),
+    )
+    .map_err(|err| RunnerError::UnsupportedScenario {
+        what: format!("[aero.uq] invalid: {err}"),
+    })?;
+    Ok(CorrelatedErrorBudget {
+        sources: vec![source],
+        correlation: None,
+    })
 }
 
 /// Reject deck-only aerodynamic use when the initial state is already
@@ -490,6 +529,40 @@ require_monotonic_time = true
         assert_eq!(deck.beta_grid_deg(), &[0.0]);
         let coefficients = deck.lookup(0.5, 2.0, 0.0, &BTreeMap::new()).unwrap();
         assert!(coefficients.cd > 0.0);
+    }
+
+    #[test]
+    fn aero_upstream_uq_budget_reads_declared_coefficient_band() {
+        let toml = BUILDUP_SCENARIO.replace(
+            "[aero.buildup]\n",
+            "[aero.uq]\n\
+             deck_id = \"synthetic_finned_cylinder.v1\"\n\
+             coefficient_id = \"cd\"\n\
+             coefficient_lower = 0.18\n\
+             coefficient_nominal = 0.20\n\
+             coefficient_upper = 0.23\n\
+             credibility_level = 2\n\
+             evidence = \"data/aero/synthetic-finned-cylinder.toml#coefficient=cd\"\n\
+             \n\
+             [aero.buildup]\n",
+        );
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let budget = upstream_uq_budget(&scenario.document).unwrap();
+
+        assert_eq!(budget.sources.len(), 1);
+        assert_eq!(
+            budget.sources[0].source_id,
+            "03.aero.synthetic_finned_cylinder.v1.cd"
+        );
+        assert_eq!(
+            budget.sources[0].class,
+            openbmp_uq::UncertaintyClass::Epistemic
+        );
+        assert_eq!(
+            budget.sources[0].credibility.binding_level(),
+            openbmp_uq::CredibilityLevel::L2
+        );
+        assert!((budget.sources[0].one_sigma - 0.03).abs() < 1.0e-15);
     }
 
     #[test]

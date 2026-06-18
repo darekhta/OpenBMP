@@ -21,9 +21,11 @@ uom           = { workspace = true }
 [dev-dependencies]
 approx          = { workspace = true }
 openbmp-mc      = { workspace = true }
+openbmp-afts    = { workspace = true }
 openbmp-physics = { workspace = true }
 openbmp-trajopt = { workspace = true }
 serde_json      = { workspace = true }
+sha2            = { workspace = true }
 trybuild        = { workspace = true }
 
 [lints]

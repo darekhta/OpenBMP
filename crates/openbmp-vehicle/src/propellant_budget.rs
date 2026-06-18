@@ -124,6 +124,17 @@ impl PropellantTankState {
         }
         Ok(())
     }
+
+    /// Normalized blowdown feed-pressure scale from isentropic ullage
+    /// expansion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PropellantBudgetError`] when the tank lacks an ullage
+    /// declaration or contains invalid volume/state data.
+    pub fn blowdown_pressure_scale(&self) -> Result<f64, PropellantBudgetError> {
+        blowdown_tank_scale(self)
+    }
 }
 
 /// Per-engine residual/utilization output.

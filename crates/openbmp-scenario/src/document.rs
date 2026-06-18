@@ -88,10 +88,15 @@ pub struct ScenarioDocument {
     pub contact: Option<ContactConfig>,
     /// Telemetry output configuration.
     pub telemetry: TelemetryConfig,
+    /// Optional communications geometry configuration (`[comm]`, v3 only).
+    pub comm: Option<CommConfig>,
     /// Runtime validation switches.
     pub validation: ValidationConfig,
     /// Optional host-side realtime frame pacing. Parsed under v3 only.
     pub realtime: Option<RealtimeConfig>,
+    /// Optional forward AFTS containment-monitor rule table. Parsed under v3
+    /// only and consumed as a runner-side observer.
+    pub afts: Option<AftsConfig>,
     /// Optional epoch metadata.
     pub epoch: Option<EpochConfig>,
     /// Optional frame profile metadata.
@@ -264,6 +269,16 @@ impl ScenarioDocument {
             contact.validate(self.time.dt_s)?;
         }
         self.telemetry.validate()?;
+        if let Some(comm) = &self.comm {
+            if self.openbmp.scenario < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "comm".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: self.openbmp.scenario,
+                });
+            }
+            comm.validate()?;
+        }
         if let Some(frames) = &self.frames {
             frames.validate()?;
             if self.environment.frame_profile != frames.profile {
@@ -512,21 +527,47 @@ impl ScenarioDocument {
 
     fn validate_frame_epoch_requirements(&self) -> Result<(), ScenarioError> {
         let profile = self.environment.frame_profile.as_str();
-        if profile == "iers-tabulated" {
+        if profile == "iers-tabulated" || profile == "iers-cio" {
             let epoch = self
                 .epoch
                 .as_ref()
                 .ok_or_else(|| ScenarioError::MissingRequiredField {
                     field: "epoch".to_owned(),
                     role: ModelRole::Frame,
-                    name: "iers-tabulated".to_owned(),
+                    name: profile.to_owned(),
                 })?;
             if epoch.eop.is_none() {
                 return Err(ScenarioError::MissingRequiredField {
                     field: "epoch.eop".to_owned(),
                     role: ModelRole::Frame,
-                    name: "iers-tabulated".to_owned(),
+                    name: profile.to_owned(),
                 });
+            }
+            if profile == "iers-cio"
+                && epoch.leap_second_table.is_none()
+                && self.environment.ephemeris_meta_kernel.is_none()
+            {
+                return Err(ScenarioError::MissingRequiredField {
+                    field: "epoch.leap_second_table".to_owned(),
+                    role: ModelRole::Frame,
+                    name: profile.to_owned(),
+                });
+            }
+            if profile == "iers-tabulated" {
+                if epoch.cio_xys.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "epoch.cio_xys".to_owned(),
+                        role: ModelRole::Frame,
+                        name: profile.to_owned(),
+                    });
+                }
+                if epoch.cio_xys_sha256.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "epoch.cio_xys_sha256".to_owned(),
+                        role: ModelRole::Frame,
+                        name: profile.to_owned(),
+                    });
+                }
             }
         } else if let Some(epoch) = &self.epoch {
             if epoch.eop.is_some() {
@@ -539,6 +580,20 @@ impl ScenarioDocument {
             if epoch.eop_sha256.is_some() {
                 return Err(ScenarioError::UnexpectedField {
                     field: "epoch.eop_sha256".to_owned(),
+                    role: ModelRole::Frame,
+                    name: profile.to_owned(),
+                });
+            }
+            if epoch.cio_xys.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "epoch.cio_xys".to_owned(),
+                    role: ModelRole::Frame,
+                    name: profile.to_owned(),
+                });
+            }
+            if epoch.cio_xys_sha256.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "epoch.cio_xys_sha256".to_owned(),
                     role: ModelRole::Frame,
                     name: profile.to_owned(),
                 });
@@ -634,6 +689,16 @@ impl ScenarioDocument {
                 });
             }
             realtime.validate()?;
+        }
+        if let Some(afts) = self.afts.as_ref() {
+            if header < SCENARIO_VERSION_V3 {
+                return Err(ScenarioError::SchemaVersionFieldReserved {
+                    field: "afts".to_owned(),
+                    required: SCENARIO_VERSION_V3,
+                    found: header,
+                });
+            }
+            afts.validate()?;
         }
         if let Some(multi_body) = self.multi_body.as_ref() {
             if header < SCENARIO_VERSION_V3 {
@@ -1075,7 +1140,10 @@ impl ScenarioDocument {
         if header >= SCENARIO_VERSION_V3 {
             return Ok(());
         }
-        if self.environment.gravity == "egm2008" || self.environment.gravity == "third_body" {
+        if matches!(
+            self.environment.gravity.as_str(),
+            "egm2008" | "third_body" | "tesseral"
+        ) {
             return Err(ScenarioError::SchemaVersionFieldReserved {
                 field: format!("environment.gravity = \"{}\"", self.environment.gravity),
                 required: SCENARIO_VERSION_V3,
@@ -1121,6 +1189,13 @@ impl ScenarioDocument {
         if self.monte_carlo.is_some() {
             return Err(ScenarioError::SchemaVersionFieldReserved {
                 field: "monte_carlo".to_owned(),
+                required: SCENARIO_VERSION_V3,
+                found: header,
+            });
+        }
+        if self.afts.is_some() {
+            return Err(ScenarioError::SchemaVersionFieldReserved {
+                field: "afts".to_owned(),
                 required: SCENARIO_VERSION_V3,
                 found: header,
             });
@@ -2098,6 +2173,20 @@ impl ScenarioDocument {
             .iter()
             .map(|engine| (engine.id.as_str(), engine))
             .collect();
+        let mechanisms: BTreeMap<&str, (usize, &ContactMechanismConfig)> = self
+            .contact
+            .as_ref()
+            .map(|contact| {
+                contact
+                    .mechanisms
+                    .iter()
+                    .enumerate()
+                    .map(|(mechanism_index, mechanism)| {
+                        (mechanism.id.as_str(), (mechanism_index, mechanism))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut seen_engines = BTreeSet::new();
         for (index, joint) in multi_body.gimbal_joints.iter().enumerate() {
             if !body_ids.contains(joint.body_id.as_str()) {
@@ -2119,6 +2208,25 @@ impl ScenarioDocument {
                     field_b: format!("vehicle.assembly.engines.{}.mounted_to", engine.id),
                     value_b: engine.mounted_to.clone().unwrap_or_default(),
                 });
+            }
+            if let Some(mechanism_id) = &joint.mechanism_id {
+                let Some((mechanism_index, mechanism)) = mechanisms.get(mechanism_id.as_str())
+                else {
+                    return Err(ScenarioError::InconsistentSection {
+                        field_a: format!("multi_body.gimbal_joint[{index}].mechanism_id"),
+                        value_a: mechanism_id.clone(),
+                        field_b: "contact.mechanism.id".to_owned(),
+                        value_b: "missing".to_owned(),
+                    });
+                };
+                if mechanism.coordinate != joint.engine_id {
+                    return Err(ScenarioError::InconsistentSection {
+                        field_a: format!("contact.mechanism[{mechanism_index}].coordinate"),
+                        value_a: mechanism.coordinate.clone(),
+                        field_b: format!("multi_body.gimbal_joint[{index}].engine_id"),
+                        value_b: joint.engine_id.clone(),
+                    });
+                }
             }
             if !seen_engines.insert(joint.engine_id.as_str()) {
                 return Err(ScenarioError::DuplicateValue {
@@ -2300,7 +2408,7 @@ fn validate_attitude_target_effector(
                 ),
             })
         }
-        EffectorKindConfig::LinearActuator { .. } => {
+        EffectorKindConfig::LinearActuator { .. } | EffectorKindConfig::SecondOrderServo { .. } => {
             Err(ScenarioError::IncompatibleAssemblyEntry {
                 field,
                 reason: format!("effector `{effector_id}` must be kind = \"direct_torque\""),
@@ -2886,6 +2994,587 @@ pub enum RealtimeModeConfig {
     Paced,
 }
 
+/// Forward AFTS containment-monitor rule table (`[afts]`, v3 only).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AftsConfig {
+    /// Whether the monitor is enabled. A declared block defaults to enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Forward IIP propagation options. Absent options preserve the historical
+    /// WGS84-spherical frame-profile-driven behavior.
+    #[serde(default)]
+    pub propagator: AftsPropagatorConfig,
+    /// Keep-inside containment polygons. The first violated rule latches the
+    /// terminate decision when runner wiring is enabled.
+    #[serde(default, rename = "keep_inside")]
+    pub keep_inside: Vec<AftsKeepInsideRuleConfig>,
+    /// Keep-out containment polygons. Entering any polygon latches the
+    /// terminate decision when runner wiring is enabled.
+    #[serde(default, rename = "keep_out")]
+    pub keep_out: Vec<AftsKeepOutRuleConfig>,
+    /// Scalar flight-state corridor rules. Leaving any inclusive bound latches
+    /// the terminate decision when runner wiring is enabled.
+    #[serde(default, rename = "corridor")]
+    pub corridor: Vec<AftsCorridorRuleConfig>,
+    /// Geospatial gate-crossing rules over successive predicted IIP points.
+    #[serde(default, rename = "gate")]
+    pub gate: Vec<AftsGateRuleConfig>,
+    /// Green/red geospatial zone rules over predicted IIP points.
+    #[serde(default, rename = "zone")]
+    pub zone: Vec<AftsZoneRuleConfig>,
+}
+
+impl AftsConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.enabled
+            && self.keep_inside.is_empty()
+            && self.keep_out.is_empty()
+            && self.corridor.is_empty()
+            && self.gate.is_empty()
+            && self.zone.is_empty()
+        {
+            return Err(ScenarioError::EmptyList {
+                field: "afts.keep_inside|afts.keep_out|afts.corridor|afts.gate|afts.zone"
+                    .to_owned(),
+            });
+        }
+        let ids: Vec<String> = self
+            .keep_inside
+            .iter()
+            .chain(self.keep_out.iter())
+            .map(|rule| rule.id.clone())
+            .chain(self.corridor.iter().map(|rule| rule.id.clone()))
+            .chain(self.gate.iter().map(|rule| rule.id.clone()))
+            .chain(self.zone.iter().map(|rule| rule.id.clone()))
+            .collect();
+        if !ids.is_empty() {
+            require_unique("afts.rule.id", &ids)?;
+        }
+        self.propagator.validate()?;
+        for (index, rule) in self.keep_inside.iter().enumerate() {
+            rule.validate_with_prefix(&format!("afts.keep_inside[{index}]"))?;
+        }
+        for (index, rule) in self.keep_out.iter().enumerate() {
+            rule.validate_with_prefix(&format!("afts.keep_out[{index}]"))?;
+        }
+        for (index, rule) in self.corridor.iter().enumerate() {
+            rule.validate_with_prefix(&format!("afts.corridor[{index}]"))?;
+        }
+        for (index, rule) in self.gate.iter().enumerate() {
+            rule.validate_with_prefix(&format!("afts.gate[{index}]"))?;
+        }
+        for (index, rule) in self.zone.iter().enumerate() {
+            rule.validate_with_prefix(&format!("afts.zone[{index}]"))?;
+        }
+        Ok(())
+    }
+}
+
+/// Forward IIP propagation options for `[afts.propagator]`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AftsPropagatorConfig {
+    /// Impact surface used to detect and report IIP. Defaults to the previous
+    /// WGS84 semi-major-axis sphere.
+    #[serde(default)]
+    pub surface: AftsPropagatorSurfaceConfig,
+    /// Earth-rotation correction source. Defaults to frame-profile behavior.
+    #[serde(default)]
+    pub earth_rotation: AftsPropagatorEarthRotationConfig,
+    /// Optional fixed propagation step override.
+    #[serde(default)]
+    pub step_s: Option<f64>,
+    /// Optional propagation horizon override.
+    #[serde(default)]
+    pub max_time_s: Option<f64>,
+    /// Optional impact-surface crossing tolerance override.
+    #[serde(default)]
+    pub radius_tolerance_m: Option<f64>,
+    /// Optional deterministic ballistic-drag model.
+    #[serde(default)]
+    pub drag: Option<AftsPropagatorDragConfig>,
+}
+
+impl AftsPropagatorConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if let Some(step_s) = self.step_s {
+            require_positive("afts.propagator.step_s", step_s)?;
+        }
+        if let Some(max_time_s) = self.max_time_s {
+            require_positive("afts.propagator.max_time_s", max_time_s)?;
+        }
+        if let Some(radius_tolerance_m) = self.radius_tolerance_m {
+            require_finite("afts.propagator.radius_tolerance_m", radius_tolerance_m)?;
+            if radius_tolerance_m < 0.0 {
+                return Err(ScenarioError::InvalidNumber {
+                    field: "afts.propagator.radius_tolerance_m".to_owned(),
+                    value: radius_tolerance_m,
+                    rule: "must be non-negative",
+                });
+            }
+        }
+        if let Some(drag) = self.drag.as_ref() {
+            drag.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// AFTS impact-surface selector.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AftsPropagatorSurfaceConfig {
+    /// WGS84 semi-major-axis sphere. This is the default legacy surface.
+    #[default]
+    Wgs84Sphere,
+    /// WGS84 oblate ellipsoid.
+    Wgs84Ellipsoid,
+}
+
+/// AFTS Earth-rotation correction selector.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AftsPropagatorEarthRotationConfig {
+    /// Preserve the current default: no correction for `toy-fixed-earth`,
+    /// WGS84 uniform rotation otherwise.
+    #[default]
+    FrameProfile,
+    /// Force inertial longitude with no Earth-rotation correction.
+    Disabled,
+    /// Force WGS84 uniform-rotation longitude correction.
+    Wgs84Uniform,
+}
+
+/// Optional deterministic ballistic drag for `[afts.propagator.drag]`.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AftsPropagatorDragConfig {
+    /// Density at the configured reference radius.
+    pub reference_density_kg_m3: f64,
+    /// Exponential density scale height.
+    pub scale_height_m: f64,
+    /// Ballistic coefficient `mass / (C_D A)`.
+    pub ballistic_coefficient_kg_m2: f64,
+}
+
+impl AftsPropagatorDragConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_finite(
+            "afts.propagator.drag.reference_density_kg_m3",
+            self.reference_density_kg_m3,
+        )?;
+        if self.reference_density_kg_m3 < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "afts.propagator.drag.reference_density_kg_m3".to_owned(),
+                value: self.reference_density_kg_m3,
+                rule: "must be non-negative",
+            });
+        }
+        require_positive("afts.propagator.drag.scale_height_m", self.scale_height_m)?;
+        require_positive(
+            "afts.propagator.drag.ballistic_coefficient_kg_m2",
+            self.ballistic_coefficient_kg_m2,
+        )?;
+        Ok(())
+    }
+}
+
+/// One keep-inside containment polygon for `[afts]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AftsKeepInsideRuleConfig {
+    /// Stable rule id emitted by the AFTS monitor when this rule fires.
+    pub id: String,
+    /// Evidence/provenance path or package id for the rule table source.
+    pub evidence: String,
+    /// Optional resolvable provenance/evidence file for this rule.
+    #[serde(default)]
+    pub evidence_file: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::evidence_file`].
+    #[serde(default)]
+    pub evidence_file_sha256: Option<String>,
+    /// Polygon vertices in degrees. The polygon is implicitly closed.
+    pub vertices: Vec<AftsVertexConfig>,
+}
+
+impl AftsKeepInsideRuleConfig {
+    fn validate_with_prefix(&self, prefix: &str) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("{prefix}.id"), &self.id)?;
+        require_non_empty(&format!("{prefix}.evidence"), &self.evidence)?;
+        if self.evidence_file_sha256.is_some() && self.evidence_file.is_none() {
+            return Err(ScenarioError::UnexpectedField {
+                field: format!("{prefix}.evidence_file_sha256"),
+                role: ModelRole::Vehicle,
+                name: "afts".to_owned(),
+            });
+        }
+        if self.vertices.len() < 3 {
+            return Err(ScenarioError::EmptyList {
+                field: format!("{prefix}.vertices"),
+            });
+        }
+        for (vertex_index, vertex) in self.vertices.iter().enumerate() {
+            vertex.validate(&format!("{prefix}.vertices[{vertex_index}]"))?;
+        }
+        validate_afts_no_antimeridian_crossing(prefix, &self.vertices)
+    }
+}
+
+/// One keep-out containment polygon for `[afts]`.
+pub type AftsKeepOutRuleConfig = AftsKeepInsideRuleConfig;
+
+/// One green/red geospatial zone rule for `[afts]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AftsZoneRuleConfig {
+    /// Stable rule id emitted by the AFTS monitor when this rule fires.
+    pub id: String,
+    /// Evidence/provenance path or package id for the rule table source.
+    pub evidence: String,
+    /// Optional resolvable provenance/evidence file for this rule.
+    #[serde(default)]
+    pub evidence_file: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::evidence_file`].
+    #[serde(default)]
+    pub evidence_file_sha256: Option<String>,
+    /// Zone color.
+    pub color: AftsZoneColorConfig,
+    /// Polygon vertices in degrees. The polygon is implicitly closed.
+    pub vertices: Vec<AftsVertexConfig>,
+}
+
+impl AftsZoneRuleConfig {
+    fn validate_with_prefix(&self, prefix: &str) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("{prefix}.id"), &self.id)?;
+        require_non_empty(&format!("{prefix}.evidence"), &self.evidence)?;
+        if self.evidence_file_sha256.is_some() && self.evidence_file.is_none() {
+            return Err(ScenarioError::UnexpectedField {
+                field: format!("{prefix}.evidence_file_sha256"),
+                role: ModelRole::Vehicle,
+                name: "afts".to_owned(),
+            });
+        }
+        if self.vertices.len() < 3 {
+            return Err(ScenarioError::EmptyList {
+                field: format!("{prefix}.vertices"),
+            });
+        }
+        for (vertex_index, vertex) in self.vertices.iter().enumerate() {
+            vertex.validate(&format!("{prefix}.vertices[{vertex_index}]"))?;
+        }
+        validate_afts_no_antimeridian_crossing(prefix, &self.vertices)
+    }
+}
+
+/// AFTS geospatial zone color.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AftsZoneColorConfig {
+    /// Safe zone. The IIP must remain inside at least one declared green zone
+    /// when green zones are present.
+    Green,
+    /// Forbidden zone. The IIP must not enter the zone.
+    Red,
+}
+
+/// One geospatial gate-crossing rule for `[afts]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AftsGateRuleConfig {
+    /// Stable rule id emitted by the AFTS monitor when this rule fires.
+    pub id: String,
+    /// Evidence/provenance path or package id for the rule table source.
+    pub evidence: String,
+    /// Optional resolvable provenance/evidence file for this rule.
+    #[serde(default)]
+    pub evidence_file: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::evidence_file`].
+    #[serde(default)]
+    pub evidence_file_sha256: Option<String>,
+    /// Start point of the directed gate segment.
+    pub start: AftsVertexConfig,
+    /// End point of the directed gate segment.
+    pub end: AftsVertexConfig,
+    /// Optional direction filter. Defaults to any crossing.
+    #[serde(default)]
+    pub direction: AftsGateDirectionConfig,
+}
+
+impl AftsGateRuleConfig {
+    fn validate_with_prefix(&self, prefix: &str) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("{prefix}.id"), &self.id)?;
+        require_non_empty(&format!("{prefix}.evidence"), &self.evidence)?;
+        if self.evidence_file_sha256.is_some() && self.evidence_file.is_none() {
+            return Err(ScenarioError::UnexpectedField {
+                field: format!("{prefix}.evidence_file_sha256"),
+                role: ModelRole::Vehicle,
+                name: "afts".to_owned(),
+            });
+        }
+        self.start.validate(&format!("{prefix}.start"))?;
+        self.end.validate(&format!("{prefix}.end"))?;
+        if (self.start.latitude_deg - self.end.latitude_deg).abs() <= f64::EPSILON
+            && (self.start.longitude_deg - self.end.longitude_deg).abs() <= f64::EPSILON
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{prefix}.end.latitude_deg"),
+                value: self.end.latitude_deg,
+                rule: "gate endpoints must be distinct",
+            });
+        }
+        if (self.start.longitude_deg - self.end.longitude_deg).abs() > 180.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{prefix}.start.longitude_deg"),
+                value: self.start.longitude_deg,
+                rule: "gate segment must not cross the antimeridian",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Direction filter for an AFTS gate-crossing rule.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AftsGateDirectionConfig {
+    /// Any crossing fires.
+    #[default]
+    Any,
+    /// Crossing from the negative to positive side of the directed gate fires.
+    NegativeToPositive,
+    /// Crossing from the positive to negative side of the directed gate fires.
+    PositiveToNegative,
+}
+
+/// One scalar corridor rule for `[afts]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AftsCorridorRuleConfig {
+    /// Stable rule id emitted by the AFTS monitor when this rule fires.
+    pub id: String,
+    /// Evidence/provenance path or package id for the rule table source.
+    pub evidence: String,
+    /// Optional resolvable provenance/evidence file for this rule.
+    #[serde(default)]
+    pub evidence_file: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::evidence_file`].
+    #[serde(default)]
+    pub evidence_file_sha256: Option<String>,
+    /// Scalar metric evaluated against the inclusive bounds.
+    pub metric: AftsCorridorMetricConfig,
+    /// Optional inclusive lower altitude bound.
+    #[serde(default)]
+    pub min_altitude_m: Option<f64>,
+    /// Optional inclusive upper altitude bound.
+    #[serde(default)]
+    pub max_altitude_m: Option<f64>,
+    /// Optional inclusive lower speed bound.
+    #[serde(default)]
+    pub min_speed_m_s: Option<f64>,
+    /// Optional inclusive upper speed bound.
+    #[serde(default)]
+    pub max_speed_m_s: Option<f64>,
+    /// Optional inclusive lower flight-path-angle bound.
+    #[serde(default)]
+    pub min_flight_path_angle_rad: Option<f64>,
+    /// Optional inclusive upper flight-path-angle bound.
+    #[serde(default)]
+    pub max_flight_path_angle_rad: Option<f64>,
+}
+
+impl AftsCorridorRuleConfig {
+    fn validate_with_prefix(&self, prefix: &str) -> Result<(), ScenarioError> {
+        require_non_empty(&format!("{prefix}.id"), &self.id)?;
+        require_non_empty(&format!("{prefix}.evidence"), &self.evidence)?;
+        if self.evidence_file_sha256.is_some() && self.evidence_file.is_none() {
+            return Err(ScenarioError::UnexpectedField {
+                field: format!("{prefix}.evidence_file_sha256"),
+                role: ModelRole::Vehicle,
+                name: "afts".to_owned(),
+            });
+        }
+        self.validate_inactive_bounds(prefix)?;
+        let (min_value, max_value) = self.bounds();
+        if min_value.is_none() && max_value.is_none() {
+            return Err(ScenarioError::EmptyList {
+                field: self.bounds_field(prefix),
+            });
+        }
+        let (min_field, max_field) = self.bound_field_names(prefix);
+        if let Some(min_value) = min_value {
+            require_finite(&min_field, min_value)?;
+            self.metric.validate_bound(&min_field, min_value)?;
+        }
+        if let Some(max_value) = max_value {
+            require_finite(&max_field, max_value)?;
+            self.metric.validate_bound(&max_field, max_value)?;
+        }
+        if let (Some(min_value), Some(max_value)) = (min_value, max_value)
+            && min_value > max_value
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: min_field,
+                value: min_value,
+                rule: "must be <= matching max bound",
+            });
+        }
+        Ok(())
+    }
+
+    fn bounds(&self) -> (Option<f64>, Option<f64>) {
+        match self.metric {
+            AftsCorridorMetricConfig::AltitudeM => (self.min_altitude_m, self.max_altitude_m),
+            AftsCorridorMetricConfig::SpeedMS => (self.min_speed_m_s, self.max_speed_m_s),
+            AftsCorridorMetricConfig::FlightPathAngleRad => (
+                self.min_flight_path_angle_rad,
+                self.max_flight_path_angle_rad,
+            ),
+        }
+    }
+
+    fn bound_field_names(&self, prefix: &str) -> (String, String) {
+        match self.metric {
+            AftsCorridorMetricConfig::AltitudeM => (
+                format!("{prefix}.min_altitude_m"),
+                format!("{prefix}.max_altitude_m"),
+            ),
+            AftsCorridorMetricConfig::SpeedMS => (
+                format!("{prefix}.min_speed_m_s"),
+                format!("{prefix}.max_speed_m_s"),
+            ),
+            AftsCorridorMetricConfig::FlightPathAngleRad => (
+                format!("{prefix}.min_flight_path_angle_rad"),
+                format!("{prefix}.max_flight_path_angle_rad"),
+            ),
+        }
+    }
+
+    fn bounds_field(&self, prefix: &str) -> String {
+        let (min_field, max_field) = self.bound_field_names(prefix);
+        format!("{min_field}|{max_field}")
+    }
+
+    fn validate_inactive_bounds(&self, prefix: &str) -> Result<(), ScenarioError> {
+        let inactive = match self.metric {
+            AftsCorridorMetricConfig::AltitudeM => [
+                ("min_speed_m_s", self.min_speed_m_s),
+                ("max_speed_m_s", self.max_speed_m_s),
+                ("min_flight_path_angle_rad", self.min_flight_path_angle_rad),
+                ("max_flight_path_angle_rad", self.max_flight_path_angle_rad),
+            ],
+            AftsCorridorMetricConfig::SpeedMS => [
+                ("min_altitude_m", self.min_altitude_m),
+                ("max_altitude_m", self.max_altitude_m),
+                ("min_flight_path_angle_rad", self.min_flight_path_angle_rad),
+                ("max_flight_path_angle_rad", self.max_flight_path_angle_rad),
+            ],
+            AftsCorridorMetricConfig::FlightPathAngleRad => [
+                ("min_altitude_m", self.min_altitude_m),
+                ("max_altitude_m", self.max_altitude_m),
+                ("min_speed_m_s", self.min_speed_m_s),
+                ("max_speed_m_s", self.max_speed_m_s),
+            ],
+        };
+        for (field, value) in inactive {
+            if value.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: format!("{prefix}.{field}"),
+                    role: ModelRole::Vehicle,
+                    name: "afts".to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Scalar metric supported by an AFTS corridor rule.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AftsCorridorMetricConfig {
+    /// Geocentric altitude above the configured AFTS surface radius.
+    AltitudeM,
+    /// Inertial speed magnitude.
+    SpeedMS,
+    /// Flight-path angle from local horizontal, positive when moving outward.
+    FlightPathAngleRad,
+}
+
+impl AftsCorridorMetricConfig {
+    fn validate_bound(self, field: &str, value: f64) -> Result<(), ScenarioError> {
+        match self {
+            Self::AltitudeM => Ok(()),
+            Self::SpeedMS => {
+                if value < 0.0 {
+                    Err(ScenarioError::InvalidNumber {
+                        field: field.to_owned(),
+                        value,
+                        rule: "must be non-negative",
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            Self::FlightPathAngleRad => require_in_range(
+                field,
+                value,
+                -core::f64::consts::FRAC_PI_2,
+                core::f64::consts::FRAC_PI_2,
+            ),
+        }
+    }
+}
+
+/// One latitude/longitude vertex for an AFTS containment polygon.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AftsVertexConfig {
+    /// Latitude in degrees, constrained to `[-90, 90]`.
+    pub latitude_deg: f64,
+    /// Longitude in degrees, constrained to `[-180, 180]`.
+    pub longitude_deg: f64,
+}
+
+impl AftsVertexConfig {
+    fn validate(&self, prefix: &str) -> Result<(), ScenarioError> {
+        require_in_range(
+            &format!("{prefix}.latitude_deg"),
+            self.latitude_deg,
+            -90.0,
+            90.0,
+        )?;
+        require_in_range(
+            &format!("{prefix}.longitude_deg"),
+            self.longitude_deg,
+            -180.0,
+            180.0,
+        )
+    }
+}
+
+fn validate_afts_no_antimeridian_crossing(
+    prefix: &str,
+    vertices: &[AftsVertexConfig],
+) -> Result<(), ScenarioError> {
+    for (index, vertex) in vertices.iter().enumerate() {
+        let next_index = if index + 1 == vertices.len() {
+            0
+        } else {
+            index + 1
+        };
+        let next = vertices[next_index];
+        if (vertex.longitude_deg - next.longitude_deg).abs() > 180.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{prefix}.vertices[{index}].longitude_deg"),
+                value: vertex.longitude_deg,
+                rule: "polygon segments must not cross the antimeridian",
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Vehicle model and initial state table.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -2925,7 +3614,7 @@ pub struct VehicleConfig {
 }
 
 /// First lateral structural bending mode (`[vehicle.bending]`).
-#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BendingConfig {
     /// Modal natural frequency (Hz), strictly positive. Set the autopilot
@@ -2939,6 +3628,9 @@ pub struct BendingConfig {
     pub slope_at_engine: f64,
     /// Mode-shape slope at the rate-gyro station (sensor pickup lever).
     pub slope_at_gyro: f64,
+    /// Optional source-tagged UQ evidence for the nominal frequency.
+    #[serde(default)]
+    pub uq: Option<BendingUqConfig>,
 }
 
 impl BendingConfig {
@@ -2957,6 +3649,65 @@ impl BendingConfig {
         }
         require_finite("vehicle.bending.slope_at_engine", self.slope_at_engine)?;
         require_finite("vehicle.bending.slope_at_gyro", self.slope_at_gyro)?;
+        if let Some(uq) = &self.uq {
+            uq.validate(self.frequency_hz)?;
+        }
+        Ok(())
+    }
+}
+
+/// Optional UQ band for a structural bending mode.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BendingUqConfig {
+    /// Stable deck or source identifier used in the UQ source tag.
+    pub deck_id: String,
+    /// Lower bound for the modal frequency in Hz.
+    pub frequency_lower_hz: f64,
+    /// Upper bound for the modal frequency in Hz.
+    pub frequency_upper_hz: f64,
+    /// Uniform NASA-STD-7009B credibility level (`0`..`4`).
+    pub credibility_level: u8,
+    /// Human-readable evidence pointer for the structural source.
+    pub evidence: String,
+}
+
+impl BendingUqConfig {
+    fn validate(&self, nominal_frequency_hz: f64) -> Result<(), ScenarioError> {
+        require_non_empty("vehicle.bending.uq.deck_id", &self.deck_id)?;
+        require_non_empty("vehicle.bending.uq.evidence", &self.evidence)?;
+        require_finite(
+            "vehicle.bending.uq.frequency_lower_hz",
+            self.frequency_lower_hz,
+        )?;
+        require_finite(
+            "vehicle.bending.uq.frequency_upper_hz",
+            self.frequency_upper_hz,
+        )?;
+        require_positive(
+            "vehicle.bending.uq.frequency_lower_hz",
+            self.frequency_lower_hz,
+        )?;
+        require_positive(
+            "vehicle.bending.uq.frequency_upper_hz",
+            self.frequency_upper_hz,
+        )?;
+        if self.frequency_lower_hz > nominal_frequency_hz
+            || nominal_frequency_hz > self.frequency_upper_hz
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: "vehicle.bending.uq.frequency_lower_hz".to_owned(),
+                value: self.frequency_lower_hz,
+                rule: "must satisfy frequency_lower_hz <= vehicle.bending.frequency_hz <= frequency_upper_hz",
+            });
+        }
+        if self.credibility_level > 4 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "vehicle.bending.uq.credibility_level".to_owned(),
+                value: f64::from(self.credibility_level),
+                rule: "must be in 0..=4",
+            });
+        }
         Ok(())
     }
 }
@@ -3339,6 +4090,36 @@ pub struct EnvironmentConfig {
     /// J2 zonal coefficient (dimensionless). Optional when
     /// `gravity = "j2"`; defaults to the WGS84 value when absent.
     pub j2: Option<f64>,
+    /// Maximum harmonic degree for `gravity = "tesseral"`.
+    pub tesseral_degree: Option<usize>,
+    /// Maximum harmonic order for `gravity = "tesseral"`.
+    pub tesseral_order: Option<usize>,
+    /// Unnormalised degree-2 `C20` coefficient for `gravity = "tesseral"`.
+    pub tesseral_c20: Option<f64>,
+    /// Unnormalised degree-2 `C21` coefficient for `gravity = "tesseral"`.
+    pub tesseral_c21: Option<f64>,
+    /// Unnormalised degree-2 `S21` coefficient for `gravity = "tesseral"`.
+    pub tesseral_s21: Option<f64>,
+    /// Unnormalised degree-2 `C22` coefficient for `gravity = "tesseral"`.
+    pub tesseral_c22: Option<f64>,
+    /// Unnormalised degree-2 `S22` coefficient for `gravity = "tesseral"`.
+    pub tesseral_s22: Option<f64>,
+    /// Tide-system tag for `gravity = "tesseral"` coefficients.
+    pub tesseral_tide_system: Option<String>,
+    /// ICGEM-style EGM2008 fully-normalized coefficient file for the
+    /// finite-difference Pines transition path.
+    pub egm2008_coefficients_file: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::egm2008_coefficients_file`].
+    pub egm2008_coefficients_file_sha256: Option<String>,
+    /// Named EGM2008 synthesis tier (`degree70`, `degree120`, or `degree360`).
+    pub egm2008_tier: Option<String>,
+    /// Maximum harmonic degree for coefficient-file `gravity = "egm2008"`.
+    pub egm2008_degree: Option<usize>,
+    /// Maximum harmonic order for coefficient-file `gravity = "egm2008"`.
+    pub egm2008_order: Option<usize>,
+    /// Symmetric finite-difference step in metres for the transition Pines
+    /// acceleration path.
+    pub egm2008_finite_difference_step_m: Option<f64>,
     /// Perturbing celestial bodies used when
     /// `gravity = "third_body"`.
     #[serde(default)]
@@ -3460,11 +4241,6 @@ impl EnvironmentConfig {
                 }
             }
             "egm2008" => {
-                // Zonal-only EGM2008 (degrees 2-6). Pinned
-                // to WGS84 µ, R_e and the Pavlis et al. 2012 J_n
-                // tables; the scenario block carries no per-field
-                // overrides on purpose to keep the determinism contract
-                // tight. Reject any leftover gravity-config keys.
                 if self.gravity_m_s2.is_some() {
                     return Err(ScenarioError::UnexpectedField {
                         field: "environment.gravity_m_s2".to_owned(),
@@ -3486,6 +4262,24 @@ impl EnvironmentConfig {
                         name: "egm2008".to_owned(),
                     });
                 }
+                self.validate_egm2008_fields("egm2008")?;
+            }
+            "tesseral" => {
+                self.validate_tesseral_fields("tesseral")?;
+                if self.gravity_m_s2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.gravity_m_s2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "tesseral".to_owned(),
+                    });
+                }
+                if self.j2.is_some() {
+                    return Err(ScenarioError::UnexpectedField {
+                        field: "environment.j2".to_owned(),
+                        role: ModelRole::Gravity,
+                        name: "tesseral".to_owned(),
+                    });
+                }
             }
             "third_body" => {
                 let base = self.gravity_base.as_deref().ok_or_else(|| {
@@ -3498,7 +4292,7 @@ impl EnvironmentConfig {
                 require_supported(
                     "environment.gravity_base",
                     base,
-                    &["point_mass", "j2", "egm2008"],
+                    &["point_mass", "j2", "egm2008", "tesseral"],
                 )?;
                 require_non_empty_list("environment.third_bodies", &self.third_bodies)?;
                 require_unique("environment.third_bodies", &self.third_bodies)?;
@@ -3721,11 +4515,32 @@ impl EnvironmentConfig {
                                 name: "third_body egm2008 base".to_owned(),
                             });
                         }
+                        self.validate_egm2008_fields("third_body egm2008 base")?;
+                    }
+                    "tesseral" => {
+                        self.validate_tesseral_fields("third_body tesseral base")?;
+                        if self.j2.is_some() {
+                            return Err(ScenarioError::UnexpectedField {
+                                field: "environment.j2".to_owned(),
+                                role: ModelRole::Gravity,
+                                name: "third_body tesseral base".to_owned(),
+                            });
+                        }
                     }
                     _ => {}
                 }
             }
             _ => {}
+        }
+        let uses_tesseral = self.gravity == "tesseral"
+            || (self.gravity == "third_body" && self.gravity_base.as_deref() == Some("tesseral"));
+        if !uses_tesseral {
+            self.reject_tesseral_fields(&self.gravity)?;
+        }
+        let uses_egm2008 = self.gravity == "egm2008"
+            || (self.gravity == "third_body" && self.gravity_base.as_deref() == Some("egm2008"));
+        if !uses_egm2008 {
+            self.reject_egm2008_fields(&self.gravity)?;
         }
         if self.gravity != "third_body" {
             if self.gravity_base.is_some() {
@@ -3821,6 +4636,186 @@ impl EnvironmentConfig {
             None
         }
     }
+
+    fn validate_egm2008_fields(&self, name: &str) -> Result<(), ScenarioError> {
+        let has_file = self.egm2008_coefficients_file.is_some();
+        if self.egm2008_coefficients_file_sha256.is_some() && !has_file {
+            return Err(ScenarioError::UnexpectedField {
+                field: "environment.egm2008_coefficients_file_sha256".to_owned(),
+                role: ModelRole::Gravity,
+                name: name.to_owned(),
+            });
+        }
+        if !has_file {
+            if self.egm2008_degree.is_some()
+                || self.egm2008_order.is_some()
+                || self.egm2008_tier.is_some()
+                || self.egm2008_finite_difference_step_m.is_some()
+            {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.egm2008_*".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: name.to_owned(),
+                });
+            }
+            return Ok(());
+        }
+        if let Some(tier) = &self.egm2008_tier {
+            require_supported(
+                "environment.egm2008_tier",
+                tier,
+                &["degree70", "degree120", "degree360"],
+            )?;
+            if self.egm2008_degree.is_some() || self.egm2008_order.is_some() {
+                return Err(ScenarioError::UnexpectedField {
+                    field: "environment.egm2008_degree / environment.egm2008_order".to_owned(),
+                    role: ModelRole::Gravity,
+                    name: name.to_owned(),
+                });
+            }
+            if let Some(step) = self.egm2008_finite_difference_step_m {
+                require_positive("environment.egm2008_finite_difference_step_m", step)?;
+            }
+            return Ok(());
+        }
+        let degree = self
+            .egm2008_degree
+            .ok_or_else(|| ScenarioError::MissingRequiredField {
+                field: "environment.egm2008_degree".to_owned(),
+                role: ModelRole::Gravity,
+                name: name.to_owned(),
+            })?;
+        if degree < 2 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "environment.egm2008_degree".to_owned(),
+                value: degree as f64,
+                rule: "EGM2008 coefficient-file gravity requires degree >= 2",
+            });
+        }
+        let order = self
+            .egm2008_order
+            .ok_or_else(|| ScenarioError::MissingRequiredField {
+                field: "environment.egm2008_order".to_owned(),
+                role: ModelRole::Gravity,
+                name: name.to_owned(),
+            })?;
+        if order > degree {
+            return Err(ScenarioError::InvalidNumber {
+                field: "environment.egm2008_order".to_owned(),
+                value: order as f64,
+                rule: "EGM2008 coefficient-file order must be <= degree",
+            });
+        }
+        if let Some(step) = self.egm2008_finite_difference_step_m {
+            require_positive("environment.egm2008_finite_difference_step_m", step)?;
+        }
+        Ok(())
+    }
+
+    fn reject_egm2008_fields(&self, name: &str) -> Result<(), ScenarioError> {
+        if self.egm2008_coefficients_file.is_some()
+            || self.egm2008_coefficients_file_sha256.is_some()
+            || self.egm2008_tier.is_some()
+            || self.egm2008_degree.is_some()
+            || self.egm2008_order.is_some()
+            || self.egm2008_finite_difference_step_m.is_some()
+        {
+            return Err(ScenarioError::UnexpectedField {
+                field: "environment.egm2008_*".to_owned(),
+                role: ModelRole::Gravity,
+                name: name.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_tesseral_fields(&self, name: &str) -> Result<(), ScenarioError> {
+        let mu = self
+            .mu_m3_s2
+            .ok_or_else(|| ScenarioError::MissingRequiredField {
+                field: "environment.mu_m3_s2".to_owned(),
+                role: ModelRole::Gravity,
+                name: name.to_owned(),
+            })?;
+        require_positive("environment.mu_m3_s2", mu)?;
+        let r_e = self
+            .r_e_m
+            .ok_or_else(|| ScenarioError::MissingRequiredField {
+                field: "environment.r_e_m".to_owned(),
+                role: ModelRole::Gravity,
+                name: name.to_owned(),
+            })?;
+        require_positive("environment.r_e_m", r_e)?;
+        let degree = self
+            .tesseral_degree
+            .ok_or_else(|| ScenarioError::MissingRequiredField {
+                field: "environment.tesseral_degree".to_owned(),
+                role: ModelRole::Gravity,
+                name: name.to_owned(),
+            })?;
+        if degree != 0 && degree != 2 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "environment.tesseral_degree".to_owned(),
+                value: degree as f64,
+                rule: "tesseral gravity currently supports degree 0 or 2 only",
+            });
+        }
+        let order = self
+            .tesseral_order
+            .ok_or_else(|| ScenarioError::MissingRequiredField {
+                field: "environment.tesseral_order".to_owned(),
+                role: ModelRole::Gravity,
+                name: name.to_owned(),
+            })?;
+        if order > degree || order > 2 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "environment.tesseral_order".to_owned(),
+                value: order as f64,
+                rule: "tesseral gravity order must be <= degree and <= 2",
+            });
+        }
+        for (field, value) in [
+            ("environment.tesseral_c20", self.tesseral_c20),
+            ("environment.tesseral_c21", self.tesseral_c21),
+            ("environment.tesseral_s21", self.tesseral_s21),
+            ("environment.tesseral_c22", self.tesseral_c22),
+            ("environment.tesseral_s22", self.tesseral_s22),
+        ] {
+            let value = value.ok_or_else(|| ScenarioError::MissingRequiredField {
+                field: field.to_owned(),
+                role: ModelRole::Gravity,
+                name: name.to_owned(),
+            })?;
+            require_finite(field, value)?;
+        }
+        if let Some(tide_system) = &self.tesseral_tide_system {
+            require_supported(
+                "environment.tesseral_tide_system",
+                tide_system,
+                &["tide_free", "zero_tide", "mean_tide"],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn reject_tesseral_fields(&self, name: &str) -> Result<(), ScenarioError> {
+        if self.tesseral_degree.is_some()
+            || self.tesseral_order.is_some()
+            || self.tesseral_c20.is_some()
+            || self.tesseral_c21.is_some()
+            || self.tesseral_s21.is_some()
+            || self.tesseral_c22.is_some()
+            || self.tesseral_s22.is_some()
+            || self.tesseral_tide_system.is_some()
+        {
+            return Err(ScenarioError::UnexpectedField {
+                field: "environment.tesseral_*".to_owned(),
+                role: ModelRole::Gravity,
+                name: name.to_owned(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Contact geometry selector for `[contact]`.
@@ -3854,6 +4849,146 @@ pub enum ContactFrictionLawConfig {
     RegularizedCoulomb,
     /// Stateful anchored static friction with kinetic slip and restick window.
     AnchoredStiction,
+}
+
+/// Scalar mechanism element selector for `[[contact.mechanism]]`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactMechanismKindConfig {
+    /// One-sided scalar stop.
+    Stop,
+    /// Two-sided scalar backlash gap.
+    Backlash,
+    /// Engage-once scalar latch.
+    Latch,
+}
+
+/// One-sided stop side for `[[contact.mechanism]]`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactMechanismStopSideConfig {
+    /// Lower stop engages below the limit.
+    Lower,
+    /// Upper stop engages above the limit.
+    Upper,
+}
+
+impl From<ContactMechanismStopSideConfig> for openbmp_contact::StopSide {
+    fn from(value: ContactMechanismStopSideConfig) -> Self {
+        match value {
+            ContactMechanismStopSideConfig::Lower => Self::Lower,
+            ContactMechanismStopSideConfig::Upper => Self::Upper,
+        }
+    }
+}
+
+/// Optional scalar mechanism fixture declared under `[contact]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ContactMechanismConfig {
+    /// Stable mechanism id for future diagnostics/telemetry.
+    pub id: String,
+    /// Declared scalar coordinate name, for example a joint or strut coordinate.
+    pub coordinate: String,
+    /// Mechanism element kind.
+    pub kind: ContactMechanismKindConfig,
+    /// Stop side; required for `kind = "stop"`.
+    #[serde(default)]
+    pub side: Option<ContactMechanismStopSideConfig>,
+    /// Stop limit angle; required for `kind = "stop"`.
+    #[serde(default)]
+    pub limit_rad: Option<f64>,
+    /// Backlash dead-zone center or latch capture center.
+    #[serde(default)]
+    pub center_rad: Option<f64>,
+    /// Backlash dead-zone angular width; required for `kind = "backlash"`.
+    #[serde(default)]
+    pub dead_zone_width_rad: Option<f64>,
+    /// Latch angular capture half-width; required for `kind = "latch"`.
+    #[serde(default)]
+    pub half_width_rad: Option<f64>,
+    /// Penalty stiffness for stop/backlash elements.
+    #[serde(default)]
+    pub stiffness_n_m: Option<f64>,
+    /// Penalty damping for stop/backlash elements. Defaults to zero.
+    #[serde(default)]
+    pub damping_n_s_m: Option<f64>,
+}
+
+impl ContactMechanismConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("contact.mechanism[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        require_non_empty(&path("coordinate"), &self.coordinate)?;
+
+        match self.kind {
+            ContactMechanismKindConfig::Stop => self.validate_stop(index),
+            ContactMechanismKindConfig::Backlash => self.validate_backlash(index),
+            ContactMechanismKindConfig::Latch => self.validate_latch(index),
+        }
+    }
+
+    fn validate_stop(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("contact.mechanism[{index}].{field}");
+        reject_contact_field(self.center_rad, &path("center_rad"), "stop")?;
+        reject_contact_field(
+            self.dead_zone_width_rad,
+            &path("dead_zone_width_rad"),
+            "stop",
+        )?;
+        reject_contact_field(self.half_width_rad, &path("half_width_rad"), "stop")?;
+        let side = required_contact_field(self.side, &path("side"), "stop")?;
+        let limit = required_contact_field(self.limit_rad, &path("limit_rad"), "stop")?;
+        let stiffness = required_contact_field(self.stiffness_n_m, &path("stiffness_n_m"), "stop")?;
+        let damping = self.damping_n_s_m.unwrap_or(0.0);
+        openbmp_contact::ScalarStop::new(limit, side.into(), stiffness, damping)
+            .map(|_| ())
+            .map_err(|err| ScenarioError::InvalidContact {
+                reason: err.to_string(),
+            })
+    }
+
+    fn validate_backlash(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("contact.mechanism[{index}].{field}");
+        reject_contact_field(self.side, &path("side"), "backlash")?;
+        reject_contact_field(self.limit_rad, &path("limit_rad"), "backlash")?;
+        reject_contact_field(self.half_width_rad, &path("half_width_rad"), "backlash")?;
+        let center = required_contact_field(self.center_rad, &path("center_rad"), "backlash")?;
+        let dead_zone_width = required_contact_field(
+            self.dead_zone_width_rad,
+            &path("dead_zone_width_rad"),
+            "backlash",
+        )?;
+        let stiffness =
+            required_contact_field(self.stiffness_n_m, &path("stiffness_n_m"), "backlash")?;
+        let damping = self.damping_n_s_m.unwrap_or(0.0);
+        openbmp_contact::BacklashGap::new(center, dead_zone_width, stiffness, damping)
+            .map(|_| ())
+            .map_err(|err| ScenarioError::InvalidContact {
+                reason: err.to_string(),
+            })
+    }
+
+    fn validate_latch(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("contact.mechanism[{index}].{field}");
+        reject_contact_field(self.side, &path("side"), "latch")?;
+        reject_contact_field(self.limit_rad, &path("limit_rad"), "latch")?;
+        reject_contact_field(
+            self.dead_zone_width_rad,
+            &path("dead_zone_width_rad"),
+            "latch",
+        )?;
+        reject_contact_field(self.stiffness_n_m, &path("stiffness_n_m"), "latch")?;
+        reject_contact_field(self.damping_n_s_m, &path("damping_n_s_m"), "latch")?;
+        let center = required_contact_field(self.center_rad, &path("center_rad"), "latch")?;
+        let half_width =
+            required_contact_field(self.half_width_rad, &path("half_width_rad"), "latch")?;
+        openbmp_contact::LatchWindow::new(center, half_width)
+            .map(|_| ())
+            .map_err(|err| ScenarioError::InvalidContact {
+                reason: err.to_string(),
+            })
+    }
 }
 
 /// Opt-in compliant contact force block.
@@ -3913,6 +5048,9 @@ pub struct ContactConfig {
     pub effective_mass_kg: f64,
     /// Fixed integer contact sub-steps per scenario major step.
     pub substeps: u32,
+    /// Optional scalar mechanism fixtures for stops, backlash, and latches.
+    #[serde(default, rename = "mechanism")]
+    pub mechanisms: Vec<ContactMechanismConfig>,
 }
 
 impl ContactConfig {
@@ -3933,6 +5071,7 @@ impl ContactConfig {
         self.validate_geometry()?;
         let stability_stiffness_n_m = self.validate_normal_law()?;
         self.validate_friction_law()?;
+        self.validate_mechanisms()?;
         require_positive("contact.effective_mass_kg", self.effective_mass_kg)?;
         require_positive_u32("contact.substeps", self.substeps)?;
 
@@ -4164,6 +5303,20 @@ impl ContactConfig {
         }
         Ok(())
     }
+
+    fn validate_mechanisms(&self) -> Result<(), ScenarioError> {
+        let mut seen_ids = BTreeSet::new();
+        for (index, mechanism) in self.mechanisms.iter().enumerate() {
+            mechanism.validate(index)?;
+            if !seen_ids.insert(mechanism.id.as_str()) {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("contact.mechanism[{index}].id"),
+                    value: mechanism.id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 fn required_contact_field<T: Copy>(
@@ -4310,6 +5463,622 @@ pub struct TelemetryOutputConfig {
     pub parquet: Option<PathBuf>,
 }
 
+/// Communications geometry configuration (`[comm]`, v3 only).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommConfig {
+    /// FC bridge link-selection policy for declared comm links.
+    #[serde(default)]
+    pub bridge_link_selection: CommBridgeLinkSelectionConfig,
+    /// Margin deadband for `bridge_link_selection = "best_margin"`, in dB.
+    #[serde(default)]
+    pub bridge_link_hysteresis_db: f64,
+    /// Optional declared bridge pass-plan windows for `declared_plan`.
+    #[serde(default, rename = "bridge_pass_plan")]
+    pub bridge_pass_plan: Vec<CommBridgePassPlanConfig>,
+    /// Ground sites participating in the simulation.
+    #[serde(default, rename = "sites")]
+    pub sites: Vec<CommGroundSiteConfig>,
+    /// Optional vehicle/ground antenna decks for WP-20.2.
+    #[serde(default, rename = "antennas")]
+    pub antennas: Vec<CommAntennaConfig>,
+    /// Optional declared GEO relay nodes for WP-20.6 two-hop budgets.
+    #[serde(default, rename = "relays")]
+    pub relays: Vec<CommRelayConfig>,
+    /// Optional link-budget declarations for WP-20.3.
+    #[serde(default, rename = "links")]
+    pub links: Vec<CommLinkConfig>,
+}
+
+impl CommConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.sites.is_empty() {
+            return Err(ScenarioError::EmptyList {
+                field: "comm.sites".to_owned(),
+            });
+        }
+        require_non_negative_comm_link(
+            "comm.bridge_link_hysteresis_db",
+            self.bridge_link_hysteresis_db,
+        )?;
+        let mut ids = Vec::with_capacity(self.sites.len());
+        for (index, site) in self.sites.iter().enumerate() {
+            site.validate(index)?;
+            ids.push(site.id.clone());
+        }
+        require_unique("comm.sites.id", &ids)?;
+        let mut antenna_ids = Vec::with_capacity(self.antennas.len());
+        for (index, antenna) in self.antennas.iter().enumerate() {
+            antenna.validate(index)?;
+            antenna_ids.push(antenna.id.clone());
+        }
+        require_unique("comm.antennas.id", &antenna_ids)?;
+        let mut relay_ids = Vec::with_capacity(self.relays.len());
+        for (index, relay) in self.relays.iter().enumerate() {
+            relay.validate(index)?;
+            relay_ids.push(relay.id.clone());
+        }
+        require_unique("comm.relays.id", &relay_ids)?;
+        let site_id_set: BTreeSet<&str> = self.sites.iter().map(|site| site.id.as_str()).collect();
+        let antenna_id_set: BTreeSet<&str> = self
+            .antennas
+            .iter()
+            .map(|antenna| antenna.id.as_str())
+            .collect();
+        let relay_id_set: BTreeSet<&str> = relay_ids.iter().map(String::as_str).collect();
+        let mut link_ids = Vec::with_capacity(self.links.len());
+        for (index, link) in self.links.iter().enumerate() {
+            link.validate(index, &site_id_set, &antenna_id_set, &relay_id_set)?;
+            link_ids.push(link.id.clone());
+        }
+        require_unique("comm.links.id", &link_ids)?;
+        let link_id_set: BTreeSet<&str> = link_ids.iter().map(String::as_str).collect();
+        for (index, plan) in self.bridge_pass_plan.iter().enumerate() {
+            plan.validate(index, &link_id_set)?;
+        }
+        validate_comm_bridge_pass_plan_schedule(&self.bridge_pass_plan)?;
+        if self.bridge_link_selection == CommBridgeLinkSelectionConfig::DeclaredPlan
+            && self.bridge_pass_plan.is_empty()
+        {
+            return Err(ScenarioError::EmptyList {
+                field: "comm.bridge_pass_plan".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Link-selection policy for comm-driven FC bridge frames.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CommBridgeLinkSelectionConfig {
+    /// Preserve declaration-order behavior by using the first declared link.
+    #[default]
+    FirstDeclared,
+    /// Select the visible, non-blackout link with the highest margin.
+    BestMargin,
+    /// Select links from declared `[[comm.bridge_pass_plan]]` time windows.
+    DeclaredPlan,
+}
+
+/// One declared FC bridge pass-plan window.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommBridgePassPlanConfig {
+    /// Declared `[[comm.links]].id` active during this window.
+    pub link_id: String,
+    /// Inclusive start time, seconds from scenario start.
+    pub start_s: f64,
+    /// Exclusive end time, seconds from scenario start.
+    pub end_s: f64,
+}
+
+impl CommBridgePassPlanConfig {
+    fn validate(&self, index: usize, link_ids: &BTreeSet<&str>) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("comm.bridge_pass_plan[{index}].{field}");
+        require_non_empty(&path("link_id"), &self.link_id)?;
+        if !link_ids.contains(self.link_id.as_str()) {
+            return Err(ScenarioError::UnsupportedValue {
+                field: path("link_id"),
+                value: self.link_id.clone(),
+            });
+        }
+        require_non_negative_comm_link(&path("start_s"), self.start_s)?;
+        require_finite(&path("end_s"), self.end_s)?;
+        if self.end_s <= self.start_s {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("end_s"),
+                value: self.end_s,
+                rule: "must be greater than start_s",
+            });
+        }
+        Ok(())
+    }
+}
+
+fn validate_comm_bridge_pass_plan_schedule(
+    plans: &[CommBridgePassPlanConfig],
+) -> Result<(), ScenarioError> {
+    let mut windows: Vec<(usize, &CommBridgePassPlanConfig)> = plans.iter().enumerate().collect();
+    windows.sort_by(|(left_index, left), (right_index, right)| {
+        left.start_s
+            .total_cmp(&right.start_s)
+            .then_with(|| left.end_s.total_cmp(&right.end_s))
+            .then_with(|| left_index.cmp(right_index))
+    });
+    for pair in windows.windows(2) {
+        let (_, previous) = pair[0];
+        let (index, current) = pair[1];
+        if current.start_s < previous.end_s {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("comm.bridge_pass_plan[{index}].start_s"),
+                value: current.start_s,
+                rule: "must not overlap another comm bridge pass-plan window",
+            });
+        }
+    }
+    Ok(())
+}
+
+/// One `[[comm.antennas]]` deck declaration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommAntennaConfig {
+    /// Stable antenna id.
+    pub id: String,
+    /// Optional antenna gain deck file.
+    #[serde(default)]
+    pub gain_deck: Option<PathBuf>,
+    /// Optional pinned SHA-256 digest of `gain_deck`.
+    #[serde(default)]
+    pub gain_deck_sha256: Option<String>,
+    /// Optional body-mask deck file.
+    #[serde(default)]
+    pub body_mask_deck: Option<PathBuf>,
+    /// Optional pinned SHA-256 digest of `body_mask_deck`.
+    #[serde(default)]
+    pub body_mask_deck_sha256: Option<String>,
+}
+
+impl CommAntennaConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("comm.antennas[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        if self.gain_deck.is_none() && self.body_mask_deck.is_none() {
+            return Err(ScenarioError::EmptyList {
+                field: format!("comm.antennas[{index}].gain_deck|body_mask_deck"),
+            });
+        }
+        if let Some(path_buf) = &self.gain_deck {
+            require_non_empty(&path("gain_deck"), &path_buf.to_string_lossy())?;
+        } else if self.gain_deck_sha256.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: path("gain_deck_sha256"),
+                role: ModelRole::Vehicle,
+                name: "comm".to_owned(),
+            });
+        }
+        if let Some(path_buf) = &self.body_mask_deck {
+            require_non_empty(&path("body_mask_deck"), &path_buf.to_string_lossy())?;
+        } else if self.body_mask_deck_sha256.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: path("body_mask_deck_sha256"),
+                role: ModelRole::Vehicle,
+                name: "comm".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// One `[[comm.relays]]` declared GEO relay-node downlink budget.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommRelayConfig {
+    /// Stable relay id.
+    pub id: String,
+    /// Relay sub-satellite longitude in degrees, east positive.
+    pub longitude_deg: f64,
+    /// Relay height above WGS84 ellipsoid in metres.
+    #[serde(default = "default_comm_geo_relay_altitude_m")]
+    pub altitude_m: f64,
+    /// Ground-site minimum elevation for relay-to-ground visibility, degrees.
+    #[serde(default)]
+    pub min_elevation_deg: f64,
+    /// Relay downlink effective isotropic radiated power, dBW.
+    pub eirp_dbw: f64,
+    /// Ground receiver gain-to-noise-temperature ratio, dB/K.
+    pub receiver_g_over_t_db_k: f64,
+    /// Relay downlink carrier frequency, Hz.
+    pub frequency_hz: f64,
+    /// Relay downlink bit rate, bit/s.
+    pub bit_rate_bps: f64,
+    /// Required Eb/N0 for positive relay-downlink margin, dB.
+    pub required_eb_n0_db: f64,
+    /// Atmospheric gas attenuation, dB.
+    #[serde(default)]
+    pub atmospheric_loss_db: f64,
+    /// Optional elevation-indexed atmospheric attenuation deck.
+    #[serde(default)]
+    pub atmospheric_loss_deck: Option<PathBuf>,
+    /// Optional pinned SHA-256 digest of `atmospheric_loss_deck`.
+    #[serde(default)]
+    pub atmospheric_loss_deck_sha256: Option<String>,
+    /// Rain attenuation, dB.
+    #[serde(default)]
+    pub rain_loss_db: f64,
+    /// Optional elevation-indexed rain attenuation deck.
+    #[serde(default)]
+    pub rain_loss_deck: Option<PathBuf>,
+    /// Optional pinned SHA-256 digest of `rain_loss_deck`.
+    #[serde(default)]
+    pub rain_loss_deck_sha256: Option<String>,
+    /// Pointing loss, dB.
+    #[serde(default)]
+    pub pointing_loss_db: f64,
+    /// Polarization loss, dB.
+    #[serde(default)]
+    pub polarization_loss_db: f64,
+    /// Implementation and fixed losses, dB.
+    #[serde(default)]
+    pub implementation_loss_db: f64,
+    /// Relay downlink FER curve deck file.
+    pub fer_curve_deck: PathBuf,
+    /// Optional pinned SHA-256 digest of `fer_curve_deck`.
+    #[serde(default)]
+    pub fer_curve_deck_sha256: Option<String>,
+}
+
+impl CommRelayConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("comm.relays[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        require_in_range(&path("longitude_deg"), self.longitude_deg, -180.0, 180.0)?;
+        require_positive(&path("altitude_m"), self.altitude_m)?;
+        require_in_range(
+            &path("min_elevation_deg"),
+            self.min_elevation_deg,
+            -90.0,
+            90.0,
+        )?;
+        require_finite(&path("eirp_dbw"), self.eirp_dbw)?;
+        require_finite(&path("receiver_g_over_t_db_k"), self.receiver_g_over_t_db_k)?;
+        require_positive(&path("frequency_hz"), self.frequency_hz)?;
+        require_positive(&path("bit_rate_bps"), self.bit_rate_bps)?;
+        require_finite(&path("required_eb_n0_db"), self.required_eb_n0_db)?;
+        require_non_negative_comm_link(&path("atmospheric_loss_db"), self.atmospheric_loss_db)?;
+        validate_optional_comm_link_path(
+            &path("atmospheric_loss_deck"),
+            &path("atmospheric_loss_deck_sha256"),
+            self.atmospheric_loss_deck.as_ref(),
+            self.atmospheric_loss_deck_sha256.as_ref(),
+        )?;
+        require_non_negative_comm_link(&path("rain_loss_db"), self.rain_loss_db)?;
+        validate_optional_comm_link_path(
+            &path("rain_loss_deck"),
+            &path("rain_loss_deck_sha256"),
+            self.rain_loss_deck.as_ref(),
+            self.rain_loss_deck_sha256.as_ref(),
+        )?;
+        require_non_negative_comm_link(&path("pointing_loss_db"), self.pointing_loss_db)?;
+        require_non_negative_comm_link(&path("polarization_loss_db"), self.polarization_loss_db)?;
+        require_non_negative_comm_link(
+            &path("implementation_loss_db"),
+            self.implementation_loss_db,
+        )?;
+        require_non_empty(
+            &path("fer_curve_deck"),
+            &self.fer_curve_deck.to_string_lossy(),
+        )
+    }
+}
+
+fn default_comm_geo_relay_altitude_m() -> f64 {
+    35_786_000.0
+}
+
+/// One `[[comm.links]]` budget/FER declaration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommLinkConfig {
+    /// Stable link id.
+    pub id: String,
+    /// Referenced `[[comm.sites]].id`.
+    pub site_id: String,
+    /// Referenced `[[comm.antennas]].id`.
+    pub antenna_id: String,
+    /// Optional referenced `[[comm.relays]].id` for a composed two-hop path.
+    #[serde(default)]
+    pub relay_id: Option<String>,
+    /// Effective isotropic radiated power, dBW.
+    pub eirp_dbw: f64,
+    /// Receiver gain-to-noise-temperature ratio, dB/K.
+    pub receiver_g_over_t_db_k: f64,
+    /// Carrier frequency, Hz.
+    pub frequency_hz: f64,
+    /// Bit rate, bit/s.
+    pub bit_rate_bps: f64,
+    /// Required Eb/N0 for positive margin, dB.
+    pub required_eb_n0_db: f64,
+    /// Atmospheric gas attenuation, dB.
+    #[serde(default)]
+    pub atmospheric_loss_db: f64,
+    /// Optional elevation-indexed atmospheric attenuation deck.
+    #[serde(default)]
+    pub atmospheric_loss_deck: Option<PathBuf>,
+    /// Optional pinned SHA-256 digest of `atmospheric_loss_deck`.
+    #[serde(default)]
+    pub atmospheric_loss_deck_sha256: Option<String>,
+    /// Rain attenuation, dB.
+    #[serde(default)]
+    pub rain_loss_db: f64,
+    /// Optional elevation-indexed rain attenuation deck.
+    #[serde(default)]
+    pub rain_loss_deck: Option<PathBuf>,
+    /// Optional pinned SHA-256 digest of `rain_loss_deck`.
+    #[serde(default)]
+    pub rain_loss_deck_sha256: Option<String>,
+    /// Pointing loss, dB.
+    #[serde(default)]
+    pub pointing_loss_db: f64,
+    /// Polarization loss, dB.
+    #[serde(default)]
+    pub polarization_loss_db: f64,
+    /// Implementation and fixed losses, dB.
+    #[serde(default)]
+    pub implementation_loss_db: f64,
+    /// FER curve deck file.
+    pub fer_curve_deck: PathBuf,
+    /// Optional pinned SHA-256 digest of `fer_curve_deck`.
+    #[serde(default)]
+    pub fer_curve_deck_sha256: Option<String>,
+    /// Declared packet processing delay for link-channel effects, seconds.
+    #[serde(default)]
+    pub packet_processing_delay_s: f64,
+    /// Packet action for errored FER draws.
+    #[serde(default)]
+    pub packet_error_action: CommPacketErrorActionConfig,
+    /// Optional deterministic packet loss-rate statistical gate.
+    #[serde(default)]
+    pub packet_loss_rate_gate: Option<CommPacketLossRateGateConfig>,
+    /// Optional downlink data-loss timeout, seconds.
+    #[serde(default)]
+    pub data_loss_timeout_s: Option<f64>,
+}
+
+impl CommLinkConfig {
+    fn validate(
+        &self,
+        index: usize,
+        site_ids: &BTreeSet<&str>,
+        antenna_ids: &BTreeSet<&str>,
+        relay_ids: &BTreeSet<&str>,
+    ) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("comm.links[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        require_non_empty(&path("site_id"), &self.site_id)?;
+        require_non_empty(&path("antenna_id"), &self.antenna_id)?;
+        if !site_ids.contains(self.site_id.as_str()) {
+            return Err(ScenarioError::UnsupportedValue {
+                field: path("site_id"),
+                value: self.site_id.clone(),
+            });
+        }
+        if !antenna_ids.contains(self.antenna_id.as_str()) {
+            return Err(ScenarioError::UnsupportedValue {
+                field: path("antenna_id"),
+                value: self.antenna_id.clone(),
+            });
+        }
+        if let Some(relay_id) = &self.relay_id {
+            require_non_empty(&path("relay_id"), relay_id)?;
+            if !relay_ids.contains(relay_id.as_str()) {
+                return Err(ScenarioError::UnsupportedValue {
+                    field: path("relay_id"),
+                    value: relay_id.clone(),
+                });
+            }
+        }
+        require_finite(&path("eirp_dbw"), self.eirp_dbw)?;
+        require_finite(&path("receiver_g_over_t_db_k"), self.receiver_g_over_t_db_k)?;
+        require_positive(&path("frequency_hz"), self.frequency_hz)?;
+        require_positive(&path("bit_rate_bps"), self.bit_rate_bps)?;
+        require_finite(&path("required_eb_n0_db"), self.required_eb_n0_db)?;
+        require_non_negative_comm_link(&path("atmospheric_loss_db"), self.atmospheric_loss_db)?;
+        validate_optional_comm_link_path(
+            &path("atmospheric_loss_deck"),
+            &path("atmospheric_loss_deck_sha256"),
+            self.atmospheric_loss_deck.as_ref(),
+            self.atmospheric_loss_deck_sha256.as_ref(),
+        )?;
+        require_non_negative_comm_link(&path("rain_loss_db"), self.rain_loss_db)?;
+        validate_optional_comm_link_path(
+            &path("rain_loss_deck"),
+            &path("rain_loss_deck_sha256"),
+            self.rain_loss_deck.as_ref(),
+            self.rain_loss_deck_sha256.as_ref(),
+        )?;
+        require_non_negative_comm_link(&path("pointing_loss_db"), self.pointing_loss_db)?;
+        require_non_negative_comm_link(&path("polarization_loss_db"), self.polarization_loss_db)?;
+        require_non_negative_comm_link(
+            &path("implementation_loss_db"),
+            self.implementation_loss_db,
+        )?;
+        require_non_empty(
+            &path("fer_curve_deck"),
+            &self.fer_curve_deck.to_string_lossy(),
+        )?;
+        require_non_negative_comm_link(
+            &path("packet_processing_delay_s"),
+            self.packet_processing_delay_s,
+        )?;
+        self.packet_error_action
+            .validate(&path("packet_error_action"))?;
+        if let Some(gate) = &self.packet_loss_rate_gate {
+            gate.validate(&path("packet_loss_rate_gate"))?;
+        }
+        if let Some(timeout_s) = self.data_loss_timeout_s {
+            require_positive(&path("data_loss_timeout_s"), timeout_s)?;
+        }
+        Ok(())
+    }
+}
+
+/// Deterministic packet loss-rate gate for a comm link.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommPacketLossRateGateConfig {
+    /// Number of synthetic packets to evaluate.
+    pub packet_count: u64,
+    /// Two-sided significance level for the exact binomial interval.
+    pub alpha: f64,
+}
+
+impl CommPacketLossRateGateConfig {
+    fn validate(self, field: &str) -> Result<(), ScenarioError> {
+        if self.packet_count == 0 || self.packet_count > 1_000_000 {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{field}.packet_count"),
+                value: self.packet_count as f64,
+                rule: "must be in [1, 1000000]",
+            });
+        }
+        require_finite(&format!("{field}.alpha"), self.alpha)?;
+        if !(0.0..1.0).contains(&self.alpha) {
+            return Err(ScenarioError::InvalidNumber {
+                field: format!("{field}.alpha"),
+                value: self.alpha,
+                rule: "must be in (0, 1)",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Packet action for comm link-channel FER failures.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CommPacketErrorActionConfig {
+    /// Drop errored frames at the abstract packet boundary.
+    #[default]
+    Drop,
+    /// Mark errored frames as corrupted with a deterministic non-zero mask.
+    BitFlip {
+        /// Non-zero bit mask.
+        mask: u8,
+    },
+}
+
+impl CommPacketErrorActionConfig {
+    fn validate(self, field: &str) -> Result<(), ScenarioError> {
+        match self {
+            Self::Drop => Ok(()),
+            Self::BitFlip { mask } if mask != 0 => Ok(()),
+            Self::BitFlip { mask } => Err(ScenarioError::InvalidNumber {
+                field: format!("{field}.mask"),
+                value: f64::from(mask),
+                rule: "must be non-zero",
+            }),
+        }
+    }
+}
+
+fn require_non_negative_comm_link(field: &str, value: f64) -> Result<(), ScenarioError> {
+    require_finite(field, value)?;
+    if value < 0.0 {
+        return Err(ScenarioError::InvalidNumber {
+            field: field.to_owned(),
+            value,
+            rule: "must be non-negative",
+        });
+    }
+    Ok(())
+}
+
+fn validate_optional_comm_link_path(
+    path_field: &str,
+    sha_field: &str,
+    path: Option<&PathBuf>,
+    sha256: Option<&String>,
+) -> Result<(), ScenarioError> {
+    if let Some(path_buf) = path {
+        require_non_empty(path_field, &path_buf.to_string_lossy())
+    } else if sha256.is_some() {
+        Err(ScenarioError::UnexpectedField {
+            field: sha_field.to_owned(),
+            role: ModelRole::Vehicle,
+            name: "comm".to_owned(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// One `[[comm.sites]]` ground-site declaration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommGroundSiteConfig {
+    /// Stable site id.
+    pub id: String,
+    /// Geodetic latitude in degrees.
+    pub latitude_deg: f64,
+    /// Longitude in degrees, east positive.
+    pub longitude_deg: f64,
+    /// Height above the WGS84 ellipsoid in metres.
+    #[serde(default)]
+    pub altitude_m: f64,
+    /// Minimum allowed elevation in degrees.
+    #[serde(default)]
+    pub min_elevation_deg: f64,
+    /// Optional azimuth-dependent terrain mask.
+    #[serde(default)]
+    pub terrain_mask: Vec<CommTerrainMaskBinConfig>,
+}
+
+impl CommGroundSiteConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("comm.sites[{index}].{field}");
+        require_non_empty(&path("id"), &self.id)?;
+        require_in_range(&path("latitude_deg"), self.latitude_deg, -90.0, 90.0)?;
+        require_in_range(&path("longitude_deg"), self.longitude_deg, -180.0, 180.0)?;
+        require_finite(&path("altitude_m"), self.altitude_m)?;
+        require_in_range(
+            &path("min_elevation_deg"),
+            self.min_elevation_deg,
+            -90.0,
+            90.0,
+        )?;
+        for (mask_index, bin) in self.terrain_mask.iter().enumerate() {
+            bin.validate(index, mask_index)?;
+        }
+        Ok(())
+    }
+}
+
+/// One azimuth/elevation terrain-mask bin for a comm site.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommTerrainMaskBinConfig {
+    /// Azimuth in degrees from north toward east.
+    pub azimuth_deg: f64,
+    /// Minimum allowed elevation in degrees at this azimuth.
+    pub min_elevation_deg: f64,
+}
+
+impl CommTerrainMaskBinConfig {
+    fn validate(&self, site_index: usize, mask_index: usize) -> Result<(), ScenarioError> {
+        let path =
+            |field: &str| format!("comm.sites[{site_index}].terrain_mask[{mask_index}].{field}");
+        require_in_range(&path("azimuth_deg"), self.azimuth_deg, 0.0, 360.0)?;
+        require_in_range(
+            &path("min_elevation_deg"),
+            self.min_elevation_deg,
+            -90.0,
+            90.0,
+        )
+    }
+}
+
 /// Runtime validation switches.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -4363,6 +6132,10 @@ pub struct EpochConfig {
     pub eop: Option<PathBuf>,
     /// Optional SHA-256 pin for [`Self::eop`].
     pub eop_sha256: Option<String>,
+    /// Optional CIO `X/Y/s` table path.
+    pub cio_xys: Option<PathBuf>,
+    /// Optional SHA-256 pin for [`Self::cio_xys`].
+    pub cio_xys_sha256: Option<String>,
 }
 
 impl EpochConfig {
@@ -4381,6 +6154,13 @@ impl EpochConfig {
                 field: "epoch.eop_sha256".to_owned(),
                 role: ModelRole::Frame,
                 name: "epoch without eop".to_owned(),
+            });
+        }
+        if self.cio_xys_sha256.is_some() && self.cio_xys.is_none() {
+            return Err(ScenarioError::UnexpectedField {
+                field: "epoch.cio_xys_sha256".to_owned(),
+                role: ModelRole::Frame,
+                name: "epoch without cio_xys".to_owned(),
             });
         }
         Ok(())
@@ -5639,6 +7419,9 @@ pub struct AeroConfig {
     /// does not provide an aerodynamic coefficient source by itself.
     #[serde(default)]
     pub plume: Option<AeroPlumeConfig>,
+    /// Optional source-tagged UQ evidence for an aerodynamic coefficient band.
+    #[serde(default)]
+    pub uq: Option<AeroUqConfig>,
     /// Optional pinned SHA-256 digest (lower-case hex). When present,
     /// a mismatch with the file's actual digest fails closed.
     pub deck_sha256: Option<String>,
@@ -5655,6 +7438,9 @@ impl AeroConfig {
         }
         if let Some(plume) = &self.plume {
             plume.validate("aero.plume")?;
+        }
+        if let Some(uq) = &self.uq {
+            uq.validate()?;
         }
         let method_uses_deck = self.method.as_ref().is_none_or(AeroMethodConfig::uses_deck);
         if method_uses_deck {
@@ -5705,6 +7491,54 @@ impl AeroConfig {
         }
         if let Some(mounted_to) = &self.mounted_to {
             require_non_empty("aero.mounted_to", mounted_to)?;
+        }
+        Ok(())
+    }
+}
+
+/// Optional UQ band for an aerodynamic coefficient.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AeroUqConfig {
+    /// Stable deck or source identifier used in the UQ source tag.
+    pub deck_id: String,
+    /// Coefficient identifier, such as `cd`, `cl`, or `cm`.
+    pub coefficient_id: String,
+    /// Lower bound for the dimensionless coefficient.
+    pub coefficient_lower: f64,
+    /// Nominal dimensionless coefficient.
+    pub coefficient_nominal: f64,
+    /// Upper bound for the dimensionless coefficient.
+    pub coefficient_upper: f64,
+    /// Uniform NASA-STD-7009B credibility level (`0`..`4`).
+    pub credibility_level: u8,
+    /// Human-readable evidence pointer for the aerodynamic source.
+    pub evidence: String,
+}
+
+impl AeroUqConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_non_empty("aero.uq.deck_id", &self.deck_id)?;
+        require_non_empty("aero.uq.coefficient_id", &self.coefficient_id)?;
+        require_non_empty("aero.uq.evidence", &self.evidence)?;
+        require_finite("aero.uq.coefficient_lower", self.coefficient_lower)?;
+        require_finite("aero.uq.coefficient_nominal", self.coefficient_nominal)?;
+        require_finite("aero.uq.coefficient_upper", self.coefficient_upper)?;
+        if self.coefficient_lower > self.coefficient_nominal
+            || self.coefficient_nominal > self.coefficient_upper
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: "aero.uq.coefficient_lower".to_owned(),
+                value: self.coefficient_lower,
+                rule: "must satisfy coefficient_lower <= coefficient_nominal <= coefficient_upper",
+            });
+        }
+        if self.credibility_level > 4 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "aero.uq.credibility_level".to_owned(),
+                value: f64::from(self.credibility_level),
+                rule: "must be in 0..=4",
+            });
         }
         Ok(())
     }
@@ -6203,6 +8037,9 @@ pub struct AerothermalConfig {
     /// Optional stateful depth-resolved ablation toy.
     #[serde(default)]
     pub ablation: Option<AerothermalAblationConfig>,
+    /// Optional source-tagged UQ evidence for stagnation convective heating.
+    #[serde(default)]
+    pub uq: Option<AerothermalUqConfig>,
 }
 
 impl AerothermalConfig {
@@ -6251,6 +8088,64 @@ impl AerothermalConfig {
         }
         if let Some(ablation) = &self.ablation {
             ablation.validate("aerothermal.ablation")?;
+        }
+        if let Some(uq) = &self.uq {
+            uq.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Optional UQ band for the live aerothermal stagnation model.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AerothermalUqConfig {
+    /// Stable deck or source identifier used in the UQ source tag.
+    pub deck_id: String,
+    /// Lower bound for convective heat flux in W/m².
+    pub q_conv_lower_w_m2: f64,
+    /// Nominal convective heat flux in W/m².
+    pub q_conv_nominal_w_m2: f64,
+    /// Upper bound for convective heat flux in W/m².
+    pub q_conv_upper_w_m2: f64,
+    /// Uniform NASA-STD-7009B credibility level (`0`..`4`).
+    pub credibility_level: u8,
+    /// Human-readable evidence pointer for the aerothermal source.
+    pub evidence: String,
+}
+
+impl AerothermalUqConfig {
+    fn validate(&self) -> Result<(), ScenarioError> {
+        require_non_empty("aerothermal.uq.deck_id", &self.deck_id)?;
+        require_non_empty("aerothermal.uq.evidence", &self.evidence)?;
+        require_finite("aerothermal.uq.q_conv_lower_w_m2", self.q_conv_lower_w_m2)?;
+        require_finite(
+            "aerothermal.uq.q_conv_nominal_w_m2",
+            self.q_conv_nominal_w_m2,
+        )?;
+        require_finite("aerothermal.uq.q_conv_upper_w_m2", self.q_conv_upper_w_m2)?;
+        if self.q_conv_lower_w_m2 < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "aerothermal.uq.q_conv_lower_w_m2".to_owned(),
+                value: self.q_conv_lower_w_m2,
+                rule: "must be non-negative",
+            });
+        }
+        if self.q_conv_lower_w_m2 > self.q_conv_nominal_w_m2
+            || self.q_conv_nominal_w_m2 > self.q_conv_upper_w_m2
+        {
+            return Err(ScenarioError::InvalidNumber {
+                field: "aerothermal.uq.q_conv_lower_w_m2".to_owned(),
+                value: self.q_conv_lower_w_m2,
+                rule: "must satisfy q_conv_lower_w_m2 <= q_conv_nominal_w_m2 <= q_conv_upper_w_m2",
+            });
+        }
+        if self.credibility_level > 4 {
+            return Err(ScenarioError::InvalidNumber {
+                field: "aerothermal.uq.credibility_level".to_owned(),
+                value: f64::from(self.credibility_level),
+                rule: "must be in 0..=4",
+            });
         }
         Ok(())
     }
@@ -6991,10 +8886,16 @@ impl PropulsionFaultRuleConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PropulsionPogoConfig {
-    /// Longitudinal structural-mode natural frequency in rad/s.
-    pub mode_natural_frequency_rad_s: f64,
-    /// Longitudinal structural-mode damping ratio.
-    pub mode_damping_ratio: f64,
+    /// Source for the longitudinal structural mode consumed by the reduced
+    /// POGO model. Defaults to explicit fields inside `[propulsion.pogo]`.
+    #[serde(default)]
+    pub mode_source: PropulsionPogoModeSource,
+    /// Longitudinal structural-mode natural frequency in rad/s. Required when
+    /// `mode_source = "explicit"`; omitted when sourcing `[vehicle.bending]`.
+    pub mode_natural_frequency_rad_s: Option<f64>,
+    /// Longitudinal structural-mode damping ratio. Required when
+    /// `mode_source = "explicit"`; omitted when sourcing `[vehicle.bending]`.
+    pub mode_damping_ratio: Option<f64>,
     /// Open-loop modal feedback gain in rad^2/s^2 before accumulator
     /// attenuation.
     pub open_loop_gain_rad2_s2: f64,
@@ -7012,13 +8913,66 @@ pub struct PropulsionPogoConfig {
     pub require_stable: bool,
 }
 
+/// Structural-mode source for `[propulsion.pogo]`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PropulsionPogoModeSource {
+    /// Consume the explicit `mode_*` fields inside `[propulsion.pogo]`.
+    #[default]
+    Explicit,
+    /// Consume the parsed `[vehicle.bending]` first-mode frequency and damping.
+    VehicleBending,
+}
+
 impl PropulsionPogoConfig {
     fn validate(&self) -> Result<(), ScenarioError> {
+        match self.mode_source {
+            PropulsionPogoModeSource::Explicit => {
+                let frequency = self.mode_natural_frequency_rad_s.ok_or_else(|| {
+                    ScenarioError::InconsistentSection {
+                        field_a: "propulsion.pogo.mode_source".to_owned(),
+                        value_a: "explicit".to_owned(),
+                        field_b: "propulsion.pogo.mode_natural_frequency_rad_s".to_owned(),
+                        value_b: "missing".to_owned(),
+                    }
+                })?;
+                let damping =
+                    self.mode_damping_ratio
+                        .ok_or_else(|| ScenarioError::InconsistentSection {
+                            field_a: "propulsion.pogo.mode_source".to_owned(),
+                            value_a: "explicit".to_owned(),
+                            field_b: "propulsion.pogo.mode_damping_ratio".to_owned(),
+                            value_b: "missing".to_owned(),
+                        })?;
+                require_finite("propulsion.pogo.mode_natural_frequency_rad_s", frequency)?;
+                require_positive("propulsion.pogo.mode_natural_frequency_rad_s", frequency)?;
+                require_finite("propulsion.pogo.mode_damping_ratio", damping)?;
+                require_non_negative("propulsion.pogo.mode_damping_ratio", damping)?;
+            }
+            PropulsionPogoModeSource::VehicleBending => {
+                for field_declared in [
+                    (
+                        "propulsion.pogo.mode_natural_frequency_rad_s",
+                        self.mode_natural_frequency_rad_s.is_some(),
+                    ),
+                    (
+                        "propulsion.pogo.mode_damping_ratio",
+                        self.mode_damping_ratio.is_some(),
+                    ),
+                ] {
+                    let (field, declared) = field_declared;
+                    if declared {
+                        return Err(ScenarioError::InconsistentSection {
+                            field_a: "propulsion.pogo.mode_source".to_owned(),
+                            value_a: "vehicle_bending".to_owned(),
+                            field_b: field.to_owned(),
+                            value_b: "declared".to_owned(),
+                        });
+                    }
+                }
+            }
+        }
         for (field, value) in [
-            (
-                "mode_natural_frequency_rad_s",
-                self.mode_natural_frequency_rad_s,
-            ),
             ("feed_time_constant_s", self.feed_time_constant_s),
             (
                 "cavitation_compliance_m3_per_pa",
@@ -7029,7 +8983,6 @@ impl PropulsionPogoConfig {
             require_positive(&format!("propulsion.pogo.{field}"), value)?;
         }
         for (field, value) in [
-            ("mode_damping_ratio", self.mode_damping_ratio),
             ("open_loop_gain_rad2_s2", self.open_loop_gain_rad2_s2),
             ("mass_flow_gain_time_s", self.mass_flow_gain_time_s),
             (
@@ -8537,9 +10490,14 @@ impl AtmosphereConfig {
 pub struct SensorConfig {
     /// Sensor kind (must match a registered sensor model).
     pub kind: String,
+    /// IMU specific-force truth source. Defaults to the legacy
+    /// finite-difference bridge path.
+    pub specific_force_source: Option<SpecificForceSourceConfig>,
+    /// Optional high-rate IMU increment generation config.
+    pub high_rate: Option<SensorHighRateImuConfig>,
     /// Path to the sensor's noise-budget TOML file.
-    /// Required for `kind = "imu"` and `kind = "barometer"`, rejected
-    /// for `kind = "ideal_state"`.
+    /// Required for every non-`ideal_state` sensor kind, rejected for
+    /// `kind = "ideal_state"`.
     pub file: Option<PathBuf>,
     /// Optional pinned SHA-256 digest of the sensor noise budget file.
     pub file_sha256: Option<String>,
@@ -8548,6 +10506,23 @@ pub struct SensorConfig {
 impl SensorConfig {
     fn validate(&self, name: &str, registry: &ModelRegistry) -> Result<(), ScenarioError> {
         registry.resolve(ModelRole::Sensor, &self.kind)?;
+        if self.kind != "imu" && self.specific_force_source.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: format!("sensors.{name}.specific_force_source"),
+                role: ModelRole::Sensor,
+                name: self.kind.clone(),
+            });
+        }
+        if self.kind != "imu" && self.high_rate.is_some() {
+            return Err(ScenarioError::UnexpectedField {
+                field: format!("sensors.{name}.high_rate"),
+                role: ModelRole::Sensor,
+                name: self.kind.clone(),
+            });
+        }
+        if let Some(high_rate) = &self.high_rate {
+            high_rate.validate(name)?;
+        }
         match self.kind.as_str() {
             "ideal_state" => {
                 if self.file.is_some() {
@@ -8583,6 +10558,46 @@ impl SensorConfig {
         }
         Ok(())
     }
+}
+
+/// Optional high-rate IMU increment generation under
+/// `[sensors.<imu>.high_rate]`.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SensorHighRateImuConfig {
+    /// Number of generated high-rate sub-samples per IMU sample.
+    pub sub_samples: u32,
+    /// Delta-theta quantization LSB in radians. `0` disables this
+    /// quantization channel.
+    #[serde(default)]
+    pub delta_theta_lsb_rad: f64,
+    /// Delta-v quantization LSB in m/s. `0` disables this
+    /// quantization channel.
+    #[serde(default)]
+    pub delta_v_lsb_m_s: f64,
+}
+
+impl SensorHighRateImuConfig {
+    fn validate(&self, name: &str) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("sensors.{name}.high_rate.{field}");
+        require_positive_u32(&path("sub_samples"), self.sub_samples)?;
+        require_non_negative(&path("delta_theta_lsb_rad"), self.delta_theta_lsb_rad)?;
+        require_non_negative(&path("delta_v_lsb_m_s"), self.delta_v_lsb_m_s)?;
+        Ok(())
+    }
+}
+
+/// Source used to fill IMU specific force and angular acceleration truth.
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecificForceSourceConfig {
+    /// Legacy bridge mode: finite-difference velocity and body rate.
+    #[default]
+    FiniteDifference,
+    /// Use the runner's force/moment accumulator at the current step boundary.
+    ForceAccumulator,
+    /// Use the closed-form stationary rotating-frame IMU truth oracle.
+    StationaryRotatingFrame,
 }
 
 /// Optional batch metadata.
@@ -9855,6 +11870,7 @@ impl AssemblyConfig {
                 });
             }
         }
+        validate_coupled_rcs_groups(&self.effectors)?;
         let mut seen_engine_ids: std::collections::BTreeSet<&str> =
             std::collections::BTreeSet::new();
         for (index, engine) in self.engines.iter().enumerate() {
@@ -9877,6 +11893,7 @@ impl AssemblyConfig {
             }
         }
         self.validate_engine_propellant_references()?;
+        self.validate_rcs_tank_feed_references()?;
         let mut seen_recovery_ids: std::collections::BTreeSet<&str> =
             std::collections::BTreeSet::new();
         for (index, recovery) in self.recovery.iter().enumerate() {
@@ -9953,6 +11970,51 @@ impl AssemblyConfig {
         }
         Ok(())
     }
+
+    fn validate_rcs_tank_feed_references(&self) -> Result<(), ScenarioError> {
+        let tank_lookup: std::collections::BTreeMap<&str, &TankConfig> = self
+            .tanks
+            .iter()
+            .map(|tank| (tank.id.as_str(), tank))
+            .collect();
+        for (effector_index, effector) in self.effectors.iter().enumerate() {
+            let EffectorKindConfig::DirectTorque { rcs: Some(rcs), .. } = &effector.kind else {
+                continue;
+            };
+            for (thruster_index, thruster) in rcs.thrusters.iter().enumerate() {
+                let Some(feed) = &thruster.feed else {
+                    continue;
+                };
+                let path = |field: &str| {
+                    format!(
+                        "vehicle.assembly.effectors[{effector_index}].kind.rcs.thrusters[{thruster_index}].feed.{field}"
+                    )
+                };
+                let tank = tank_lookup.get(feed.tank.as_str()).ok_or_else(|| {
+                    ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("tank"),
+                        reason: format!("unknown tank id `{}`", feed.tank),
+                    }
+                })?;
+                if tank.ullage.is_none() {
+                    return Err(ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("tank"),
+                        reason: "RCS tank feed requires tank.ullage".to_owned(),
+                    });
+                }
+                if let Some(mounted_to) = effector.mounted_to.as_deref()
+                    && tank.mounted_to != mounted_to
+                {
+                    return Err(ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("tank"),
+                        reason: "RCS feed tank must be mounted_to the same body as the effector"
+                            .to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One declared body within `[vehicle.assembly]`.
@@ -9980,6 +12042,10 @@ const fn zero_vec3_meters() -> [f64; 3] {
 
 const fn positive_z_vec3() -> [f64; 3] {
     [0.0, 0.0, 1.0]
+}
+
+const fn default_pressure_exponent() -> f64 {
+    1.0
 }
 
 impl AssemblyBodyConfig {
@@ -10119,8 +12185,8 @@ impl EffectorConfig {
                 });
             }
         }
-        self.kind.validate(index)?;
         self.limits.validate(index, dt_s)?;
+        self.kind.validate(index, &self.limits)?;
         if let Some(unit) = &self.unit {
             require_non_empty(&path("unit"), unit)?;
         }
@@ -10145,6 +12211,7 @@ impl EffectorConfig {
 }
 
 /// Effector kind tagged enum. `linear_actuator` is the baseline kind;
+/// `second_order_servo` adds finite-bandwidth actuator dynamics, and
 /// `direct_torque` (v3-only) supports closed-loop
 /// autopilot-validation scenarios that need the kernel to respond
 /// to autopilot torque commands without an aero deck in the loop.
@@ -10157,6 +12224,19 @@ pub enum EffectorKindConfig {
         /// (pure rate-clamped tracker).
         #[serde(default)]
         tau_s: Option<f64>,
+    },
+    /// Second-order servo with command-side rate/acceleration limits
+    /// plus backlash. Ordinary aero-deck effectors may use this kind
+    /// anywhere `linear_actuator` is accepted.
+    SecondOrderServo {
+        /// Natural frequency, rad/s. Must be strictly positive.
+        natural_frequency_rad_s: f64,
+        /// Damping ratio. Must be non-negative.
+        damping_ratio: f64,
+        /// Maximum command acceleration magnitude, units/s^2.
+        max_accel_per_s2: f64,
+        /// Backlash half-width in effector units.
+        backlash_half_width: f64,
     },
     /// Direct body-torque source (v3-only). The
     /// effector's deflection is interpreted as a body-frame torque
@@ -10172,7 +12252,113 @@ pub enum EffectorKindConfig {
         axis: TorqueAxis,
         /// Per-rad torque effectiveness (N·m / rad).
         effectiveness_n_m_per_rad: f64,
+        /// Optional RCS pulse dynamics for this direct-torque effector.
+        #[serde(default)]
+        rcs: Option<DirectTorqueRcsConfig>,
     },
+}
+
+/// Optional RCS pulse dynamics for a `direct_torque` effector.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DirectTorqueRcsConfig {
+    /// Explicit RCS model mode. When omitted, scalar mode is inferred unless
+    /// `thrusters` is non-empty.
+    #[serde(default)]
+    pub mode: Option<DirectTorqueRcsMode>,
+    /// Coupled-bank group id. Required by `mode = "coupled_bank"` and ignored
+    /// by scalar/bank modes.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Minimum non-zero command impulse, N*s-equivalent.
+    #[serde(default)]
+    pub minimum_impulse_n_s: Option<f64>,
+    /// Nominal on-pulse command magnitude, N-equivalent.
+    #[serde(default)]
+    pub nominal_thrust_n: Option<f64>,
+    /// Physical thruster bank used by `mode = "bank"`.
+    #[serde(default)]
+    pub thrusters: Vec<RcsThrusterConfig>,
+    /// Optional PWPF prefilter parameters.
+    #[serde(default)]
+    pub pwpf: Option<PwpfConfig>,
+}
+
+/// `direct_torque.rcs` model selector.
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectTorqueRcsMode {
+    /// Legacy scalar MIB/PWPF path.
+    Scalar,
+    /// Physical body-frame thruster bank.
+    Bank,
+    /// Shared physical bank allocated across roll/pitch/yaw direct-torque axes.
+    CoupledBank,
+}
+
+/// One physical thruster inside `direct_torque.rcs.thrusters`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RcsThrusterConfig {
+    /// Stable bank-local thruster id.
+    pub id: String,
+    /// Body-frame mount position, m.
+    pub position_body_m: [f64; 3],
+    /// Body-frame force direction. Normalized at runtime.
+    pub direction_body: [f64; 3],
+    /// Minimum non-zero impulse, N*s.
+    pub minimum_impulse_n_s: f64,
+    /// Nominal thrust at initial pressure, N.
+    pub nominal_thrust_n: f64,
+    /// Optional pressure-fed blowdown model.
+    #[serde(default)]
+    pub blowdown: Option<RcsBlowdownConfig>,
+    /// Optional direct tank feed coupling.
+    #[serde(default)]
+    pub feed: Option<RcsTankFeedConfig>,
+}
+
+/// Direct tank feed coupling for one RCS thruster.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RcsTankFeedConfig {
+    /// Tank id under `[[vehicle.assembly.tanks]]`.
+    pub tank: String,
+    /// Thruster specific impulse for propellant drain, s.
+    pub specific_impulse_s: f64,
+    /// Exponent applied to normalized tank blowdown pressure scale before
+    /// multiplying nominal thrust.
+    #[serde(default = "default_pressure_exponent")]
+    pub pressure_exponent: f64,
+}
+
+/// Pressure-fed blowdown parameters for one RCS thruster.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RcsBlowdownConfig {
+    /// Initial feed pressure, Pa.
+    pub initial_pressure_pa: f64,
+    /// Pressure floor, Pa.
+    pub minimum_pressure_pa: f64,
+    /// Usable cumulative impulse between initial and floor pressure, N*s.
+    pub usable_impulse_n_s: f64,
+    /// Shape exponent applied to remaining impulse fraction.
+    #[serde(default = "default_pressure_exponent")]
+    pub pressure_exponent: f64,
+}
+
+/// Pulse-width pulse-frequency prefilter configuration.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PwpfConfig {
+    /// Prefilter gain.
+    pub gain: f64,
+    /// First-order prefilter time constant, s.
+    pub time_constant_s: f64,
+    /// Schmitt turn-on threshold in command units.
+    pub on_threshold: f64,
+    /// Schmitt turn-off threshold in command units.
+    pub off_threshold: f64,
 }
 
 /// Body-frame axis a `DirectTorque` effector drives.
@@ -10200,7 +12386,7 @@ impl TorqueAxis {
 }
 
 impl EffectorKindConfig {
-    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+    fn validate(&self, index: usize, limits: &EffectorLimitsConfig) -> Result<(), ScenarioError> {
         let path = |field: &str| format!("vehicle.assembly.effectors[{index}].kind.{field}");
         match self {
             Self::LinearActuator { tau_s } => {
@@ -10215,9 +12401,44 @@ impl EffectorKindConfig {
                     }
                 }
             }
+            Self::SecondOrderServo {
+                natural_frequency_rad_s,
+                damping_ratio,
+                max_accel_per_s2,
+                backlash_half_width,
+            } => {
+                require_finite(&path("natural_frequency_rad_s"), *natural_frequency_rad_s)?;
+                require_positive(&path("natural_frequency_rad_s"), *natural_frequency_rad_s)?;
+                require_finite(&path("damping_ratio"), *damping_ratio)?;
+                if *damping_ratio < 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("damping_ratio"),
+                        value: *damping_ratio,
+                        rule: "must be non-negative",
+                    });
+                }
+                require_finite(&path("max_accel_per_s2"), *max_accel_per_s2)?;
+                require_positive(&path("max_accel_per_s2"), *max_accel_per_s2)?;
+                require_finite(&path("backlash_half_width"), *backlash_half_width)?;
+                if *backlash_half_width < 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("backlash_half_width"),
+                        value: *backlash_half_width,
+                        rule: "must be non-negative",
+                    });
+                }
+                if *backlash_half_width > 0.5 * (limits.max - limits.min) {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("backlash_half_width"),
+                        value: *backlash_half_width,
+                        rule: "must be at most half the authority range",
+                    });
+                }
+            }
             Self::DirectTorque {
+                axis,
                 effectiveness_n_m_per_rad,
-                ..
+                rcs,
             } => {
                 require_finite(
                     &path("effectiveness_n_m_per_rad"),
@@ -10227,7 +12448,506 @@ impl EffectorKindConfig {
                     &path("effectiveness_n_m_per_rad"),
                     *effectiveness_n_m_per_rad,
                 )?;
+                if let Some(rcs) = rcs {
+                    rcs.validate(index, *axis, limits)?;
+                }
             }
+        }
+        Ok(())
+    }
+}
+
+impl DirectTorqueRcsConfig {
+    /// Resolved RCS mode, preserving the legacy scalar shorthand.
+    #[must_use]
+    pub fn resolved_mode(&self) -> DirectTorqueRcsMode {
+        match self.mode {
+            Some(mode) => mode,
+            None if self.thrusters.is_empty() => DirectTorqueRcsMode::Scalar,
+            None => DirectTorqueRcsMode::Bank,
+        }
+    }
+
+    fn validate(
+        &self,
+        index: usize,
+        axis: TorqueAxis,
+        limits: &EffectorLimitsConfig,
+    ) -> Result<(), ScenarioError> {
+        let path = |field: &str| format!("vehicle.assembly.effectors[{index}].kind.rcs.{field}");
+        match self.resolved_mode() {
+            DirectTorqueRcsMode::Scalar => {
+                if self.group.is_some() {
+                    return Err(ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("group"),
+                        reason: "scalar RCS mode must not declare a coupled group".to_owned(),
+                    });
+                }
+                let minimum_impulse_n_s = self.minimum_impulse_n_s.ok_or_else(|| {
+                    ScenarioError::MissingRequiredField {
+                        field: path("minimum_impulse_n_s"),
+                        role: ModelRole::Vehicle,
+                        name: "direct_torque.rcs".to_owned(),
+                    }
+                })?;
+                let nominal_thrust_n =
+                    self.nominal_thrust_n
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: path("nominal_thrust_n"),
+                            role: ModelRole::Vehicle,
+                            name: "direct_torque.rcs".to_owned(),
+                        })?;
+                require_finite(&path("minimum_impulse_n_s"), minimum_impulse_n_s)?;
+                require_positive(&path("minimum_impulse_n_s"), minimum_impulse_n_s)?;
+                require_finite(&path("nominal_thrust_n"), nominal_thrust_n)?;
+                require_positive(&path("nominal_thrust_n"), nominal_thrust_n)?;
+                if !self.thrusters.is_empty() {
+                    return Err(ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("thrusters"),
+                        reason: "scalar RCS mode must not declare thrusters".to_owned(),
+                    });
+                }
+            }
+            DirectTorqueRcsMode::Bank => {
+                if self.group.is_some() {
+                    return Err(ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("group"),
+                        reason: "bank RCS mode must not declare a coupled group".to_owned(),
+                    });
+                }
+                if self.minimum_impulse_n_s.is_some() || self.nominal_thrust_n.is_some() {
+                    return Err(ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("mode"),
+                        reason:
+                            "bank RCS mode declares minimum impulse and nominal thrust per thruster"
+                                .to_owned(),
+                    });
+                }
+                if self.thrusters.is_empty() {
+                    return Err(ScenarioError::EmptyList {
+                        field: path("thrusters"),
+                    });
+                }
+                validate_rcs_thruster_bank(index, axis, limits, &self.thrusters)?;
+            }
+            DirectTorqueRcsMode::CoupledBank => {
+                if self.minimum_impulse_n_s.is_some() || self.nominal_thrust_n.is_some() {
+                    return Err(ScenarioError::IncompatibleAssemblyEntry {
+                        field: path("mode"),
+                        reason:
+                            "coupled_bank RCS mode declares minimum impulse and nominal thrust per thruster"
+                                .to_owned(),
+                    });
+                }
+                let group =
+                    self.group
+                        .as_deref()
+                        .ok_or_else(|| ScenarioError::MissingRequiredField {
+                            field: path("group"),
+                            role: ModelRole::Vehicle,
+                            name: "direct_torque.rcs".to_owned(),
+                        })?;
+                require_non_empty(&path("group"), group)?;
+                if self.thrusters.is_empty() {
+                    return Err(ScenarioError::EmptyList {
+                        field: path("thrusters"),
+                    });
+                }
+                validate_rcs_coupled_thruster_bank(index, &self.thrusters)?;
+            }
+        }
+        if let Some(pwpf) = &self.pwpf {
+            pwpf.validate(index)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CoupledRcsAxisValidation {
+    effector_index: usize,
+    limits_min: f64,
+    limits_max: f64,
+}
+
+#[derive(Clone, Debug)]
+struct CoupledRcsGroupValidation {
+    first_effector_index: usize,
+    mounted_to: Option<String>,
+    thrusters: Vec<RcsThrusterConfig>,
+    axes: BTreeMap<usize, CoupledRcsAxisValidation>,
+}
+
+fn validate_coupled_rcs_groups(effectors: &[EffectorConfig]) -> Result<(), ScenarioError> {
+    let mut groups: BTreeMap<String, CoupledRcsGroupValidation> = BTreeMap::new();
+
+    for (index, effector) in effectors.iter().enumerate() {
+        let EffectorKindConfig::DirectTorque {
+            axis,
+            rcs: Some(rcs),
+            ..
+        } = &effector.kind
+        else {
+            continue;
+        };
+        if rcs.resolved_mode() != DirectTorqueRcsMode::CoupledBank {
+            continue;
+        }
+        let group = rcs
+            .group
+            .as_deref()
+            .ok_or_else(|| ScenarioError::MissingRequiredField {
+                field: format!("vehicle.assembly.effectors[{index}].kind.rcs.group"),
+                role: ModelRole::Vehicle,
+                name: "direct_torque.rcs".to_owned(),
+            })?;
+        let axis_index = axis.body_axis_index();
+        let axis_entry = CoupledRcsAxisValidation {
+            effector_index: index,
+            limits_min: effector.limits.min,
+            limits_max: effector.limits.max,
+        };
+        if let Some(existing) = groups.get_mut(group) {
+            if existing.mounted_to != effector.mounted_to {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: format!("vehicle.assembly.effectors[{index}].mounted_to"),
+                    reason: format!(
+                        "coupled_bank group `{group}` members must share the same mounted_to value"
+                    ),
+                });
+            }
+            if existing.thrusters != rcs.thrusters {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: format!("vehicle.assembly.effectors[{index}].kind.rcs.thrusters"),
+                    reason: format!(
+                        "coupled_bank group `{group}` members must declare identical thruster banks"
+                    ),
+                });
+            }
+            if existing.axes.insert(axis_index, axis_entry).is_some() {
+                return Err(ScenarioError::DuplicateValue {
+                    field: format!("vehicle.assembly.effectors[{index}].kind.axis"),
+                    value: format!("{axis:?}"),
+                });
+            }
+        } else {
+            let mut axes = BTreeMap::new();
+            axes.insert(axis_index, axis_entry);
+            groups.insert(
+                group.to_owned(),
+                CoupledRcsGroupValidation {
+                    first_effector_index: index,
+                    mounted_to: effector.mounted_to.clone(),
+                    thrusters: rcs.thrusters.clone(),
+                    axes,
+                },
+            );
+        }
+    }
+
+    for (group, config) in groups {
+        if config.axes.len() != 3 {
+            return Err(ScenarioError::IncompatibleAssemblyEntry {
+                field: format!(
+                    "vehicle.assembly.effectors[{}].kind.rcs.group",
+                    config.first_effector_index
+                ),
+                reason: format!(
+                    "coupled_bank group `{group}` must declare exactly one roll, pitch, and yaw direct_torque effector"
+                ),
+            });
+        }
+        for axis_index in 0..3 {
+            let Some(axis) = config.axes.get(&axis_index) else {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: format!(
+                        "vehicle.assembly.effectors[{}].kind.rcs.group",
+                        config.first_effector_index
+                    ),
+                    reason: format!(
+                        "coupled_bank group `{group}` must declare exactly one roll, pitch, and yaw direct_torque effector"
+                    ),
+                });
+            };
+            let has_positive = config
+                .thrusters
+                .iter()
+                .any(|thruster| thruster_torque_per_newton_body(thruster)[axis_index] > 1.0e-12);
+            let has_negative = config
+                .thrusters
+                .iter()
+                .any(|thruster| thruster_torque_per_newton_body(thruster)[axis_index] < -1.0e-12);
+            if axis.limits_max > 0.0 && !has_positive {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: format!(
+                        "vehicle.assembly.effectors[{}].kind.rcs.thrusters",
+                        axis.effector_index
+                    ),
+                    reason: format!(
+                        "coupled_bank group `{group}` lacks positive {} authority required by limits.max",
+                        torque_axis_name(axis_index)
+                    ),
+                });
+            }
+            if axis.limits_min < 0.0 && !has_negative {
+                return Err(ScenarioError::IncompatibleAssemblyEntry {
+                    field: format!(
+                        "vehicle.assembly.effectors[{}].kind.rcs.thrusters",
+                        axis.effector_index
+                    ),
+                    reason: format!(
+                        "coupled_bank group `{group}` lacks negative {} authority required by limits.min",
+                        torque_axis_name(axis_index)
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_rcs_thruster_bank(
+    effector_index: usize,
+    axis: TorqueAxis,
+    limits: &EffectorLimitsConfig,
+    thrusters: &[RcsThrusterConfig],
+) -> Result<(), ScenarioError> {
+    let mut has_positive = false;
+    let mut has_negative = false;
+    let mut ids = BTreeSet::new();
+    for (thruster_index, thruster) in thrusters.iter().enumerate() {
+        let path = |field: &str| {
+            format!(
+                "vehicle.assembly.effectors[{effector_index}].kind.rcs.thrusters[{thruster_index}].{field}"
+            )
+        };
+        require_non_empty(&path("id"), &thruster.id)?;
+        if !ids.insert(thruster.id.as_str()) {
+            return Err(ScenarioError::DuplicateValue {
+                field: path("id"),
+                value: thruster.id.clone(),
+            });
+        }
+        require_finite_array(&path("position_body_m"), &thruster.position_body_m)?;
+        require_finite_array(&path("direction_body"), &thruster.direction_body)?;
+        let direction_norm = vec3_norm(thruster.direction_body);
+        if direction_norm <= 1.0e-12 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("direction_body"),
+                value: direction_norm,
+                rule: "must have non-zero norm",
+            });
+        }
+        require_finite(&path("minimum_impulse_n_s"), thruster.minimum_impulse_n_s)?;
+        require_positive(&path("minimum_impulse_n_s"), thruster.minimum_impulse_n_s)?;
+        require_finite(&path("nominal_thrust_n"), thruster.nominal_thrust_n)?;
+        require_positive(&path("nominal_thrust_n"), thruster.nominal_thrust_n)?;
+        if let Some(feed) = &thruster.feed {
+            feed.validate(effector_index, thruster_index)?;
+        }
+        let min_scale = if let Some(blowdown) = &thruster.blowdown {
+            blowdown.validate(effector_index, thruster_index)?;
+            blowdown.minimum_pressure_pa / blowdown.initial_pressure_pa
+        } else {
+            1.0
+        };
+        let minimum_nominal = thruster.nominal_thrust_n * min_scale;
+        if thruster.minimum_impulse_n_s > minimum_nominal {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("minimum_impulse_n_s"),
+                value: thruster.minimum_impulse_n_s,
+                rule: "must not exceed nominal_thrust_n at the minimum blowdown pressure for a one-second capacity check",
+            });
+        }
+        let direction_unit = vec3_scale(thruster.direction_body, 1.0 / direction_norm);
+        let torque_axis =
+            vec3_cross(thruster.position_body_m, direction_unit)[axis.body_axis_index()];
+        if torque_axis.abs() <= 1.0e-12 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("direction_body"),
+                value: torque_axis,
+                rule: "must produce non-zero torque about the declared direct_torque axis",
+            });
+        }
+        has_positive |= torque_axis > 0.0;
+        has_negative |= torque_axis < 0.0;
+    }
+    if limits.max > 0.0 && !has_positive {
+        return Err(ScenarioError::IncompatibleAssemblyEntry {
+            field: format!("vehicle.assembly.effectors[{effector_index}].kind.rcs.thrusters"),
+            reason: "RCS bank lacks positive-axis authority required by limits.max".to_owned(),
+        });
+    }
+    if limits.min < 0.0 && !has_negative {
+        return Err(ScenarioError::IncompatibleAssemblyEntry {
+            field: format!("vehicle.assembly.effectors[{effector_index}].kind.rcs.thrusters"),
+            reason: "RCS bank lacks negative-axis authority required by limits.min".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_rcs_coupled_thruster_bank(
+    effector_index: usize,
+    thrusters: &[RcsThrusterConfig],
+) -> Result<(), ScenarioError> {
+    let mut ids = BTreeSet::new();
+    for (thruster_index, thruster) in thrusters.iter().enumerate() {
+        let path = |field: &str| {
+            format!(
+                "vehicle.assembly.effectors[{effector_index}].kind.rcs.thrusters[{thruster_index}].{field}"
+            )
+        };
+        require_non_empty(&path("id"), &thruster.id)?;
+        if !ids.insert(thruster.id.as_str()) {
+            return Err(ScenarioError::DuplicateValue {
+                field: path("id"),
+                value: thruster.id.clone(),
+            });
+        }
+        require_finite_array(&path("position_body_m"), &thruster.position_body_m)?;
+        require_finite_array(&path("direction_body"), &thruster.direction_body)?;
+        let direction_norm = vec3_norm(thruster.direction_body);
+        if direction_norm <= 1.0e-12 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("direction_body"),
+                value: direction_norm,
+                rule: "must have non-zero norm",
+            });
+        }
+        require_finite(&path("minimum_impulse_n_s"), thruster.minimum_impulse_n_s)?;
+        require_positive(&path("minimum_impulse_n_s"), thruster.minimum_impulse_n_s)?;
+        require_finite(&path("nominal_thrust_n"), thruster.nominal_thrust_n)?;
+        require_positive(&path("nominal_thrust_n"), thruster.nominal_thrust_n)?;
+        if let Some(feed) = &thruster.feed {
+            feed.validate(effector_index, thruster_index)?;
+        }
+        let min_scale = if let Some(blowdown) = &thruster.blowdown {
+            blowdown.validate(effector_index, thruster_index)?;
+            blowdown.minimum_pressure_pa / blowdown.initial_pressure_pa
+        } else {
+            1.0
+        };
+        let minimum_nominal = thruster.nominal_thrust_n * min_scale;
+        if thruster.minimum_impulse_n_s > minimum_nominal {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("minimum_impulse_n_s"),
+                value: thruster.minimum_impulse_n_s,
+                rule: "must not exceed nominal_thrust_n at the minimum blowdown pressure for a one-second capacity check",
+            });
+        }
+        if vec3_norm(thruster_torque_per_newton_body(thruster)) <= 1.0e-12 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("direction_body"),
+                value: 0.0,
+                rule: "must produce non-zero body torque",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn thruster_torque_per_newton_body(thruster: &RcsThrusterConfig) -> [f64; 3] {
+    let direction_norm = vec3_norm(thruster.direction_body);
+    if direction_norm <= 1.0e-12 {
+        return [0.0, 0.0, 0.0];
+    }
+    let direction_unit = vec3_scale(thruster.direction_body, 1.0 / direction_norm);
+    vec3_cross(thruster.position_body_m, direction_unit)
+}
+
+fn torque_axis_name(axis_index: usize) -> &'static str {
+    match axis_index {
+        0 => "roll",
+        1 => "pitch",
+        2 => "yaw",
+        _ => "unknown",
+    }
+}
+
+fn vec3_norm(value: [f64; 3]) -> f64 {
+    (value[0] * value[0] + value[1] * value[1] + value[2] * value[2]).sqrt()
+}
+
+fn vec3_scale(value: [f64; 3], scale: f64) -> [f64; 3] {
+    [value[0] * scale, value[1] * scale, value[2] * scale]
+}
+
+fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+impl RcsBlowdownConfig {
+    fn validate(&self, effector_index: usize, thruster_index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| {
+            format!(
+                "vehicle.assembly.effectors[{effector_index}].kind.rcs.thrusters[{thruster_index}].blowdown.{field}"
+            )
+        };
+        require_finite(&path("initial_pressure_pa"), self.initial_pressure_pa)?;
+        require_positive(&path("initial_pressure_pa"), self.initial_pressure_pa)?;
+        require_finite(&path("minimum_pressure_pa"), self.minimum_pressure_pa)?;
+        require_positive(&path("minimum_pressure_pa"), self.minimum_pressure_pa)?;
+        if self.minimum_pressure_pa > self.initial_pressure_pa {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("minimum_pressure_pa"),
+                value: self.minimum_pressure_pa,
+                rule: "must be less than or equal to initial_pressure_pa",
+            });
+        }
+        require_finite(&path("usable_impulse_n_s"), self.usable_impulse_n_s)?;
+        require_positive(&path("usable_impulse_n_s"), self.usable_impulse_n_s)?;
+        require_finite(&path("pressure_exponent"), self.pressure_exponent)?;
+        require_positive(&path("pressure_exponent"), self.pressure_exponent)?;
+        Ok(())
+    }
+}
+
+impl RcsTankFeedConfig {
+    fn validate(&self, effector_index: usize, thruster_index: usize) -> Result<(), ScenarioError> {
+        let path = |field: &str| {
+            format!(
+                "vehicle.assembly.effectors[{effector_index}].kind.rcs.thrusters[{thruster_index}].feed.{field}"
+            )
+        };
+        require_non_empty(&path("tank"), &self.tank)?;
+        require_finite(&path("specific_impulse_s"), self.specific_impulse_s)?;
+        require_positive(&path("specific_impulse_s"), self.specific_impulse_s)?;
+        require_finite(&path("pressure_exponent"), self.pressure_exponent)?;
+        require_positive(&path("pressure_exponent"), self.pressure_exponent)?;
+        Ok(())
+    }
+}
+
+impl PwpfConfig {
+    fn validate(&self, index: usize) -> Result<(), ScenarioError> {
+        let path =
+            |field: &str| format!("vehicle.assembly.effectors[{index}].kind.rcs.pwpf.{field}");
+        require_finite(&path("gain"), self.gain)?;
+        require_positive(&path("gain"), self.gain)?;
+        require_finite(&path("time_constant_s"), self.time_constant_s)?;
+        require_positive(&path("time_constant_s"), self.time_constant_s)?;
+        require_finite(&path("on_threshold"), self.on_threshold)?;
+        require_positive(&path("on_threshold"), self.on_threshold)?;
+        require_finite(&path("off_threshold"), self.off_threshold)?;
+        if self.off_threshold < 0.0 {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("off_threshold"),
+                value: self.off_threshold,
+                rule: "must be non-negative",
+            });
+        }
+        if self.off_threshold >= self.on_threshold {
+            return Err(ScenarioError::InvalidNumber {
+                field: path("off_threshold"),
+                value: self.off_threshold,
+                rule: "must be smaller than on_threshold",
+            });
         }
         Ok(())
     }
@@ -10333,6 +13053,15 @@ pub enum EffectorFaultConfig {
         /// Target deflection.
         to: f64,
     },
+    /// Deterministic sinusoidal command-offset fault.
+    Oscillatory {
+        /// Fault amplitude in effector command units.
+        amplitude: f64,
+        /// Fault frequency, Hz.
+        frequency_hz: f64,
+        /// Initial phase, rad.
+        phase_rad: f64,
+    },
 }
 
 impl EffectorFaultConfig {
@@ -10365,6 +13094,23 @@ impl EffectorFaultConfig {
                         rule: "must lie within [limits.min, limits.max]",
                     });
                 }
+            }
+            Self::Oscillatory {
+                amplitude,
+                frequency_hz,
+                phase_rad,
+            } => {
+                require_finite(&path("amplitude"), *amplitude)?;
+                if *amplitude < 0.0 {
+                    return Err(ScenarioError::InvalidNumber {
+                        field: path("amplitude"),
+                        value: *amplitude,
+                        rule: "must be non-negative",
+                    });
+                }
+                require_finite(&path("frequency_hz"), *frequency_hz)?;
+                require_positive(&path("frequency_hz"), *frequency_hz)?;
+                require_finite(&path("phase_rad"), *phase_rad)?;
             }
         }
         Ok(())
@@ -11905,6 +14651,28 @@ pub enum FcTransportFaultSignalConfig {
     ImuGyroBodyRadS {
         /// Vector axis.
         axis: FcTransportVectorAxisConfig,
+    },
+    /// High-rate IMU delta-theta increment component, rad.
+    #[serde(rename = "imu_increment_delta_theta_rad")]
+    ImuIncrementDeltaThetaRad {
+        /// Zero-based increment index inside the bridge frame.
+        sample_index: u32,
+        /// Vector axis.
+        axis: FcTransportVectorAxisConfig,
+    },
+    /// High-rate IMU delta-v increment component, m/s.
+    #[serde(rename = "imu_increment_delta_v_m_s")]
+    ImuIncrementDeltaVMs {
+        /// Zero-based increment index inside the bridge frame.
+        sample_index: u32,
+        /// Vector axis.
+        axis: FcTransportVectorAxisConfig,
+    },
+    /// High-rate IMU increment duration, s.
+    #[serde(rename = "imu_increment_dt_s")]
+    ImuIncrementDtS {
+        /// Zero-based increment index inside the bridge frame.
+        sample_index: u32,
     },
     /// Barometric altitude, m.
     BaroAltitudeM,
@@ -14594,6 +17362,10 @@ pub struct MultiBodyGimbalJointConfig {
     /// Child-frame neutral thrust direction used to derive live joint angle.
     #[serde(default = "positive_z_vec3")]
     pub neutral_thrust_body: [f64; 3],
+    /// Optional `[contact]` scalar mechanism id coupled to the primary gimbal
+    /// coordinate.
+    #[serde(default)]
+    pub mechanism_id: Option<String>,
     /// Initial revolute coordinate.
     #[serde(default)]
     pub initial_angle_rad: f64,
@@ -14645,6 +17417,9 @@ impl MultiBodyGimbalJointConfig {
         }
         require_finite(&path("initial_angle_rad"), self.initial_angle_rad)?;
         require_finite(&path("initial_rate_rad_s"), self.initial_rate_rad_s)?;
+        if let Some(mechanism_id) = &self.mechanism_id {
+            require_non_empty(&path("mechanism_id"), mechanism_id)?;
+        }
         Ok(())
     }
 }

@@ -9,9 +9,9 @@
 //! by adapting these primitives into force accumulators.
 //!
 //! The initial tier intentionally covers point/sphere contact against a
-//! plane plus scalar mechanism constraints. Runner scenario wiring, gear-leg
-//! assemblies, terrain decks, and implicit contact solvers are later work
-//! packages.
+//! plane plus scalar mechanism constraints. Higher layers now adapt these
+//! primitives into runner half-space contact and landing-gear footpads; terrain
+//! decks and implicit contact solvers remain later work packages.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
@@ -19,12 +19,17 @@
 pub mod backlash;
 pub mod error;
 pub mod latch;
+pub mod mechanism;
 pub mod stiction;
 pub mod stop;
 
 pub use backlash::{BacklashFlank, BacklashGap, BacklashResponse};
 pub use error::ContactError;
 pub use latch::{LatchState, LatchTransition, LatchWindow, MonotoneLatch};
+pub use mechanism::{
+    ScalarMechanismElement, ScalarMechanismResponse, evaluate_scalar_mechanism,
+    scalar_mechanism_latch_count,
+};
 pub use stiction::{
     AnchoredStictionFriction, AnchoredStictionResponse, AnchoredStictionState, HousnerRockingBlock,
     RestDetector, RestDetectorConfig, RestDetectorState, RestStatus, StictionMode,

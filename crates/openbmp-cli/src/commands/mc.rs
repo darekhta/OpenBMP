@@ -200,6 +200,32 @@ pub struct McCredibilityOptions<'a> {
     pub report_md: Option<&'a Path>,
 }
 
+/// Complete UQ credibility inputs expected by MC campaign drivers.
+///
+/// This contract keeps optional campaign sidecars and runner-gathered upstream
+/// UQ on the same path, so future drivers do not need bespoke merge rules.
+#[derive(Clone, Copy, Debug)]
+pub struct CampaignCredibilityInputs<'a> {
+    /// Optional campaign UQ sidecar declaration.
+    pub sidecar: Option<McCredibilityOptions<'a>>,
+    /// Runner-gathered upstream deck UQ budget.
+    pub upstream_uq: &'a CorrelatedErrorBudget,
+}
+
+impl<'a> CampaignCredibilityInputs<'a> {
+    /// Build MC campaign credibility inputs from a sidecar and upstream budget.
+    #[must_use]
+    pub const fn new(
+        sidecar: Option<McCredibilityOptions<'a>>,
+        upstream_uq: &'a CorrelatedErrorBudget,
+    ) -> Self {
+        Self {
+            sidecar,
+            upstream_uq,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ResolvedMcCredibilityOptions {
     budget: CorrelatedErrorBudget,
@@ -580,20 +606,19 @@ pub fn summarize_with_credibility(
     credibility: Option<McCredibilityOptions<'_>>,
 ) -> Result<McScalarSummaryReport, CliError> {
     let summary = summarize(samples_csv, value_column, success_column, confidence)?;
-    let Some(options) = credibility else {
-        return Ok(McScalarSummaryReport {
-            summary,
-            credibility: None,
-            credibility_report_md: None,
-        });
+    let credibility = evaluate_campaign_credibility_contract(CampaignCredibilityInputs::new(
+        credibility,
+        &CorrelatedErrorBudget::default(),
+    ))?;
+    let (credibility, credibility_report_md) = match credibility {
+        Some((report, report_path)) => (Some(report), report_path),
+        None => (None, None),
     };
-
-    let (report, report_path) = evaluate_credibility_options(options)?;
 
     Ok(McScalarSummaryReport {
         summary,
-        credibility: Some(report),
-        credibility_report_md: report_path,
+        credibility,
+        credibility_report_md,
     })
 }
 
@@ -751,7 +776,7 @@ pub fn parse_credibility_floor(value: &str) -> Result<CredibilityLevel, CliError
 /// Returns [`CliError`] when the UQ TOML is malformed, UQ validation fails,
 /// the Markdown report cannot be written, or the binding credibility level is
 /// below the requested floor.
-pub(crate) fn evaluate_credibility_options(
+fn evaluate_credibility_options(
     options: McCredibilityOptions<'_>,
 ) -> Result<(CampaignCredibilityReport, Option<PathBuf>), CliError> {
     let resolved = resolve_credibility_options(options)?;
@@ -760,6 +785,62 @@ pub(crate) fn evaluate_credibility_options(
         resolved.floor,
         resolved.report_md.as_deref(),
     )
+}
+
+/// Evaluate optional MC UQ sidecar evidence plus runner-gathered upstream UQ.
+///
+/// If both inputs are present, upstream sources are appended as independent
+/// sources after the sidecar budget. If only upstream UQ is present, it is
+/// still evaluated with an `L0` floor so campaign drivers can surface
+/// discipline-deck credibility without bespoke merge logic.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the sidecar is malformed, source ids conflict,
+/// UQ validation fails, the Markdown report cannot be written, or the binding
+/// credibility level is below the requested floor.
+pub fn evaluate_campaign_credibility_contract(
+    inputs: CampaignCredibilityInputs<'_>,
+) -> Result<Option<(CampaignCredibilityReport, Option<PathBuf>)>, CliError> {
+    if inputs.upstream_uq.sources.is_empty() {
+        return inputs.sidecar.map(evaluate_credibility_options).transpose();
+    }
+
+    let resolved = inputs
+        .sidecar
+        .map(resolve_credibility_options)
+        .transpose()?;
+    if let Some(mut resolved) = resolved {
+        append_independent_uq_budget(&mut resolved.budget, inputs.upstream_uq)?;
+        return evaluate_credibility_budget(
+            &resolved.budget,
+            resolved.floor,
+            resolved.report_md.as_deref(),
+        )
+        .map(Some);
+    }
+
+    evaluate_credibility_budget(inputs.upstream_uq, CredibilityLevel::L0, None).map(Some)
+}
+
+/// Evaluate optional MC UQ sidecar evidence plus runner-gathered upstream UQ.
+///
+/// Prefer [`evaluate_campaign_credibility_contract`] for new campaign drivers;
+/// this compatibility wrapper keeps older call sites on the same contract.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the sidecar is malformed, source ids conflict,
+/// UQ validation fails, the Markdown report cannot be written, or the binding
+/// credibility level is below the requested floor.
+pub fn evaluate_campaign_credibility_inputs(
+    credibility: Option<McCredibilityOptions<'_>>,
+    gathered_upstream_uq: &CorrelatedErrorBudget,
+) -> Result<Option<(CampaignCredibilityReport, Option<PathBuf>)>, CliError> {
+    evaluate_campaign_credibility_contract(CampaignCredibilityInputs::new(
+        credibility,
+        gathered_upstream_uq,
+    ))
 }
 
 fn resolve_credibility_options(
@@ -832,11 +913,7 @@ pub fn run_propulsion_fault_campaign(
             floor: *floor,
             report_md: report_md.as_deref(),
         });
-    let credibility = options
-        .credibility
-        .or(manifest_credibility)
-        .map(resolve_credibility_options)
-        .transpose()?;
+    let credibility = options.credibility.or(manifest_credibility);
     let library = PropulsionFaultLibrary::new(document.faults).map_err(monte_carlo_error)?;
     let source_dir = options.scenario_path.parent().map(Path::to_path_buf);
 
@@ -870,29 +947,10 @@ pub fn run_propulsion_fault_campaign(
         Welford::from_indexed_samples(rows.iter().map(|row| (row.sample_index, row.value)))
             .map_err(monte_carlo_error)?;
     let success = success_summary(rows.iter().map(|row| row.success), options.confidence)?;
-    let credibility = if gathered_upstream_uq.sources.is_empty() {
-        credibility.map(|resolved| {
-            evaluate_credibility_budget(
-                &resolved.budget,
-                resolved.floor,
-                resolved.report_md.as_deref(),
-            )
-        })
-    } else if let Some(mut resolved) = credibility {
-        append_independent_uq_sources(&mut resolved.budget, &gathered_upstream_uq.sources)?;
-        Some(evaluate_credibility_budget(
-            &resolved.budget,
-            resolved.floor,
-            resolved.report_md.as_deref(),
-        ))
-    } else {
-        Some(evaluate_credibility_budget(
-            &gathered_upstream_uq,
-            CredibilityLevel::L0,
-            None,
-        ))
-    }
-    .transpose()?;
+    let credibility = evaluate_campaign_credibility_contract(CampaignCredibilityInputs::new(
+        credibility,
+        &gathered_upstream_uq,
+    ))?;
     let (credibility, credibility_report_md) = match credibility {
         Some((report, report_path)) => (Some(report), report_path),
         None => (None, None),
@@ -1145,11 +1203,27 @@ fn append_independent_uq_sources(
     budget: &mut CorrelatedErrorBudget,
     incoming: &[UncertaintySource],
 ) -> Result<(), CliError> {
-    let mut added = Vec::new();
-    for source in incoming {
+    append_independent_uq_budget(
+        budget,
+        &CorrelatedErrorBudget {
+            sources: incoming.to_vec(),
+            correlation: None,
+        },
+    )
+}
+
+fn append_independent_uq_budget(
+    budget: &mut CorrelatedErrorBudget,
+    incoming: &CorrelatedErrorBudget,
+) -> Result<(), CliError> {
+    let mut added: Vec<UncertaintySource> = Vec::new();
+    let mut added_indices = Vec::new();
+    let mut skipped_duplicate = false;
+    for (index, source) in incoming.sources.iter().enumerate() {
         if let Some(existing) = budget
             .sources
             .iter()
+            .chain(added.iter())
             .find(|existing| existing.source_id == source.source_id)
         {
             if existing != source {
@@ -1160,40 +1234,79 @@ fn append_independent_uq_sources(
                     ),
                 });
             }
+            skipped_duplicate = true;
             continue;
         }
+        added_indices.push(index);
         added.push(source.clone());
     }
     if added.is_empty() {
         return Ok(());
     }
-    expand_correlation_for_independent_sources(budget, added.len())?;
+    if skipped_duplicate && incoming.correlation.is_some() {
+        return Err(CliError::MonteCarlo {
+            summary: "cannot merge partially duplicate correlated upstream UQ budget".to_owned(),
+        });
+    }
+    expand_correlation_for_independent_budget(budget, incoming, &added_indices)?;
     budget.sources.extend(added);
     Ok(())
 }
 
-fn expand_correlation_for_independent_sources(
+fn expand_correlation_for_independent_budget(
     budget: &mut CorrelatedErrorBudget,
-    added_count: usize,
+    incoming: &CorrelatedErrorBudget,
+    added_indices: &[usize],
 ) -> Result<(), CliError> {
-    let Some(correlation) = budget.correlation.take() else {
+    let old_correlation = budget.correlation.take();
+    if old_correlation.is_none() && incoming.correlation.is_none() {
         return Ok(());
-    };
+    }
     let old_count = budget.sources.len();
+    let added_count = added_indices.len();
     let new_count = old_count + added_count;
     let mut values = vec![0.0; new_count * new_count];
-    for row in 0..old_count {
-        for column in 0..old_count {
-            values[row * new_count + column] =
-                correlation
-                    .get(row, column)
-                    .ok_or_else(|| CliError::MonteCarlo {
-                        summary: "UQ correlation matrix dimension mismatch".to_owned(),
-                    })?;
-        }
-    }
     for index in 0..new_count {
         values[index * new_count + index] = 1.0;
+    }
+    for row in 0..old_count {
+        for column in 0..old_count {
+            values[row * new_count + column] = old_correlation
+                .as_ref()
+                .map(|correlation| {
+                    correlation
+                        .get(row, column)
+                        .ok_or_else(|| CliError::MonteCarlo {
+                            summary: "UQ correlation matrix dimension mismatch".to_owned(),
+                        })
+                })
+                .transpose()?
+                .unwrap_or(if row == column { 1.0 } else { 0.0 });
+        }
+    }
+    for (new_row, incoming_row) in added_indices.iter().copied().enumerate() {
+        for (new_column, incoming_column) in added_indices.iter().copied().enumerate() {
+            let row = old_count + new_row;
+            let column = old_count + new_column;
+            values[row * new_count + column] = incoming
+                .correlation
+                .as_ref()
+                .map(|correlation| {
+                    correlation
+                        .get(incoming_row, incoming_column)
+                        .ok_or_else(|| CliError::MonteCarlo {
+                            summary: "UQ correlation matrix dimension mismatch".to_owned(),
+                        })
+                })
+                .transpose()?
+                .unwrap_or({
+                    if incoming_row == incoming_column {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                });
+        }
     }
     budget.correlation =
         Some(

@@ -109,7 +109,7 @@ selected.
 
 The implemented HAL contract is guarded by:
 
-- `cargo check -p openbmp-core -p openbmp-state -p openbmp-models -p openbmp-mission -p openbmp-physics -p openbmp-propulsion -p openbmp-aero -p openbmp-sensors -p openbmp-hal -p openbmp-fc --no-default-features --target thumbv7em-none-eabihf --locked`
+- `cargo check -p openbmp-core -p openbmp-state -p openbmp-models -p openbmp-mission -p openbmp-physics -p openbmp-propulsion -p openbmp-aero -p openbmp-afts -p openbmp-sensors -p openbmp-hal -p openbmp-fc --no-default-features --target thumbv7em-none-eabihf --locked`
 - `cargo test -p openbmp-hal iload --locked`
 - `cargo test -p openbmp-hal flight_record --locked`
 - `cargo test -p openbmp-hal static_bus --locked`

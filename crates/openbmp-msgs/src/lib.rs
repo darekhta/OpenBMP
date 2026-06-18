@@ -175,8 +175,10 @@ pub mod topic_index {
     pub const HEALTH_ACTUATOR_STATUS: usize = 34;
     pub const HEALTH_WATCHDOG_STATUS: usize = 35;
     pub const HEALTH_STORAGE_STATUS: usize = 36;
+    pub const SENSOR_AIRDATA: usize = 37;
+    pub const SENSOR_IMU_INCREMENTS: usize = 38;
     #[allow(dead_code)]
-    pub const COUNT: usize = 37;
+    pub const COUNT: usize = 39;
 }
 
 // ---------------------------------------------------------------------
@@ -202,6 +204,35 @@ impl Topic for ImuSample {
     const INDEX: usize = topic_index::SENSOR_IMU;
 }
 
+/// One high-rate strapdown IMU inertial increment.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ImuInertialIncrement {
+    /// Integrated body angular rate over the sub-interval (rad).
+    pub delta_theta_rad: Vector3<f64>,
+    /// Integrated body specific force over the sub-interval (m/s).
+    pub delta_v_m_s: Vector3<f64>,
+    /// Sub-interval duration (s).
+    pub dt_s: f64,
+    /// High-rate sample sequence number.
+    pub seq: u64,
+}
+
+/// High-rate strapdown IMU increment window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImuIncrementWindow {
+    /// Capture timestamp of the parent IMU sample.
+    pub time: SimTime,
+    /// Generated high-rate increments in deterministic sequence order.
+    pub increments: Vec<ImuInertialIncrement>,
+    /// `true` if the parent IMU sample was valid.
+    pub healthy: bool,
+}
+
+impl Topic for ImuIncrementWindow {
+    const NAME: &'static str = "sensor.imu_increments";
+    const INDEX: usize = topic_index::SENSOR_IMU_INCREMENTS;
+}
+
 /// Barometric-altimeter sample.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BarometerSample {
@@ -218,6 +249,36 @@ pub struct BarometerSample {
 impl Topic for BarometerSample {
     const NAME: &'static str = "sensor.barometer";
     const INDEX: usize = topic_index::SENSOR_BAROMETER;
+}
+
+/// Pitot-static and angle-vane air-data sample.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct AirDataSample {
+    /// Capture timestamp.
+    pub time: SimTime,
+    /// Static pressure (Pa).
+    pub static_pressure_pa: f64,
+    /// Pitot impact pressure `p_t - p_s` (Pa).
+    pub impact_pressure_pa: f64,
+    /// Mach number inferred from the Pitot-static channels.
+    pub mach: f64,
+    /// Calibrated airspeed against the ISA sea-level reference (m/s).
+    pub calibrated_airspeed_m_s: f64,
+    /// True airspeed from the air-relative velocity norm (m/s).
+    pub true_airspeed_m_s: f64,
+    /// Angle of attack (rad).
+    pub angle_of_attack_rad: f64,
+    /// Sideslip angle (rad).
+    pub sideslip_rad: f64,
+    /// ISA pressure altitude inferred from static pressure (m).
+    pub pressure_altitude_m: f64,
+    /// `true` if the sample is valid this cycle.
+    pub healthy: bool,
+}
+
+impl Topic for AirDataSample {
+    const NAME: &'static str = "sensor.airdata";
+    const INDEX: usize = topic_index::SENSOR_AIRDATA;
 }
 
 /// GNSS receiver sample.
@@ -295,6 +356,8 @@ pub enum SensorKind {
     Gnss,
     /// Magnetometer lane status.
     Magnetometer,
+    /// Air-data lane status.
+    AirData,
 }
 
 /// Per-lane voter status for one redundant sensor source.
@@ -1204,6 +1267,8 @@ pub const CANONICAL_TOPIC_DESCRIPTORS: [TopicDescriptor; topic_index::COUNT] = [
     TopicDescriptor::of::<ActuatorStatus>(),
     TopicDescriptor::of::<WatchdogStatus>(),
     TopicDescriptor::of::<StorageStatus>(),
+    TopicDescriptor::of::<AirDataSample>(),
+    TopicDescriptor::of::<ImuIncrementWindow>(),
 ];
 
 /// Borrow the canonical OpenBMP command/telemetry topic dictionary.

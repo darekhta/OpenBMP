@@ -965,9 +965,10 @@ Executed in `depends_on` order, one PR each, green on the full gate set (`13`
 - **implementation_status:** implemented in `.github/workflows/ci.yml` as
   `determinism-gate (aarch64)`: the x86_64 determinism job uploads
   `x86_64-determinism-reference-${{ github.sha }}`, and the native
-  `ubuntu-24.04-arm` job verifies the aarch64 host profile, runs the fixed-step
-  canonical scenario set, and byte-diffs those outputs against the same-run
-  x86_64 reference artifact. Traceable as `REQ-DET-004` / `V-DET-004`.
+  `ubuntu-24.04-arm` job verifies the aarch64 host profile, runs the pinned
+  `openbmp-mc` scalar-report byte digest, runs the fixed-step canonical
+  scenario set, and byte-diffs those outputs against the same-run x86_64
+  reference artifact. Traceable as `REQ-DET-004` / `V-DET-004`.
 - **goal:** Close the cross-architecture reproducibility loop: byte-diff the
   fixed-step canonical scenarios on an aarch64 runner against the same-run
   x86_64 reference bytes, declaring a **second bit-stable profile** for the fixed-step
@@ -985,6 +986,7 @@ Executed in `depends_on` order, one PR each, green on the full gate set (`13`
 - **acceptance:**
   - V5: aarch64 fixed-step Parquet byte-identical to the same-run x86_64
     reference artifact.
+  - The pinned scalar Monte-Carlo report byte digest passes on native aarch64.
   - The second bit-stable profile is documented (target triple + toolchain + opt
     level + FP-guard pass).
   - All §2 gates green.
@@ -1044,9 +1046,16 @@ Executed in `depends_on` order, one PR each, green on the full gate set (`13`
 - **fidelity_tier:** T4
 - **depends_on:** [WP-12.2-a, WP-12.0-a]
 - **new_crates:** none (no GPU framework enters the workspace)
-- **touched:** `data/<deck>/` + `provenance.md` (ingested deck);
-  `crates/openbmp-runner/` (consume the deck through the existing model trait
-  surface); `requirements.toml`; a code-to-code subset-reproduction test.
+- **implementation_status:** implemented traceable as `REQ-DET-005` /
+  `V-DET-005`: `data/atmosphere/gpu-offline-density-subset-v1.toml` is a
+  provenance-pinned, UQ-tagged synthetic offline deck; the testkit reproduces its
+  sampled density subset through `openbmp_physics::AtmosphereModel` using
+  `PiecewiseExponentialAtmosphere`, verifies the deck SHA-256 appears in
+  `data/atmosphere/provenance.md`, and scans workspace manifests for known GPU
+  framework dependencies.
+- **touched:** `data/atmosphere/gpu-offline-density-subset-v1.toml`,
+  `data/atmosphere/provenance.md`, `crates/openbmp-testkit/tests/gpu_offload_boundary.rs`,
+  `crates/openbmp-testkit/Cargo.toml`, `requirements.toml`.
 - **approach:** §3.4 T4(b); solver-consumer posture (`00-overview.md` §1.1)
   applied to compute. GPU is an external producer; the in-repo footprint is the
   provenance-pinned deck + a deterministic-CPU reproduction of a sampled subset

@@ -1,0 +1,51 @@
+openbmp.comm_antenna_body_mask = 1
+
+[meta]
+dataset_id = "openbmp.comm.antenna_body_mask.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic antenna gain and body-mask deck tolerance table"
+provenance = "OpenBMP synthetic analytic fixture using an axisymmetric gain pattern and a two-triangle square occluder for deterministic body-mask precompute tests."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[tolerances]
+gain_dbi = 1.0e-12
+
+[antenna]
+boresight_body = [1.0, 0.0, 0.0]
+samples = [
+  { off_boresight_deg = 0.0, gain_dbi = 12.0 },
+  { off_boresight_deg = 90.0, gain_dbi = 0.0 },
+  { off_boresight_deg = 180.0, gain_dbi = -20.0 },
+]
+
+[[antenna.gain_case]]
+name = "boresight"
+direction_body = [1.0, 0.0, 0.0]
+expected_gain_dbi = 12.0
+
+[[antenna.gain_case]]
+name = "forty_five_deg"
+direction_body = [1.0, 1.0, 0.0]
+expected_gain_dbi = 6.0
+
+[[antenna.gain_case]]
+name = "aft"
+direction_body = [-1.0, 0.0, 0.0]
+expected_gain_dbi = -20.0
+
+[body_mask]
+mesh_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+antenna_position_body_m = [0.0, 0.0, 0.0]
+
+directions = [
+  { direction_body = [1.0, 0.0, 0.0], expected_blocked = true },
+  { direction_body = [1.0, 0.25, 0.0], expected_blocked = true },
+  { direction_body = [1.0, 2.0, 0.0], expected_blocked = false },
+  { direction_body = [0.0, 1.0, 0.0], expected_blocked = false },
+]
+
+triangles = [
+  { a_m = [1.0, -1.0, -1.0], b_m = [1.0, 1.0, -1.0], c_m = [1.0, 1.0, 1.0] },
+  { a_m = [1.0, -1.0, -1.0], b_m = [1.0, 1.0, 1.0], c_m = [1.0, -1.0, 1.0] },
+]

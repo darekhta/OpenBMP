@@ -127,6 +127,7 @@ pub(crate) fn validate_frame_profile(field: &str, value: &str) -> Result<(), Sce
             "toy-fixed-earth",
             "wgs84-uniform-rotation",
             "iers-tabulated",
+            "iers-cio",
             "spice-reference",
         ],
     )

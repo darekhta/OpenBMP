@@ -19,13 +19,19 @@ use crate::CliError;
 use crate::cli::VerifyOrderMethod;
 
 const STOP_S: f64 = 4.0;
+const MAX_CAMPAIGN_CASES: u32 = 16;
+const CAMPAIGN_LAMBDAS_PER_S: [f64; MAX_CAMPAIGN_CASES as usize] = [
+    1.0, 0.5, 0.75, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0, 4.25,
+];
 
 /// CLI report for one `openbmp verify-order` invocation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifyOrderCliReport {
     /// User-requested method selection.
     pub requested_method: VerifyOrderMethod,
-    /// Per-method order/GCI reports.
+    /// Number of deterministic MMS campaign cases evaluated.
+    pub campaign_cases: u32,
+    /// Per-method/per-case order/GCI reports.
     pub methods: Vec<VerifyOrderMethodReport>,
     /// Evidence TOML path, when requested and written.
     pub output_toml: Option<PathBuf>,
@@ -34,6 +40,12 @@ pub struct VerifyOrderCliReport {
 /// Order/GCI report plus command acceptance metadata for one method.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifyOrderMethodReport {
+    /// Zero-based deterministic campaign case index.
+    pub case_index: u32,
+    /// Stable case identifier.
+    pub case_id: String,
+    /// MMS source-term linear coefficient for this case.
+    pub lambda_per_s: f64,
     /// Observed-order and GCI calculations.
     pub report: OrderVerificationReport,
     /// Inclusive lower bound for both observed-order estimates.
@@ -55,13 +67,39 @@ pub fn run(
     requested_method: VerifyOrderMethod,
     output_toml: Option<&Path>,
 ) -> Result<VerifyOrderCliReport, CliError> {
+    run_campaign(requested_method, 1, output_toml)
+}
+
+/// Run a deterministic MMS campaign over multiple source-term variants.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when `campaign_cases` is outside the supported
+/// deterministic range, when any method-case fails, or when evidence TOML
+/// cannot be written.
+pub fn run_campaign(
+    requested_method: VerifyOrderMethod,
+    campaign_cases: u32,
+    output_toml: Option<&Path>,
+) -> Result<VerifyOrderCliReport, CliError> {
+    if campaign_cases == 0 || campaign_cases > MAX_CAMPAIGN_CASES {
+        return Err(CliError::CodeVerification {
+            summary: format!(
+                "verify-order campaign-cases must be in [1, {MAX_CAMPAIGN_CASES}], got {campaign_cases}"
+            ),
+        });
+    }
     let mut report = VerifyOrderCliReport {
         requested_method,
+        campaign_cases,
         methods: Vec::new(),
         output_toml: None,
     };
-    for method in selected_methods(requested_method) {
-        report.methods.push(run_one(method)?);
+    for case_index in 0..campaign_cases {
+        let case = CampaignCase::from_index(case_index);
+        for method in selected_methods(requested_method) {
+            report.methods.push(run_one(method, case)?);
+        }
     }
 
     if let Some(path) = output_toml {
@@ -73,10 +111,11 @@ pub fn run(
         return Err(CliError::CodeVerification {
             summary: format!(
                 "{} observed order outside [{:.3}, {:.3}] or GCI acceptance failed \
-                 (p_cm={:.6}, p_mf={:.6}, gci_monotone={}, gci_brackets={})",
+                 for {} (p_cm={:.6}, p_mf={:.6}, gci_monotone={}, gci_brackets={})",
                 method.report.method,
                 method.min_observed_order,
                 method.max_observed_order,
+                method.case_id,
                 method.report.observed_order_coarse_medium,
                 method.report.observed_order_medium_fine,
                 method.report.gci_monotone,
@@ -96,9 +135,12 @@ fn selected_methods(requested_method: VerifyOrderMethod) -> Vec<IntegratorUnderT
     }
 }
 
-fn run_one(method: IntegratorUnderTest) -> Result<VerifyOrderMethodReport, CliError> {
+fn run_one(
+    method: IntegratorUnderTest,
+    case: CampaignCase,
+) -> Result<VerifyOrderMethodReport, CliError> {
     let (coarse_h, medium_h, fine_h) = method.step_sizes_s();
-    let ode = ManufacturedScalarOde::STANDARD;
+    let ode = case.ode();
     let coarse = StepError {
         step_s: coarse_h,
         error: integrate(method, ode, coarse_h)?,
@@ -121,6 +163,9 @@ fn run_one(method: IntegratorUnderTest) -> Result<VerifyOrderMethodReport, CliEr
         && report.gci_monotone
         && report.gci_brackets_richardson_error;
     Ok(VerifyOrderMethodReport {
+        case_index: case.index,
+        case_id: case.id(),
+        lambda_per_s: ode.lambda_per_s,
         report,
         min_observed_order,
         max_observed_order,
@@ -202,15 +247,14 @@ fn step_count(step_s: f64) -> Result<u64, CliError> {
 fn write_report_toml(path: &Path, report: &VerifyOrderCliReport) -> Result<(), CliError> {
     ensure_parent_dir(path)?;
     let mut out = String::new();
-    let ode = ManufacturedScalarOde::STANDARD;
     let _ = writeln!(out, "[verify_order]");
     let _ = writeln!(
         out,
         "requested_method = {}",
         toml_string(selection_label(report.requested_method))
     );
+    let _ = writeln!(out, "campaign_cases = {}", report.campaign_cases);
     let _ = writeln!(out, "case = \"manufactured_scalar_ode\"");
-    let _ = writeln!(out, "lambda_per_s = {:.17e}", ode.lambda_per_s);
     let _ = writeln!(out, "stop_s = {:.17e}", STOP_S);
     let _ = writeln!(out, "exact_state = \"y(t) = 0.75 + sin(0.3 t) + 0.05 t^3\"");
     let _ = writeln!(
@@ -222,6 +266,9 @@ fn write_report_toml(path: &Path, report: &VerifyOrderCliReport) -> Result<(), C
         let report = &method.report;
         let _ = writeln!(out);
         let _ = writeln!(out, "[[verify_order.methods]]");
+        let _ = writeln!(out, "case_index = {}", method.case_index);
+        let _ = writeln!(out, "case_id = {}", toml_string(&method.case_id));
+        let _ = writeln!(out, "lambda_per_s = {:.17e}", method.lambda_per_s);
         let _ = writeln!(out, "method = {}", toml_string(&report.method));
         let _ = writeln!(out, "formal_order = {:.17e}", report.formal_order);
         let _ = writeln!(
@@ -297,6 +344,27 @@ fn selection_label(method: VerifyOrderMethod) -> &'static str {
         VerifyOrderMethod::All => "all",
         VerifyOrderMethod::Rk4 => "rk4",
         VerifyOrderMethod::Dop853 => "dop853",
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CampaignCase {
+    index: u32,
+}
+
+impl CampaignCase {
+    const fn from_index(index: u32) -> Self {
+        Self { index }
+    }
+
+    fn id(self) -> String {
+        format!("mms-lambda-{:02}", self.index)
+    }
+
+    fn ode(self) -> ManufacturedScalarOde {
+        ManufacturedScalarOde {
+            lambda_per_s: CAMPAIGN_LAMBDAS_PER_S[self.index as usize],
+        }
     }
 }
 
@@ -465,5 +533,46 @@ mod tests {
         assert!(text.contains("exact_state"));
         assert!(text.contains("source_term"));
         Ok(())
+    }
+
+    #[test]
+    fn verify_order_campaign_runs_deterministic_lambda_sweep() -> Result<(), Box<dyn Error>> {
+        let temp = tempfile::tempdir()?;
+        let output = temp
+            .path()
+            .join("evidence")
+            .join("verify-order-campaign.toml");
+
+        let report = run_campaign(VerifyOrderMethod::All, 3, Some(&output))?;
+
+        assert_eq!(report.campaign_cases, 3);
+        assert_eq!(report.methods.len(), 6);
+        assert!(report.methods.iter().all(|method| method.passed));
+        assert_eq!(report.methods[0].case_id, "mms-lambda-00");
+        assert_eq!(report.methods[0].lambda_per_s.to_bits(), 1.0_f64.to_bits());
+        assert!(
+            report
+                .methods
+                .iter()
+                .any(|method| method.case_id == "mms-lambda-02"
+                    && method.report.method == "dop853")
+        );
+
+        let text = fs::read_to_string(&output)?;
+        let _: toml::Value = toml::from_str(&text)?;
+        assert!(text.contains("campaign_cases = 3"));
+        assert!(text.contains("case_id = \"mms-lambda-02\""));
+        assert!(text.contains("lambda_per_s = 7.50000000000000000e-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn verify_order_campaign_rejects_empty_campaign() {
+        let err = run_campaign(VerifyOrderMethod::All, 0, None).expect_err("zero cases rejects");
+
+        assert!(
+            err.to_string().contains("campaign-cases must be in"),
+            "unexpected error: {err}"
+        );
     }
 }

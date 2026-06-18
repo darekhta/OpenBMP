@@ -58,6 +58,8 @@ pub struct RunReport {
     pub realtime: Option<runner::rt::RealtimeRunReport>,
     /// Optional FC actuator command-stream digest report.
     pub actuator_stream: Option<runner::determinism::ActuatorStreamReport>,
+    /// Optional AFTS forward-containment evidence report.
+    pub afts: Option<runner::afts::AftsRunReport>,
 }
 
 /// Entry point with no overrides — uses the scenario's declared
@@ -130,6 +132,7 @@ pub fn run_with_overrides(
         written,
         realtime: outcome.realtime,
         actuator_stream: outcome.actuator_stream,
+        afts: outcome.afts,
     })
 }
 

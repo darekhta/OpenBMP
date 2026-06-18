@@ -112,8 +112,22 @@ downlink/uplink.
 - `crates/openbmp-runner/src/fc_bridge.rs` — where uplink (command/I-load)
   and downlink (telemetry) cross the FC boundary; the natural place link
   effects bind.
-- No site model, no link budget, no pass logic, no tracking observables, no
-  blackout, no frame/dictionary export.
+- `crates/openbmp-comm/src/lib.rs` — WP-20.1 partial substrate: WGS84
+  ground-site geometry, ENU visibility, terrain masks, rise/set events, and
+  pass intervals; WP-20.2 antenna/body-mask deck substrate; WP-20.3 partial
+  deterministic free-space link-budget and FER-curve substrate; WP-20.4
+  partial deterministic link-channel packet-effect substrate.
+- Runner paths publish per-site visibility telemetry plus per-link
+  `LinkState` telemetry with resolved FER, attenuation, antenna-gain, and
+  body-mask decks. The runner bridge applies the selected link's packet model
+  fail-closed at the FC transport sensor/command seam, queues delivered frames
+  by step-quantized link latency, can opt into greedy best-margin selection
+  across declared links, supports declared pass-plan handover windows, and
+  reports sampled per-link passes with margin profiles plus bridge packet
+  counts. Declared GEO relay nodes can be attached to links to compose
+  vehicle-to-relay and relay-to-ground two-hop budgets. Tracking observables,
+  blackout, richer relay scheduling, and frame-shaped stream export remain
+  open.
 
 ---
 
@@ -260,6 +274,7 @@ white noise, quantization) pointed at ground instruments.
 | Case | Type | Tier | Tolerance/criterion |
 |---|---|---|---|
 | Visibility/passes vs external propagation oracle (skyfield/sgp4-class, external process) | code-to-code | T1 | rise/set < 1 s on the LEO reference case |
+| Fixed-Earth visibility/pass table vs repository-local line-scan oracle | analytic | T1 | slant/range-rate/angles within table tolerances; rise/set < 1 s |
 | Slant range/Doppler closed forms (circular orbit overflight) | analytic | T1 | < 1e-9 rel |
 | Free-space loss + budget chain | analytic | T2 | < 1e-12 rel (pure arithmetic) |
 | FER curve interpolation monotonicity + envelope | property | T2 | exact (monotone, clamped never silently) |
@@ -318,6 +333,16 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 ### WP-20.1 — `openbmp-comm` skeleton: sites, visibility, passes
 
 - **title:** L3 comm crate with ground-site schema, elevation/terrain masks, slant range/Doppler, rise/set events, pass tables.
+- **status:** implemented. `openbmp-comm` exposes WGS84 ground-site geometry,
+  ENU visibility samples, azimuth-binned terrain masks, rise/set events, and
+  deterministic pass intervals with byte-stable CSV pass-table serialization;
+  schema-v3 `[comm]` / `[[comm.sites]]` parses site geometry and mask bins,
+  and `openbmp-runner` emits deterministic pass-table bytes through
+  `RunOutcome.comm` plus `comm.<site>.*` telemetry channels for sampled
+  point-mass and rigid-body primary states. `data/comm/` now carries a
+  provenance-recorded fixed-Earth line-scan tolerance table for geometric
+  visibility and rise/set extraction plus an SGP4/TLE external-library LEO
+  visibility tolerance table for rise/set extraction.
 - **goal:** The geometric substrate every link computation needs, validated
   against an external propagation oracle, with pass tables as deterministic
   artifacts.
@@ -331,8 +356,9 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
   decks pinned.
 - **acceptance:**
   - `[comm]` off by default; canonical goldens byte-identical
-  - analytic overflight range/Doppler < 1e-9 rel; rise/set vs external
-    oracle < 1 s (tolerance table)
+  - analytic overflight range/Doppler < 1e-9 rel; fixed-Earth line-scan
+    rise/set < 1 s (tolerance table); SGP4/TLE external orbital propagation
+    oracle rise/set < 1 s
   - pass-table artifact byte-stable
   - all `13` §2 gates green
 - **validation_label:** `validated-toy`
@@ -343,6 +369,21 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 ### WP-20.2 — Antenna decks + body masking from the panel mesh
 
 - **title:** Vehicle/ground antenna gain decks and precomputed BVH occlusion masks indexed by attitude at runtime.
+- **status:** partial. `openbmp-comm` now exposes `AntennaGainDeck` /
+  `AntennaGainSample` for deterministic off-boresight gain interpolation and
+  `BodyMaskDeck` / `BodyMaskTriangle` / `BodyMaskSample` for direct
+  triangle-ray-cast mask precompute, nearest-direction runtime lookup, and
+  deterministic SHA-256 deck hashing bound to a mesh hash. `data/comm/`
+  carries a provenance-recorded synthetic antenna/body-mask fixture, and the
+  schema-v3 `[comm]` block can bind `[[comm.antennas]]` gain/body-mask deck
+  paths with SHA-256 pins through the standard resolved-file mechanism.
+  Runner point-mass and rigid-body setup now parses declared decks from the
+  resolved byte map, validates them through `openbmp-comm`, precomputes body
+  masks, and reports resolved/derived deck hashes plus sample counts in
+  `RunOutcome.comm`. Runner link budgets rotate vehicle-to-site line of sight
+  into the body frame, add sampled antenna gain to EIRP, and gate link
+  visibility when the body-mask lookup is blocked. Missing: doc-03 watertight
+  mesh/BVH integration and real mesh-derived deck regeneration tooling.
 - **goal:** Antenna placement and vehicle attitude start mattering: link
   geometry inherits real body shadowing from the `03` mesh instead of
   assuming isotropic coverage.
@@ -350,7 +391,8 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **depends_on:** [WP-20.1; cross-doc: WP-03.1 (watertight mesh + BVH)]
 - **new_crates:** none.
 - **touched:** `crates/openbmp-comm` (antenna module + mask precompute),
-  `data/` antenna/mask decks + `provenance.md`.
+  `crates/openbmp-runner` (deck parsing/report evidence), `data/`
+  antenna/mask decks + `provenance.md`.
 - **approach:** §3.3; offline ray-cast table over the sphere, pinned; runtime
   table lookup, allocation-free.
 - **acceptance:**
@@ -368,13 +410,29 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 ### WP-20.3 — Link budget + coded-performance FER
 
 - **title:** Full budget chain (EIRP→C/N0→Eb/N0→FER) with attenuation and coded-performance decks; `LinkState` channels.
+- **status:** partial. `openbmp-comm` now exposes `LinkBudgetInput`,
+  `LinkState`, `free_space_path_loss_db`, `evaluate_link_budget`,
+  `FerCurveDeck`, `FerCurveSample`, `ElevationLossDeck`, and
+  `ElevationLossSample` for deterministic free-space budget arithmetic, dB
+  operand ordering, log-linear FER interpolation, elevation-indexed additive
+  atmospheric/rain losses, no-link FER behavior, and fail-closed
+  out-of-envelope rejection. `data/comm/` carries provenance-recorded
+  synthetic one-kilometre S-band budget/FER and elevation-loss fixtures. The
+  schema-v3 `[comm]` block now binds `[[comm.links]]` budget constants, FER
+  curve decks, atmospheric loss decks, and rain loss decks with SHA-256 pins,
+  and the point-mass/rigid-body runner paths publish `comm.link.<link>.*`
+  `LinkState` telemetry channels, including `antenna_gain_dbi` and
+  `body_blocked` evidence from the linked antenna decks. Missing: blackout
+  attenuation and packet-effect integration.
 - **goal:** Margin becomes a number with provenance: every link, every step,
   a budget and a frame-error rate from pinned decks.
 - **fidelity_tier:** T2
 - **depends_on:** [WP-20.2]
 - **new_crates:** none.
-- **touched:** `crates/openbmp-comm` (budget module), `data/` attenuation +
-  FER decks + `provenance.md`, telemetry channels.
+- **touched:** `crates/openbmp-comm` (budget/FER substrate),
+  `crates/openbmp-scenario` (`[[comm.links]]` schema/resolved files),
+  `crates/openbmp-runner` (`LinkState` telemetry), `data/` FER fixture +
+  `provenance.md`.
 - **approach:** §3.3 chain; locked operand order; deck interpolation with
   monotonicity property tests.
 - **acceptance:**
@@ -390,6 +448,29 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 ### WP-20.4 — Link-driven telemetry effects + continuity criterion
 
 - **title:** `LinkChannelModel` driving deterministic packet loss/latency/corruption at the bridge fault seam from computed `LinkState`; data-loss-timeout criterion for `18`/`10`.
+- **status:** partial. `openbmp-comm` now exposes `LinkChannelModel`,
+  `LinkPacketContext`, `LinkPacketEffect`, `LinkPacketDisposition`,
+  `LinkErrorAction`, `LinkPacketDirection`, and `link_stream_id_from_id`.
+  The model validates packet context and `LinkState`, computes one-way
+  light-time plus declared processing delay, maps no-visibility/blackout to
+  packet drop, maps FER Bernoulli draws from a domain-keyed deterministic RNG
+  to drop or bit-flip dispositions, and is backed by a provenance-recorded
+  synthetic packet-effect fixture. It also exposes an exact-binomial
+  loss-rate gate over deterministic packet streams, with no-link/blackout
+  treated as expected 100% errored packets. Schema-v3 `[[comm.links]]` now
+  accepts `packet_processing_delay_s` and `packet_error_action` plus optional
+  `packet_loss_rate_gate` and `data_loss_timeout_s`, validates them
+  fail-closed, and the runner reports the validated model, downlink/uplink
+  loss-rate gate evidence, and monotone downlink data-loss timeout latch
+  evidence in `RunOutcome.comm`. The runner stores the latest comm observation,
+  evaluates the selected bridge link for FC sensor and command frames, supports
+  default first-declared selection plus opt-in greedy `best_margin` selection
+  across visible non-blackout declared links with configurable margin
+  hysteresis, and a first declared pass-plan selector for bridge handover
+  windows, queues delivered frames by step-quantized downlink/uplink latency,
+  preserves zero-step delivered comm-link determinism, and fails closed on
+  drop, bit-flip, or scheduled pass-plan gap packet effects at the
+  `[fc.transport]` seam. Missing: blackout attenuation.
 - **goal:** Telemetry stops being free: dropouts and latency follow physics,
   uplink and downlink both, and the continuity commit/terminate criterion of
   reference practice becomes computable and testable.
@@ -444,6 +525,23 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 ### WP-20.6 — Station network, handover & relay
 
 - **title:** Multi-station chains with declared or deterministic-greedy pass plans, handover events, GEO-relay two-hop budgets, per-pass reports.
+- **status:** partial. Schema-v3 `[comm]` now accepts
+  `bridge_link_selection = "declared_plan"` with non-overlapping
+  `[[comm.bridge_pass_plan]]` windows keyed to declared link ids, validates
+  window references and monotonic times fail-closed, and the runner selects the
+  active declared link by latest observation time while dropping bridge packets
+  fail-closed during schedule gaps. It also emits contiguous bridge-selection
+  interval reports with link/gap identity, step/time span, sample count, and
+  sensor/command drop or bit-flip counts, plus explicit handover events at
+  link/gap transitions. `RunOutcome.comm.link_passes` reports each sampled
+  visible/non-blackout link pass with step/time span, duration, sample count,
+  min/max/mean margin, a sampled margin profile, and bridge packet
+  drop/bit-flip counts attributed to that pass. Greedy best-margin handover
+  already has a configurable hysteresis deadband. Declared `[[comm.relays]]`
+  GEO nodes plus per-link `relay_id` now compose vehicle-to-relay and
+  relay-to-ground budgets into a two-hop `LinkState` using bottleneck margin
+  and combined independent-hop FER. Missing: richer relay scheduling and
+  continuous/interpolated pass-profile artifacts.
 - **goal:** The downrange-chain and network dimension: who is listening when,
   with what margin, and what got lost in handover.
 - **fidelity_tier:** T4

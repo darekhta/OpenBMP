@@ -7,13 +7,16 @@
 //! invariants; transports and retry policy remain downstream-owned.
 
 use crate::error::BridgeError;
+use crate::packet::{ActuatorCommandPacket, PROTOCOL_VERSION, SensorPacket, StepAckPacket};
+#[cfg(feature = "std")]
 use crate::packet::{
-    ActuatorCommandPacket, BridgeEndpointRole, BridgeFaultCode, BridgeFaultPacket,
-    BridgeHelloPacket, BridgeMessage, PROTOCOL_VERSION, SensorPacket, StepAckPacket,
+    BridgeEndpointRole, BridgeFaultCode, BridgeFaultPacket, BridgeHelloPacket, BridgeMessage,
 };
+#[cfg(feature = "std")]
 use crate::transport::Transport;
 
 /// Response that unblocks one simulator lockstep frame.
+#[cfg(feature = "std")]
 #[derive(Clone, Debug, PartialEq)]
 pub enum LockstepResponse {
     /// Peer returned actuator commands for the outstanding sensor frame.
@@ -30,12 +33,14 @@ pub enum LockstepResponse {
 /// one [`SensorPacket`] per simulator frame, then blocks until the peer
 /// returns a matching [`ActuatorCommandPacket`], matching
 /// [`StepAckPacket`], or fail-closed [`BridgeFaultPacket`].
+#[cfg(feature = "std")]
 #[derive(Debug)]
 pub struct LockstepSimMaster<T> {
     transport: T,
     max_payload_len: u32,
 }
 
+#[cfg(feature = "std")]
 impl<T: Transport> LockstepSimMaster<T> {
     /// Construct a simulator-side lockstep master.
     #[must_use]
@@ -218,6 +223,7 @@ fn validate_step_and_time(
     Ok(())
 }
 
+#[cfg(feature = "std")]
 fn message_kind(message: &BridgeMessage) -> &'static str {
     match message {
         BridgeMessage::Hello(_) => "Hello",
@@ -228,6 +234,7 @@ fn message_kind(message: &BridgeMessage) -> &'static str {
     }
 }
 
+#[cfg(feature = "std")]
 fn fault_code_for_error(error: &BridgeError) -> BridgeFaultCode {
     match error {
         BridgeError::ProtocolVersionMismatch { .. } => BridgeFaultCode::ProtocolVersionMismatch,
@@ -239,9 +246,9 @@ fn fault_code_for_error(error: &BridgeError) -> BridgeFaultCode {
         | BridgeError::FrameTruncated { .. }
         | BridgeError::PrefixIncomplete { .. }
         | BridgeError::TransportClosed
-        | BridgeError::Io(_)
         | BridgeError::UnexpectedMessage { .. }
         | BridgeError::RoleMismatch { .. } => BridgeFaultCode::ApplicationFault,
+        BridgeError::Io(_) => BridgeFaultCode::ApplicationFault,
     }
 }
 
@@ -270,6 +277,7 @@ mod tests {
             baro_pressure_pa: None,
             baro_bias_pa: None,
             star_tracker_attitude_eci_to_body_xyzw: None,
+            ..SensorPacket::default()
         }
     }
 

@@ -29,9 +29,11 @@ pub mod error;
 pub mod aero;
 pub mod aero_effector_match;
 pub mod aerothermal;
+pub mod afts;
 pub mod assembly;
 pub mod atmosphere;
 pub mod celestial;
+pub mod comm;
 pub mod contact;
 pub mod determinism;
 pub mod effectors;
@@ -45,6 +47,7 @@ pub mod frames;
 pub mod integrator;
 pub mod landing_gear;
 pub mod mission;
+pub mod pil;
 pub mod plume;
 pub mod pogo;
 pub mod point_mass;
@@ -264,6 +267,10 @@ pub struct RunOutcome {
     /// Optional landing-gear touchdown report for `[vehicle.landing_gear]`
     /// scenarios.
     pub landing_gear: Option<landing_gear::LandingGearRunReport>,
+    /// Optional AFTS forward-containment evidence for `[afts]` scenarios.
+    pub afts: Option<afts::AftsRunReport>,
+    /// Optional communications pass-table artifact for `[comm]` scenarios.
+    pub comm: Option<comm::CommRunReport>,
     /// Source-tagged upstream UQ budget gathered while resolving runner decks.
     pub upstream_uq: CorrelatedErrorBudget,
 }

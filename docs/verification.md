@@ -78,7 +78,10 @@ dimension_id)`, so a sample is independent of worker count and completion
 order. The crate also owns the shared Welford and Clopper-Pearson reducers
 used by seeded dispersion tests. The serial `run_scalar_campaign` helper
 emits ordered samples, a Welford convergence trace, and a Bernoulli success
-summary; `openbmp mc summarize` applies the same reducers to local scalar
+summary, and a reducer byte-identity test serializes those report fields as
+explicit f64 bit-pattern bytes across serial and worker-pool execution, with a
+pinned digest also checked by the native aarch64 determinism job.
+`openbmp mc summarize` applies the same reducers to local scalar
 sample CSV files for lightweight campaign evidence review. Wilks sample-size
 planning is available through `openbmp mc wilks`, and `ConvergenceGate`
 evaluates the convergence trace using a deterministic relative CI half-width

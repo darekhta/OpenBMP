@@ -75,10 +75,20 @@ struct ReferenceCase {
 }
 
 #[test]
-fn cantera_gri30_reference_table_matches_thermochem_and_liquid_performance() {
+fn cantera_reference_tables_match_thermochem_and_liquid_performance() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let data_dir = root.join("data/thermochem");
-    let reference_path = data_dir.join("lox-lch4-cantera-gri30-tolerance-v1.toml");
+    for reference_file in [
+        "lox-lch4-cantera-gri30-tolerance-v1.toml",
+        "lox-lh2-cantera-gri30-tolerance-v1.toml",
+        "lox-rp1-ndodecane-cantera-reitz-tolerance-v1.toml",
+    ] {
+        check_reference_table(&data_dir, reference_file);
+    }
+}
+
+fn check_reference_table(data_dir: &Path, reference_file: &str) {
+    let reference_path = data_dir.join(reference_file);
     let reference_text =
         std::fs::read_to_string(&reference_path).expect("reference tolerance table reads");
     let reference: ReferenceTable =
@@ -89,7 +99,23 @@ fn cantera_gri30_reference_table_matches_thermochem_and_liquid_performance() {
         "reference source title should pin Cantera version: {}",
         reference.meta.source_title
     );
-    assert_eq!(reference.meta.mechanism, "gri30.yaml");
+    assert!(
+        matches!(
+            reference.meta.mechanism.as_str(),
+            "gri30.yaml" | "nDodecane_Reitz.yaml"
+        ),
+        "unsupported mechanism in {reference_file}: {}",
+        reference.meta.mechanism,
+    );
+    assert!(
+        reference
+            .meta
+            .source_title
+            .contains(&reference.meta.mechanism),
+        "reference source title should name mechanism {}: {}",
+        reference.meta.mechanism,
+        reference.meta.source_title,
+    );
     assert_eq!(reference.meta.validation, "research");
     assert!(!reference.case.is_empty());
 

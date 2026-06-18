@@ -136,6 +136,7 @@ pub mod scheduler;
 pub mod sensor_ingest;
 pub mod sr_ukf;
 mod stable_map;
+pub mod step;
 pub mod tables;
 pub mod topics;
 pub mod trajectory;
@@ -156,3 +157,4 @@ pub use scheduler::{
     JobTimingObserver, NoJobTimingObserver, OverrunEvent, Priority, Scheduler, TimingBudgetReport,
     Trigger,
 };
+pub use step::{FcStepInput, FcStepOutput, fc_step, fc_step_with_timing_observer};

@@ -410,6 +410,7 @@ mod tests {
             baro_pressure_pa: None,
             baro_bias_pa: None,
             star_tracker_attitude_eci_to_body_xyzw: None,
+            ..SensorPacket::default()
         }
     }
 

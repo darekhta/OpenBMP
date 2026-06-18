@@ -126,6 +126,7 @@ openbmp/
 │   │   └── tank/                        #     TankModel + MovingMassModel
 │   ├── openbmp-aero/                    # L2: aero decks + hypersonic methods
 │   ├── openbmp-aerothermal/             # L2: heat transfer, BL, thermal toy
+│   ├── openbmp-afts/                    # L2: forward AFTS IIP containment monitor
 │   ├── openbmp-contact/                 # L2: compliant contact primitives
 │   ├── openbmp-thermochem/              # L2: thermochemistry decks
 │   ├── openbmp-feedsystem/              # L2: feed-network primitives
@@ -330,7 +331,8 @@ Monte Carlo campaign sampling uses the same discipline through
 `openbmp-mc` wraps that stream in `SampleRng` and provides deterministic
 Welford and Clopper-Pearson reducers for campaign statistics. Its serial
 `run_scalar_campaign` helper produces ordered sample records plus a Welford
-convergence trace, and the CLI exposes `openbmp mc summarize` for local scalar
+convergence trace, serializes scalar report bytes for reducer determinism
+evidence, and the CLI exposes `openbmp mc summarize` for local scalar
 sample CSV summaries using the same reducers. The same crate also owns Wilks
 one-sided/two-sided sample-size calculators and a `ConvergenceGate` that checks
 relative CI half-width stability across a trace window; the calculator is
@@ -2146,9 +2148,10 @@ profile. The native Linux arm64 profile (`aarch64-unknown-linux-gnu` on
 simulation profile, and the `.cargo/config.toml` FP-contraction ban) is the
 second CI-declared bit-stable profile: the aarch64 determinism job downloads the
 x86_64 reference bytes produced earlier in the same workflow run and byte-diffs
-the fixed-step canonical scenarios against them. macOS and Windows remain
-state-stable profiles: tolerance compliance is required, but cross-platform byte
-equality is not claimed there.
+the fixed-step canonical scenarios against them, while also running the pinned
+`openbmp-mc` scalar-report byte digest on native aarch64. macOS and Windows
+remain state-stable profiles: tolerance compliance is required, but
+cross-platform byte equality is not claimed there.
 
 ## HIL Pattern (Optional, Generic)
 

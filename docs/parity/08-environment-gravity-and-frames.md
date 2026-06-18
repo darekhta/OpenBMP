@@ -95,7 +95,8 @@ Verified by reading the actual files (paths absolute under the repo root).
 - `trait GravityModel { fn gravity_eci_m_s2(&self, position_eci, time) -> Result<Vector3<f64>, PhysicsError> }` — the single environment-side acceleration surface used by current gravity/perturbation models; ephemeris-backed paths vary with time.
 - `ConstantGravity`, `PointMassGravity` (`−µ/r² r̂`), `J2Gravity` (point-mass + J₂ in closed Cartesian form, Vallado §8.6).
 - `Egm2008ZonalGravity` — **zonal-only** truncation J₂…J₆, **hard-capped at `EGM2008_MAX_DEGREE = 6`** (fixed-size arrays; `new(...)` rejects `degree ∉ [2,6]`). It can now build the same zonal truncation from `NormalizedHarmonicField` zonal `Cbar_n0` entries via `J_n = -Cbar_n0 sqrt(2n + 1)`, preserving default-zero missing zonals and fail-closed field-envelope validation.
-- `TesseralGravity` / `FiniteDifferencePinesGravity` — first WP-08.1 substrate: a static degree-2/order-2 ECI
+- `TesseralGravity` / `FiniteDifferencePinesGravity` / `EarthFixedGravity` —
+  first WP-08.1 substrate: a static degree-2/order-2 ECI
   harmonic surface with `DegreeTwoTesseralCoefficients`,
   `NormalizedDegreeTwoTesseralCoefficients`, `NormalizedHarmonicCoefficient`,
   `NormalizedHarmonicField`, `NormalizedHarmonicFieldIter`,
@@ -118,7 +119,9 @@ Verified by reading the actual files (paths absolute under the repo root).
   `from_icgem_gfc_str_with_metadata` parsers for static ICGEM/NGA-style
   fully-normalized `gfc` coefficient lines and their source `µ`/radius/source
   degree headers, `FiniteDifferencePinesGravity::new_from_icgem_gfc_str` to
-  carry those parsed constants into the transition model, checked runtime
+  carry those parsed constants into the transition model, a provenance-pinned
+  clipped real EGM2008 degree-10/order-10 GFC block that exercises those source
+  constants and non-zonal rows through the transition model, checked runtime
   high-degree EGM2008 tier requests for the planned 70/120/360 truncations that
   must resolve against a concrete field envelope and the bounded Pines scratch
   tables, a bounded `cos(mλ)` / `sin(mλ)` recurrence table, a
@@ -137,15 +140,26 @@ Verified by reading the actual files (paths absolute under the repo root).
   the Pines oracle with
   `new_from_full_normalized_field` central-term stripping for full imported
   fields plus `acceleration_gradient_eci_s2` for the point-mass-plus-correction
-  transition tensor
-  whose ECI axes are currently treated as body-fixed until frame-rotating force
-  wiring lands, and a complete default-zero coefficient-slot iterator for
+  transition tensor, plus `EarthFixedGravity` to evaluate Earth-fixed harmonic
+  models through `FrameContext` ECI↔ECEF vector rotations. Schema-v3 scenarios
+  can now select `environment.gravity = "tesseral"` with explicit bounded
+  degree-2 unnormalised coefficients, and `gravity = "third_body"` can use
+  `gravity_base = "tesseral"` for the same central model. The runner wires that
+  selector through point-mass, rigid-body, environment-sample, and third-body
+  force paths. Schema-v3 `gravity = "egm2008"` can also resolve a pinned ICGEM
+  GFC coefficient file with explicit `egm2008_degree` / `egm2008_order` and
+  consume it through the frame-coupled finite-difference Pines transition path.
+  The substrate also exposes a complete default-zero
+  coefficient-slot iterator for
   future synthesis kernels, rejects duplicate or
   out-of-envelope coefficient entries, parses a provenance-pinned WGS84
   normalized degree-2 fixture, parses synthetic non-zonal degree-4 fixtures
   for the general TOML schema and ICGEM-style GFC schema, proves its
-  degree-2/order-0 path is byte-identical to `J2Gravity`, and stays finite near
-  the pole. This is **not yet** the full Pines/Gottlieb high-degree EGM2008
+  degree-2/order-0 path is byte-identical to `J2Gravity`, stays finite near
+  the pole, exercises the frame-coupled path through ToyFixedEarth,
+  WGS84 uniform rotation, and generated-IAU-2006/2000A `IersCio`, and proves a
+  point-mass runner force-stack can consume the runtime selector. This is
+  **not yet** the full Pines/Gottlieb high-degree EGM2008
   kernel; real high-degree EGM2008 coefficient ingestion and external
   HARMONIC_SYNTH validation remain the central gap.
 - `ThirdBody` / `ThirdBodyGravity<G,E>` — central + Σ third-body perturbation
@@ -165,11 +179,12 @@ Verified by reading the actual files (paths absolute under the repo root).
 - No tides, no SRP macro-model/re-radiation, and no Lense-Thirring/de Sitter
   terms anywhere in the file.
 
-### 2.2 Frames — `crates/openbmp-physics/src/frames.rs` (2835 lines)
+### 2.2 Frames — `crates/openbmp-physics/src/frames.rs`
 
-- `enum FrameProfile { ToyFixedEarth, Wgs84UniformRotation, IersTabulated }`; `FrameContext` exposes `eci_to_ecef_position/velocity`, rotation/rate matrices, ECEF↔NED helpers.
-- The `IersTabulated` profile uses an **equinox-based** chain: `precession_angles_iau1976()` + `nutation_angles_iau1980()` (the IAU 1980 nutation series, transcribed with permission from SOFA per the third-party notice at line ~1058), then ERA, then polar motion. **There is no CIO (X, Y, s) path, no frame-bias, no IAU 2006 precession, no celestial-pole offsets dX/dY.** Confirmed: zero hits for `CIO`/`2000A`/`XYS`.
-- `EarthOrientationSample` carries `polar_motion_x/y_rad`, `ut1_minus_utc`, optional LOD; `EarthOrientationTable` Lagrange/linear-interpolates. **No `dX`, `dY` fields.** This is the EOP plumbing the CIO upgrade extends.
+- `enum FrameProfile { ToyFixedEarth, Wgs84UniformRotation, IersTabulated, IersCio, SpiceReference }`; `FrameContext` exposes `eci_to_ecef_position/velocity`, direction/acceleration vector rotations, rotation/rate matrices, ECEF↔NED helpers.
+- The legacy `IersTabulated` profile uses an **equinox-based** chain: `precession_angles_iau1976()` + `nutation_angles_iau1980()` (the IAU 1980 nutation series, transcribed with permission from SOFA), then ERA, then polar motion. It intentionally leaves the CIO path and dX/dY offsets to `IersCio`.
+- `EarthOrientationSample` carries `polar_motion_x/y_rad`, `ut1_minus_utc`, optional LOD, and `cip_offset_x/y_rad`; `EarthOrientationTable` interpolates all of those scalar fields. The runner's `openbmp-eop-v1` parser accepts optional `cip_offset_x/y_arcsec` row pairs, and the runner also detects raw fixed-width IERS/USNO `finals2000A.data` rows and raw IERS EOP 14 C04 IAU2000A rows with headers, converting row MJD UTC to scenario-relative `time_s` from `epoch.iso8601`. `TimeScaleBridge` converts pinned UTC-relative seconds and Julian Dates through UT1/TAI/TT and still exposes the legacy compact two-term TT->TDB approximation. It also now exposes an ERFA `eraDtdb`-compatible TT->TDB path backed by the transcribed Fairhead-Bretagnon coefficient table and upstream C reference pins; runner celestial UTC/TT/TDB epoch conversion uses that ERFA-compatible helper, supplies topocentric dtdb observer geometry from `[frames.local_origin]` when present, and samples `epoch.eop` UT1-UTC for UTC-to-TDB phase when available. Four-day provenance-pinned finals2000A-derived raw/converted and EOP 14 C04 raw fixtures now exercise real x/y pole, UT1-UTC, LOD, and dX/dY rows.
+- The CIO-frame primitive/profile substrate is now present: `earth_rotation_angle_iau2000(_parts)`, `tio_locator_sp00(_parts)`, `cio_locator_s06(_parts)`, IAU 2006 Fukushima-Williams precession primitives, IAU 2000A/2006 nutation primitives, `bias_precession_nutation_matrix_iau2006a(_parts)`, `cio_xys_iau2006a(_parts)`, `cio_celestial_to_intermediate_matrix`, `polar_motion_matrix_iau2000`, and `cio_celestial_to_terrestrial_matrix` are ERFA-pinned against `eraEra00`, `eraSp00`, `eraS06`, `eraObl06`, `eraPfw06`, `eraNut00a`, `eraNut06a`, `eraPnm06a`, `eraBpn2xy`, `eraXys06a`, `eraC2ixys`, `eraC2tcio`, and `eraPom00` reference outputs. `CioXysTable` and `CioFrameModel` now compose caller-provided or generated X/Y/s with pinned EOP dX/dY, UT1/TT dates, ERA, TIO `s'`, and polar motion into GCRS↔ITRS matrices. `FrameProfile::IersCio` and runner `frame_profile = "iers-cio"` scenario wiring consume SHA-pinned `epoch.eop` and leap-second inputs, default to generated IAU 2006/2000A X/Y/s, and still accept SHA-pinned `epoch.cio_xys` tables for fixture-locked runs. A three-case UTC/EOP grid pins full generated GCRS→ITRS matrices against the ERFA `Xys06a` + `C2ixys` + `Era00` + `Sp00` + `Pom00` + `C2tcio` sequence, and generated X/Y/s is also checked against independent IERS TN36 Ch.5 electronic Tables 5.2a, 5.2b, and 5.2d reference values.
 - `WGS84_A_M`, `WGS84_INV_FLATTENING`, `WGS84_MU_M3_S2`, `WGS84_OMEGA_RAD_S` live here (allow-listed source-of-truth constants).
 
 ### 2.3 Atmosphere & wind
@@ -185,7 +200,7 @@ Verified by reading the actual files (paths absolute under the repo root).
 
 ### 2.5 Ephemeris — `crates/openbmp-physics/src/ephemeris.rs`
 
-- `enum CelestialBody`, `trait EphemerisModel { fn body_position_eci_m(...) }`, `LowPrecisionSunMoonEphemeris`, and a **real `SpkEphemeris` DAF/SPK byte parser** (types 1/2/3/10/etc., `SpkAberrationCorrection`, `SpkFixedFrame`). The ephemeris substrate for third-body is built; it needs the Battin acceleration form and a TT↔TDB time-scale bridge wired in.
+- `enum CelestialBody`, `trait EphemerisModel { fn body_position_eci_m(...) }`, `LowPrecisionSunMoonEphemeris`, and a **real `SpkEphemeris` DAF/SPK byte parser** (types 1/2/3/10/etc., `SpkAberrationCorrection`, `SpkFixedFrame`). The ephemeris substrate for third-body is built and runner UTC/TT/TDB epoch conversion now uses the shared ERFA-compatible `TimeScaleBridge`; the remaining gap is external code-to-code force/epoch validation, not parser existence.
 
 ### 2.6 Data & provenance
 
@@ -714,7 +729,12 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   existing `Egm2008ZonalGravity` J2-J6 truncation can be rebuilt from the
   provenance-pinned
   `data/gravity/egm2008-zonal-degree6-normalized-v1.toml` normalized zonal
-  fixture. Tests prove non-zonal acceleration, near-pole finite evaluation,
+  fixture. The same GFC parser now also ingests the provenance-pinned clipped
+  `data/gravity/egm2008-degree10-normalized-icgem-v1.gfc` real EGM2008
+  degree-10/order-10 block, preserves the source `µ`/radius/max-degree metadata,
+  strips `Cbar00`, constructs `FiniteDifferencePinesGravity` directly from the
+  GFC text, and proves the degree-10 real non-zonal block changes acceleration
+  relative to the degree-2 truncation. Tests prove non-zonal acceleration, near-pole finite evaluation,
   point-mass degeneration, shared fully-normalized scale factors, bounded
   longitude `cos(mλ)`/`sin(mλ)` recurrence, singularity-free Pines
   direction-cosine longitude polynomials, checked truncation-envelope
@@ -741,17 +761,29 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
   point-mass tensor for zero correction fields, default-zero
   missing coefficients and iteration slots,
   normalized-field zonal fixture equivalence, and fail-closed unsupported
-  degree/order/duplicate/out-of-range coefficient handling. Remaining work for
+  degree/order/duplicate/out-of-range coefficient handling. Schema-v3 scenarios
+  now accept `environment.gravity = "tesseral"` and `gravity_base = "tesseral"`
+  for third-body central gravity, with point-mass runner coverage proving the
+  frame-coupled force adapter consumes the selector. They can also opt into the
+  file-backed EGM2008 transition path through
+  `environment.egm2008_coefficients_file` plus custom
+  `egm2008_degree`/`egm2008_order` or named `egm2008_tier` selectors
+  (`degree70`, `degree120`, `degree360`); the runner resolves and SHA-pins the
+  ICGEM GFC file, builds `FiniteDifferencePinesGravity` from the file's source
+  constants, wraps it in `EarthFixedGravity`, and point-mass coverage proves it
+  does not silently use the legacy zonal-only EGM2008 path. Synthetic degree-70
+  coverage proves the named tier path and undersized-source fail-closed
+  behavior. Remaining work for
   full WP-08.1 acceptance:
-  full runtime high-degree Pines synthesis over real EGM2008 coefficient
-  blocks, full analytic normalized Gottlieb acceleration-gradient oracle, real
-  high-degree EGM2008 coefficient ingestion/provenance/tripwire, and NGA HARMONIC_SYNTH
-  benchmark tolerance tables.
+  full runtime degree-70/120/360 Pines synthesis over real EGM2008 coefficient
+  blocks, full analytic normalized Gottlieb acceleration-gradient oracle, full
+  high-degree EGM2008 coefficient-block provenance/tripwire, and NGA
+  HARMONIC_SYNTH benchmark tolerance tables.
 - **goal:** Replace the deg-6 zonal cap with full tesseral gravity. Build the shared `HarmonicSynthesis` kernel (Pines + normalized Gottlieb oracle + Holmes–Featherstone scaled recursion) and `TesseralGravity`; load EGM2008 to a runtime-selectable degree. The central gap-closer for this dimension and a "pure win that improves all propagation" (`00` §5).
 - **fidelity_tier:** T1
 - **depends_on:** []
 - **new_crates:** `openbmp-harmonics` (L1 leaf — depends only on `openbmp-core` + nalgebra; propose boundary in first commit — skeleton + placement justification before the kernel lands; may instead be a private module inside `openbmp-physics` if the review prefers)
-- **touched:** `crates/openbmp-harmonics/*` (new), `crates/openbmp-physics/src/gravity.rs`, `data/gravity/` (+ EGM2008 block + `provenance.md` + SHA pin), `inline_data_tripwire.rs` allow-list
+- **touched:** current: `crates/openbmp-physics/src/{gravity,frames,lib}.rs`, `crates/openbmp-scenario/src/{document,scenario,registry,lint}.rs`, `crates/openbmp-runner/src/{celestial,point_mass,rigid_body,atmosphere}.rs`, `data/gravity/` (+ EGM2008 block + `provenance.md` + SHA pin), `docs/scenario-format.md`; remaining/full target: `crates/openbmp-harmonics/*` (new) or equivalent private module, high-degree EGM2008 block, `inline_data_tripwire.rs` allow-list
 - **approach:** §3.2 Pines + Gottlieb; §3.3 `TesseralGravity`. Pre-allocated scratch, locked `n`-then-`m` operand order, no `mul_add`.
 - **acceptance:**
   - new model off by default; canonical goldens byte-identical
@@ -799,12 +831,31 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
 ---
 
 **WP-08.3 — Time-scale bridge (UTC↔UT1↔TT↔TDB) + EOP dX/dY ingestion**
+- **implementation_status:** implemented. `EarthOrientationSample` now carries
+  `cip_offset_x_rad` / `cip_offset_y_rad`, keeps the legacy constructors
+  defaulting both offsets to exactly zero, validates non-finite offsets
+  fail-closed through `with_cip_offsets`, and `EarthOrientationTable::sample`
+  linearly interpolates dX/dY alongside UT1-UTC, polar motion, and optional LOD.
+  The runner `openbmp-eop-v1` parser now accepts optional
+  `cip_offset_x_arcsec` / `cip_offset_y_arcsec` pairs and rejects rows that
+  declare only one offset. `TimeScaleBridge` now exposes pinned UTC↔UT1/TAI/TT
+  conversions plus the compact TT↔TDB approximation and an ERFA
+  `eraDtdb`-compatible TT↔TDB path backed by the transcribed
+  Fairhead-Bretagnon coefficient table with upstream C reference pins. Runner
+  celestial UTC/TT/TDB epoch conversion uses the ERFA-compatible helper,
+  supplies topocentric dtdb observer geometry from `[frames.local_origin]`
+  when present, and samples `epoch.eop` UT1-UTC for UTC-to-TDB phase when
+  available. A four-day provenance-pinned finals2000A-derived raw and
+  `openbmp-eop-v1` fixtures now exercise real polar motion, UT1-UTC, LOD, dX/dY
+  parser reachability, and fixed-width row-to-epoch MJD conversion. A four-day
+  provenance-pinned EOP 14 C04 fixture exercises raw C04 header/data ingestion
+  in the same path (`REQ-ENV-004`).
 - **goal:** Add the time-scale conversions and the celestial-pole-offset EOP fields that the CIO frame and TDB third-body need. Small, isolated, unblocks WP-08.4.
 - **fidelity_tier:** T3 (prep)
 - **depends_on:** [WP-08.2]
 - **new_crates:** []
-- **touched:** `crates/openbmp-physics/src/frames.rs` (`EarthOrientationSample` += `cip_offset_x/y_rad`; `TimeScaleBridge`), EOP ingestion + `data/eop/` (`finals2000A` subset + `provenance.md` + SHA pin)
-- **approach:** §3.4 — UTC↔UT1 from EOP, TT↔TDB via `eraDtdb` periodic series; extend the existing Lagrange EOP interpolation to dX, dY.
+- **touched:** `crates/openbmp-physics/src/frames.rs` (`EarthOrientationSample` += `cip_offset_x/y_rad`; `TimeScaleBridge`), `crates/openbmp-physics/src/erfa_dtdb_data.rs` (ERFA Fairhead-Bretagnon terms), `crates/openbmp-runner/src/frames.rs` (`openbmp-eop-v1` parser + raw `finals2000A.data` and EOP 14 C04 row parsers + real fixture tests), `crates/openbmp-runner/src/celestial.rs` (runner TDB conversion, EOP UT1 sampling, local-origin dtdb observer geometry), `data/eop/` (`finals2000A` raw/converted subset, EOP 14 C04 raw subset, `provenance.md`, SHA pins)
+- **approach:** §3.4 — UTC↔UT1 from EOP, ERFA-compatible TT↔TDB bridge now shared between physics and runner, topocentric `dtdb` geometry derives from `[frames.local_origin]` when available, existing EOP interpolation extends to dX/dY, and raw C04 rows land through the same pinned-input EOP table path.
 - **acceptance:**
   - additive EOP fields default to zero → existing `IersTabulated` byte-identical
   - TT↔TDB vs `eraDtdb` ≤ 1e-9 s over a test grid
@@ -818,16 +869,72 @@ Executed in `depends_on` order, one PR each, green on the full `13` §2 gate set
 ---
 
 **WP-08.4 — IAU 2006/2000A CIO frame transform**
+- **implementation_status:** partial. CIO primitive/profile substrate is now **partial**:
+  `earth_rotation_angle_iau2000` / `_parts` mirror ERFA `eraEra00`,
+  `tio_locator_sp00` / `_parts` mirror `eraSp00`,
+  `cio_locator_s06` / `_parts` mirror `eraS06` for caller-provided CIP X/Y,
+  `mean_obliquity_iau2006` / `_parts` mirror `eraObl06`,
+  `fukushima_williams_angles_iau2006` / `_parts` mirror `eraPfw06`,
+  `fukushima_williams_matrix` mirrors `eraFw2m`, and
+  `cip_xy_from_bias_precession_nutation_matrix` mirrors `eraBpn2xy`,
+  `nutation_angles_iau2000a` / `_parts` mirror `eraNut00a` through generated
+  ERFA coefficient data, `nutation_angles_iau2006a` / `_parts` mirror
+  `eraNut06a`, `bias_precession_nutation_matrix_iau2006a` / `_parts` mirror
+  `eraPnm06a`, and `cio_xys_iau2006a` / `_parts` mirror `eraXys06a`,
+  `cio_celestial_to_intermediate_matrix` mirrors `eraC2ixys` for
+  caller-provided CIP X/Y and CIO locator `s`, `polar_motion_matrix_iau2000`
+  mirrors `eraPom00`, and `cio_celestial_to_terrestrial_matrix` assembles
+  `RPOM * R3(ERA) * RC2I`. `CioXysSample`, `CioXysTable`,
+  `CioXysCoordinates`, `CioFrameSample`, and `CioFrameModel` now compose
+  caller-provided or generated IAU 2006/2000A X/Y/s samples with pinned EOP:
+  dX/dY are added before `RC2I`, UT1 and TT dates come through
+  `TimeScaleBridge`, ERA and TIO `s'` are computed with the ERFA-pinned
+  primitives, and the substrate returns GCRS-to-ITRS plus inverse matrices.
+  `FrameProfile::IersCio` and runner `frame_profile = "iers-cio"`
+  / `[frames].profile = "iers-cio"` wiring now load SHA-pinned `epoch.eop`
+  and leap-second inputs, default to generated IAU 2006/2000A X/Y/s, still
+  parse optional SHA-pinned `openbmp-cio-xys-v1` TOML tables, validate EOP
+  and table coverage, and leave `IersTabulated` unchanged. A UTC/EOP grid pins
+  full generated GCRS-to-ITRS matrices against the ERFA `Xys06a` + `C2ixys` +
+  `Era00` + `Sp00` + `Pom00` + `C2tcio` sequence. Generated X/Y/s is also
+  checked against independent reference values evaluated from IERS TN36 Ch.5
+  electronic Tables 5.2a, 5.2b, and 5.2d. Tests pin
+  scalar and matrix outputs against local reference values generated from
+  upstream ERFA sources
+  `era00.c` (`91c092c322d070305ba02873005bcb03110d7c26674fbdc7105477c50543ffb5`),
+  `sp00.c` (`120c1363c7f912272ed689ca186df1d16f3a8f8992dd7b981c94e9cba4a8980a`),
+  `s06.c` (`6ad19dd59c3150d9f065b3f76d254c1cf3adb0cb6bacd6422c1dc6b6f14122ea`)
+  plus its ERFA fundamental-argument helpers,
+  `nut00a.c` (`a1538ec0277745db974ab76ca4b678a7602249bccecf9474e2b0268f9c2032ef`),
+  `nut06a.c` (`819c36a689c28e50aaf71ec6d9774da5130df09657a07ab07520ae3712414d07`),
+  `xys06a.c` (`a0b87f7a16b843254d11df469ce3b809cd44155611e361b25580ea6d4086f6ae`),
+  `pnm06a.c` (`ea1814a86aad0895b6f1d5a48ef0308474df1f8fcf27abe6c0293165d8367b99`),
+  `obl06.c` (`550260874d5e5fa3be77296b85b92c54c726fee6fbb1bb44748d04c17ffb37c2`),
+  `pfw06.c` (`085f49861026fab98633d8479795090b3278a0d246a938ebdf10fde326ef1987`),
+  `fw2m.c` (`480d1ae7780566980b8f80f4c6daa2be330a80e99861d892dc5a9f7b11da47c0`),
+  `bpn2xy.c` (`8771bc7db7aeb18f8d9d6fc258d5a28db55e05f3345df0564b4c71a20cc01dfb`),
+  `c2tcio.c` (`1a219863130bcb49ae67f424264776339aea8db5fdd0e716dbff660fbdd65a44`),
+  `c2ixys.c` (`8b220605ef6bb81757b53e5ee7df638e9a0c834d0d8fb8a312d2a603f4877f36`),
+  and `pom00.c` (`19182ef9805c998ed46ec6304a6fb2e869856b85a97cb2391e3e1ec26687f043`),
+  and reject non-finite / invalid-CIP inputs fail-closed, including combined
+  X/Y plus EOP offset domain failures (`REQ-ENV-005`).
+  `FrameContext` now exposes explicit direction/acceleration vector rotations,
+  and `EarthFixedGravity` uses them to rotate the degree-2 tesseral substrate
+  through ToyFixedEarth, WGS84 uniform rotation, and generated-X/Y/s `IersCio`
+  tests. The runner can now consume that adapter through the v3
+  `environment.gravity = "tesseral"` selector and through `third_body`
+  central gravity. Remaining WP-08.4 work: replace the local frame-coupled test
+  with an Orekit force-stack fixture for tesseral gravity through `IersCio`.
 - **goal:** Replace the equinox chain with the CIO (X, Y, s) GCRS↔ITRS transform, bringing frame error from arcsec to sub-mas and making external-ephemeris/telemetry comparisons honest.
 - **fidelity_tier:** T3
 - **depends_on:** [WP-08.3]
 - **new_crates:** []
-- **touched:** `crates/openbmp-physics/src/frames.rs` (`CioFrameModel`; `FrameProfile::IersCio`), ERFA X/Y/s series transcription + `data/iers/xys-series/` (+ `provenance.md` + SHA pin)
+- **touched:** current: `crates/openbmp-physics/src/{frames,gravity,erfa_nut00a_data,lib}.rs` (`CioXysTable`, `CioFrameModel`, `FrameProfile::IersCio`, ERFA-pinned `s06`, Fukushima-Williams, Nut00a/Nut06a, Pnm06a, Xys06a, TN36 table-reference pins, full C2tcio-grid subcomponents, and `EarthFixedGravity` frame-coupled harmonic gravity), `crates/openbmp-runner/src/{frames,celestial,point_mass,rigid_body,atmosphere,fc_bridge}.rs`, `crates/openbmp-scenario/src/{checks,document,scenario,registry,lint}.rs`; remaining: Orekit force-stack validation
 - **approach:** §3.4 — `[ITRS]=W·R·Q·[GCRS]` from X, Y, s, ERA, polar motion + s′; X/Y/s series transcribed from ERFA (BSD); dX, dY added to the series.
 - **acceptance:**
   - new `IersCio` variant off by default; `IersTabulated` (equinox) byte-identical
   - GCRS↔ITRS matrix vs `eraXys06a`/`eraC2ixys`/`eraPom00`/`eraEra00`/`eraSp00` ≤ 1e-12 element-wise over a (UTC, EOP) grid (tolerance table)
-  - IERS TN36 Ch.5 worked X, Y, s reproduced
+  - IERS TN36 Ch.5 electronic Table 5.2a/5.2b/5.2d X, Y, s reference reproduced
   - tesseral gravity (WP-08.1) evaluated through `IersCio` agrees with the Orekit force stack to the WP-08.2 tolerance
   - all §2 gates green
 - **validation_label:** `research`

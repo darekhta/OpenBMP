@@ -1,0 +1,56 @@
+# OpenBMP EOP fixture clipped from IERS/USNO finals2000A.data.
+#
+# Source rows: MJD UTC 57754.00 through 57757.00
+# Source retrieval date: 2026-06-18
+# Source URL:
+#   https://datacenter.iers.org/data/latestVersion/10_FINALS.DATA_IAU2000_V2013_0110.txt
+# Full source SHA-256 at retrieval:
+#   a2e8f7dc1e616b7f0fe41f18c1953e29424f1eb9636875dfd40482e8f471f292
+#
+# The x/y pole, UT1-UTC, dX, and dY values below use the Bulletin B final
+# columns when present. LOD uses the Bulletin A LOD column converted from
+# milliseconds to seconds because the Bulletin B block does not carry LOD.
+
+format = "openbmp-eop-v1"
+source_id = "openbmp.eop.finals2000a.2017-001-004.v1"
+source_format = "finals2000A.data"
+epoch_utc = "2017-01-01T00:00:00Z"
+mjd_start_utc = 57754.0
+mjd_stop_utc = 57757.0
+row_policy = "Bulletin B x/y/UT1/dX/dY, Bulletin A LOD"
+
+[[samples]]
+time_s = 0.0
+ut1_minus_utc_s = 0.5912975
+x_pole_arcsec = 0.080450
+y_pole_arcsec = 0.263074
+cip_offset_x_arcsec = -0.000019
+cip_offset_y_arcsec = -0.000057
+lod_s = 0.0010342
+
+[[samples]]
+time_s = 86400.0
+ut1_minus_utc_s = 0.5902149
+x_pole_arcsec = 0.080275
+y_pole_arcsec = 0.263595
+cip_offset_x_arcsec = -0.000027
+cip_offset_y_arcsec = -0.000065
+lod_s = 0.0011730
+
+[[samples]]
+time_s = 172800.0
+ut1_minus_utc_s = 0.5889684
+x_pole_arcsec = 0.080351
+y_pole_arcsec = 0.264010
+cip_offset_x_arcsec = -0.000027
+cip_offset_y_arcsec = -0.000074
+lod_s = 0.0012984
+
+[[samples]]
+time_s = 259200.0
+ut1_minus_utc_s = 0.5875625
+x_pole_arcsec = 0.080144
+y_pole_arcsec = 0.264241
+cip_offset_x_arcsec = -0.000013
+cip_offset_y_arcsec = -0.000084
+lod_s = 0.0014712

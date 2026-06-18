@@ -1,0 +1,23 @@
+openbmp.afts_closed_form_iip = 1
+
+[meta]
+dataset_id = "openbmp.afts.closed_form_iip.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic two-body closed-form IIP tolerance table"
+provenance = "OpenBMP synthetic analytic fixture using Keplerian conic propagation to a WGS84 spherical impact surface; not a certified range-safety case."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[tolerances]
+angular_rad = 1.0e-6
+time_s = 2.0e-2
+
+[[case]]
+name = "non_radial_descending_suborbital"
+surface_radius_m = 6378137.0
+mu_m3_s2 = 3.986004418e14
+earth_rotation_rate_rad_s = 7.2921151467e-5
+rk4_step_s = 0.05
+max_time_s = 600.0
+position_eci_m = [6458137.0, 120000.0, 350000.0]
+velocity_eci_m_s = [-750.0, 1450.0, -300.0]

@@ -1,0 +1,190 @@
+openbmp.thermochem_deck = 1
+
+[meta]
+propellant_pair = "LOX/LH2"
+provenance = "Generated with Cantera 3.2.0 gri30.yaml gas-phase HP equilibrium; see data/thermochem/provenance.md"
+validation = "research"
+
+[axes]
+chamber_pressure_pa = [1000000.0, 4000000.0, 10000000.0, 30000000.0]
+mixture_ratio = [4.5, 5.0, 5.5, 6.0, 6.5]
+
+[[state]]
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 4.5
+chamber_temperature_k = 3138.949475085253
+gamma = 1.2157212664744705
+molecular_weight_kg_per_mol = 0.010668024651372598
+c_star_m_s = 2400.5380469968713
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 5.0
+chamber_temperature_k = 3229.4302588700843
+gamma = 1.2117394613276158
+molecular_weight_kg_per_mol = 0.011467253397740037
+c_star_m_s = 2351.2682040118616
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 5.5
+chamber_temperature_k = 3294.764761086266
+gamma = 1.208764159792991
+molecular_weight_kg_per_mol = 0.012223073284368806
+c_star_m_s = 2302.3626649757916
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 6.0
+chamber_temperature_k = 3339.7076068707097
+gamma = 1.206577272983947
+molecular_weight_kg_per_mol = 0.012936097913143128
+c_star_m_s = 2254.687912285419
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 6.5
+chamber_temperature_k = 3368.5140239709513
+gamma = 1.2050081178668437
+molecular_weight_kg_per_mol = 0.013607685633215167
+c_star_m_s = 2208.8373282609327
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 4.5
+chamber_temperature_k = 3259.0526335441036
+gamma = 1.2112646936552247
+molecular_weight_kg_per_mol = 0.010791519725724709
+c_star_m_s = 2435.1981786604247
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 5.0
+chamber_temperature_k = 3374.9852117823493
+gamma = 1.2064602629136882
+molecular_weight_kg_per_mol = 0.011629667091685227
+c_star_m_s = 2390.5689233141984
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 5.5
+chamber_temperature_k = 3461.4509595136374
+gamma = 1.202797483518359
+molecular_weight_kg_per_mol = 0.01242314875578536
+c_star_m_s = 2344.964315669109
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 6.0
+chamber_temperature_k = 3522.6501724105337
+gamma = 1.2000783735836629
+molecular_weight_kg_per_mol = 0.013170615180850883
+c_star_m_s = 2299.36424944676
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 6.5
+chamber_temperature_k = 3562.749567091545
+gamma = 1.1981407217995192
+molecular_weight_kg_per_mol = 0.013871837621417528
+c_star_m_s = 2254.5189825766465
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 10000000.0
+mixture_ratio = 4.5
+chamber_temperature_k = 3327.034430780074
+gamma = 1.2087767963703422
+molecular_weight_kg_per_mol = 0.010862557496218356
+c_star_m_s = 2454.2155922170355
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 10000000.0
+mixture_ratio = 5.0
+chamber_temperature_k = 3461.970375922081
+gamma = 1.2033330086395957
+molecular_weight_kg_per_mol = 0.011728648496122727
+c_star_m_s = 2413.1885769034584
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 10000000.0
+mixture_ratio = 5.5
+chamber_temperature_k = 3565.4178344893116
+gamma = 1.1990878181663867
+molecular_weight_kg_per_mol = 0.012550811744877733
+c_star_m_s = 2370.4140902168774
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 10000000.0
+mixture_ratio = 6.0
+chamber_temperature_k = 3640.5839307988713
+gamma = 1.1958816209062004
+molecular_weight_kg_per_mol = 0.013325726429316242
+c_star_m_s = 2326.82116435777
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 10000000.0
+mixture_ratio = 6.5
+chamber_temperature_k = 3690.954193950138
+gamma = 1.1935837802615425
+molecular_weight_kg_per_mol = 0.014051199409672926
+c_star_m_s = 2283.1581995823267
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 30000000.0
+mixture_ratio = 4.5
+chamber_temperature_k = 3393.7991754699865
+gamma = 1.2063476567222626
+molecular_weight_kg_per_mol = 0.01093314736064791
+c_star_m_s = 2472.4868414980842
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 30000000.0
+mixture_ratio = 5.0
+chamber_temperature_k = 3552.1263310244067
+gamma = 1.2000913568510492
+molecular_weight_kg_per_mol = 0.011832816075965733
+c_star_m_s = 2435.984402166219
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 30000000.0
+mixture_ratio = 5.5
+chamber_temperature_k = 3678.2076218472375
+gamma = 1.1950346541764096
+molecular_weight_kg_per_mol = 0.01269192105686748
+c_star_m_s = 2397.1103435079317
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 30000000.0
+mixture_ratio = 6.0
+chamber_temperature_k = 3773.4939477491907
+gamma = 1.1910868780486712
+molecular_weight_kg_per_mol = 0.013504434884081705
+c_star_m_s = 2356.5914101822123
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }
+
+[[state]]
+chamber_pressure_pa = 30000000.0
+mixture_ratio = 6.5
+chamber_temperature_k = 3839.7776278164274
+gamma = 1.1881934971582502
+molecular_weight_kg_per_mol = 0.014264752552207565
+c_star_m_s = 2315.004925607012
+c_star_efficiency = { min = 0.96, nominal = 0.98, max = 1.0 }

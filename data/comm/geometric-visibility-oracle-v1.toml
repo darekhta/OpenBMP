@@ -1,0 +1,69 @@
+openbmp.comm_geometric_visibility = 1
+
+[meta]
+dataset_id = "openbmp.comm.geometric_visibility.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic fixed-Earth communications visibility tolerance table"
+provenance = "OpenBMP synthetic analytic fixture using WGS84 site geometry and a local ENU line-scan rise/set oracle; not a fielded RF link, terrain, or orbital-propagation validation case."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[tolerances]
+slant_range_m = 1.0e-9
+range_rate_m_s = 1.0e-12
+angle_rad = 1.0e-12
+event_time_s = 1.0
+
+[site]
+id = "equator-zero"
+latitude_deg = 0.0
+longitude_deg = 0.0
+altitude_m = 0.0
+min_elevation_deg = 5.0
+
+[[geometry_case]]
+name = "overhead_eastbound"
+time_s = 12.5
+offset_enu_m = [0.0, 0.0, 1000.0]
+velocity_enu_m_s = [50.0, 0.0, 0.0]
+expected_slant_range_m = 1000.0
+expected_range_rate_m_s = 0.0
+expected_elevation_deg = 90.0
+expected_azimuth_deg = 0.0
+expected_mask_elevation_deg = 5.0
+expected_visible = true
+
+[[geometry_case]]
+name = "east_45deg_receding"
+time_s = 30.0
+offset_enu_m = [1000.0, 0.0, 1000.0]
+velocity_enu_m_s = [20.0, 0.0, 0.0]
+expected_slant_range_m = 1414.2135623730951
+expected_range_rate_m_s = 14.142135623730949
+expected_elevation_deg = 45.0
+expected_azimuth_deg = 90.0
+expected_mask_elevation_deg = 5.0
+expected_visible = true
+
+[[geometry_case]]
+name = "north_below_mask"
+time_s = 60.0
+offset_enu_m = [0.0, 1000.0, 50.0]
+velocity_enu_m_s = [0.0, -10.0, 0.0]
+expected_slant_range_m = 1001.2492197250393
+expected_range_rate_m_s = -9.9875233887784471
+expected_elevation_deg = 2.8624052261117474
+expected_azimuth_deg = 0.0
+expected_mask_elevation_deg = 5.0
+expected_visible = false
+
+[[line_scan_pass_case]]
+name = "equator_overhead_east_line"
+altitude_m = 1000.0
+speed_m_s = 100.0
+start_s = -130.0
+end_s = 130.0
+step_s = 1.0
+expected_aos_s = -114.30052302761345
+expected_los_s = 114.30052302761345
+expected_max_elevation_deg = 90.0

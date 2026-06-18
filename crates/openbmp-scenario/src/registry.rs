@@ -108,8 +108,9 @@ impl ModelRegistry {
     /// `j2` and `point_mass` gravity,
     /// `us_standard_1976` and `isothermal` atmosphere, `constant` wind,
     /// `aero` and `thrust` force terms, the `rigid_body` vehicle kind,
-    /// the three synthetic sensors (`ideal_state`, `imu`, `barometer`),
-    /// and the `solid` motor variant.
+    /// the synthetic sensors (`ideal_state`, `imu`, `barometer`,
+    /// `airdata`, `gnss`, `magnetometer`, `star_tracker`), and the
+    /// `solid` motor variant.
     #[must_use]
     pub fn full() -> Self {
         Self::from_descriptors([
@@ -132,6 +133,9 @@ impl ModelRegistry {
             // Central Earth gravity plus Sun/Moon point-mass
             // perturbations from the configured ephemeris source.
             ModelDescriptor::new("third_body", ModelRole::Gravity),
+            // Bounded degree-2 tesseral/sectoral Earth-fixed gravity,
+            // consumed under v3 by the runner gravity dispatch.
+            ModelDescriptor::new("tesseral", ModelRole::Gravity),
             // Atmosphere models.
             ModelDescriptor::new("isothermal", ModelRole::Atmosphere),
             ModelDescriptor::new("us_standard_1976", ModelRole::Atmosphere),
@@ -163,6 +167,7 @@ impl ModelRegistry {
             ModelDescriptor::new("ideal_state", ModelRole::Sensor),
             ModelDescriptor::new("imu", ModelRole::Sensor),
             ModelDescriptor::new("barometer", ModelRole::Sensor),
+            ModelDescriptor::new("airdata", ModelRole::Sensor),
             // Navigation and attitude sensors.
             ModelDescriptor::new("gnss", ModelRole::Sensor),
             ModelDescriptor::new("magnetometer", ModelRole::Sensor),

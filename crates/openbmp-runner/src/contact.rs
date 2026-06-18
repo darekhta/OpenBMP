@@ -714,6 +714,7 @@ mod tests {
             restick_speed_m_s: None,
             effective_mass_kg: 1.0,
             substeps: 1,
+            mechanisms: Vec::new(),
         };
         let diagnostics = ContactDiagnosticsEvaluator::from_config(&config)
             .unwrap()
@@ -766,6 +767,7 @@ mod tests {
             restick_speed_m_s: Some(0.01),
             effective_mass_kg: 1.0,
             substeps: 1,
+            mechanisms: Vec::new(),
         };
         let evaluator = ContactDiagnosticsEvaluator::from_config(&config).unwrap();
         let position = nalgebra::Vector3::new(0.0, 0.0, -0.01);

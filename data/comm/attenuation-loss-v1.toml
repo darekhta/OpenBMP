@@ -1,0 +1,38 @@
+openbmp.comm_attenuation_loss = 1
+
+[meta]
+dataset_id = "openbmp.comm.attenuation_loss.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic elevation-indexed attenuation and rain loss table"
+provenance = "OpenBMP synthetic analytic fixture for deterministic elevation-indexed atmospheric and rain attenuation interpolation."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[tolerances]
+loss_db = 1.0e-12
+
+[atmospheric_loss]
+deck_id = "synthetic-atmospheric-elevation"
+samples = [
+  { elevation_deg = -90.0, loss_db = 10.0 },
+  { elevation_deg = 0.0, loss_db = 2.0 },
+  { elevation_deg = 90.0, loss_db = 0.2 },
+]
+
+[rain_loss]
+deck_id = "synthetic-rain-elevation"
+samples = [
+  { elevation_deg = -90.0, loss_db = 20.0 },
+  { elevation_deg = 0.0, loss_db = 1.0 },
+  { elevation_deg = 90.0, loss_db = 0.05 },
+]
+
+[[loss_case]]
+deck = "atmospheric_loss"
+elevation_deg = 45.0
+expected_loss_db = 1.1
+
+[[loss_case]]
+deck = "rain_loss"
+elevation_deg = 45.0
+expected_loss_db = 0.525

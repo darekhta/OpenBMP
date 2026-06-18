@@ -72,6 +72,12 @@ pub use assembly::{
 };
 pub use effector::{
     ControlEffector, EffectorError, EffectorFault, EffectorLimits, EffectorState, LinearActuator,
+    PulsePolarity, PwpfModulator, PwpfParams, PwpfStep, RateLimitBacklashDescribingFunction,
+    RcsBlowdownParams, RcsCoupledAllocation, RcsCoupledAllocator, RcsCoupledThrusterPulse,
+    RcsError, RcsMinimumImpulseBit, RcsPulse, RcsPulseEffector, RcsPulseEffectorParams,
+    RcsThrusterBankEffector, RcsThrusterBankEffectorParams, RcsThrusterBankPulse,
+    RcsThrusterConfig, SecondOrderServo, SecondOrderServoParams,
+    rate_limit_backlash_describing_function,
 };
 pub use error::VehicleError;
 pub use landing_gear::{CrushCore, CrushCoreResponse, LandingGearError, LandingGearLeg, OleoStage};

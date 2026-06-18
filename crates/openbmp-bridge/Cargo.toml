@@ -8,11 +8,15 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP optional generic socket-bridge schema for the academic HIL pattern. No real device drivers, no real bus protocols."
 
+[features]
+default = ["std"]
+std     = ["openbmp-core/std", "serde/std", "thiserror/std"]
+
 [dependencies]
-openbmp-core = { workspace = true }
+openbmp-core = { version = "0.0.1", path = "../openbmp-core", default-features = false }
 postcard     = { workspace = true }
-serde        = { workspace = true }
-thiserror    = { workspace = true }
+serde        = { version = "1.0.228", default-features = false, features = ["alloc", "derive"] }
+thiserror    = { version = "2.0.18", default-features = false }
 
 [dev-dependencies]
 openbmp-testkit = { workspace = true }

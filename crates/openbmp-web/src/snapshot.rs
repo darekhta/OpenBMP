@@ -475,8 +475,16 @@ impl SnapshotLayout {
                     &reference.q_body_to_eci_xyzw,
                 );
                 write_vector3(out, f.reference_position_eci_m, &reference.position_eci_m);
-                write_vector3(out, f.reference_velocity_eci_m_s, &reference.velocity_eci_m_s);
-                write_vector3(out, f.reference_omega_body_rad_s, &reference.omega_body_rad_s);
+                write_vector3(
+                    out,
+                    f.reference_velocity_eci_m_s,
+                    &reference.velocity_eci_m_s,
+                );
+                write_vector3(
+                    out,
+                    f.reference_omega_body_rad_s,
+                    &reference.omega_body_rad_s,
+                );
             }
         }
 

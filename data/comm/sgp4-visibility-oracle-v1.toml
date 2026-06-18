@@ -1,0 +1,28 @@
+openbmp.comm_sgp4_visibility = 1
+
+[meta]
+dataset_id = "openbmp.comm.sgp4_visibility.v1"
+source_class = "external-library"
+source_title = "sgp4 2.4.0 ISS TLE visibility pass oracle"
+provenance = "OpenBMP code-to-code fixture using the MIT-licensed sgp4 crate as an external TLE propagation oracle; TEME positions are rotated to a fixed Earth frame with the crate's IAU sidereal-time expression before OpenBMP site visibility is evaluated."
+license_or_terms = "sgp4 crate MIT; ISS TLE example copied from sgp4 crate documentation"
+validation = "validated-toy"
+
+[tolerances]
+event_time_s = 1.0
+
+[site]
+id = "equator-zero"
+latitude_deg = 0.0
+longitude_deg = 0.0
+altitude_m = 0.0
+min_elevation_deg = 5.0
+
+[leo_reference]
+object_name = "ISS (ZARYA)"
+tle_line1 = "1 25544U 98067A   20194.88612269 -.00002218  00000-0 -31515-4 0  9992"
+tle_line2 = "2 25544  51.6461 221.2784 0001413  89.1723 280.4612 15.49507896236008"
+start_s = 0.0
+end_s = 86400.0
+sample_step_s = 1.0
+minimum_event_count = 2

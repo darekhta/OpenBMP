@@ -64,6 +64,8 @@ pub struct TankRack {
     /// Per-tank engine-coupled drain rates (kg/s) produced by the
     /// propellant budget from the prior engine snapshot.
     propellant_budget_drain_rates_kg_per_s: BTreeMap<TankId, f64>,
+    /// Per-tank RCS feed drain rates (kg/s) produced by the effector rack.
+    rcs_feed_drain_rates_kg_per_s: BTreeMap<TankId, f64>,
     /// Cached `(specific_force_body_m_s2, omega_body_rad_s)` from the
     /// prior kernel step. Initialised to zeros at construction.
     last_drivers: (Vector3<f64>, Vector3<f64>),
@@ -78,6 +80,10 @@ impl std::fmt::Debug for TankRack {
             .field(
                 "propellant_budget_drain_rates_kg_per_s",
                 &self.propellant_budget_drain_rates_kg_per_s,
+            )
+            .field(
+                "rcs_feed_drain_rates_kg_per_s",
+                &self.rcs_feed_drain_rates_kg_per_s,
             )
             .field("last_drivers", &self.last_drivers)
             .finish()
@@ -115,6 +121,7 @@ impl TankRack {
             dt,
             drain_rates_kg_per_s: drain_rates,
             propellant_budget_drain_rates_kg_per_s: BTreeMap::new(),
+            rcs_feed_drain_rates_kg_per_s: BTreeMap::new(),
             last_drivers: (Vector3::zeros(), Vector3::zeros()),
         })
     }
@@ -158,6 +165,12 @@ impl TankRack {
         self.propellant_budget_drain_rates_kg_per_s = rates;
     }
 
+    /// Replace RCS feed-coupled drain rates for the next [`Self::step`].
+    /// Scenario-declared and engine-budget drain remain additive.
+    pub fn set_rcs_feed_drain_rates(&mut self, rates: BTreeMap<TankId, f64>) {
+        self.rcs_feed_drain_rates_kg_per_s = rates;
+    }
+
     /// Live tank states consumed by the vehicle-side propellant
     /// budget.
     #[must_use]
@@ -199,6 +212,11 @@ impl TankRack {
             let rate = self.drain_rates_kg_per_s.get(id).copied().unwrap_or(0.0)
                 + self
                     .propellant_budget_drain_rates_kg_per_s
+                    .get(id)
+                    .copied()
+                    .unwrap_or(0.0)
+                + self
+                    .rcs_feed_drain_rates_kg_per_s
                     .get(id)
                     .copied()
                     .unwrap_or(0.0);

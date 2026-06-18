@@ -1,0 +1,23 @@
+[package]
+name                    = "openbmp-pil"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP processor-in-the-loop target shim: bridge packet bytes around the hardware-portable FC step entry."
+
+[features]
+default = ["std"]
+std     = ["nalgebra/std", "openbmp-bridge/std", "openbmp-core/std", "openbmp-fc/std", "thiserror/std"]
+
+[dependencies]
+nalgebra       = { version = "0.34.2", default-features = false, features = ["alloc", "libm"] }
+openbmp-bridge = { version = "0.0.1", path = "../openbmp-bridge", default-features = false }
+openbmp-core   = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+openbmp-fc     = { version = "0.0.1", path = "../openbmp-fc", default-features = false }
+thiserror      = { version = "2.0.18", default-features = false }
+
+[lints]
+workspace = true

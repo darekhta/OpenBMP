@@ -11,6 +11,102 @@ const SCENARIO_PATH: &str = concat!(
     "/../../scenarios/closed-loop-attitude-hold/scenario.toml"
 );
 
+const VISIBLE_HIGH_MARGIN_COMM: &str = r#"
+
+[comm]
+
+[[comm.sites]]
+id = "equator-zero"
+latitude_deg = 0.0
+longitude_deg = 0.0
+altitude_m = 0.0
+min_elevation_deg = 0.0
+
+[[comm.antennas]]
+id = "s-band-omni"
+gain_deck = "../../data/comm/antenna-link-budget-v1.toml"
+body_mask_deck = "../../data/comm/antenna-link-budget-v1.toml"
+
+[[comm.links]]
+id = "s-band-equator"
+site_id = "equator-zero"
+antenna_id = "s-band-omni"
+eirp_dbw = -33.0
+receiver_g_over_t_db_k = 0.0
+frequency_hz = 2.0e9
+bit_rate_bps = 1000.0
+required_eb_n0_db = 3.0
+atmospheric_loss_db = 1.0
+rain_loss_db = 0.5
+pointing_loss_db = 0.25
+polarization_loss_db = 0.1
+implementation_loss_db = 0.0
+fer_curve_deck = "../../data/comm/link-budget-fer-v1.toml"
+packet_processing_delay_s = 0.005
+packet_error_action = { kind = "drop" }
+"#;
+
+const HANDOVER_COMM: &str = r#"
+
+[comm]
+bridge_link_selection = "best_margin"
+
+[[comm.sites]]
+id = "opposite-side"
+latitude_deg = 0.0
+longitude_deg = 180.0
+altitude_m = 0.0
+min_elevation_deg = 0.0
+
+[[comm.sites]]
+id = "equator-zero"
+latitude_deg = 0.0
+longitude_deg = 0.0
+altitude_m = 0.0
+min_elevation_deg = 0.0
+
+[[comm.antennas]]
+id = "s-band-omni"
+gain_deck = "../../data/comm/antenna-link-budget-v1.toml"
+body_mask_deck = "../../data/comm/antenna-link-budget-v1.toml"
+
+[[comm.links]]
+id = "blocked-first"
+site_id = "opposite-side"
+antenna_id = "s-band-omni"
+eirp_dbw = -33.0
+receiver_g_over_t_db_k = 0.0
+frequency_hz = 2.0e9
+bit_rate_bps = 1000.0
+required_eb_n0_db = 3.0
+atmospheric_loss_db = 1.0
+rain_loss_db = 0.5
+pointing_loss_db = 0.25
+polarization_loss_db = 0.1
+implementation_loss_db = 0.0
+fer_curve_deck = "../../data/comm/link-budget-fer-v1.toml"
+packet_processing_delay_s = 0.0
+packet_error_action = { kind = "drop" }
+
+[[comm.links]]
+id = "healthy-second"
+site_id = "equator-zero"
+antenna_id = "s-band-omni"
+eirp_dbw = -33.0
+receiver_g_over_t_db_k = 0.0
+frequency_hz = 2.0e9
+bit_rate_bps = 1000.0
+required_eb_n0_db = 3.0
+atmospheric_loss_db = 1.0
+rain_loss_db = 0.5
+pointing_loss_db = 0.25
+polarization_loss_db = 0.1
+implementation_loss_db = 0.0
+fer_curve_deck = "../../data/comm/link-budget-fer-v1.toml"
+packet_processing_delay_s = 0.0
+packet_error_action = { kind = "drop" }
+"#;
+
 fn remove_section(toml: &str, section: &str) -> String {
     let header = format!("\n[{section}]\n");
     let start = toml.find(&header).expect("section exists");
@@ -24,6 +120,44 @@ fn remove_section(toml: &str, section: &str) -> String {
 fn load(extra: &str) -> Scenario {
     let mut toml = std::fs::read_to_string(SCENARIO_PATH).expect("read scenario");
     toml = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+    toml.push_str(extra);
+    let source_dir = Path::new(SCENARIO_PATH).parent().map(Path::to_path_buf);
+    Scenario::from_toml_str_with_source_dir(&toml, source_dir).expect("scenario parses")
+}
+
+fn load_visible_comm_with_processing_delay(delay_s: f64, extra: &str) -> Scenario {
+    let mut toml = std::fs::read_to_string(SCENARIO_PATH).expect("read scenario");
+    toml = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+    toml = toml.replace(
+        "initial_position_eci_m   = [0.0, 0.0, 0.0]",
+        "initial_position_eci_m   = [6379137.0, 0.0, 0.0]",
+    );
+    let comm = VISIBLE_HIGH_MARGIN_COMM.replace(
+        "packet_processing_delay_s = 0.005",
+        &format!("packet_processing_delay_s = {delay_s:.17e}"),
+    );
+    toml.push_str(&comm);
+    toml.push_str(extra);
+    let source_dir = Path::new(SCENARIO_PATH).parent().map(Path::to_path_buf);
+    Scenario::from_toml_str_with_source_dir(&toml, source_dir).expect("scenario parses")
+}
+
+fn load_visible_comm(extra: &str) -> Scenario {
+    load_visible_comm_with_processing_delay(0.005, extra)
+}
+
+fn load_handover_comm(selection: &str, extra: &str) -> Scenario {
+    let mut toml = std::fs::read_to_string(SCENARIO_PATH).expect("read scenario");
+    toml = toml.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+    toml = toml.replace(
+        "initial_position_eci_m   = [0.0, 0.0, 0.0]",
+        "initial_position_eci_m   = [6379137.0, 0.0, 0.0]",
+    );
+    let comm = HANDOVER_COMM.replace(
+        "bridge_link_selection = \"best_margin\"",
+        &format!("bridge_link_selection = {selection:?}"),
+    );
+    toml.push_str(&comm);
     toml.push_str(extra);
     let source_dir = Path::new(SCENARIO_PATH).parent().map(Path::to_path_buf);
     Scenario::from_toml_str_with_source_dir(&toml, source_dir).expect("scenario parses")
@@ -109,6 +243,133 @@ max_payload_len = 4096
             .as_ref()
             .is_some_and(|report| report.packet_count > 0),
         "tcp_loopback run should produce actuator stream evidence"
+    );
+}
+
+#[test]
+fn fc_transport_comm_processing_delay_queues_actuator_commands() {
+    let direct = openbmp_runner::run(&load_visible_comm("")).expect("direct comm run");
+    let transported = openbmp_runner::run(&load_visible_comm(
+        r#"
+
+[fc.transport]
+mode = "in_process"
+max_payload_len = 4096
+"#,
+    ))
+    .expect("transported delayed comm run");
+
+    let direct_stream = direct
+        .actuator_stream
+        .as_ref()
+        .expect("direct actuator stream");
+    let transported_stream = transported
+        .actuator_stream
+        .as_ref()
+        .expect("transport actuator stream");
+    assert!(
+        transported_stream.packet_count + 8 <= direct_stream.packet_count,
+        "two-way comm delay should leave the final command frames queued: direct={}, transported={}",
+        direct_stream.packet_count,
+        transported_stream.packet_count
+    );
+    assert_ne!(
+        direct_stream.sha256_hex, transported_stream.sha256_hex,
+        "delayed transport command stream should not hash like immediate direct commands"
+    );
+
+    let comm = transported.comm.as_ref().expect("transported comm report");
+    let link = comm.links.first().expect("comm link report");
+    assert_eq!(
+        link.packet_processing_delay_s.to_bits(),
+        0.005_f64.to_bits()
+    );
+    let timeout = link.data_loss_timeout.as_ref();
+    assert!(
+        timeout.is_none(),
+        "test link does not declare timeout latch"
+    );
+}
+
+#[test]
+fn fc_transport_zero_step_comm_link_preserves_direct_bridge_bytes() {
+    let direct = openbmp_runner::run(&load_visible_comm_with_processing_delay(0.0, ""))
+        .expect("direct comm run");
+    let transported = openbmp_runner::run(&load_visible_comm_with_processing_delay(
+        0.0,
+        r#"
+
+[fc.transport]
+mode = "in_process"
+max_payload_len = 4096
+"#,
+    ))
+    .expect("transported zero-step comm run");
+
+    assert_eq!(
+        direct.table, transported.table,
+        "zero-step delivered comm link should preserve telemetry bytes"
+    );
+    assert_eq!(
+        openbmp_runner::determinism::telemetry_sha256_hex(&direct.table)
+            .expect("direct telemetry hash"),
+        openbmp_runner::determinism::telemetry_sha256_hex(&transported.table)
+            .expect("transport telemetry hash"),
+        "zero-step delivered comm link should preserve telemetry digest"
+    );
+    assert_eq!(
+        direct.actuator_stream, transported.actuator_stream,
+        "zero-step delivered comm link should preserve actuator stream evidence"
+    );
+
+    let comm = transported.comm.as_ref().expect("transported comm report");
+    let link = comm.links.first().expect("comm link report");
+    assert_eq!(link.packet_processing_delay_s.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn fc_transport_best_margin_comm_link_handover_uses_visible_second_link() {
+    let transported = openbmp_runner::run(&load_handover_comm(
+        "best_margin",
+        r#"
+
+[fc.transport]
+mode = "in_process"
+max_payload_len = 4096
+"#,
+    ))
+    .expect("best-margin handover run");
+
+    assert!(
+        transported
+            .actuator_stream
+            .as_ref()
+            .is_some_and(|report| report.packet_count > 0),
+        "best-margin selected visible second link should deliver transport commands"
+    );
+    let comm = transported.comm.as_ref().expect("comm report");
+    assert_eq!(comm.links.len(), 2);
+    assert_eq!(comm.links[0].link_id, "blocked-first");
+    assert_eq!(comm.links[1].link_id, "healthy-second");
+}
+
+#[test]
+fn fc_transport_first_declared_comm_link_fails_closed_on_blocked_first_link() {
+    let err = openbmp_runner::run(&load_handover_comm(
+        "first_declared",
+        r#"
+
+[fc.transport]
+mode = "in_process"
+max_payload_len = 4096
+"#,
+    ))
+    .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("comm link `blocked-first` dropped fc.transport sensor frame step 0"),
+        "unexpected error: {err}"
     );
 }
 

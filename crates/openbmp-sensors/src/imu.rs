@@ -37,6 +37,10 @@ use openbmp_core::{DeterministicRng, SensorId, StepIndex};
 use crate::error::SensorError;
 use crate::noise::{BoxMullerGaussian, IntegratedWhiteNoise, OrnsteinUhlenbeck};
 use crate::sensor::{SensorMeasurement, SensorTruth, SyntheticSensor, require_truth_finite};
+use crate::strapdown::{
+    HighRateImuConfig, InertialIncrement, InertialTruthSample, integrate_constant_truth_window,
+    integrate_rk4_truth_window,
+};
 
 const COMPONENTS_PER_AXIS: u32 = 5;
 const SUB_ARW: u32 = 0;
@@ -258,6 +262,9 @@ pub struct SyntheticImu {
     gyro_rrw: IntegratedWhiteNoise,
     accel_rrw: IntegratedWhiteNoise,
     gauss: BoxMullerGaussian,
+    high_rate: Option<HighRateImuConfig>,
+    last_high_rate_increments: Vec<InertialIncrement>,
+    previous_high_rate_truth: Option<(f64, InertialTruthSample)>,
 }
 
 impl SyntheticImu {
@@ -291,7 +298,20 @@ impl SyntheticImu {
             gyro_rrw,
             accel_rrw,
             gauss: BoxMullerGaussian::new(),
+            high_rate: None,
+            last_high_rate_increments: Vec::new(),
+            previous_high_rate_truth: None,
         })
+    }
+
+    /// Enable deterministic high-rate inertial increment generation
+    /// while preserving the legacy [`SensorMeasurement::Imu`] output.
+    #[must_use]
+    pub fn with_high_rate(mut self, config: HighRateImuConfig) -> Self {
+        self.last_high_rate_increments.clear();
+        self.previous_high_rate_truth = None;
+        self.high_rate = Some(config);
+        self
     }
 
     /// Read-only access to the budget.
@@ -310,6 +330,21 @@ impl SyntheticImu {
     #[must_use]
     pub const fn bias_rrw_state(&self) -> &[f64; 6] {
         &self.bias_rrw
+    }
+
+    /// Optional high-rate increment-generation configuration.
+    #[must_use]
+    pub const fn high_rate_config(&self) -> Option<HighRateImuConfig> {
+        self.high_rate
+    }
+
+    /// Last generated high-rate increment window.
+    ///
+    /// Empty when high-rate mode is disabled or before the first
+    /// successful measurement.
+    #[must_use]
+    pub fn last_high_rate_increments(&self) -> &[InertialIncrement] {
+        &self.last_high_rate_increments
     }
 
     #[allow(clippy::too_many_arguments, clippy::similar_names)]
@@ -375,6 +410,110 @@ impl SyntheticImu {
         }
         Ok(quantised)
     }
+
+    fn inertial_truth_from_sensor_truth(
+        &self,
+        truth: &SensorTruth,
+    ) -> Result<InertialTruthSample, SensorError> {
+        let accel_at_mount = specific_force_at_mount(
+            truth.specific_force_body_m_s2,
+            truth.angular_velocity_body_rad_s,
+            truth.angular_acceleration_body_rad_s2,
+            self.budget.mount_offset_body_m,
+        )?;
+        Ok(InertialTruthSample {
+            angular_velocity_body_rad_s: self.budget.gyro_misalignment
+                * truth.angular_velocity_body_rad_s
+                + self.budget.gyro_g_sensitivity_rad_s_per_m_s2 * accel_at_mount,
+            specific_force_body_m_s2: self.budget.accel_misalignment * accel_at_mount,
+        })
+    }
+
+    fn high_rate_first_seq(
+        step: StepIndex,
+        high_rate: HighRateImuConfig,
+    ) -> Result<u64, SensorError> {
+        step.value()
+            .checked_mul(u64::from(high_rate.sub_samples))
+            .ok_or(SensorError::InvalidParameter {
+                reason: "IMU high-rate increment sequence overflowed u64",
+            })
+    }
+
+    fn update_high_rate_increments(
+        &mut self,
+        current_time_s: f64,
+        current_truth: InertialTruthSample,
+        step: StepIndex,
+    ) -> Result<(), SensorError> {
+        self.last_high_rate_increments.clear();
+        let Some(high_rate) = self.high_rate else {
+            return Ok(());
+        };
+        let first_seq = Self::high_rate_first_seq(step, high_rate)?;
+        self.last_high_rate_increments =
+            if let Some((previous_time_s, previous_truth)) = self.previous_high_rate_truth {
+                let window_dt_s = current_time_s - previous_time_s;
+                if window_dt_s.is_finite() && window_dt_s > 0.0 {
+                    let sub_dt_s = window_dt_s / f64::from(high_rate.sub_samples);
+                    integrate_rk4_truth_window(
+                        |time_s| {
+                            interpolate_inertial_truth(
+                                previous_time_s,
+                                previous_truth,
+                                current_time_s,
+                                current_truth,
+                                time_s,
+                            )
+                        },
+                        previous_time_s,
+                        sub_dt_s,
+                        high_rate.sub_samples,
+                        first_seq,
+                        high_rate.quantization,
+                    )?
+                } else {
+                    integrate_constant_truth_window(
+                        current_truth.angular_velocity_body_rad_s,
+                        current_truth.specific_force_body_m_s2,
+                        self.budget.dt_s / f64::from(high_rate.sub_samples),
+                        high_rate.sub_samples,
+                        first_seq,
+                        high_rate.quantization,
+                    )?
+                }
+            } else {
+                integrate_constant_truth_window(
+                    current_truth.angular_velocity_body_rad_s,
+                    current_truth.specific_force_body_m_s2,
+                    self.budget.dt_s / f64::from(high_rate.sub_samples),
+                    high_rate.sub_samples,
+                    first_seq,
+                    high_rate.quantization,
+                )?
+            };
+        self.previous_high_rate_truth = Some((current_time_s, current_truth));
+        Ok(())
+    }
+}
+
+fn interpolate_inertial_truth(
+    previous_time_s: f64,
+    previous_truth: InertialTruthSample,
+    current_time_s: f64,
+    current_truth: InertialTruthSample,
+    sample_time_s: f64,
+) -> InertialTruthSample {
+    let u = (sample_time_s - previous_time_s) / (current_time_s - previous_time_s);
+    InertialTruthSample {
+        angular_velocity_body_rad_s: previous_truth.angular_velocity_body_rad_s
+            + (current_truth.angular_velocity_body_rad_s
+                - previous_truth.angular_velocity_body_rad_s)
+                * u,
+        specific_force_body_m_s2: previous_truth.specific_force_body_m_s2
+            + (current_truth.specific_force_body_m_s2 - previous_truth.specific_force_body_m_s2)
+                * u,
+    }
 }
 
 fn specific_force_at_mount(
@@ -412,15 +551,10 @@ impl SyntheticSensor for SyntheticImu {
         let gyro_budget = self.budget.gyro;
         let accel_budget = self.budget.accel;
 
-        let truth_accel_at_mount = specific_force_at_mount(
-            truth.specific_force_body_m_s2,
-            truth.angular_velocity_body_rad_s,
-            truth.angular_acceleration_body_rad_s2,
-            self.budget.mount_offset_body_m,
-        )?;
-        let truth_omega = self.budget.gyro_misalignment * truth.angular_velocity_body_rad_s
-            + self.budget.gyro_g_sensitivity_rad_s_per_m_s2 * truth_accel_at_mount;
-        let truth_accel = self.budget.accel_misalignment * truth_accel_at_mount;
+        let inertial_truth = self.inertial_truth_from_sensor_truth(truth)?;
+        self.update_high_rate_increments(truth.time.as_seconds(), inertial_truth, step)?;
+        let truth_omega = inertial_truth.angular_velocity_body_rad_s;
+        let truth_accel = inertial_truth.specific_force_body_m_s2;
 
         let gyro_x = self.measure_axis(
             truth_omega.x,
@@ -520,6 +654,9 @@ mod tests {
             angular_acceleration_body_rad_s2: Vector3::zeros(),
             specific_force_body_m_s2: Vector3::new(0.5, 1.0, 9.806_65),
             static_pressure_pa: 0.0,
+            atmosphere_density_kg_m3: 0.0,
+            speed_of_sound_m_s: 0.0,
+            air_relative_velocity_body_m_s: Vector3::zeros(),
             altitude_geometric_m: 0.0,
             magnetic_field_body_nt: Vector3::zeros(),
             time: SimTime::ZERO,
@@ -547,6 +684,82 @@ mod tests {
         )
         .unwrap();
         ImuNoiseBudget::new(gyro, accel, 0.01).unwrap()
+    }
+
+    #[test]
+    fn high_rate_imu_generates_quantized_increment_window_without_changing_sample() {
+        let config = HighRateImuConfig::new(4, 0.001, 0.01).unwrap();
+        let mut imu = SyntheticImu::new(SensorId::from_path("sensors.imu"), zero_noise_budget())
+            .unwrap()
+            .with_high_rate(config);
+        let truth = fixture_truth();
+        let sample = imu.measure(&truth, StepIndex::new(3), 0).unwrap();
+
+        let SensorMeasurement::Imu {
+            gyro_rad_s,
+            accel_m_s2,
+        } = sample
+        else {
+            panic!("expected IMU sample");
+        };
+        assert_abs_diff_eq!(
+            gyro_rad_s,
+            truth.angular_velocity_body_rad_s,
+            epsilon = 1.0e-15
+        );
+        assert_abs_diff_eq!(
+            accel_m_s2,
+            truth.specific_force_body_m_s2,
+            epsilon = 1.0e-15
+        );
+
+        let increments = imu.last_high_rate_increments();
+        assert_eq!(increments.len(), 4);
+        assert_eq!(increments[0].seq, 12);
+        assert_eq!(increments[3].seq, 15);
+        assert_abs_diff_eq!(increments[0].delta_theta_rad.x, 0.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(increments[0].delta_v_m_s.z, 0.02, epsilon = 1.0e-15);
+        assert_eq!(imu.high_rate_config(), Some(config));
+    }
+
+    #[test]
+    fn high_rate_imu_uses_time_varying_truth_after_first_sample() {
+        let config = HighRateImuConfig::new(2, 0.0, 0.0).unwrap();
+        let mut imu = SyntheticImu::new(SensorId::from_path("sensors.imu"), zero_noise_budget())
+            .unwrap()
+            .with_high_rate(config);
+        let mut truth0 = fixture_truth();
+        truth0.angular_velocity_body_rad_s = Vector3::zeros();
+        truth0.specific_force_body_m_s2 = Vector3::zeros();
+        truth0.time = SimTime::from_seconds(0.0);
+        imu.measure(&truth0, StepIndex::new(0), 0).unwrap();
+
+        let mut truth1 = truth0;
+        truth1.angular_velocity_body_rad_s = Vector3::new(1.0, 0.0, 0.0);
+        truth1.specific_force_body_m_s2 = Vector3::new(0.0, 0.0, 2.0);
+        truth1.time = SimTime::from_seconds(0.01);
+        let sample = imu.measure(&truth1, StepIndex::new(1), 0).unwrap();
+
+        let SensorMeasurement::Imu {
+            gyro_rad_s,
+            accel_m_s2,
+        } = sample
+        else {
+            panic!("expected IMU sample");
+        };
+        assert_abs_diff_eq!(gyro_rad_s.x, 1.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(accel_m_s2.z, 2.0, epsilon = 1.0e-15);
+
+        let increments = imu.last_high_rate_increments();
+        assert_eq!(increments.len(), 2);
+        assert_eq!(increments[0].seq, 2);
+        assert_eq!(increments[1].seq, 3);
+        assert_abs_diff_eq!(increments[0].dt_s, 0.005, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(increments[1].dt_s, 0.005, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(increments[0].delta_theta_rad.x, 0.00125, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(increments[1].delta_theta_rad.x, 0.00375, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(increments[0].delta_v_m_s.z, 0.0025, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(increments[1].delta_v_m_s.z, 0.0075, epsilon = 1.0e-15);
     }
 
     #[test]

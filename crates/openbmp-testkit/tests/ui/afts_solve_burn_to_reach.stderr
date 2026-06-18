@@ -1,0 +1,5 @@
+error[E0599]: no method named `solve_burn_to_reach` found for struct `IipPropagator` in the current scope
+  --> tests/ui/afts_solve_burn_to_reach.rs:13:24
+   |
+13 |     let _ = propagator.solve_burn_to_reach(polygon);
+   |                        ^^^^^^^^^^^^^^^^^^^ method not found in `IipPropagator`

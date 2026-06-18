@@ -23,7 +23,9 @@ mpc         = ["openbmp-fc/mpc"]
 nalgebra            = { workspace = true }
 openbmp-aero        = { workspace = true }
 openbmp-aerothermal = { workspace = true }
+openbmp-afts        = { workspace = true }
 openbmp-bridge      = { workspace = true }
+openbmp-comm        = { workspace = true }
 openbmp-contact     = { workspace = true }
 openbmp-core        = { workspace = true }
 openbmp-feedsystem  = { workspace = true }
@@ -32,6 +34,7 @@ openbmp-mission     = { workspace = true }
 openbmp-mc          = { workspace = true }
 openbmp-multibody   = { workspace = true }
 openbmp-physics     = { workspace = true }
+openbmp-pil         = { workspace = true }
 openbmp-plume       = { workspace = true }
 openbmp-propulsion  = { workspace = true }
 openbmp-rt          = { workspace = true }

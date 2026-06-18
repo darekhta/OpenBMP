@@ -25,6 +25,11 @@ const UNIT_SUFFIXES: &[&str] = &[
     "_kg_m2",
     "_kg_per_s",
     "_per_s",
+    "_dbhz",
+    "_dbw",
+    "_db_k",
+    "_bps",
+    "_db",
     "_kg",
     "_w_m2",
     "_m3",
@@ -190,6 +195,7 @@ fn is_frame_exempt_3vector(path: &str, key: &str) -> bool {
         ("$.wind.intensity_m_s", "intensity_m_s") | ("$.wind.length_scale_m", "length_scale_m")
     ) || (path.starts_with("$.landing_footprint.monte_carlo") && key == "confidence_levels")
         || (path.starts_with("$.vehicle.landing_gear.legs") && key == "strut_axis_body")
+        || (path.starts_with("$.vehicle.assembly.effectors") && matches!(key, "direction_body"))
         || (path.starts_with("$.propulsion.feed_network")
             && (path.contains(".oxidizer_pump") || path.contains(".fuel_pump"))
             && matches!(key, "head_coefficients" | "efficiency_coefficients"))
@@ -213,10 +219,20 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
             | "rtol"
             | "atol"
             | "j2"
+            | "egm2008_degree"
+            | "egm2008_order"
+            | "tesseral_degree"
+            | "tesseral_order"
+            | "tesseral_c20"
+            | "tesseral_c21"
+            | "tesseral_s21"
+            | "tesseral_c22"
+            | "tesseral_s22"
             | "year"
             | "day_of_year"
             | "ap_average"
             | "ap_current_3h"
+            | "credibility_level"
             // Mission-block trigger fields: a mass fraction
             // ratio in [0, 1].
             | "remaining"
@@ -229,6 +245,16 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     // slopes (the frequency and modal mass carry `_hz` / `_kg` suffixes).
     if path.starts_with("$.vehicle.bending")
         && matches!(key, "damping_ratio" | "slope_at_engine" | "slope_at_gyro")
+    {
+        return true;
+    }
+
+    // Aerodynamic coefficient UQ bands are dimensionless by definition.
+    if path.starts_with("$.aero.uq")
+        && matches!(
+            key,
+            "coefficient_lower" | "coefficient_nominal" | "coefficient_upper"
+        )
     {
         return true;
     }
@@ -246,10 +272,19 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
                 | "start"
                 | "end"
                 | "value"
+                | "amplitude"
                 | "factor"
+                | "gain"
+                | "direction_body"
+                | "damping_ratio"
+                | "max_accel_per_s2"
                 | "min"
                 | "max"
                 | "deadband"
+                | "backlash_half_width"
+                | "on_threshold"
+                | "off_threshold"
+                | "pressure_exponent"
                 | "at"
                 | "to"
                 | "initial_position"
@@ -358,6 +393,21 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
     if path.starts_with("$.propulsion.pogo") && key == "mode_damping_ratio" {
+        return true;
+    }
+    if path.starts_with("$.sensors.") && path.contains(".high_rate") && key == "sub_samples" {
+        return true;
+    }
+    if path.starts_with("$.comm.links")
+        && path.contains(".packet_error_action")
+        && matches!(key, "mask")
+    {
+        return true;
+    }
+    if path.starts_with("$.comm.links")
+        && path.contains(".packet_loss_rate_gate")
+        && matches!(key, "packet_count" | "alpha")
+    {
         return true;
     }
     if path.starts_with("$.propulsion.faults.rules") && key == "start_step" {

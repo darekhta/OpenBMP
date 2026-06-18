@@ -36,6 +36,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use nalgebra::Vector3;
 use openbmp_aero::AeroDeck;
+use openbmp_contact::{
+    BacklashGap, LatchState, LatchWindow, MonotoneLatch, ScalarMechanismElement, ScalarStop,
+    evaluate_scalar_mechanism, scalar_mechanism_latch_count,
+};
 use openbmp_core::{
     AngularVelocity3, Body, BodyId, ChannelId, Duration, EngineId, ModelId, Position3, Quaternion,
     RecoveryId, SimTime, TankId, ValidationStatus, Velocity3,
@@ -44,14 +48,13 @@ use openbmp_multibody::{
     Joint, MultibodyDerivative, MultibodySimState, MultibodyState, MultibodyTree, PluckerTransform,
     SpatialForce, SpatialInertia, SpatialMatrix, SpatialMotion, TreeBodySpec,
 };
-use openbmp_physics::{
-    AtmosphereModel, ConstantGravity, Egm2008ZonalGravity, J2Gravity, PointMassGravity, WGS84_J2,
-};
+use openbmp_physics::{AtmosphereModel, ConstantGravity, J2Gravity, PointMassGravity, WGS84_J2};
 use openbmp_propulsion::{Motor, SolidMotor};
 use openbmp_scenario::{
-    MultiBodyGimbalJointConfig, MultiBodyPropagationAuthorityConfig, ResolvedFile, Scenario,
-    ScenarioDocument,
+    ContactMechanismConfig, ContactMechanismKindConfig, MultiBodyGimbalJointConfig,
+    MultiBodyPropagationAuthorityConfig, ResolvedFile, Scenario, ScenarioDocument,
 };
+use openbmp_sensors::SpecificForceTruth;
 use openbmp_sim::{
     AnyStop, ConstantMass, EffectorActualsView, EndTime, EngineSnapshotView, EnvironmentModel,
     EnvironmentQuery, ForceContext, ForceModel, GroundImpact, InitialRigidBodyLane, Integrator,
@@ -172,6 +175,7 @@ pub(crate) struct RigidBodySession {
     separated_landing_controllers: crate::separated_landing::SeparatedLandingControllers,
     wind_rack: crate::wind::WindRack,
     structural_rack: crate::structural::StructuralRack,
+    upstream_uq: openbmp_uq::CorrelatedErrorBudget,
     frame: openbmp_physics::FrameContext,
     aerothermal_driver: Option<crate::aerothermal::LiveAerothermalDriver>,
     mass_model: RigidMassEither,
@@ -185,9 +189,12 @@ pub(crate) struct RigidBodySession {
     contact_accumulator: Option<crate::contact::ContactRunAccumulator>,
     landing_gear_runtime: Option<crate::landing_gear::LandingGearRuntime>,
     landing_gear_accumulator: Option<crate::landing_gear::LandingGearRunAccumulator>,
+    afts_monitor: Option<crate::afts::RunnerAftsMonitor>,
+    comm_accumulator: Option<crate::comm::CommRunAccumulator>,
     geocentric_surface_radius_m: Option<f64>,
     breakdown_atmosphere: Option<RuntimeAtmosphere>,
     breakdown_vehicle: KernelVehicle<RigidBodyState>,
+    moment_breakdown_vehicle: KernelVehicle<RigidBodyState>,
     primary_multibody_shadow: Option<RootFreeFlyerMultibodyShadow>,
     separated_multibody_shadows: BTreeMap<BodyId, RootFreeFlyerMultibodyShadow>,
     articulated_gimbal_shadows: BTreeMap<EngineId, ArticulatedGimbalMultibodyShadow>,
@@ -253,6 +260,16 @@ impl RigidBodySession {
         // Structural bending-mode rack. Inactive when no `[vehicle.bending]`.
         let mut structural_rack = crate::structural::StructuralRack::build(document)?;
         structural_rack.reset();
+        let mut upstream_uq = structural_rack.upstream_uq_budget();
+        upstream_uq
+            .sources
+            .extend(crate::aero::upstream_uq_budget(document)?.sources);
+        upstream_uq
+            .sources
+            .extend(crate::aerothermal::upstream_uq_budget(document)?.sources);
+        upstream_uq
+            .sources
+            .extend(engine_rack.upstream_uq_budget().sources);
         let frame = crate::frames::build_frame_context(document, resolved_files)?;
 
         let loaded = load_models(document, resolved_files)?;
@@ -310,14 +327,17 @@ impl RigidBodySession {
                 .map_err(|err| RunnerError::UnsupportedScenario {
                     what: format!("initial articulated gimbal inertia validation failed: {err}"),
                 })?;
+            let mut mechanism_latch_states = articulated_gimbal_mechanism_latch_states(&seed);
             let derivative = articulated_gimbal_multibody_derivative_from_engine_thrust(
                 &seed,
                 &initial_engine_snapshot,
+                &mut mechanism_latch_states,
             )?;
             let forecast = articulated_gimbal_multibody_rk4_forecast_from_engine_thrust(
                 &seed,
                 &initial_engine_snapshot,
                 kernel_step_s,
+                &mechanism_latch_states,
             )?;
             let root_forecast = articulated_gimbal_root_rigid_state_from_seed(&forecast)?;
             articulated_gimbal_shadows.insert(
@@ -328,6 +348,7 @@ impl RigidBodySession {
                     last_rk4_forecast: Some(forecast),
                     last_root_rk4_forecast: Some(root_forecast),
                     last_authoritative_root_state: None,
+                    mechanism_latch_states,
                 },
             );
         }
@@ -355,6 +376,8 @@ impl RigidBodySession {
             aerothermal_feedback,
         );
         let moment_model = build_moment_model(document, &loaded, landing_gear_runtime.clone())?;
+        let moment_breakdown_vehicle =
+            build_moment_model(document, &loaded, landing_gear_runtime.clone())?;
         let runtime_environment =
             RuntimeEnvironment::from_document(document, resolved_files, &frame)?;
         let deck_bindings = crate::aero_effector_match::assert_axes_match_effectors(
@@ -551,6 +574,23 @@ impl RigidBodySession {
             engine_rack.engine_ids(),
             engine_rack.mount_points_body(),
         )?;
+        let mut afts_monitor = crate::afts::RunnerAftsMonitor::maybe_new(document)?;
+        let mut comm_accumulator =
+            crate::comm::CommRunAccumulator::maybe_new(document, resolved_files)?;
+        let initial_comm_observation = comm_accumulator
+            .as_mut()
+            .map(|accumulator| {
+                let state = kernel.current_state();
+                accumulator.observe_eci(
+                    &frame,
+                    kernel.current_step(),
+                    state.time,
+                    state.position,
+                    state.velocity,
+                    state.orientation.q,
+                )
+            })
+            .transpose()?;
         record_step(
             document,
             &mut table,
@@ -566,10 +606,18 @@ impl RigidBodySession {
             landing_gear_runtime.as_ref(),
             landing_gear_accumulator.as_mut(),
             fc_bridge.as_ref(),
+            initial_comm_observation.as_ref(),
             &[],
             &mut mission_region_trace,
             &initial_snapshot,
         )?;
+        if let Some(monitor) = &mut afts_monitor {
+            monitor.observe_rigid_body(
+                kernel.current_step().value(),
+                kernel.current_time().as_seconds(),
+                kernel.current_state(),
+            )?;
+        }
         let realtime_pacer = crate::rt::RunnerRealtimePacer::from_document(document)?;
         Ok(Self {
             effector_rack,
@@ -582,6 +630,7 @@ impl RigidBodySession {
             separated_landing_controllers,
             wind_rack,
             structural_rack,
+            upstream_uq,
             frame,
             aerothermal_driver,
             mass_model,
@@ -595,9 +644,12 @@ impl RigidBodySession {
             contact_accumulator,
             landing_gear_runtime,
             landing_gear_accumulator,
+            afts_monitor,
+            comm_accumulator,
             geocentric_surface_radius_m,
             breakdown_atmosphere,
             breakdown_vehicle,
+            moment_breakdown_vehicle,
             primary_multibody_shadow,
             separated_multibody_shadows: BTreeMap::new(),
             articulated_gimbal_shadows,
@@ -650,16 +702,41 @@ impl RigidBodySession {
             self.engine_rack
                 .apply_commands(&self.pending_engine_events)?;
         }
+        let specific_force_truth = if self
+            .fc_bridge
+            .as_ref()
+            .is_some_and(crate::fc_bridge::FcBridge::uses_force_accumulator_truth)
+        {
+            Some(rigid_body_specific_force_truth(
+                &self.kernel,
+                &self.breakdown_vehicle,
+                &self.moment_breakdown_vehicle,
+                &self.mass_model,
+                self.structural_rack.reaction_moment_body_n_m(),
+            )?)
+        } else {
+            None
+        };
+        let comm_link_effects = self
+            .comm_accumulator
+            .as_mut()
+            .map(|accumulator| {
+                accumulator.bridge_packet_effects(document.time.seed, self.kernel.current_step())
+            })
+            .transpose()?
+            .flatten();
         if let Some(bridge) = &mut self.fc_bridge {
             let gravity = self.kernel.current_environment_sample()?.gravity_eci_m_s2;
             let propellant_state = crate::fc_bridge::propellant_state_from_tanks(
                 self.kernel.current_time(),
                 &self.tank_rack.propellant_tank_states(document),
             );
+            bridge.set_comm_link_effects(comm_link_effects);
             bridge.tick_rigid_body(
                 self.kernel.current_state(),
                 self.kernel.current_step(),
                 gravity,
+                specific_force_truth,
                 propellant_state,
                 &mut self.effector_rack,
                 &mut self.engine_rack,
@@ -717,7 +794,13 @@ impl RigidBodySession {
             self.engine_rack.apply_propellant_budget(&report)?;
         }
         if !self.effector_rack.is_empty() {
-            self.effector_rack.step(self.kernel.current_time())?;
+            let tank_states = self.tank_rack.propellant_tank_states(document);
+            self.effector_rack
+                .step_with_tanks(self.kernel.current_time(), &tank_states)?;
+        }
+        if !self.tank_rack.is_empty() {
+            self.tank_rack
+                .set_rcs_feed_drain_rates(self.effector_rack.rcs_feed_drain_rates());
         }
         if !self.engine_rack.is_empty() {
             let cavitation_events = self.feed_network_rack.cavitation_events();
@@ -870,6 +953,21 @@ impl RigidBodySession {
             )?;
         }
         let snapshot = self.effector_rack.snapshot();
+        let comm_observation = self
+            .comm_accumulator
+            .as_mut()
+            .map(|accumulator| {
+                let state = self.kernel.current_state();
+                accumulator.observe_eci(
+                    &self.frame,
+                    self.kernel.current_step(),
+                    state.time,
+                    state.position,
+                    state.velocity,
+                    state.orientation.q,
+                )
+            })
+            .transpose()?;
         record_step(
             document,
             &mut self.table,
@@ -887,10 +985,18 @@ impl RigidBodySession {
             self.landing_gear_runtime.as_ref(),
             self.landing_gear_accumulator.as_mut(),
             self.fc_bridge.as_ref(),
+            comm_observation.as_ref(),
             &mission_fired,
             &mut self.mission_region_trace,
             &snapshot,
         )?;
+        if let Some(monitor) = &mut self.afts_monitor {
+            monitor.observe_rigid_body(
+                self.kernel.current_step().value(),
+                self.kernel.current_time().as_seconds(),
+                self.kernel.current_state(),
+            )?;
+        }
         // Partition typed script-action fired queue.
         self.pending_engine_events = script_fired
             .iter()
@@ -1217,7 +1323,7 @@ impl RigidBodySession {
         let engine_snapshot = self.kernel.engine_snapshot();
         let tank_snapshot = self.kernel.tank_snapshot();
         let mut updates = Vec::with_capacity(self.articulated_gimbal_shadows.len());
-        for shadow in self.articulated_gimbal_shadows.values() {
+        for shadow in self.articulated_gimbal_shadows.values_mut() {
             let body = shadow.seed.body;
             if let Some(active_body) = primary_body
                 && active_body != body
@@ -1283,28 +1389,42 @@ impl RigidBodySession {
                     body,
                     shadow.seed.engine,
                     &shadow.seed.joint,
+                    shadow.seed.mechanism.clone(),
                     &parent_state,
                     &joint_state.angles_rad,
                     &joint_state.rates_rad_s,
                 )?
             };
-            let derivative =
-                articulated_gimbal_multibody_derivative_from_engine_thrust(&seed, engine_snapshot)?;
+            let mut mechanism_latch_states = shadow.mechanism_latch_states.clone();
+            let derivative = articulated_gimbal_multibody_derivative_from_engine_thrust(
+                &seed,
+                engine_snapshot,
+                &mut mechanism_latch_states,
+            )?;
             let forecast = articulated_gimbal_multibody_rk4_forecast_from_engine_thrust(
                 &seed,
                 engine_snapshot,
                 self.kernel_step_s,
+                &mechanism_latch_states,
             )?;
             let root_forecast = articulated_gimbal_root_rigid_state_from_seed(&forecast)?;
-            updates.push((seed.engine, seed, derivative, forecast, root_forecast));
+            updates.push((
+                seed.engine,
+                seed,
+                derivative,
+                forecast,
+                root_forecast,
+                mechanism_latch_states,
+            ));
         }
-        for (engine, seed, derivative, forecast, root_forecast) in updates {
+        for (engine, seed, derivative, forecast, root_forecast, mechanism_latch_states) in updates {
             if let Some(shadow) = self.articulated_gimbal_shadows.get_mut(&engine) {
                 shadow.seed = seed;
                 shadow.last_derivative = Some(derivative);
                 shadow.last_rk4_forecast = Some(forecast);
                 shadow.last_root_rk4_forecast = Some(root_forecast);
                 shadow.last_authoritative_root_state = None;
+                shadow.mechanism_latch_states = mechanism_latch_states;
             }
         }
         Ok(())
@@ -1341,7 +1461,10 @@ impl RigidBodySession {
             .map(crate::landing_gear::LandingGearRunAccumulator::finish)
             .transpose()?
             .flatten();
-
+        let comm = self
+            .comm_accumulator
+            .map(crate::comm::CommRunAccumulator::finish)
+            .transpose()?;
         Ok(RunOutcome {
             final_step: self.kernel.current_step().value(),
             final_time_s: self.kernel.current_time().as_seconds(),
@@ -1351,7 +1474,11 @@ impl RigidBodySession {
             actuator_stream,
             contact,
             landing_gear,
-            upstream_uq: self.engine_rack.upstream_uq_budget(),
+            afts: self
+                .afts_monitor
+                .map(crate::afts::RunnerAftsMonitor::finish),
+            comm,
+            upstream_uq: self.upstream_uq,
         })
     }
 
@@ -1566,11 +1693,11 @@ fn require_supported_shape(document: &ScenarioDocument) -> Result<(), RunnerErro
     // that refused non-RK4 selections has been removed.
     if !matches!(
         document.environment.gravity.as_str(),
-        "constant" | "point_mass" | "j2" | "egm2008" | "third_body"
+        "constant" | "point_mass" | "j2" | "egm2008" | "third_body" | "tesseral"
     ) {
         return Err(RunnerError::UnsupportedScenario {
             what: format!(
-                "environment.gravity = {} (wired: constant, point_mass, j2, egm2008, third_body)",
+                "environment.gravity = {} (wired: constant, point_mass, j2, egm2008, third_body, tesseral)",
                 document.environment.gravity
             ),
         });
@@ -3007,9 +3134,16 @@ struct ArticulatedGimbalMultibodySeed {
     body: BodyId,
     engine: EngineId,
     joint: MultiBodyGimbalJointConfig,
+    mechanism: Option<ArticulatedGimbalMechanism>,
     parent_mass_props: MassProperties,
     tree: MultibodyTree,
     sim_state: MultibodySimState,
+}
+
+#[derive(Clone, Debug)]
+struct ArticulatedGimbalMechanism {
+    id: String,
+    elements: Vec<ScalarMechanismElement>,
 }
 
 #[derive(Clone, Debug)]
@@ -3025,6 +3159,7 @@ struct ArticulatedGimbalMultibodyShadow {
     last_rk4_forecast: Option<ArticulatedGimbalMultibodySeed>,
     last_root_rk4_forecast: Option<RigidBodyState>,
     last_authoritative_root_state: Option<RigidBodyState>,
+    mechanism_latch_states: Vec<LatchState>,
 }
 
 #[derive(Debug)]
@@ -3126,6 +3261,7 @@ fn build_initial_articulated_gimbal_multibody_seeds(
             body,
             engine_id_from_scenario_text(&joint.engine_id),
             joint,
+            articulated_gimbal_mechanism_from_document(document, joint)?,
             &parent_state,
         )?);
     }
@@ -3136,6 +3272,7 @@ fn articulated_gimbal_multibody_seed_from_config(
     body: BodyId,
     engine: EngineId,
     joint: &MultiBodyGimbalJointConfig,
+    mechanism: Option<ArticulatedGimbalMechanism>,
     parent_state: &RigidBodyState,
 ) -> Result<ArticulatedGimbalMultibodySeed, RunnerError> {
     let (joint_angles_rad, joint_rates_rad_s) = if joint.secondary_axis_body.is_some() {
@@ -3153,16 +3290,134 @@ fn articulated_gimbal_multibody_seed_from_config(
         body,
         engine,
         joint,
+        mechanism,
         parent_state,
         &joint_angles_rad,
         &joint_rates_rad_s,
     )
 }
 
+fn articulated_gimbal_mechanism_from_document(
+    document: &ScenarioDocument,
+    joint: &MultiBodyGimbalJointConfig,
+) -> Result<Option<ArticulatedGimbalMechanism>, RunnerError> {
+    let Some(mechanism_id) = joint.mechanism_id.as_ref() else {
+        return Ok(None);
+    };
+    let Some(contact) = document.contact.as_ref() else {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "articulated gimbal mechanism `{mechanism_id}` requires a [contact] block"
+            ),
+        });
+    };
+    let mechanism = contact
+        .mechanisms
+        .iter()
+        .find(|mechanism| mechanism.id == *mechanism_id)
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("articulated gimbal mechanism `{mechanism_id}` was not declared"),
+        })?;
+    if mechanism.coordinate != joint.engine_id {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "articulated gimbal mechanism `{mechanism_id}` coordinate `{}` does not match engine `{}`",
+                mechanism.coordinate, joint.engine_id
+            ),
+        });
+    }
+    Ok(Some(ArticulatedGimbalMechanism {
+        id: mechanism.id.clone(),
+        elements: vec![scalar_mechanism_element_from_config(mechanism)?],
+    }))
+}
+
+fn scalar_mechanism_element_from_config(
+    mechanism: &ContactMechanismConfig,
+) -> Result<ScalarMechanismElement, RunnerError> {
+    let element = match mechanism.kind {
+        ContactMechanismKindConfig::Stop => {
+            let side = mechanism
+                .side
+                .ok_or_else(|| mechanism_config_error(&mechanism.id, "side"))?;
+            let limit = mechanism
+                .limit_rad
+                .ok_or_else(|| mechanism_config_error(&mechanism.id, "limit_rad"))?;
+            let stiffness = mechanism
+                .stiffness_n_m
+                .ok_or_else(|| mechanism_config_error(&mechanism.id, "stiffness_n_m"))?;
+            ScalarStop::new(
+                limit,
+                side.into(),
+                stiffness,
+                mechanism.damping_n_s_m.unwrap_or(0.0),
+            )
+            .map(ScalarMechanismElement::stop)
+            .map_err(|err| mechanism_contact_error(&mechanism.id, err))?
+        }
+        ContactMechanismKindConfig::Backlash => {
+            let center = mechanism
+                .center_rad
+                .ok_or_else(|| mechanism_config_error(&mechanism.id, "center_rad"))?;
+            let dead_zone_width = mechanism
+                .dead_zone_width_rad
+                .ok_or_else(|| mechanism_config_error(&mechanism.id, "dead_zone_width_rad"))?;
+            let stiffness = mechanism
+                .stiffness_n_m
+                .ok_or_else(|| mechanism_config_error(&mechanism.id, "stiffness_n_m"))?;
+            BacklashGap::new(
+                center,
+                dead_zone_width,
+                stiffness,
+                mechanism.damping_n_s_m.unwrap_or(0.0),
+            )
+            .map(ScalarMechanismElement::backlash)
+            .map_err(|err| mechanism_contact_error(&mechanism.id, err))?
+        }
+        ContactMechanismKindConfig::Latch => {
+            let center = mechanism
+                .center_rad
+                .ok_or_else(|| mechanism_config_error(&mechanism.id, "center_rad"))?;
+            let half_width = mechanism
+                .half_width_rad
+                .ok_or_else(|| mechanism_config_error(&mechanism.id, "half_width_rad"))?;
+            LatchWindow::new(center, half_width)
+                .map(MonotoneLatch::new)
+                .map(ScalarMechanismElement::latch)
+                .map_err(|err| mechanism_contact_error(&mechanism.id, err))?
+        }
+    };
+    Ok(element)
+}
+
+fn mechanism_config_error(id: &str, field: &'static str) -> RunnerError {
+    RunnerError::UnsupportedScenario {
+        what: format!("articulated gimbal mechanism `{id}` is missing {field}"),
+    }
+}
+
+fn mechanism_contact_error(id: &str, err: openbmp_contact::ContactError) -> RunnerError {
+    RunnerError::UnsupportedScenario {
+        what: format!("articulated gimbal mechanism `{id}` failed: {err}"),
+    }
+}
+
+fn articulated_gimbal_mechanism_latch_states(
+    seed: &ArticulatedGimbalMultibodySeed,
+) -> Vec<LatchState> {
+    seed.mechanism
+        .as_ref()
+        .map(|mechanism| {
+            vec![LatchState::disengaged(); scalar_mechanism_latch_count(&mechanism.elements)]
+        })
+        .unwrap_or_default()
+}
+
 fn articulated_gimbal_multibody_seed_from_config_with_joint_state(
     body: BodyId,
     engine: EngineId,
     joint: &MultiBodyGimbalJointConfig,
+    mechanism: Option<ArticulatedGimbalMechanism>,
     parent_state: &RigidBodyState,
     joint_angles_rad: &[f64],
     joint_rates_rad_s: &[f64],
@@ -3312,6 +3567,7 @@ fn articulated_gimbal_multibody_seed_from_config_with_joint_state(
             body,
             engine,
             joint: joint.clone(),
+            mechanism,
             parent_mass_props: parent_state.mass_props,
             tree,
             sim_state,
@@ -3324,13 +3580,16 @@ fn articulated_gimbal_multibody_seed_from_config_with_joint_state(
 fn articulated_gimbal_multibody_derivative_from_engine_thrust(
     seed: &ArticulatedGimbalMultibodySeed,
     engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    mechanism_latch_states: &mut [LatchState],
 ) -> Result<MultibodyDerivative, RunnerError> {
     articulated_gimbal_multibody_derivative_from_engine_thrust_at_state(
         &seed.tree,
         seed.engine,
         &seed.joint,
+        seed.mechanism.as_ref(),
         &seed.sim_state,
         engine_snapshot,
+        mechanism_latch_states,
     )
 }
 
@@ -3338,8 +3597,10 @@ fn articulated_gimbal_multibody_derivative_from_engine_thrust_at_state(
     tree: &MultibodyTree,
     engine: EngineId,
     joint: &MultiBodyGimbalJointConfig,
+    mechanism: Option<&ArticulatedGimbalMechanism>,
     sim_state: &MultibodySimState,
     engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+    mechanism_latch_states: &mut [LatchState],
 ) -> Result<MultibodyDerivative, RunnerError> {
     let body_count = tree.bodies().len();
     if !(2..=3).contains(&body_count) {
@@ -3378,7 +3639,51 @@ fn articulated_gimbal_multibody_derivative_from_engine_thrust_at_state(
     let mut external_forces_body = vec![SpatialForce::zero(); body_count];
     external_forces_body[body_count - 1] =
         SpatialForce::new(thrust_moment_child_n_m, thrust_child_n);
-    let generalized_forces = vec![0.0; tree.n_qd()];
+    let mut generalized_forces = vec![0.0; tree.n_qd()];
+    if let Some(mechanism) = mechanism {
+        let joint_dof = articulated_gimbal_joint_dof(joint);
+        let q = sim_state.q();
+        let qd = sim_state.qd();
+        let coordinate_index =
+            q.len()
+                .checked_sub(1)
+                .ok_or_else(|| RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "articulated gimbal mechanism {} has no primary coordinate",
+                        mechanism.id
+                    ),
+                })?;
+        let rate_index =
+            qd.len()
+                .checked_sub(1)
+                .ok_or_else(|| RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "articulated gimbal mechanism {} has no primary coordinate rate",
+                        mechanism.id
+                    ),
+                })?;
+        if joint_dof == 0 || coordinate_index < 7 || rate_index < 6 {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "articulated gimbal mechanism {} cannot bind to malformed gimbal state",
+                    mechanism.id
+                ),
+            });
+        }
+        let response = evaluate_scalar_mechanism(
+            &mechanism.elements,
+            mechanism_latch_states,
+            q[coordinate_index],
+            qd[rate_index],
+        )
+        .map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!(
+                "articulated gimbal mechanism {} failed: {err}",
+                mechanism.id
+            ),
+        })?;
+        generalized_forces[rate_index] += response.generalized_force;
+    }
     tree.derivative_from_forward_dynamics(
         sim_state.state(),
         &generalized_forces,
@@ -3394,17 +3699,21 @@ fn articulated_gimbal_multibody_rk4_forecast_from_engine_thrust(
     seed: &ArticulatedGimbalMultibodySeed,
     engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
     dt_s: f64,
+    mechanism_latch_states: &[LatchState],
 ) -> Result<ArticulatedGimbalMultibodySeed, RunnerError> {
     let next_sim_state = Rk4FixedStep
         .advance(
             &seed.sim_state,
             |sim_state, _time| {
+                let mut stage_latches = mechanism_latch_states.to_vec();
                 articulated_gimbal_multibody_derivative_from_engine_thrust_at_state(
                     &seed.tree,
                     seed.engine,
                     &seed.joint,
+                    seed.mechanism.as_ref(),
                     sim_state,
                     engine_snapshot,
+                    &mut stage_latches,
                 )
                 .map_err(multibody_shadow_model_eval_error)
             },
@@ -3417,6 +3726,7 @@ fn articulated_gimbal_multibody_rk4_forecast_from_engine_thrust(
         body: seed.body,
         engine: seed.engine,
         joint: seed.joint.clone(),
+        mechanism: seed.mechanism.clone(),
         parent_mass_props: seed.parent_mass_props,
         tree: seed.tree.clone(),
         sim_state: next_sim_state,
@@ -3459,6 +3769,7 @@ fn articulated_gimbal_multibody_seed_from_authoritative_forecast(
         forecast.body,
         forecast.engine,
         &forecast.joint,
+        forecast.mechanism.clone(),
         parent_state,
         joint_angles_rad,
         joint_rates_rad_s,
@@ -4095,11 +4406,7 @@ fn build_gravity_force_adapter_rigid_body(
             )))
         }
         "egm2008" => {
-            // Zonal-only EGM2008 (degrees 2-6), pinned to
-            // WGS84 µ / R_e and the Pavlis et al. 2012 J_n table. No
-            // per-scenario overrides are accepted, matching the parser
-            // contract in `EnvironmentConfig::validate`.
-            let model = Egm2008ZonalGravity::wgs84_egm2008_zonal();
+            let model = crate::celestial::build_egm2008_gravity(document, resolved_files)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
                 RIGID_BODY_GRAVITY_MODEL_ID,
@@ -4107,6 +4414,13 @@ fn build_gravity_force_adapter_rigid_body(
         }
         "third_body" => {
             let model = crate::celestial::build_third_body_gravity(document, resolved_files)?;
+            Ok(Box::new(GravityForceAdapter::new(
+                model,
+                RIGID_BODY_GRAVITY_MODEL_ID,
+            )))
+        }
+        "tesseral" => {
+            let model = crate::celestial::build_tesseral_gravity(document, resolved_files)?;
             Ok(Box::new(GravityForceAdapter::new(
                 model,
                 RIGID_BODY_GRAVITY_MODEL_ID,
@@ -4695,6 +5009,7 @@ fn build_direct_torque_adapter(
         if let openbmp_scenario::EffectorKindConfig::DirectTorque {
             axis,
             effectiveness_n_m_per_rad,
+            ..
         } = effector.kind
         {
             bindings.push(openbmp_vehicle::DirectTorqueBinding {
@@ -4936,6 +5251,7 @@ struct RigidChannelSet {
     mass: TelemetryChannel<f64>,
     mission_phase: Option<TelemetryChannel<String>>,
     mission_regions: Vec<(crate::MissionRegionDeclaration, TelemetryChannel<String>)>,
+    comm: Option<crate::comm::CommTelemetryChannels>,
     quaternion_x: TelemetryChannel<f64>,
     quaternion_y: TelemetryChannel<f64>,
     quaternion_z: TelemetryChannel<f64>,
@@ -5007,6 +5323,7 @@ impl RigidChannelSet {
             )?;
             mission_regions.push((declaration, channel));
         }
+        let comm = crate::comm::CommTelemetryChannels::maybe_new(document, &mut alloc)?;
 
         let quaternion_x =
             TelemetryChannel::<f64>::new(alloc(), "attitude.q_x", "1", None::<&str>)?;
@@ -5483,6 +5800,7 @@ impl RigidChannelSet {
             mass,
             mission_phase,
             mission_regions,
+            comm,
             quaternion_x,
             quaternion_y,
             quaternion_z,
@@ -5532,6 +5850,9 @@ impl RigidChannelSet {
         }
         for (_, region) in &self.mission_regions {
             channels.push(region.metadata().clone());
+        }
+        if let Some(comm) = &self.comm {
+            comm.push_metadata(&mut channels);
         }
         if let Some(reference) = &self.fc_reference {
             channels.push(reference.valid.metadata().clone());
@@ -5631,6 +5952,90 @@ impl RigidChannelSet {
     }
 }
 
+fn rigid_body_specific_force_truth(
+    kernel: &RigidKernel,
+    force_vehicle: &KernelVehicle<RigidBodyState>,
+    moment_vehicle: &KernelVehicle<RigidBodyState>,
+    mass_model: &RigidMassEither,
+    bending_reaction_moment_body_n_m: Vector3<f64>,
+) -> Result<SpecificForceTruth, RunnerError> {
+    let state = kernel.current_state();
+    let environment = kernel.current_environment_sample()?;
+    let active_body = kernel.primary_rigid_body();
+    let phase_id = kernel.current_phase().map(|phase| phase.value());
+    let mass_kg = state.mass_props.mass_kg();
+    let force_ctx = ForceContext {
+        state,
+        environment: &environment,
+        mass_kg,
+        time: state.time,
+        active_body,
+        phase_id,
+        effector_actuals: EffectorActualsView::new(kernel.effector_actuals()),
+        engine_snapshot: EngineSnapshotView::new(kernel.engine_snapshot()),
+        tank_snapshot: TankSnapshotView::new(kernel.tank_snapshot()),
+        recovery_snapshot: RecoverySnapshotView::new(kernel.recovery_snapshot()),
+    };
+    let force_breakdown = force_vehicle
+        .evaluate_force_breakdown(force_ctx)
+        .map_err(|e| RunnerError::UnsupportedScenario {
+            what: format!("force-accumulator sensor force evaluation failed: {e}"),
+        })?;
+    let gravity_force = force_breakdown
+        .components
+        .iter()
+        .filter(|(name, _)| name == "gravity")
+        .fold(Vector3::zeros(), |sum, (_, force)| sum + *force);
+    let non_gravity_specific_force_eci = (force_breakdown.total - gravity_force) / mass_kg;
+    let f_cg_body_m_s2 = state.orientation.q.inverse() * non_gravity_specific_force_eci;
+
+    let moment_ctx = MomentContext {
+        state,
+        environment: &environment,
+        time: state.time,
+        active_body,
+        phase_id,
+        effector_actuals: EffectorActualsView::new(kernel.effector_actuals()),
+        engine_snapshot: EngineSnapshotView::new(kernel.engine_snapshot()),
+        tank_snapshot: TankSnapshotView::new(kernel.tank_snapshot()),
+    };
+    let moment_breakdown = moment_vehicle
+        .evaluate_moment_breakdown(moment_ctx)
+        .map_err(|e| RunnerError::UnsupportedScenario {
+            what: format!("force-accumulator sensor moment evaluation failed: {e}"),
+        })?;
+    let rate = mass_model
+        .mass_properties_rate_at(MassContext {
+            time: state.time,
+            active_body,
+            engine_snapshot: EngineSnapshotView::new(kernel.engine_snapshot()),
+            tank_snapshot: TankSnapshotView::new(kernel.tank_snapshot()),
+        })
+        .map_err(|e| RunnerError::UnsupportedScenario {
+            what: format!("force-accumulator sensor mass-rate evaluation failed: {e}"),
+        })?;
+    let inertia = state.mass_props.inertia_body;
+    let omega = state.angular_velocity.vector;
+    let i_omega = inertia * omega;
+    let omega_cross_iomega = omega.cross(&i_omega);
+    let i_dot_omega = rate.inertia_rate_body * omega;
+    let net_moment = moment_breakdown.total + bending_reaction_moment_body_n_m
+        - omega_cross_iomega
+        - i_dot_omega;
+    let inv_inertia = inertia
+        .try_inverse()
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: "force-accumulator sensor truth requires invertible rigid-body inertia"
+                .to_owned(),
+        })?;
+
+    Ok(SpecificForceTruth {
+        f_cg_body_m_s2,
+        omega_body_rad_s: omega,
+        alpha_body_rad_s2: inv_inertia * net_moment,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn record_step<I, F, MOM, MM, E, SC>(
     document: &ScenarioDocument,
@@ -5647,6 +6052,7 @@ fn record_step<I, F, MOM, MM, E, SC>(
     landing_gear_runtime: Option<&crate::landing_gear::LandingGearRuntime>,
     landing_gear_accumulator: Option<&mut crate::landing_gear::LandingGearRunAccumulator>,
     fc_bridge: Option<&crate::fc_bridge::FcBridge>,
+    comm_observation: Option<&crate::comm::CommObservation>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
     mission_region_trace: &mut crate::MissionRegionTraceState,
     effector_snapshot: &[openbmp_vehicle::EffectorState],
@@ -5678,6 +6084,9 @@ where
     mission_region_trace.apply_fired_events(fired_events);
     for (declaration, channel) in &channels.mission_regions {
         row.insert(channel, mission_region_trace.label(declaration))?;
+    }
+    if let (Some(comm_channels), Some(observation)) = (&channels.comm, comm_observation) {
+        comm_channels.insert_samples(&mut row, observation)?;
     }
 
     let raw = state.orientation.q.into_inner();
@@ -6555,6 +6964,91 @@ mod tests {
             derivative.qd_dot()[6].abs() > 1.0e-6,
             "offset thrust should drive revolute gimbal acceleration: {:?}",
             derivative.qd_dot()
+        );
+    }
+
+    fn primary_gimbal_acceleration_from_scenario(toml: &str) -> f64 {
+        let scenario = openbmp_scenario::Scenario::from_toml_str(toml).expect("scenario parses");
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session =
+            RigidBodySession::prepare(&scenario, &resolved_files).expect("session prepares");
+
+        session
+            .step_once(&scenario.document, None)
+            .expect("first step fires engine command");
+        session
+            .step_once(&scenario.document, None)
+            .expect("second step mirrors articulated gimbal thrust");
+
+        let engine = engine_id_from_scenario_text("main_engine");
+        let shadow = session
+            .articulated_gimbal_shadows
+            .get(&engine)
+            .expect("articulated gimbal shadow present");
+        shadow
+            .last_derivative
+            .as_ref()
+            .expect("articulated gimbal derivative recorded")
+            .qd_dot()[6]
+    }
+
+    #[test]
+    fn articulated_gimbal_contact_mechanism_stop_adds_joint_generalized_force() {
+        let gimbal_joint = "[[multi_body.gimbal_joint]]\n\
+             body_id = \"main\"\n\
+             engine_id = \"main_engine\"\n\
+             axis_body = [0.0, 1.0, 0.0]\n\
+             pivot_body_m = [0.0, 1.0, 0.0]\n\
+             engine_mass_kg = 1.5\n\
+             engine_cg_body_m = [0.2, 0.0, -0.4]\n\
+             engine_inertia_body_kg_m2 = [[0.08, 0.0, 0.0], [0.0, 0.12, 0.0], [0.0, 0.0, 0.1]]\n\
+             thrust_application_body_m = [0.2, 0.0, 0.0]\n\
+             initial_angle_rad = 0.0\n\
+             initial_rate_rad_s = 0.0\n\
+             \n\
+             [[multi_body.attitude_target]]\n";
+        let baseline = PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO
+            .replace("[[multi_body.attitude_target]]\n", gimbal_joint);
+        let mechanism_gimbal_joint = gimbal_joint.replace(
+            "initial_rate_rad_s = 0.0\n",
+            "initial_rate_rad_s = 0.0\n\
+             mechanism_id = \"main-engine-lower-stop\"\n",
+        );
+        let mechanism_contact = "[contact]\n\
+             kind = \"half_space\"\n\
+             ground_altitude_m = 0.0\n\
+             geometry = \"point\"\n\
+             normal_law = \"kelvin_voigt\"\n\
+             stiffness_n_m = 2000.0\n\
+             damping_n_s_m = 0.0\n\
+             friction_coefficient = 0.0\n\
+             effective_mass_kg = 1.0\n\
+             substeps = 10\n\
+             \n\
+             [[contact.mechanism]]\n\
+             id = \"main-engine-lower-stop\"\n\
+             coordinate = \"main_engine\"\n\
+             kind = \"stop\"\n\
+             side = \"lower\"\n\
+             limit_rad = 0.0\n\
+             stiffness_n_m = 1000.0\n\
+             damping_n_s_m = 0.0\n\
+             \n\
+             [multi_body]\n";
+        let with_mechanism = PRIMARY_MULTIBODY_GIMBAL_SHADOW_SCENARIO
+            .replace(
+                "models = [\"thrust\"]",
+                "models = [\"thrust\", \"contact\"]",
+            )
+            .replace("[multi_body]\n", mechanism_contact)
+            .replace("[[multi_body.attitude_target]]\n", &mechanism_gimbal_joint);
+
+        let baseline_qdd = primary_gimbal_acceleration_from_scenario(&baseline);
+        let mechanism_qdd = primary_gimbal_acceleration_from_scenario(&with_mechanism);
+
+        assert!(
+            mechanism_qdd - baseline_qdd > 1.0,
+            "lower-stop mechanism should add positive primary gimbal acceleration: baseline={baseline_qdd:.17e} mechanism={mechanism_qdd:.17e}"
         );
     }
 
@@ -9529,6 +10023,57 @@ require_monotonic_time = true
     }
 
     #[test]
+    fn rigid_bending_uq_band_flows_into_upstream_budget() {
+        let toml = RIGID_ENGINE_TELEMETRY_SCENARIO.replace(
+            "[vehicle.assembly]\n",
+            "[vehicle.bending]\n\
+             frequency_hz = 1.2\n\
+             damping_ratio = 0.02\n\
+             modal_mass_kg = 25.0\n\
+             slope_at_engine = 0.1\n\
+             slope_at_gyro = 0.05\n\
+             \n\
+             [vehicle.bending.uq]\n\
+             deck_id = \"first_mode.generic.v1\"\n\
+             frequency_lower_hz = 1.0\n\
+             frequency_upper_hz = 1.4\n\
+             credibility_level = 2\n\
+             evidence = \"docs/parity/02-structural-dynamics-loads-slosh-pogo.md#wp-02-bending\"\n\
+             \n\
+             [vehicle.assembly]\n",
+        );
+        let scenario =
+            openbmp_scenario::Scenario::from_toml_str(&toml).expect("bending UQ scenario parses");
+        let outcome = crate::run(&scenario).expect("bending UQ scenario runs");
+
+        let upstream_sources = &outcome.upstream_uq.sources;
+        assert_eq!(upstream_sources.len(), 1);
+        assert_eq!(
+            upstream_sources[0].source_id,
+            "02.structural.first_mode.generic.v1.frequency_hz"
+        );
+        assert_eq!(
+            upstream_sources[0].class,
+            openbmp_uq::UncertaintyClass::Epistemic
+        );
+        assert_eq!(
+            upstream_sources[0].credibility.binding_level(),
+            openbmp_uq::CredibilityLevel::L2
+        );
+        assert!(
+            upstream_sources[0]
+                .justification
+                .contains("docs/parity/02-structural-dynamics-loads-slosh-pogo.md")
+        );
+        assert!((upstream_sources[0].one_sigma - 0.2).abs() < 1.0e-15);
+        assert!(
+            (outcome.upstream_uq.epistemic_one_sigma().unwrap() - upstream_sources[0].one_sigma)
+                .abs()
+                < 1.0e-15
+        );
+    }
+
+    #[test]
     fn rigid_liquid_plume_telemetry_uses_engine_snapshots() {
         let baseline = openbmp_scenario::Scenario::from_toml_str(RIGID_ENGINE_TELEMETRY_SCENARIO)
             .expect("baseline engine telemetry scenario must parse");
@@ -9987,6 +10532,7 @@ require_monotonic_time = true
             method: None,
             mounted_to: Some("upper".to_owned()),
             plume: None,
+            uq: None,
             deck_sha256: None,
         });
         require_supported_multi_body_shape(&document).expect("owned non-gravity force is allowed");

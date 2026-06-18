@@ -108,11 +108,20 @@ so the parity work is targeted, not greenfield. Verified against source:
     (`with_deterministic_errors`, imu.rs:207–224; applied at imu.rs:421–423);
   - mount offset `mount_offset_body_m`.
   The gap is *not* the IMU error model — it is the **truth** the IMU consumes.
-- **`SensorTruth` already carries the right fields.**
+- **`SensorTruth` now has an opt-in force-accumulator source.**
   `crates/openbmp-sensors/src/sensor.rs:32–59` exposes
   `specific_force_body_m_s2`, `angular_velocity_body_rad_s`, and
-  `angular_acceleration_body_rad_s2` as first-class truth. The truth *struct* is
-  force-based-ready; only the runner's *population* of it is not.
+  `angular_acceleration_body_rad_s2` as first-class truth, and also exposes
+  `SpecificForceTruth` for runner-provided force-accumulator truth. Schema v3
+  IMUs may declare `specific_force_source = "force_accumulator"`; the runner FC
+  bridge then fills specific force from summed non-gravity force divided by mass
+  and, on rigid bodies, angular acceleration from the moment accumulator and
+  Euler rotational dynamics. They may also declare
+  `specific_force_source = "stationary_rotating_frame"` as a validation source:
+  the bridge consumes the `openbmp-physics` closed-form stationary rotating-frame
+  IMU oracle for the `f = a - g`, Earth-rate gyro case and projects it into body
+  axes. The default remains the legacy finite-difference source for byte
+  continuity.
 - **GNSS receiver-output model with clock and lever-arm.**
   `crates/openbmp-sensors/src/gnss.rs` is an ECI position/velocity oracle with
   additive Gaussian noise + an OU position-bias drift, **plus** a receiver-clock
@@ -132,23 +141,42 @@ so the parity work is targeted, not greenfield. Verified against source:
   applied at the sensor-read → FC-publish boundary, forward-only by construction
   (`apply` takes only `(measurement, rng)`, never truth or estimate;
   stimulus.rs:34–47).
-- **Effector dynamics already exist (first-order).**
+- **Effector dynamics now have first-order runtime support plus second-order servo and RCS pulse substrates.**
   `crates/openbmp-vehicle/src/effector/mod.rs` + `linear.rs` ship a
   `ControlEffector` trait and a `LinearActuator`: first-order lag + rate clamp +
-  position saturation + deadband + fixed-depth pure-delay buffer, with four
-  canonical fault modes `Jam / Runaway / ReducedRate / Hardover`
-  (effector/mod.rs:146–171). This is **first-order only** — no second-order
-  bandwidth `(ωₙ, ζ)`, no acceleration limit, no backlash-on-reversal, no
-  resonant load model, no hinge-moment coupling.
+  position saturation + deadband + fixed-depth pure-delay buffer, with five
+  canonical fault modes `Jam / Runaway / ReducedRate / Hardover /
+  Oscillatory`.
+  `second_order.rs` now adds the WP-09.2 substrate `SecondOrderServo` with
+  closed-form second-order bandwidth dynamics, command-side rate and
+  acceleration limits, backlash, saturation, delay, and the same deterministic
+  load-time fault modes. `rate_limit_backlash_describing_function` provides the
+  deterministic first-harmonic evidence for the rate-limit/backlash acceptance
+  band. Scenario `[[vehicle.assembly.effectors]]` blocks can select
+  `kind = "second_order_servo"`, and the runner's `EffectorRack` builds it.
+  `rcs.rs` adds fixed-step minimum-impulse-bit quantization plus a deterministic
+  PWPF Schmitt prefilter; schema v3 `direct_torque` effectors can opt into the
+  scalar RCS pulse path or a body-frame thruster bank with deterministic
+  geometry allocation, per-thruster blowdown scaling, and optional direct tank
+  feed pressure/drain coupling, and the runner builds both through the existing
+  `EffectorRack`. A coupled multi-axis RCS allocator
+  substrate maps vector body torque-impulse requests onto physical thruster
+  geometry with MIB quantization separated from authority saturation; schema v3
+  `mode = "coupled_bank"` groups one roll, pitch, and yaw `direct_torque`
+  effector through the runner rack and publishes equivalent per-axis outputs
+  through the existing direct-torque moment adapter; optional coupled-bank PWPF
+  gates each member axis before shared vector allocation. Resonant load model
+  and hinge-moment coupling remain open.
 - **HAL contract surface.** `crates/openbmp-hal/src/lib.rs` defines marker
   traits `Imu`, `Gnss`, `Magnetometer`, `Barometer`, `StarTracker`,
   `TvcActuator`, `RcsValve`, `ThrottleCommand`, the pull-style `Sensor` and
   command-style `Actuator` traits, and the injected `Clock` trait (lib.rs:856).
   These are the portability anchors any new sensor/actuator model attaches to.
 
-### 2.2 The one structural artifact to remove (the headline WP)
+### 2.2 Remaining structural artifact (the headline WP)
 
-`crates/openbmp-runner/src/fc_bridge.rs:579–613` computes the "sensed" truth by
+By default, `crates/openbmp-runner/src/fc_bridge.rs` still computes the
+"sensed" truth by
 **finite-differencing simulator state**:
 
 ```rust
@@ -163,12 +191,12 @@ let angular_accel = (angular_velocity_body_rad_s - prev_omega) / (time_s - prev_
 
 This conflates integrator truncation error and **gravity-model mismatch**
 directly into the "sensed" specific force, has a one-sample lag, and produces a
-zero gradient at `t₀` (the first step has no `prev`). It corrupts EKF tuning
-conclusions because the filter is tuned against a "measurement" that contains
-the simulator's own gravity error. Because `SensorTruth` already carries
-`specific_force_body_m_s2` and `angular_acceleration_body_rad_s2`, the fix is a
-**plumbing** change: source both from the EOM force/moment accumulator and the
-rotational dynamics, not from re-differencing state.
+zero-gradient initial sample. The opt-in `force_accumulator` path removes this
+artifact for point-mass and rigid-body FC bridge scenarios, and the
+`stationary_rotating_frame` validation source covers the runner end-to-end
+stationary rotating-Earth acceptance case. The remaining fix is a **plumbing**
+change: make the accumulator path the default once canonical goldens prove the
+default switch is byte-accounted.
 
 ### 2.3 Maturity summary
 
@@ -176,13 +204,13 @@ rotational dynamics, not from re-differencing state.
 |---|---|---|
 | Specific-force truth | velocity finite-difference − gravity (artifact) | T1 force-based |
 | IMU error stack | IEEE-952 + lever-arm + anisotropy + g-sens | (already T1-grade) |
-| High-rate strapdown | none (single-rate truth echo) | T2 delta-θ/delta-v + coning/sculling |
+| High-rate strapdown | constant-truth/RK4 increment substrate; two-sample coning/sculling substrate; `SyntheticImu` high-rate mode; direct and bridge/PIL `sensor.imu_increments` path | T2 delta-θ/delta-v + coning/sculling |
 | GNSS | position/velocity oracle + clock + latency | T2 pseudorange / T3 carrier+RAIM/ARAIM |
 | Star tracker | small-angle quaternion noise | T2 QUEST + FOV occultation |
 | Altimeter / TRN | none | T2 altimeter / T4 TRN |
-| TVC/fin servo | first-order lag + rate/deadband/delay | T1 2nd-order / T4 resonant + hinge |
-| RCS / RW / CMG | direct-torque effectors only | T1 RCS MIB / T3 RW / T4 CMG |
-| Air-data / FADS | none | T1 Pitot-static / T3 FADS |
+| TVC/fin servo | first-order lag + rate/deadband/delay; second-order L2 substrate | T1 2nd-order / T4 resonant + hinge |
+| RCS / RW / CMG | direct-torque effectors plus RCS MIB/PWPF substrate | T1 RCS runtime wiring / T3 RW / T4 CMG |
+| Air-data / FADS | Pitot-static + alpha/beta vane substrate | T1 Pitot-static / T3 FADS |
 | Redundancy / FDIR / time-tag | partial (per-sensor latency) | T1 time-tag / T3 voting+FDIR |
 
 ---
@@ -341,6 +369,23 @@ pub fn coning_sculling_update(
     algo: ConingScullingAlgo,        // TwoSample | ThreeSample | FourSample
 ) -> (UnitQuaternion<f64>, Vector3<f64> /*Δv_nav*/);
 ```
+
+Current implementation status: `openbmp-sensors::strapdown` exposes
+`InertialIncrement`, `IncrementQuantization`, constant-truth window generation,
+RK4 time-varying truth window generation with locked sample order, and a
+deterministic `ConingScullingAlgo::TwoSample` reference returning correction
+diagnostics plus the quaternion update. `SyntheticImu::with_high_rate` now
+generates and stashes configured high-rate increment windows while preserving
+the legacy `sensor.imu` output; the first or non-advancing timestamp window
+uses constant truth, and later advancing timestamps use RK4 over linearly
+interpolated successive runner truth samples. Schema/runner wiring accepts
+IMU-only `[sensors.<imu>.high_rate]` blocks. The canonical message dictionary
+now includes `sensor.imu_increments`, the direct runner FC bridge publishes
+`ImuIncrementWindow` beside the legacy IMU sample, and bridge protocol v4
+carries `ImuIncrementPacket` windows through runner/PIL packet adapters into
+`FcStepInput` before dispatch. Transport-fault scalar rules can target
+per-increment delta-theta, delta-v, and dt fields by sample index. Kernel
+RK-stage truth export and three/four-sample algorithms remain open.
 
 The inner integrator is RK4 with **locked operand order** and no FMA;
 quantization is `round(x/lsb)*lsb` exactly as the existing IMU axis path.
@@ -539,7 +584,7 @@ average with fault flags; cross-strapping routes sensor `i` to FC channel `j`.
 
 | Tier | Scope | Earns |
 |---|---|---|
-| **T0** (current) | velocity-finite-difference specific force − gravity; IEEE-952 IMU (already lever-arm/anisotropy); GNSS position oracle + clock + latency; small-angle star tracker; first-order effector | `checked` |
+| **T0 + partial T1** (current) | finite-difference IMU truth remains default, but IMUs can opt into force-accumulator specific force/angular acceleration; IEEE-952 IMU (already lever-arm/anisotropy); GNSS position oracle + clock + latency; small-angle star tracker; first-order effector plus selectable second-order servo and RCS MIB/PWPF substrates | `checked` / partial `validated-toy` |
 | **T1** | force-based specific-force truth (kill the finite-difference); 2nd-order TVC/fin servo (rate/accel/backlash/hardover); RCS MIB + PWM on existing effectors; Pitot-static air-data + vanes; measurement time-tag everywhere | `validated-toy` |
 | **T2** | high-rate delta-θ/delta-v + coning/sculling; pseudorange/Doppler GNSS (Klobuchar/Saastamoinen/multipath/WLS/DOP); QUEST star tracker + FOV occultation; radar/laser altimeter + Doppler velocimeter | `validated-toy`; GNSS `research` (code-to-code RTKLIB) |
 | **T3** | snapshot RAIM + ARAIM/MHSS; carrier phase + integer ambiguity + cycle slips; spoof/jam injection; N-string redundancy + 2-of-3 voting + cross-strapping + FDIR; reaction-wheel friction/saturation; FADS least-squares | `research` (ARAIM Milestone-3); rest `validated-toy` |
@@ -612,7 +657,7 @@ benchmarks → UQ reporting.
 
 | Case | Setup | Tolerance | Tier / label |
 |---|---|---|---|
-| Stationary-on-rotating-Earth | fixed sensor at known lat/lon reads `f = −g + centrifugal`, gyro = Earth-rate `ω_ie` projected to local frame (Earth rate ≈ 15.041 °/hr) | accel `< 1e-9 m/s²`; gyro `< 1e-12 rad/s` (vs closed form) | T1 `validated-toy` |
+| Stationary-on-rotating-Earth | fixed sensor at known lat/lon reads `f = −g + centrifugal`, gyro = Earth-rate `ω_ie` projected to local frame (Earth rate ≈ 15.041 °/hr); physics oracle and runner body-frame scenario covered | accel `< 1e-9 m/s²`; gyro `< 1e-12 rad/s` (vs closed form) | T1 `validated-toy` |
 | Pure-thrust specific force | constant thrust `T`, mass `m`, no aero → `f = T/m` exactly, zero gravity leakage | `< 1e-12 m/s²` (vs `T/m`) | T1 `validated-toy` |
 | Lever-arm | spin-up `(ω, α)` at offset `r` → `f = α×r + ω×(ω×r)` | `< 1e-12` (already tested, imu.rs:572) | T1 `validated-toy` |
 | Coning motion | sinusoidal coning input → exact attitude drift (Savage/Ignagni) | drift residual `< 1e-10 rad` | T2 `validated-toy` |
@@ -714,6 +759,12 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 
 ### WP-09.1 — Force-based specific-force truth (kill the finite-difference)
 
+- **implementation_status:** partial — `SpecificForceTruth`,
+  `specific_force_source = "force_accumulator"`, point-mass force truth, and
+  rigid-body force/moment truth are wired and covered by a powered point-mass
+  FC/SIL monitor regression; the finite-difference source remains default and
+  the `stationary_rotating_frame` validation source covers the rotating-Earth
+  body-frame acceptance case.
 - **title:** Source specific force and angular acceleration from the EOM accumulator.
 - **goal:** Remove the structural artifact at `fc_bridge.rs:579–613` where
   specific force is `(Δv_eci/Δt − g)` and angular accel is `Δω/Δt`. Fill
@@ -725,15 +776,17 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **depends_on:** [`WP-05.1` (force/thrust accumulator, doc 05)]
 - **new_crates:** none (extend `openbmp-sensors` + `openbmp-runner`).
 - **touched:** `openbmp-sensors/src/sensor.rs` (add `SpecificForceTruth`);
-  `openbmp-runner/src/fc_bridge.rs` (delete finite-difference, fill from
-  accumulator); scenario schema (`[sensors.imu] specific_force_source`).
+  `openbmp-runner/src/fc_bridge.rs` (keep finite-difference default, add opt-in
+  accumulator fill); scenario schema (`[sensors.imu] specific_force_source`).
 - **approach:** §3.2 (eqs 3.2.1–3.2.4). Add `specific_force_source =
-  "finite_difference" (default) | "force_accumulator"`; new path off by default.
+  "finite_difference" (default) | "force_accumulator" |
+  "stationary_rotating_frame"`; new physical path off by default.
 - **acceptance:**
   - new path off by default; canonical goldens byte-identical.
   - pure-thrust case: `f = T/m` to `< 1e-12 m/s²` (tolerance table).
-  - stationary-on-rotating-Earth: `f = −g + centrifugal`, gyro = `ω_ie` to
-    closed form (`< 1e-9 m/s²`, `< 1e-12 rad/s`).
+  - stationary-on-rotating-Earth: physics oracle and runner FC bridge scenario
+    cover `f = −g + centrifugal` and gyro = `ω_ie` to closed form
+    (`< 1e-9 m/s²`, `< 1e-12 rad/s`).
   - opt-in scenario exercises the model end-to-end; all §2 gates green.
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line (truth-fidelity fix).
@@ -742,6 +795,26 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 
 ### WP-09.2 — Second-order TVC/fin servo + RCS MIB
 
+- **implementation_status:** partial — `openbmp-vehicle::SecondOrderServo`
+  exists as a deterministic `ControlEffector` substrate with closed-form
+  bandwidth integration, rate/acceleration limiting, backlash, delay,
+  saturation, and existing fault modes; `kind = "second_order_servo"` is parsed
+  from `[[vehicle.assembly.effectors]]` and built by the runner rack.
+  `openbmp-vehicle::RcsMinimumImpulseBit`, `PwpfModulator`, and
+  `RcsPulseEffector` now provide the deterministic RCS MIB/PWPF path; schema v3
+  `direct_torque` effectors can opt into scalar `rcs = {...}` or `mode =
+  "bank"` physical thrusters; the runner rack quantizes scalar commands or
+  allocates bank pulses before the existing direct-torque moment adapter
+  consumes the average output. Physical bank and coupled-bank thrusters may bind
+  to declared ullage tanks, apply live tank-pressure scaling to thrust, and emit
+  additive tank drain from actual impulse. Load-time `oscillatory` faults now inject a
+  deterministic sinusoidal command offset before actuator dynamics and RCS
+  quantization. A vehicle-level coupled multi-axis allocator substrate plus
+  schema/runner `mode = "coupled_bank"` now covers vector body torque-impulse
+  allocation across a shared physical thruster bank, including per-axis PWPF
+  gating before allocation; the rate-limit/backlash describing-function evidence
+  now covers the T1 limit-cycle acceptance item. Resonant load extensions remain
+  open.
 - **title:** Add 2nd-order servo (rate/accel/backlash/hardover) and RCS minimum-impulse-bit.
 - **goal:** Replace the first-order `LinearActuator` (for opting scenarios) with
   a finite-bandwidth `G(s) = ωₙ²/(s²+2ζωₙs+ωₙ²)` servo including accel limit,
@@ -751,11 +824,14 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **fidelity_tier:** T1
 - **depends_on:** [WP-09.1]
 - **new_crates:** none (extend `openbmp-vehicle/src/effector`).
-- **touched:** `effector/mod.rs`, `effector/second_order.rs` (new),
-  `effector/rcs.rs` (new); scenario `[vehicle.effector.servo]`.
+- **touched:** `openbmp-vehicle/src/effector/mod.rs`,
+  `openbmp-vehicle/src/effector/second_order.rs`,
+  `openbmp-vehicle/src/effector/rcs.rs`, `openbmp-scenario`
+  `EffectorKindConfig`, `openbmp-runner` `EffectorRack`, and runner tank-rack
+  feed drain coupling.
 - **approach:** §3.8 (series order: rate → accel → backlash → bandwidth →
-  saturation). ZOH discretize at FC rate. Extend `EffectorFault` with
-  `Oscillatory`.
+  saturation). ZOH discretize at FC rate. `EffectorFault::Oscillatory` injects
+  a deterministic sinusoidal command offset before the normal actuator path.
 - **acceptance:**
   - off by default; goldens byte-identical.
   - step/frequency response matches `G(s)` to `< 0.5%`; MMS on the servo ODE.
@@ -782,9 +858,13 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **acceptance:**
   - off by default; goldens byte-identical.
   - Mach from `q_c/p_s` matches closed-form `< 1e-9`; altitude from `p_s` matches
-    the atmosphere model.
-  - latency-delayed `capture_time` verified for a non-GNSS sensor (mirrors
-    gnss.rs:719).
+    the ISA pressure-altitude relation.
+  - alpha/beta vanes recover manufactured body-frame relative-wind geometry.
+  - latency-delayed `capture_time` verified for a non-GNSS sensor.
+  - scenario registry and runner sensor construction accept `kind = "airdata"`;
+    FC air-data sample topic, simplex/voted FC ingest jobs, and external bridge
+    packet fields carry the same channels. Estimator fusion of air-data remains
+    open.
   - all §2 gates green.
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line.
@@ -801,12 +881,16 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **depends_on:** [WP-09.1]
 - **new_crates:** none.
 - **touched:** `openbmp-sensors/src/strapdown.rs` (new); `imu.rs` (increment
-  path); scenario `[sensors.imu.high_rate]`.
+  path); `openbmp-msgs/src/lib.rs`; runner FC bridge; scenario
+  `[sensors.imu.high_rate]`.
 - **approach:** §3.3 (eqs 3.3.1 + two/three/four-sample). RK4 inner loop, locked
   operand order, sub-sample-keyed RNG.
 - **acceptance:**
   - off by default; goldens byte-identical.
   - closed-form coning drift residual `< 1e-10 rad`; sculling `< 1e-9 m/s`.
+  - IMU-only scenario `high_rate` config enables deterministic increment-window
+    generation without changing the legacy `sensor.imu` output.
+  - direct FC bus and bridge/PIL packet adapters publish `sensor.imu_increments`.
   - Schuler-period free-INS growth within `< 1%`.
   - all §2 gates green.
 - **validation_label:** `validated-toy`

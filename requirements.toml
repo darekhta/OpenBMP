@@ -225,7 +225,7 @@ verification = ["V-MULTIBODY-037"]
 [[requirements]]
 id = "REQ-MULTIBODY-038"
 title = "The multibody substrate ingests Spatial_v2-compatible ABA oracle fixtures"
-statement = "The openbmp-multibody crate ingests a provenance-bearing TOML fixture shaped for offline Spatial_v2 ABA qdd exports, validates source metadata and q/qd/generalized-force/root-acceleration/external-force dimensions against the sample free-flyer/revolute/prismatic tree, computes ABA forward dynamics, and compares the resulting generalized accelerations against a checked static expected_qdd vector at <= 1e-12. The checked-in fixture is explicitly labeled self-consistency and therefore makes no claim that an independent Featherstone Spatial_v2 run or the required three-tree external oracle matrix is complete."
+statement = "The openbmp-multibody crate ingests a provenance-bearing TOML fixture matrix shaped for offline Spatial_v2 ABA qdd exports, validates source metadata and q/qd/generalized-force/root-acceleration/external-force dimensions for three deterministic free-flyer/revolute/prismatic sample-tree cases, computes ABA forward dynamics, and compares each resulting generalized acceleration vector against checked static expected_qdd values at <= 1e-12. The checked-in matrix is explicitly labeled self-consistency and therefore makes no claim that an independent Featherstone Spatial_v2 run or the required three-tree external oracle matrix is complete."
 verification = ["V-MULTIBODY-038"]
 
 [[requirements]]
@@ -357,8 +357,14 @@ verification = ["V-FDIR-004"]
 [[requirements]]
 id = "REQ-HAL-001"
 title = "Shared and flight-math contracts compile without std"
-statement = "The shared core, state, model, mission, HAL, bare sensor-trait, no_std flight-math physics, propulsion core, aerodynamics core, and alloc-aware flight controller crates compile for the embedded thumb target with default features disabled."
+statement = "The shared core, state, model, mission, HAL, bare sensor-trait, no_std flight-math physics, propulsion core, aerodynamics core, forward AFTS monitor, and alloc-aware flight controller crates compile for the embedded thumb target with default features disabled."
 verification = ["V-HAL-001"]
+
+[[requirements]]
+id = "REQ-PIL-001"
+title = "Flight-controller step entry is hardware-portable"
+statement = "The flight-controller crate exposes a hardware-portable topic-level fc_step entry that accepts FcStepInput time/tick plus optional IMU, barometer, air-data, GNSS, magnetometer, and star-tracker samples; publishes those samples before dispatch; runs exactly one FlightController scheduler tick; returns FcStepOutput with dispatch summary plus latest actuator, effector, engine, FDIR, failsafe, and vehicle-status outputs; fails closed when required topics are not registered; compiles without default features; and keeps openbmp-fc free of bridge, runner, scenario, telemetry, CLI, simulator, and aerothermal dependencies. The openbmp-bridge packet, codec, lockstep-validator, caller-buffer encode, and caller-buffer frame surface compiles without default features for the embedded thumb target while host transports, XIL ports, and bridge fault transforms stay std-gated. The openbmp-pil crate provides a no_std-capable target shim outside openbmp-fc that decodes bridge SensorPacket bytes, adapts them into FcStepInput, calls fc_step, converts captured effector/engine topics into ActuatorCommandPacket, encodes command bytes into caller storage, exposes a repr(C) PilMailbox with target-visible status/error codes plus PilMailboxLayout field offsets for GDB-symbol or UART-backed firmware wrappers, exposes a complete-frame PilFrameIo loop over the existing length-prefixed bridge frame format, exposes a fixed-buffer PilFramePump that ingests arbitrary byte chunks, waits for complete frames, preserves queued trailing frames, and holds one pending output frame for caller transmission, exposes a PilByteIo polling endpoint that reads caller-owned byte chunks, drives the pump, writes completed command frames, and preserves pending output across write failures, exposes OPENBMP_PIL_MAILBOX / openbmp_pil_step_mailbox advisory symbol names with PilFirmwareSymbolContract, exposes a safe PilFirmware wrapper that owns one initialized FlightController plus bounded mailbox, pump, and read scratch for target firmware loops, and exposes PilWcetBudget / PilWcetReport integer instruction-count × CPI deadline evidence helpers; it compiles for the embedded thumb target with default features disabled. The runner adapts openbmp-bridge SensorPacket and ActuatorCommandPacket frames to the topic-level FC boundary outside openbmp-fc, exposes a validated RenodePilPlan renderer for a socket-backed UART `.resc` coupling script, exposes GdbPilSymbolBinding helpers that resolve mailbox and step-entry addresses from target ELF32/ELF64 symtab/dynsym bytes or files, exposes a GdbPilMailboxPlan with GdbMemoryRead/GdbMemoryWrite/GdbBreakpointCommand helpers that map the resolved target mailbox symbol address plus PilMailboxLayout into deterministic GDB Remote Serial Protocol memory read/write/breakpoint packets and decode target-read status/error/length/command payload bytes, exposes a GdbRspSession over caller-owned Read+Write streams that performs RSP checksummed packet exchange, acknowledgement, target-error handling, memory reads/writes, software breakpoint insert/remove, continue, mailbox sensor loading, and mailbox status/command reads, and exposes a host PilFrameStream/RenodeSocketPilClient that sends length-prefixed SensorPacket bytes to that socket, decodes length-prefixed ActuatorCommandPacket responses, enforces payload limits, and fails closed on step/time mismatches. This is only the factored PIL prerequisite, target-compatible bridge wire surface, no_std byte/mailbox/framed endpoint/frame-pump/byte-poll/firmware-wrapper shim, WCET budget plumbing, host Renode script renderer, ELF symbol resolver, GDB mailbox/RSP planner and tested stream-session mechanics, socket client, and host bridge-packet adapter, not a downstream-exported linked firmware image, live Renode target execution, real UART driver, actuator-equivalence-on-target gate, or measured WCET claim."
+verification = ["V-PIL-001"]
 
 [[requirements]]
 id = "REQ-HAL-002"
@@ -403,9 +409,15 @@ statement = "The in-house bridge exposes an ordered, step-windowed fault-transfo
 verification = ["V-XIL-001"]
 
 [[requirements]]
+id = "REQ-AFTS-001"
+title = "AFTS IIP containment monitor is forward-only"
+statement = "The L2 openbmp-afts crate exposes a no_std-capable forward automatic-flight-termination substrate that depends only on openbmp-core, openbmp-state, and openbmp-physics; predicts WGS84-spherical or WGS84-ellipsoid central-gravity instantaneous impact points from OpenBMP ECI point-mass or rigid-body state projections using symbolic WGS84 constants; can apply WGS84 uniform-rotation longitude correction using symbolic WGS84_OMEGA_RAD_S and optional deterministic exponential ballistic drag; evaluates declarative keep-inside and keep-out containment polygons with boundary-inclusive point-in-polygon logic, scalar corridor rules for altitude, speed, and flight-path-angle bounds, geospatial gate-crossing rules over successive IIP samples, and red/green zone rules with red-zone priority plus green-zone union semantics; emits a latched terminate decision with the first firing rule id through AftsMonitor; rejects malformed propagator, drag, vector, polygon, corridor, gate, zone, and no-impact-horizon inputs fail-closed; schema v3 accepts an optional [afts.propagator] block plus an optional [afts] block with unique keep-inside/keep-out/corridor/gate/zone rule ids, nonempty evidence strings, optional resolved evidence_file inputs with evidence_file_sha256 pins, validated latitude/longitude vertices, finite corridor bounds, nondegenerate gate endpoints, green/red zone colors, enabled-without-rules rejection, and antimeridian crossing rejection; the runner samples telemetry-aligned truth states into an optional AftsRunReport without changing kernel StopReason; native SIL stimulation can append AFTS zone rules in memory without modifying package scenario files and records the stimulus alongside the sidecar report; CLI run reports carry that sidecar evidence; and the public surface exposes no openbmp-fc dependency or inverse solve_burn_to_reach targeting API. This is not a certified AFTS and not a range-safety qualification claim."
+verification = ["V-AFTS-001"]
+
+[[requirements]]
 id = "REQ-FMI-001"
 title = "FMI import bindings are typed and value-reference based"
-statement = "The host-only FMI importer reads stored and deflated FMU ZIP entries, can safely materialize packaged FMU resources, parses FMU modelDescription.xml metadata into a root instantiationToken, typed Float64, Int32, and UInt64 scalar variables, direct FMI 3 Clock variables, and scalar-variable clock dependencies with required valueReference fields, infers safe current-platform FMI 3 binary entries from modelIdentifier values, builds a positive-step co-simulation master plan with declared coupling order and Clock bindings, owns FMI 3 co-simulation instantiation/init/termination/free through a drop-backed instance wrapper, exposes typed Float64/Int32/UInt64/Clock get/set plus doStep early-return reporting, exposes optional FMU-state snapshot/restore/free wrappers for rollback-capable FMUs, can execute a single-FMU typed macro step that publishes inputs, advances master time using complete-step or early-return timing, reads typed outputs, can restore a pre-step FMU-state checkpoint on early return through an explicit rollback policy, can route typed Float64/UInt64 connections across multiple existing FMU instances using deterministic Gauss-Seidel or Jacobi ordering, and validates that the current-platform packaged point-mass FMU runs through the OpenBMP importer with byte-stable fixed-step output across repeated fresh materializations and a pinned FMPy final-sample cross-check, plus pinned Dahlquist, VanDerPol, pre-event BouncingBall, Stair, and Resource Reference-FMU smoke cross-checks against FMPy, while still making no full FMI conformance claim."
+statement = "The host-only FMI importer reads stored and deflated FMU ZIP entries, can safely materialize packaged FMU resources, parses FMU modelDescription.xml metadata into a root instantiationToken, typed Float64, Int32, and UInt64 scalar variables, direct FMI 3 Clock variables, and scalar-variable clock dependencies with required valueReference fields, infers safe current-platform FMI 3 binary entries from modelIdentifier values, builds a positive-step co-simulation master plan with declared coupling order and Clock bindings, owns FMI 3 co-simulation instantiation/init/termination/free through a drop-backed instance wrapper, exposes typed Float64/Int32/UInt64/Clock get/set plus doStep early-return reporting, exposes optional FMU-state snapshot/restore/free wrappers for rollback-capable FMUs, can execute a single-FMU typed macro step that publishes deterministic periodic input-clock activations at macro-step boundaries before publishing typed inputs, advances master time using complete-step or early-return timing, reads typed outputs, can restore a pre-step FMU-state checkpoint on early return through an explicit rollback policy, can route typed Float64/UInt64 connections across multiple existing FMU instances using deterministic Gauss-Seidel or Jacobi ordering, can run a checkpointed multi-FMU predictor/corrector macro step that restores FMU states and master clocks after the predictor pass before seeding the corrector pass from predicted outputs, and validates that the current-platform packaged point-mass FMU runs through the OpenBMP importer with byte-stable fixed-step output across repeated fresh materializations and a pinned FMPy final-sample cross-check, plus pinned Dahlquist, VanDerPol, pre-event BouncingBall, Stair, and Resource Reference-FMU smoke cross-checks against FMPy, while still making no full FMI conformance claim."
 verification = ["V-FMI-001"]
 
 [[requirements]]
@@ -463,6 +475,12 @@ statement = "The CI workflow runs the fixed-step canonical determinism scenarios
 verification = ["V-DET-004"]
 
 [[requirements]]
+id = "REQ-DET-005"
+title = "GPU offload is bounded to offline provenance-pinned decks"
+statement = "The repository contains a WP-12.4-b boundary fixture for externally produced GPU-style output as a static offline atmosphere-density deck under data/ with a sibling provenance record, SHA-256 pin, explicit UQ band, and no-live-GPU metadata; the deterministic CPU path reproduces the deck's sampled subset through the existing AtmosphereModel surface within the declared UQ band, and workspace Cargo manifests do not add known GPU framework dependencies."
+verification = ["V-DET-005"]
+
+[[requirements]]
 id = "REQ-STD-001"
 title = "Standards posture avoids certification overclaim"
 statement = "The repository documents that upstream OpenBMP uses civil aerospace and simulation standards as vocabulary and evidence organization only; certification, qualification, real-time proof, and data-rights posture are re-earned by downstream real-vehicle forks."
@@ -489,7 +507,7 @@ verification = ["V-TRAJOPT-002"]
 [[requirements]]
 id = "REQ-ENV-001"
 title = "The physics layer exposes a first tesseral gravity substrate"
-statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a reusable NormalizedHarmonicField / NormalizedHarmonicCoefficient / NormalizedHarmonicFieldIter / IcgemGfcNormalizedField substrate, std-gated from_normalized_toml_str ingestion for OpenBMP normalized harmonic TOML fixtures, std-gated from_icgem_gfc_str and from_icgem_gfc_str_with_metadata ingestion for static ICGEM/NGA-style fully-normalized gfc coefficient lines plus source earth_gravity_constant/radius/max_degree metadata, explicit without_central_term stripping for full coefficient files whose Cbar00 central term must not be double-counted by point-mass-plus-correction evaluators, checked fully_normalized_to_unnormalized_scale helper, bounded HarmonicLongitudeTrigonometry cos(mλ)/sin(mλ) recurrence table, singularity-free PinesLongitudePolynomials direction-cosine recurrence, HarmonicTruncation envelope validator, HarmonicSynthesisPlan / HarmonicSynthesisTier runtime-tier validation for planned 70/120/360 EGM2008 requests, bounded PinesLegendreTable A_nm(u) recurrence, PinesSynthesisPoint geometry validator, PinesPotentialSum / pines_dimensionless_potential_sum and GottliebPotentialSum / gottlieb_dimensionless_potential_sum scalar-potential correction paths, pines_potential_correction_acceleration_finite_difference_m_s2 and gottlieb_potential_correction_acceleration_finite_difference_m_s2 acceleration oracles, pines_potential_correction_acceleration_gradient_finite_difference_s2 and gottlieb_potential_correction_acceleration_gradient_finite_difference_s2 finite-difference acceleration-gradient oracles, and FiniteDifferencePinesGravity GravityModel wrapper with new_from_full_normalized_field, new_from_icgem_gfc_str, and acceleration_gradient_eci_s2 that stores, scales, precomputes, parses source constants, strips Cbar00, differentiates, and validates deterministic harmonic inputs, cross-checks the Pines scalar sum through a Gottlieb-style longitude recomposition oracle, defaults missing in-envelope coefficients to zero for lookup and iteration, rejects duplicate or out-of-envelope entries, rejects malformed normalized-field TOML and ICGEM GFC metadata, rejects high-degree tier requests when field or scratch envelopes do not cover them, rejects central C00 double-counting in the correction-only constructor, and can rebuild the current Egm2008ZonalGravity J2-J6 truncation from a provenance-pinned normalized zonal Cbar_n0 fixture, parse a provenance-labeled synthetic degree-4 non-zonal normalized-field fixture, parse a provenance-labeled synthetic degree-4 ICGEM-style GFC fixture with source metadata, parse a provenance-pinned WGS84 normalized degree-2 fixture, expose a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, produce finite Cartesian evaluation near the pole, and produce deterministic non-zonal acceleration and finite-difference acceleration gradients for sectoral/tesseral terms while making no high-degree EGM2008 or analytic Pines/Gottlieb completion claim."
+statement = "The HAL-portable physics crate exposes an opt-in TesseralGravity model with finite degree-2 C20, C21/S21, and C22/S22 coefficients, an explicit TideSystem tag, fail-closed degree/order validation that currently permits only degree 0 or degree 2 up to order 2, a fully-normalized degree-2 coefficient ingestion bridge with a reusable NormalizedHarmonicField / NormalizedHarmonicCoefficient / NormalizedHarmonicFieldIter / IcgemGfcNormalizedField substrate, std-gated from_normalized_toml_str ingestion for OpenBMP normalized harmonic TOML fixtures, std-gated from_icgem_gfc_str and from_icgem_gfc_str_with_metadata ingestion for static ICGEM/NGA-style fully-normalized gfc coefficient lines plus source earth_gravity_constant/radius/max_degree metadata, explicit without_central_term stripping for full coefficient files whose Cbar00 central term must not be double-counted by point-mass-plus-correction evaluators, checked fully_normalized_to_unnormalized_scale helper, bounded HarmonicLongitudeTrigonometry cos(mλ)/sin(mλ) recurrence table, singularity-free PinesLongitudePolynomials direction-cosine recurrence, HarmonicTruncation envelope validator, HarmonicSynthesisPlan / HarmonicSynthesisTier runtime-tier validation and tag parsing for planned 70/120/360 EGM2008 requests, bounded PinesLegendreTable A_nm(u) recurrence, PinesSynthesisPoint geometry validator, PinesPotentialSum / pines_dimensionless_potential_sum and GottliebPotentialSum / gottlieb_dimensionless_potential_sum scalar-potential correction paths, pines_potential_correction_acceleration_finite_difference_m_s2 and gottlieb_potential_correction_acceleration_finite_difference_m_s2 acceleration oracles, pines_potential_correction_acceleration_gradient_finite_difference_s2 and gottlieb_potential_correction_acceleration_gradient_finite_difference_s2 finite-difference acceleration-gradient oracles, and FiniteDifferencePinesGravity GravityModel wrapper with new_from_full_normalized_field, new_from_icgem_gfc_str, new_from_icgem_gfc_str_with_synthesis_tier, and acceleration_gradient_eci_s2 that stores, scales, precomputes, parses source constants, strips Cbar00, differentiates, and validates deterministic harmonic inputs, cross-checks the Pines scalar sum through a Gottlieb-style longitude recomposition oracle, defaults missing in-envelope coefficients to zero for lookup and iteration, rejects duplicate or out-of-envelope entries, rejects malformed normalized-field TOML and ICGEM GFC metadata, rejects high-degree tier requests when field or scratch envelopes do not cover them, rejects central C00 double-counting in the correction-only constructor, and can rebuild the current Egm2008ZonalGravity J2-J6 truncation from a provenance-pinned normalized zonal Cbar_n0 fixture, parse a provenance-labeled synthetic degree-4 non-zonal normalized-field fixture, parse a provenance-labeled synthetic degree-4 ICGEM-style GFC fixture with source metadata, parse a provenance-pinned clipped EGM2008 degree-10/order-10 ICGEM-style GFC block with source constants and feed it through the FiniteDifferencePinesGravity transition model, parse a provenance-pinned WGS84 normalized degree-2 fixture, expose a degree-2/order-0 WGS84 J2 constructor that is byte-identical to the existing J2Gravity path, produce finite Cartesian evaluation near the pole, produce deterministic non-zonal acceleration and finite-difference acceleration gradients for sectoral/tesseral terms, expose EarthFixedGravity to rotate Earth-fixed harmonic models through FrameContext ECI/ECEF vectors including generated IersCio X/Y/s tests, wire schema-v3 runner scenarios to consume the bounded degree-2 path through environment.gravity = \"tesseral\" and third-body gravity_base = \"tesseral\", and wire schema-v3 environment.gravity = \"egm2008\" scenarios to resolve a SHA-pinnable ICGEM coefficient file with explicit egm2008_degree / egm2008_order or named egm2008_tier selectors and consume the degree-10 EGM2008 block or synthetic degree-70 tier path through the frame-coupled FiniteDifferencePinesGravity transition path while making no analytic Pines/Gottlieb completion claim."
 verification = ["V-ENV-001"]
 
 [[requirements]]
@@ -503,6 +521,18 @@ id = "REQ-ENV-003"
 title = "The physics layer exposes analytic SRP and Schwarzschild perturbations"
 statement = "The HAL-portable physics crate exposes opt-in SolarRadiationPressure and RelativisticCorrection force surfaces: cannonball SRP uses configurable area, mass, reflectivity, 1 AU pressure scaling, Sun ephemeris input, and a conical Earth-shadow factor from apparent solar/Earth disk overlap; the Schwarzschild correction uses typed ECI position and velocity, WGS84 defaults, named speed of light, and the standard beta equals gamma equals one first-post-Newtonian formula, with tests for full sunlight, umbra/penumbra behavior, circular-disk overlap, the near-3e-10 m/s^2 circular-orbit correction scale, and fail-closed invalid geometry while making no claim that the WP-08.2 Orekit code-to-code force-stack fixture is complete."
 verification = ["V-ENV-003"]
+
+[[requirements]]
+id = "REQ-ENV-004"
+title = "Earth-orientation samples carry CIO pole-offset fields and compact time-scale bridge"
+statement = "The HAL-portable physics frame layer extends EarthOrientationSample with cip_offset_x_rad and cip_offset_y_rad celestial-pole-offset fields for future CIO-frame construction, keeps the legacy constructors defaulting both offsets to exactly zero, validates non-finite offsets fail-closed through a builder-style with_cip_offsets path and table validation, linearly interpolates dX/dY through EarthOrientationTable::sample alongside polar motion and UT1-UTC, exposes a TimeScaleBridge that converts pinned UTC-relative seconds and Julian Dates through UT1/TAI/TT plus the legacy compact two-term TT-to-TDB approximation, and also exposes ERFA eraDtdb-compatible TT-to-TDB helpers backed by a transcribed Fairhead-Bretagnon coefficient table with reference pins against the upstream ERFA C routine. The runner openbmp-eop-v1 parser ingests optional cip_offset_x_arcsec/cip_offset_y_arcsec pairs while rejecting rows that declare only one offset. Runner celestial UTC/TT/TDB epoch conversion now uses the shared TimeScaleBridge ERFA-compatible helper, supplies topocentric dtdb observer geometry from frames.local_origin when present, samples epoch.eop UT1-UTC for UTC-to-TDB phase when available, and pins the 2017 UTC conversion against the ERFA-style offset. Runner EOP ingestion also detects raw fixed-width IERS/USNO finals2000A.data rows, converts row MJD UTC to scenario-relative time_s from epoch.iso8601, prefers Bulletin B final x/y pole, UT1-UTC, dX, and dY columns when present, falls back to Bulletin A columns otherwise, converts dX/dY milliarcseconds to arcseconds and LOD milliseconds to seconds, and is exercised by a four-day provenance-pinned finals2000A-derived raw fixture plus equivalent openbmp-eop-v1 fixture. Runner EOP ingestion also detects raw IERS EOP 14 C04 IAU2000A rows with headers, consumes MJD, x, y, UT1-UTC, LOD, dX, and dY in the published C04 units, and is exercised by a four-day provenance-pinned C04 fixture. The current equinox-based IersTabulated transform remains unchanged, and this makes no claim that a CIO rotation matrix is complete."
+verification = ["V-ENV-004"]
+
+[[requirements]]
+id = "REQ-ENV-005"
+title = "The frame layer exposes ERFA-pinned CIO matrix primitives and scenario profile substrate"
+statement = "The HAL-portable physics frame layer exposes ERFA-compatible building blocks for the IAU 2006/2000A CIO frame path: earth_rotation_angle_iau2000 and earth_rotation_angle_iau2000_parts mirror eraEra00, tio_locator_sp00 and tio_locator_sp00_parts mirror eraSp00, cio_locator_s06 and cio_locator_s06_parts mirror eraS06, mean_obliquity_iau2006 and mean_obliquity_iau2006_parts mirror eraObl06, fukushima_williams_angles_iau2006 and fukushima_williams_angles_iau2006_parts mirror eraPfw06, fukushima_williams_matrix mirrors eraFw2m, nutation_angles_iau2000a and nutation_angles_iau2000a_parts mirror eraNut00a using generated ERFA coefficient data, nutation_angles_iau2006a and nutation_angles_iau2006a_parts mirror eraNut06a, bias_precession_nutation_matrix_iau2006a and bias_precession_nutation_matrix_iau2006a_parts mirror eraPnm06a, cip_xy_from_bias_precession_nutation_matrix mirrors eraBpn2xy, cio_xys_iau2006a and cio_xys_iau2006a_parts mirror eraXys06a, cio_celestial_to_intermediate_matrix mirrors eraC2ixys, polar_motion_matrix_iau2000 mirrors eraPom00, and cio_celestial_to_terrestrial_matrix assembles the eraC2tcio product RPOM * R3(ERA) * RC2I. It also exposes CioXysSample, CioXysTable, CioXysCoordinates, CioFrameSample, and CioFrameModel as a CIO substrate that samples pinned EOP, adds dX/dY offsets to X/Y before matrix construction, derives UT1 and TT dates through TimeScaleBridge, computes ERA and TIO s prime, and returns GCRS-to-ITRS plus inverse CIO matrices; CioFrameModel can use either caller-provided X/Y/s tables or internally generated IAU 2006/2000A X/Y/s. FrameProfile::IersCio and runner frame construction are wired behind frame_profile = \"iers-cio\" / [frames].profile = \"iers-cio\" using SHA-pinned epoch.eop and leap-second inputs, defaulting to internally generated IAU 2006/2000A X/Y/s; when epoch.cio_xys is supplied, the runner parses the openbmp-cio-xys-v1 TOML table, validates EOP and X/Y/s table coverage over the simulation interval, and keeps IersTabulated unchanged. These helpers validate non-finite inputs fail-closed, reject impossible CIP X/Y norms including post-offset combinations, remain available in no-default-features physics builds, and are pinned against reference values generated from upstream ERFA C sources for era00.c, sp00.c, s06.c (6ad19dd59c3150d9f065b3f76d254c1cf3adb0cb6bacd6422c1dc6b6f14122ea) plus its fundamental-argument helpers, nut00a.c (a1538ec0277745db974ab76ca4b678a7602249bccecf9474e2b0268f9c2032ef), nut06a.c (819c36a689c28e50aaf71ec6d9774da5130df09657a07ab07520ae3712414d07), xys06a.c (a0b87f7a16b843254d11df469ce3b809cd44155611e361b25580ea6d4086f6ae), pnm06a.c (ea1814a86aad0895b6f1d5a48ef0308474df1f8fcf27abe6c0293165d8367b99), obl06.c (550260874d5e5fa3be77296b85b92c54c726fee6fbb1bb44748d04c17ffb37c2), pfw06.c (085f49861026fab98633d8479795090b3278a0d246a938ebdf10fde326ef1987), fw2m.c (480d1ae7780566980b8f80f4c6daa2be330a80e99861d892dc5a9f7b11da47c0), bpn2xy.c (8771bc7db7aeb18f8d9d6fc258d5a28db55e05f3345df0564b4c71a20cc01dfb), c2tcio.c (1a219863130bcb49ae67f424264776339aea8db5fdd0e716dbff660fbdd65a44), c2ixys.c, and pom00.c; the generated-X/Y/s CioFrameModel path is additionally pinned against a three-case UTC/EOP full-matrix grid generated from ERFA Xys06a, C2ixys, Era00, Sp00, Pom00, and C2tcio, and cio_xys_iau2006a is checked against IERS TN36 Ch.5 electronic Tables 5.2a, 5.2b, and 5.2d table-derived X/Y/s reference pins. FrameContext also exposes direction/acceleration vector rotations used by EarthFixedGravity, and a generated-IersCio tesseral gravity test proves the local frame-coupled force path while keeping the broader WP-08.4 Orekit force-stack validation open."
+verification = ["V-ENV-005"]
 
 [[requirements]]
 id = "REQ-CONTACT-001"
@@ -519,7 +549,7 @@ verification = ["V-CONTACT-002"]
 [[requirements]]
 id = "REQ-CONTACT-003"
 title = "Contact substrate exposes scalar constraint primitives"
-statement = "The contact dynamics substrate exposes one-sided scalar stop, two-sided backlash gap, and monotone latch primitives with finite-input validation, unilateral no-tension force clamping, exact configured backlash dead-zone width reporting, closed-form Kelvin-Voigt stop restitution evidence, and engage-once latch state transitions without depending on runner, simulator, or flight-controller crates."
+statement = "The contact dynamics substrate exposes one-sided scalar stop, two-sided backlash gap, monotone latch primitives, and an allocation-free scalar mechanism evaluator that sums stop/backlash generalized forces and updates caller-owned latch state in declaration order, with finite-input validation, unilateral no-tension force clamping, exact configured backlash dead-zone width reporting, closed-form Kelvin-Voigt stop restitution evidence, and engage-once latch state transitions without depending on simulator or flight-controller crates. Schema-v3 [contact] blocks can declare optional [[contact.mechanism]] angular stop/backlash/latch fixtures with kind-specific fail-closed validation and duplicate-id rejection; schema-v3 [[multi_body.gimbal_joint]] entries can bind one contact mechanism by mechanism_id when its coordinate matches the engine id; and the rigid runner converts that mechanism into primary gimbal generalized force during articulated gimbal shadow derivative and forecast evaluation. This remains limited to a single primary-axis gimbal mechanism and does not claim full CFE loop-constraint dynamics, multi-axis mechanism routing, or broad doc-01 tree-joint mechanism authority."
 verification = ["V-CONTACT-003"]
 
 [[requirements]]
@@ -555,7 +585,7 @@ verification = ["V-MC-001"]
 [[requirements]]
 id = "REQ-MC-002"
 title = "Monte-Carlo campaigns use deterministic sample streams and reusable reducers"
-statement = "Monte-Carlo campaign sampling uses the project deterministic RNG with a dedicated sample domain, and reusable campaign reports, Welford reducers, and Clopper-Pearson reducers provide deterministic campaign statistics instead of ad hoc per-test samplers."
+statement = "Monte-Carlo campaign sampling uses the project deterministic RNG with a dedicated sample domain, and reusable campaign reports, Welford reducers, Clopper-Pearson reducers, explicit scalar-report byte checks, and a pinned scalar-report digest provide deterministic campaign statistics instead of ad hoc per-test samplers."
 verification = ["V-MC-002"]
 
 [[requirements]]
@@ -609,7 +639,7 @@ verification = ["V-MC-010"]
 [[requirements]]
 id = "REQ-MC-011"
 title = "Code verification reports observed order and GCI"
-statement = "The testkit exposes a smooth manufactured scalar ODE with exact state, exact derivative, and source term, plus an observed-order and Richardson/GCI reducer over three halved step sizes; the CLI exposes openbmp verify-order to run the real fixed-step RK4 and DOP853 integrators against that manufactured case, fail closed when observed order or GCI acceptance fails, and optionally write deterministic TOML evidence."
+statement = "The testkit exposes a smooth manufactured scalar ODE with exact state, exact derivative, and source term, plus an observed-order and Richardson/GCI reducer over three halved step sizes; the CLI exposes openbmp verify-order to run the real fixed-step RK4 and DOP853 integrators against that manufactured case or a deterministic multi-case MMS lambda campaign, fail closed when observed order or GCI acceptance fails, reject empty or oversized campaign requests, and optionally write deterministic TOML evidence."
 verification = ["V-MC-011"]
 
 [[requirements]]
@@ -643,6 +673,12 @@ statement = "The CLI reconstruction layer can write deterministic compare-teleme
 verification = ["V-MC-016"]
 
 [[requirements]]
+id = "REQ-MC-017"
+title = "Reconstruction local workflow keeps external BET references local-only"
+statement = "The CLI reconstruction layer can write a deterministic LOCAL-only BET/code-to-code workflow manifest through openbmp reconstruct local-workflow, recording the scenario, OpenBMP trajectory CSV path, compare-telemetry mapping path, external reference CSV path, tolerance pack, and exact local commands for export, mapping, and comparison while explicitly marking external telemetry as local-only, not read by the manifest writer, not copied into the repository, and not a flight or targeting input."
+verification = ["V-MC-017"]
+
+[[requirements]]
 id = "REQ-UQ-001"
 title = "UQ budgets expose correlated source tags and 7009B credibility records"
 statement = "The workspace exposes an L1 openbmp-uq crate that uses the canonical openbmp-core ValidationStatus, preserves the legacy flat RSS-plus-bias ErrorBudget for compatibility, provides source-tagged CorrelatedErrorBudget aggregation via sqrt(s^T Sigma s), reports aleatory and epistemic sub-aggregates, validates finite symmetric unit-diagonal bounded positive-semidefinite correlation matrices fail-closed, exposes NASA-STD-7009B-shaped eight-factor CredibilityRecord scoring with absent factors binding to L0, maps binding credibility back to the four public validation labels, and leaves openbmp-physics::uq as a compatibility re-export rather than a duplicate implementation."
@@ -651,7 +687,7 @@ verification = ["V-UQ-001"]
 [[requirements]]
 id = "REQ-UQ-002"
 title = "Monte-Carlo campaign reports enforce UQ credibility floors"
-statement = "Monte-Carlo scalar summaries, landing-footprint campaigns, and sampled propulsion-fault campaigns can read a TOML UQ budget into openbmp-uq CorrelatedErrorBudget data, evaluate campaign credibility through openbmp-mc, preserve ordinary reports when no UQ budget is supplied, optionally write a deterministic Markdown credibility report, fail closed before final campaign evidence is accepted when the binding credibility level is below the requested floor, allow landing-footprint scenario manifests to declare the UQ budget, floor, and report path under landing_footprint.monte_carlo.uq, and allow propulsion-fault library manifests to declare the same campaign UQ sidecar under uq."
+statement = "Monte-Carlo scalar summaries, landing-footprint campaigns, and sampled propulsion-fault campaigns can read a TOML UQ budget into openbmp-uq CorrelatedErrorBudget data, evaluate campaign credibility through the shared MC campaign credibility helper and openbmp-mc, preserve ordinary reports when no UQ budget is supplied, optionally write a deterministic Markdown credibility report, fail closed before final campaign evidence is accepted when the binding credibility level is below the requested floor, allow landing-footprint scenario manifests to declare the UQ budget, floor, and report path under landing_footprint.monte_carlo.uq, and allow propulsion-fault library manifests to declare the same campaign UQ sidecar under uq."
 verification = ["V-UQ-002"]
 
 [[requirements]]
@@ -663,7 +699,7 @@ verification = ["V-UQ-003"]
 [[requirements]]
 id = "REQ-UQ-004"
 title = "Upstream deck margins can become source-tagged UQ sources"
-statement = "The UQ crate exposes a no-std-compatible UpstreamMargin adapter that validates source ids, quantity ids, finite ordered lower/nominal/upper bounds, uncertainty class, upstream evidence, and credibility records, converts the larger side of each bounded band into a conservative one-sigma source contribution, can build a CorrelatedErrorBudget from ordered upstream margins plus an optional correlation matrix, and provides structural bending, aerodynamic coefficient, aerothermal model, and propulsion c_star_efficiency helpers that map upstream deck bands into source-tagged epistemic budget sources with evidence pointers and credibility scores; the runner gathers the resolved thermochemical liquid-engine c_star_efficiency band into EngineRack upstream UQ sources and exposes the gathered budget on RunOutcome without changing nominal engine performance; sampled propulsion-fault Monte-Carlo campaigns merge runner-gathered upstream UQ sources into campaign credibility reports before final CSV evidence is written."
+statement = "The UQ crate exposes a no-std-compatible UpstreamMargin adapter that validates source ids, quantity ids, finite ordered lower/nominal/upper bounds, uncertainty class, upstream evidence, and credibility records, converts the larger side of each bounded band into a conservative one-sigma source contribution, can build a CorrelatedErrorBudget from ordered upstream margins plus an optional correlation matrix, and provides structural bending, aerodynamic coefficient, aerothermal model, and propulsion c_star_efficiency helpers that map upstream deck bands into source-tagged epistemic budget sources with evidence pointers and credibility scores; the scenario schema accepts optional vehicle.bending.uq frequency-band evidence, aero.uq coefficient-band evidence, and aerothermal.uq stagnation q_conv_w_m2 evidence; the runner gathers declared structural bending, aerodynamic coefficient, aerothermal q_conv_w_m2, and resolved thermochemical liquid-engine c_star_efficiency bands into upstream UQ sources and exposes the gathered budget on RunOutcome and FootprintMonteCarloReport without changing nominal dynamics, footprint propagation, or engine performance; the MC CLI exposes a typed CampaignCredibilityInputs contract plus a generalized campaign credibility helper that evaluates optional sidecar budgets plus runner-gathered upstream UQ budgets, preserving upstream-only correlation matrices and appending sidecar/upstream blocks as independent sources when both are present; sampled propulsion-fault and landing-footprint Monte-Carlo campaigns use that contract to merge runner-gathered upstream UQ sources into campaign credibility reports before final evidence is written."
 verification = ["V-UQ-004"]
 
 [[requirements]]
@@ -777,7 +813,7 @@ verification = ["V-PROP-018"]
 [[requirements]]
 id = "REQ-PROP-019"
 title = "Propulsion POGO scenarios can gate startup on reduced stability verdicts"
-statement = "A scenario may declare an optional [propulsion.pogo] block with reduced longitudinal-mode, feed-lag, mass-flow-gain, cavitation-compliance, accumulator-compliance, and require_stable parameters; scenario validation rejects malformed POGO scalars through unit-suffixed typed fields, the point-mass and rigid-body runners evaluate the feed-system POGO primitive at startup, require_stable rejects non-stable verdicts fail-closed, and the no-block path remains inert."
+statement = "A scenario may declare an optional [propulsion.pogo] block with explicit reduced longitudinal-mode scalars or mode_source = \"vehicle_bending\" consumption of the parsed [vehicle.bending] first mode, plus feed-lag, mass-flow-gain, cavitation-compliance, accumulator-compliance, and require_stable parameters; scenario validation rejects malformed or contradictory POGO scalars through unit-suffixed typed fields, the point-mass and rigid-body runners evaluate the feed-system POGO primitive at startup, require_stable rejects non-stable verdicts fail-closed, vehicle_bending mode source fails closed when no [vehicle.bending] block exists, and the no-block path remains inert."
 verification = ["V-PROP-019"]
 
 [[requirements]]
@@ -843,8 +879,44 @@ verification = ["V-PROP-029"]
 [[requirements]]
 id = "REQ-PROP-030"
 title = "Thermochemistry decks carry checked Cantera reference evidence"
-statement = "The repository ships a provenance-recorded Cantera 3.2.0 gri30.yaml LOX/LCH4 Schema-1 thermochemistry deck plus an independent tolerance table over chamber pressure and mixture ratio, including an in-deck midpoint interpolation case; the runner validation harness loads the deck, checks looked-up temperature, gamma, molecular weight, and ideal c* against the table, and checks LiquidEnginePerformance nominal mass flow, mass-flow envelope, sea-level thrust, and nominal Isp against independently generated nozzle references."
+statement = "The repository ships provenance-recorded Cantera 3.2.0 LOX/LCH4, LOX/LH2, and LOX/RP-1 n-dodecane-surrogate Schema-1 thermochemistry decks using gri30.yaml and nDodecane_Reitz.yaml, spanning 1-30 MPa chamber pressure and pair-appropriate mixture-ratio bands, plus independent tolerance tables over every grid point and multiple in-deck log-pressure and mixture-ratio interpolation cases; the runner validation harness loads each deck, checks looked-up temperature, gamma, molecular weight, and ideal c* against its table, and checks LiquidEnginePerformance nominal mass flow, mass-flow envelope, sea-level thrust, and nominal Isp against independently generated nozzle references."
 verification = ["V-PROP-030"]
+
+[[requirements]]
+id = "REQ-SENSOR-001"
+title = "IMU truth can opt into force-accumulator specific force"
+statement = "The synthetic sensor layer exposes SpecificForceTruth as an additive force-accumulator truth record, schema v3 [sensors.<imu>] may declare specific_force_source = \"force_accumulator\" while non-IMU sensors reject that field and the default remains \"finite_difference\", and the runner's FC bridge uses the opt-in path to fill SensorTruth.specific_force_body_m_s2 from summed non-gravity force divided by mass and to fill angular_acceleration_body_rad_s2 from the rigid moment accumulator and Euler rotational dynamics; point-mass and rigid-body runner paths evaluate the existing force/moment stacks at the bridge tick boundary without extra model evaluation in legacy finite-difference mode. This is a WP-09.1 substrate only: the legacy default, high-rate strapdown increments, and broader WP-09 actuator/navigation work remain open; the rotating-frame closed-form validation source is tracked separately by REQ-SENSOR-002."
+verification = ["V-SENSOR-001"]
+
+[[requirements]]
+id = "REQ-SENSOR-002"
+title = "Stationary rotating-frame IMU truth has a closed-form oracle"
+statement = "The openbmp-physics frame layer exposes StationaryRotatingFrameImuTruth and stationary_rotating_frame_imu_truth_eci for a point fixed in a uniformly rotating frame, computing ideal accelerometer specific force as a - g with a = omega x (omega x r) and ideal gyro truth as the frame spin about inertial +z. Schema v3 IMUs may declare specific_force_source = \"stationary_rotating_frame\" while non-IMU sensors reject the field, and the runner FC bridge consumes that source through the scenario FrameContext and sampled gravity vector. The regressions cover the WGS84 equator against mu/a^2 - omega^2 a, project Earth-rate gyro into the KSC local NED frame, reject non-finite position/gravity/spin inputs fail-closed, and run a one-tick rigid-body FC bridge scenario at the WGS84 equator with body axes aligned to local NED to prove body-frame specific force and gyro truth within the WP-09.1 stationary-on-rotating-Earth tolerances. This is a WP-09.1 validation source only: default force-accumulator selection and high-rate strapdown increments remain open."
+verification = ["V-SENSOR-002"]
+
+[[requirements]]
+id = "REQ-SENSOR-003"
+title = "Second-order servo substrate exposes deterministic bandwidth dynamics"
+statement = "The openbmp-vehicle effector layer exposes SecondOrderServoParams, SecondOrderServo, RateLimitBacklashDescribingFunction, and rate_limit_backlash_describing_function as scalar actuator primitives and validation evidence with finite natural frequency and damping, command-side rate limiting, command acceleration limiting, backlash dead-zone behavior, position saturation, fixed-step pure-delay latency, and the Jam, Runaway, ReducedRate, Hardover, and Oscillatory fault modes. Oscillatory faults inject a deterministic sinusoidal command offset before normal actuator dynamics and, for RCS effectors, before pulse quantization. The rate-limit/backlash describing-function helper computes a deterministic first-harmonic estimate for the same command-side rate limiter and backlash play operator used before the servo bandwidth model, including output amplitude, gain, phase lag, rate-limited fraction, and backlash-hold fraction. Schema v2+ [[vehicle.assembly.effectors]] blocks may select kind = \"second_order_servo\" with finite positive natural frequency, finite non-negative damping, finite positive command acceleration limit, and finite non-negative backlash half-width bounded by half the authority range, and may declare load-time fault = { kind = \"oscillatory\", amplitude, frequency_hz, phase_rad } with non-negative finite amplitude, positive finite frequency, and finite phase. The runner EffectorRack builds second_order_servo and oscillatory faults through the same command schedule, override, fault, and telemetry path as existing effectors. The regressions prove invalid parameter rejection, closed-form underdamped step response within the WP-09.2 0.5% band, acceleration limiting, backlash hold/engagement, rate-limit/backlash first-harmonic amplitude within the WP-09.2 5% describing-function band, latency delay, jam behavior, deterministic oscillatory injection for linear, second-order, and RCS pulse effectors, scenario parser acceptance/rejection of oscillatory faults, and runner rack mounting of oscillatory faults. RCS minimum-impulse-bit/PWPF is tracked separately, and resonant actuator load extensions remain open."
+verification = ["V-SENSOR-003"]
+
+[[requirements]]
+id = "REQ-SENSOR-004"
+title = "RCS MIB, PWPF, and allocation substrate exposes deterministic pulse primitives"
+statement = "The openbmp-vehicle effector layer exposes RcsMinimumImpulseBit, RcsPulse, PwpfParams, PwpfModulator, PwpfStep, PulsePolarity, RcsPulseEffectorParams, RcsPulseEffector, RcsBlowdownParams, RcsThrusterConfig, RcsThrusterBankEffectorParams, RcsThrusterBankEffector, RcsThrusterBankPulse, RcsCoupledThrusterPulse, RcsCoupledAllocation, RcsCoupledAllocator, and RcsError as deterministic fixed-step reaction-control pulse and allocation primitives. RcsMinimumImpulseBit validates finite positive minimum impulse and nominal thrust, emits zero for zero requested impulse, floors any nonzero below-MIB requested impulse to the exact signed MIB, passes above-MIB requested impulse through linearly when it fits within nominal_thrust_n * dt, reports average thrust, on-time, duty cycle, and polarity, and fails closed on non-finite requested impulse or fixed-step capacity overflow. PwpfModulator validates finite positive gain, time constant, and turn-on threshold plus finite non-negative turn-off threshold smaller than turn-on, advances its first-order prefilter with the exact ZOH update, and applies symmetric Schmitt hysteresis for positive, off, and negative pulse polarity. RcsThrusterBankEffector maps scalar direct_torque commands into requested body-axis torque, allocates deterministic declared-order pulses over body-frame thruster geometry, applies each thruster's MIB, optional pressure-fed blowdown scale, and live feed-pressure scale, and reports equivalent direct_torque command units so the existing moment adapter effectiveness remains unchanged. RcsCoupledAllocator maps vector body torque-impulse requests across physical thruster geometry in deterministic declaration order, reports requested, actual, and residual body torque-impulse vectors plus per-thruster pulse telemetry, separates MIB quantization from authority saturation, avoids same-step opposite-thruster chasing of MIB overshoot, and applies optional pressure-fed blowdown plus live feed-pressure scale per thruster. Schema v3 direct_torque effectors may opt into an rcs table with legacy scalar minimum_impulse_n_s, nominal_thrust_n, and optional pwpf parameters; mode = \"bank\" with per-thruster position_body_m, direction_body, MIB, nominal thrust, optional blowdown, optional feed = { tank, specific_impulse_s, pressure_exponent }, and optional pwpf; or mode = \"coupled_bank\" with a shared group id, optional per-member pwpf, an identical physical thruster bank on exactly one roll, pitch, and yaw direct_torque effector, and the same optional per-thruster feed binding. Scenario validation rejects feed bindings with unknown tanks, tanks without ullage, body mismatches when mounted_to is declared, and non-positive Isp or pressure exponent. The runner EffectorRack builds RcsPulseEffector, RcsThrusterBankEffector, or a grouped RcsCoupledAllocator with per-axis PWPF gating while preserving the existing continuous direct_torque path when rcs is absent; physical bank and coupled-bank feed bindings consume live PropellantTankState::blowdown_pressure_scale, derate thruster nominal thrust, report per-tank drain from actual impulse divided by specific impulse and standard gravity, and TankRack::set_rcs_feed_drain_rates applies that drain additively. The regressions prove the exact MIB floor, linear above-floor impulse, signed negative pulse handling, invalid input/capacity rejection, positive PWPF hysteresis, negative PWPF polarity, RcsPulseEffector average-output quantization, bank geometry allocation, blowdown capacity reduction, coupled cross-axis geometry allocation, coupled MIB quantization without saturation, invalid coupled geometry/request rejection, parser acceptance/rejection of scalar, bank, coupled-bank, and RCS tank-feed direct_torque rcs configs including coupled-bank PWPF, and runner rack scalar, bank, coupled-bank MIB quantization, coupled-bank PWPF gating, bank tank-feed thrust derating/drain, and coupled-bank shared tank-feed drain."
+verification = ["V-SENSOR-004"]
+
+[[requirements]]
+id = "REQ-SENSOR-005"
+title = "Synthetic air-data sensor exposes Pitot-static and vane primitives"
+statement = "The openbmp-sensors crate exposes AirDataNoiseBudget, SyntheticAirData, pitot_impact_pressure_pa, mach_from_pitot_impact_pressure, calibrated_airspeed_from_impact_pressure, pressure_altitude_from_static_pressure, and vane_angles_from_body_velocity as deterministic WP-09.3 air-data primitives. SensorTruth carries runner-supplied static pressure, atmosphere density, speed of sound, and body-frame air-relative velocity so the synthetic sensor can emit SensorMeasurement::AirData with static pressure, compressible Pitot impact pressure, Mach, calibrated airspeed, true airspeed, alpha, beta, and ISA pressure altitude, while fixed_latency_s reports delayed capture_time through the existing Timestamped adapter on a non-GNSS sensor. Schema validation registers kind = \"airdata\", data/sensors/airdata-textbook.toml provides a zero-noise validated-toy budget, the runner FC bridge can build the sensor from resolved scenario files, openbmp-msgs exposes AirDataSample and FcStepInput::with_airdata publishes it before dispatch, openbmp-fc exposes AirDataIngest and VotedAirDataIngest for simplex and redundant FC ingestion with SensorStatus lane divergence, and openbmp-bridge SensorPacket protocol v4 carries every air-data channel across transport/PIL adapters. The regressions prove subsonic Pitot pressure against closed form, supersonic pressure inversion back to Mach, calibrated airspeed against the sea-level reference, pressure-altitude sea-level inversion, alpha/beta vane recovery from manufactured body-frame velocity, zero-noise measurement output, budget rejection, delayed timestamp reporting, scenario registry acceptance, runner construction, SensorPacket codec round-trip, portable FC step publication, simplex/voted FC air-data ingest, runner bridge packet ingestion, and fc_bridge air-data serialization."
+verification = ["V-SENSOR-005"]
+
+[[requirements]]
+id = "REQ-SENSOR-006"
+title = "Strapdown increment substrate exposes coning/sculling reference math"
+statement = "The openbmp-sensors crate exposes InertialIncrement, IncrementQuantization, HighRateImuConfig, InertialTruthSample, ConingScullingAlgo, ConingScullingWindow, quantize_increment_vector, inertial_increment_from_constant_truth, inertial_increment_from_rk4_truth, integrate_constant_truth_window, integrate_rk4_truth_window, coning_sculling_window, and coning_sculling_update as deterministic WP-09.4 strapdown primitives. The substrate validates finite positive sub-intervals, finite truth/increment vectors, finite non-negative delta-theta and delta-v quantization LSBs, positive high-rate sub-sample counts, finite RK4 sample times, and non-empty coning/sculling windows fail-closed. It can generate locked-sequence constant-truth and RK4 time-varying high-rate increment windows, applies deterministic round-to-nearest LSB quantization to delta-theta and delta-v, accumulates adjacent-pair two-sample coning correction, velocity-rotation correction, and manufactured sculling correction, and returns a quaternion attitude update plus corrected body-frame delta-v. SyntheticImu::with_high_rate enables optional high-rate increment-window generation without changing the legacy SensorMeasurement::Imu output, generates the first/non-advancing timestamp window from constant truth, and uses RK4 over linearly interpolated successive runner SensorTruth samples for later advancing timestamps. Schema [sensors.<imu>.high_rate] accepts IMU-only sub_samples plus delta-theta/delta-v LSBs and rejects non-IMU or invalid counts, the runner FC bridge builds configured high-rate IMU sensors from parsed scenarios, openbmp-msgs exposes ImuIncrementWindow / ImuInertialIncrement on the canonical sensor.imu_increments topic, the direct runner FC bus path publishes those windows beside the legacy IMU sample, openbmp-bridge SensorPacket protocol v4 carries ImuIncrementPacket windows through the runner and PIL packet adapters into FcStepInput::with_imu_increment_window before dispatch, and [fc.transport_faults] scalar rules can target per-increment delta-theta components, delta-v components, and increment dt_s by sample index. This is a WP-09.4 partial implementation only: kernel RK-stage truth export, three/four-sample algorithms, and Schuler-period free-INS validation remain open."
+verification = ["V-SENSOR-006"]
 
 [[requirements]]
 id = "REQ-PLUME-001"
@@ -1594,6 +1666,7 @@ kind = "test"
 command = "cargo test -p openbmp-scenario multi_body_gimbal_joint --locked && cargo test -p openbmp-runner articulated_gimbal_shadow_derivative_uses_live_engine_thrust --locked && cargo check -p openbmp-scenario -p openbmp-runner --locked && cargo clippy -p openbmp-scenario -p openbmp-runner --all-targets --locked -- -D warnings"
 paths = [
   "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lint.rs",
   "crates/openbmp-scenario/src/scenario.rs",
   "crates/openbmp-runner/src/rigid_body.rs",
   "docs/scenario-format.md",
@@ -1680,7 +1753,7 @@ requirements = ["REQ-MULTIBODY-037"]
 [[verification]]
 id = "V-MULTIBODY-038"
 kind = "test"
-command = "cargo test -p openbmp-multibody forward_dynamics_aba_matches_spatial_v2_compatible_oracle_fixture --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
+command = "cargo test -p openbmp-multibody forward_dynamics_aba_matches_spatial_v2_compatible_fixture_matrix --locked && cargo check -p openbmp-multibody --no-default-features --locked && cargo clippy -p openbmp-multibody --all-targets --locked -- -D warnings"
 paths = [
   "crates/openbmp-multibody/src/lib.rs",
   "crates/openbmp-multibody/tests/expected/spatial-v2-compatible-aba-oracle-chain-v1.toml",
@@ -1688,9 +1761,12 @@ paths = [
   "docs/parity/progress.md",
 ]
 contains = [
-  "SpatialV2CompatibleOracleFixture",
-  "forward_dynamics_aba_matches_spatial_v2_compatible_oracle_fixture",
+  "SpatialV2CompatibleOracleFixtureMatrix",
+  "SpatialV2CompatibleOracleCase",
+  "forward_dynamics_aba_matches_spatial_v2_compatible_fixture_matrix",
   "spatial-v2-compatible-aba-oracle-chain-v1.toml",
+  "reverse-bias-moving-chain",
+  "tilted-root-moving-chain",
   "expected_qdd",
   "independence = \"self-consistency\"",
   "not an independent Featherstone Spatial_v2 run",
@@ -2116,10 +2192,111 @@ requirements = ["REQ-FDIR-004"]
 [[verification]]
 id = "V-HAL-001"
 kind = "ci"
-command = "cargo check -p openbmp-core -p openbmp-state -p openbmp-models -p openbmp-mission -p openbmp-physics -p openbmp-propulsion -p openbmp-aero -p openbmp-sensors -p openbmp-hal -p openbmp-fc --no-default-features --target thumbv7em-none-eabihf --locked"
+command = "cargo check -p openbmp-core -p openbmp-state -p openbmp-models -p openbmp-mission -p openbmp-physics -p openbmp-propulsion -p openbmp-aero -p openbmp-afts -p openbmp-sensors -p openbmp-hal -p openbmp-fc --no-default-features --target thumbv7em-none-eabihf --locked"
 paths = [".github/workflows/ci.yml"]
-contains = ["HAL portability", "thumbv7em-none-eabihf"]
+contains = ["HAL portability", "openbmp-afts", "thumbv7em-none-eabihf"]
 requirements = ["REQ-HAL-001"]
+
+[[verification]]
+id = "V-PIL-001"
+kind = "test"
+command = "cargo test -p openbmp-fc fc_step --locked && cargo test -p openbmp-runner step_bridge_packet --locked && cargo test -p openbmp-runner pil_framed_endpoint_matches_runner_bridge_packet_adapter --locked && cargo test -p openbmp-runner pil --locked && cargo test -p openbmp-bridge --locked && cargo test -p openbmp-pil --locked && cargo check -p openbmp-fc --no-default-features --locked && cargo check -p openbmp-bridge --no-default-features --target thumbv7em-none-eabihf --locked && cargo check -p openbmp-pil --no-default-features --target thumbv7em-none-eabihf --locked && cargo clippy -p openbmp-pil --all-targets --locked -- -D warnings && cargo clippy -p openbmp-pil --no-default-features --target thumbv7em-none-eabihf --locked -- -D warnings && cargo clippy -p openbmp-runner --all-targets --locked -- -D warnings && cargo test -p openbmp-testkit --test fc_dependency_tripwire --locked"
+paths = [
+  "crates/openbmp-fc/src/lib.rs",
+  "crates/openbmp-fc/src/step.rs",
+  "crates/openbmp-bridge/Cargo.toml",
+  "crates/openbmp-bridge/src/lib.rs",
+  "crates/openbmp-bridge/src/codec.rs",
+  "crates/openbmp-bridge/src/packet.rs",
+  "crates/openbmp-bridge/src/lockstep.rs",
+  "crates/openbmp-pil/Cargo.toml",
+  "crates/openbmp-pil/src/lib.rs",
+  "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/fc.rs",
+  "crates/openbmp-runner/src/pil.rs",
+  "crates/openbmp-fc/Cargo.toml",
+  "crates/openbmp-testkit/tests/fc_dependency_tripwire.rs",
+  ".github/workflows/ci.yml",
+  "docs/parity/10-flight-software-in-the-loop-xil.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "FcStepInput",
+  "FcStepOutput",
+  "fc_step",
+  "cfg_attr(not(feature = \"std\"), no_std)",
+  "validate_command_for_sensor",
+  "encode_into",
+  "frame_into",
+  "fc_step_from_wire",
+  "fc_step_from_frame_into",
+  "PilFrameIo",
+  "run_framed_endpoint_once",
+  "PilFramePump",
+  "PilFramePumpStatus",
+  "PilFramePumpError",
+  "PilByteIo",
+  "PilByteEndpointStatus",
+  "poll_byte_stream_endpoint_once",
+  "OPENBMP_PIL_MAILBOX_SYMBOL",
+  "OPENBMP_PIL_STEP_MAILBOX_SYMBOL",
+  "PilFirmwareSymbolContract",
+  "PilFirmware",
+  "PilWcetBudget",
+  "PilWcetReport",
+  "RenodePilPlan",
+  "render_resc",
+  "PilFrameStream",
+  "RenodeSocketPilClient",
+  "PilMailbox",
+  "PilMailboxLayout",
+  "step_mailbox",
+  "GdbPilMailboxPlan",
+  "GdbPilSymbolBinding",
+  "GdbMemoryRead",
+  "GdbMemoryWrite",
+  "GdbBreakpointCommand",
+  "GdbRspSession",
+  "GdbRspSessionError",
+  "from_elf_symbols",
+  "resolve_from_elf_bytes",
+  "exchange_payload",
+  "load_mailbox_sensor_payload",
+  "read_mailbox_status",
+  "read_mailbox_command_packet",
+  "decode_gdb_rsp_hex_bytes",
+  "decode_gdb_mailbox_status",
+  "OutputBufferTooSmall",
+  "pil_mailbox_layout_reports_repr_c_offsets",
+  "pil_frame_pump_waits_for_split_frame_then_outputs_command",
+  "pil_frame_pump_preserves_queued_frames_after_one_step",
+  "pil_byte_stream_endpoint_reads_split_chunks_and_writes_command",
+  "pil_byte_stream_endpoint_preserves_pending_output_after_write_failure",
+  "pil_firmware_symbol_contract_reports_mailbox_layout",
+  "pil_firmware_mailbox_entry_steps_loaded_payload",
+  "pil_firmware_byte_poll_uses_internal_read_storage",
+  "pil_wcet_budget_reports_integer_deadline_margin",
+  "pil_wcet_budget_detects_deadline_miss_and_bad_inputs",
+  "renode_pil_plan_renders_socket_uart_resc",
+  "renode_pil_plan_rejects_unquoted_paths",
+  "gdb_mailbox_plan_maps_payload_into_repr_c_offsets",
+  "gdb_pil_symbols_resolve_from_elf32_symbol_table",
+  "gdb_pil_symbol_resolution_fails_closed_on_missing_symbol",
+  "gdb_rsp_packets_include_remote_protocol_checksums",
+  "gdb_rsp_session_loads_sensor_payload_with_memory_writes",
+  "gdb_rsp_session_reads_mailbox_status_and_command_payload",
+  "gdb_rsp_session_drives_breakpoint_and_continue_packets",
+  "gdb_rsp_session_fails_closed_on_bad_checksum_and_target_error",
+  "gdb_mailbox_decodes_target_reads_and_command_payload",
+  "pil_frame_stream_sends_sensor_and_validates_matching_command",
+  "pil_frame_stream_rejects_mismatched_command_step",
+  "step_bridge_packet",
+  "pil_framed_endpoint_matches_runner_bridge_packet_adapter",
+  "fc_step_publishes_inputs_dispatches_and_captures_outputs",
+  "fc_step_fails_closed_when_input_topic_is_unregistered",
+  "openbmp-fc must not depend on simulator/tooling crates",
+]
+requirements = ["REQ-PIL-001"]
 
 [[verification]]
 id = "V-HAL-002"
@@ -2356,6 +2533,157 @@ contains = [
 requirements = ["REQ-XIL-001"]
 
 [[verification]]
+id = "V-AFTS-001"
+kind = "test"
+command = "cargo test -p openbmp-afts --locked && cargo test -p openbmp-scenario afts --locked && cargo test -p openbmp-runner afts --locked && cargo test -p openbmp-sil afts_zone_stimulation_latches_afts_evidence --locked && cargo test -p openbmp-testkit --test afts_no_inverse_compile_fail --locked && cargo check -p openbmp-afts --no-default-features --locked && cargo check -p openbmp-runner -p openbmp-cli -p openbmp-sil --locked && cargo clippy -p openbmp-afts -p openbmp-scenario -p openbmp-runner -p openbmp-cli -p openbmp-sil --all-targets --locked -- -D warnings"
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  ".github/workflows/ci.yml",
+  "crates/openbmp-afts/Cargo.toml",
+  "crates/openbmp-afts/src/lib.rs",
+  "crates/openbmp-afts/src/error.rs",
+  "data/afts/closed-form-iip-tolerance-v1.toml",
+  "data/afts/provenance.md",
+  "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/afts.rs",
+  "crates/openbmp-runner/src/error.rs",
+  "crates/openbmp-runner/src/lib.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-runner/tests/session_equivalence.rs",
+  "crates/openbmp-cli/src/commands/run.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-sil/src/lib.rs",
+  "crates/openbmp-sil/tests/afts_stimulus.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-testkit/Cargo.toml",
+  "crates/openbmp-testkit/tests/afts_no_inverse_compile_fail.rs",
+  "crates/openbmp-testkit/tests/ui/afts_solve_burn_to_reach.rs",
+  "crates/openbmp-testkit/tests/ui/afts_solve_burn_to_reach.stderr",
+  "docs/HAL.md",
+  "docs/scenario-format.md",
+  "docs/parity/10-flight-software-in-the-loop-xil.md",
+  "docs/parity/progress.md",
+  "docs/software-architecture.md",
+]
+contains = [
+  "openbmp-afts",
+  "IipPropagator",
+  "IipImpactSurface",
+  "ExponentialAtmosphericDrag",
+  "AftsMonitor",
+  "AftsRunReport",
+  "RunnerAftsMonitor",
+  "ContainmentPolygon",
+  "ContainmentRule",
+  "ContainmentRuleKind",
+  "CorridorMetric",
+  "CorridorRule",
+  "FlightCorridorSample",
+  "GateCrossingDirection",
+  "GateSegment",
+  "GateRule",
+  "ZoneColor",
+  "ZoneRule",
+  "evaluate_zone_rules",
+  "keep_out",
+  "corridor",
+  "gate",
+  "zone",
+  "impact_point_from_state",
+  "impact_point_from_rigid_body",
+  "wgs84_ellipsoid",
+  "wgs84_ellipsoid_rotating_earth",
+  "with_exponential_drag",
+  "wgs84_rotating_earth",
+  "WGS84_OMEGA_RAD_S",
+  "rotating_earth_iip_applies_longitude_correction",
+  "wgs84_rotating_earth_uses_symbolic_rotation_rate",
+  "evaluate_iip",
+  "AftsConfig",
+  "AftsZoneStimulus",
+  "AftsZoneStimulusVertex",
+  "AftsCorridorMetricConfig",
+  "AftsCorridorRuleConfig",
+  "AftsGateDirectionConfig",
+  "AftsGateRuleConfig",
+  "AftsKeepInsideRuleConfig",
+  "AftsKeepOutRuleConfig",
+  "AftsPropagatorConfig",
+  "AftsPropagatorDragConfig",
+  "AftsPropagatorEarthRotationConfig",
+  "AftsPropagatorSurfaceConfig",
+  "AftsVertexConfig",
+  "AftsZoneColorConfig",
+  "AftsZoneRuleConfig",
+  "afts.propagator",
+  "afts.keep_inside",
+  "afts.keep_out",
+  "afts.corridor",
+  "afts.gate",
+  "afts.zone",
+  "RunOutcome",
+  "EvidenceBundle",
+  "afts_zone_stimulus",
+  "point_mass_afts_report_latches_without_changing_kernel_stop_reason",
+  "point_mass_afts_keep_out_report_latches_inside_forbidden_polygon",
+  "point_mass_afts_corridor_report_latches_without_iip_rule",
+  "point_mass_afts_gate_report_latches_on_iip_crossing",
+  "point_mass_afts_zone_report_latches_inside_red_zone",
+  "point_mass_afts_ellipsoid_corridor_uses_surface_altitude",
+  "afts_zone_stimulation_latches_afts_evidence",
+  "solve_burn_to_reach",
+  "radial_iip_matches_closed_form_conic_point",
+  "non_radial_iip_matches_closed_form_conic_tolerance_table",
+  "closed-form-iip-tolerance-v1.toml",
+  "openbmp.afts_closed_form_iip",
+  "angular_rad",
+  "wgs84_ellipsoid_iip_reports_geodetic_surface_latitude",
+  "exponential_drag_changes_forward_iip_longitude",
+  "exponential_drag_rejects_invalid_ballistic_coefficient",
+  "corridor_sample_computes_altitude_speed_and_flight_path_angle",
+  "corridor_rule_fires_outside_inclusive_bounds",
+  "gate_rule_fires_when_iip_track_crosses_segment",
+  "gate_rule_honors_crossing_direction",
+  "gate_segment_rejects_degenerate_endpoint_pair",
+  "zone_rules_fire_on_red_zone_entry",
+  "green_zone_rules_use_union_semantics",
+  "red_zone_wins_over_green_zone",
+  "polygon_contains_hand_computed_inside_boundary_and_outside_cases",
+  "containment_monitor_latches_first_termination_rule",
+  "propagator_reports_no_impact_for_stable_circular_state",
+  "afts_surface_has_no_fc_or_inverse_targeting_dependency",
+  "afts_propagator_cannot_solve_burn_to_reach_polygon",
+  "afts_block_is_v3_only_and_validates_under_v3",
+  "afts_keep_out_rule_validates_under_v3",
+  "afts_corridor_rule_validates_under_v3",
+  "afts_gate_rule_validates_under_v3",
+  "afts_zone_rule_validates_under_v3",
+  "afts_propagator_options_validate_under_v3",
+  "afts_propagator_drag_rejects_non_positive_ballistic_coefficient",
+  "afts_enabled_requires_keep_inside_rule",
+  "afts_corridor_requires_at_least_one_bound",
+  "afts_corridor_rejects_out_of_range_flight_path_angle_bound",
+  "afts_gate_rejects_degenerate_endpoints",
+  "afts_rejects_out_of_range_vertex_latitude",
+  "afts_rejects_antimeridian_crossing_polygon",
+  "afts_evidence_file_resolves_and_hashes_with_injected_reader",
+  "afts_keep_out_evidence_file_resolves_and_hashes_with_injected_reader",
+  "afts_corridor_evidence_file_resolves_and_hashes_with_injected_reader",
+  "afts_gate_evidence_file_resolves_and_hashes_with_injected_reader",
+  "afts_zone_evidence_file_resolves_and_hashes_with_injected_reader",
+  "afts_evidence_file_sha256_requires_evidence_file",
+  "evidence_file_sha256",
+  "afts_solve_burn_to_reach",
+  "method not found in `IipPropagator`",
+  "thumbv7em-none-eabihf",
+]
+requirements = ["REQ-AFTS-001"]
+
+[[verification]]
 id = "V-FMI-001"
 kind = "test"
 command = "python3 scripts/check_fmi_export_schema.py && python3 scripts/check_fmi_import_point_mass.py && python3 scripts/check_fmi_import_fmpy.py && python3 scripts/check_fmi_reference_smoke.py && python3 scripts/check_fmi_export_fmpy.py && cargo test -p openbmp-models fmu --locked && cargo test -p openbmp-fmi --locked && cargo build -p openbmp-fmi --lib --locked && cargo check -p openbmp-models -p openbmp-fmi --locked && cargo clippy -p openbmp-models -p openbmp-fmi --all-targets --locked -- -D warnings"
@@ -2408,6 +2736,9 @@ contains = [
   "import_fmu_final_sample",
   "Fmi3ClockBinding",
   "Fmi3ClockedVariableBinding",
+  "Fmi3ClockScheduleActivation",
+  "Fmi3ClockScheduleReport",
+  "publish_periodic_input_clocks_at",
   "Fmi3CoSimulationInstantiation",
   "Fmi3CoSimulationInstance",
   "instantiate_co_simulation",
@@ -2422,15 +2753,19 @@ contains = [
   "Fmi3RollbackAction",
   "Fmi3RollbackStepResult",
   "step_with_rollback_policy",
+  "single_fmu_master_publishes_periodic_input_clock_schedule",
   "Fmi3FmuNode",
   "Fmi3Float64Connection",
   "Fmi3UInt64Connection",
   "Fmi3MultiFmuMaster",
   "Fmi3MultiFmuStepResult",
+  "Fmi3PredictorCorrectorStepResult",
   "add_float64_connection",
   "add_uint64_connection",
+  "step_predictor_corrector",
   "multi_fmu_master_applies_gauss_seidel_connections_in_step",
   "multi_fmu_master_applies_jacobi_connections_from_previous_outputs",
+  "multi_fmu_master_predictor_corrector_restores_then_corrects_jacobi_step",
   "FMI3_FMU_STATE_SYMBOLS",
   "Fmi3ExportModel",
   "FmiExportError",
@@ -2617,6 +2952,8 @@ contains = [
   "x86_64-determinism-reference-${{ github.sha }}",
   "actions/download-artifact@v4",
   "Verify aarch64 host profile and FP guard",
+  "Verify aarch64 MC scalar report bytes",
+  "scalar_campaign_report_bytes_match_pinned_golden",
   "Compare aarch64 outputs against x86_64 reference",
   "aarch64-unknown-linux-gnu",
   "second CI-declared bit-stable profile",
@@ -2624,6 +2961,35 @@ contains = [
   "V-DET-004",
 ]
 requirements = ["REQ-DET-004"]
+
+[[verification]]
+id = "V-DET-005"
+kind = "test"
+command = "cargo test -p openbmp-testkit --test gpu_offload_boundary --locked"
+paths = [
+  "data/atmosphere/gpu-offline-density-subset-v1.toml",
+  "data/atmosphere/provenance.md",
+  "crates/openbmp-testkit/Cargo.toml",
+  "crates/openbmp-testkit/tests/gpu_offload_boundary.rs",
+  "crates/openbmp-physics/src/atmosphere/piecewise_exponential.rs",
+  "docs/parity/12-determinism-realtime-and-compute.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "openbmp.gpu_offload_boundary_deck",
+  "openbmp.det.gpu_offline.atmosphere_density.v1",
+  "gpu-offline-density-subset-v1.toml",
+  "source_hash_sha256",
+  "no_live_gpu_path",
+  "uq_relative",
+  "AtmosphereModel",
+  "PiecewiseExponentialAtmosphere",
+  "gpu_offline_density_deck_reproduces_cpu_subset_within_uq",
+  "gpu_offline_density_deck_has_provenance_sha_pin",
+  "workspace_manifests_do_not_add_gpu_framework_dependency",
+  "74dea5cca998bd9e3e3af88d3f8784906be5a1050b910e3c89067490f15e2d96",
+]
+requirements = ["REQ-DET-005"]
 
 [[verification]]
 id = "V-STD-001"
@@ -2763,22 +3129,34 @@ requirements = ["REQ-TRAJOPT-002"]
 [[verification]]
 id = "V-ENV-001"
 kind = "test"
-command = "cargo test -p openbmp-physics gravity::tests --locked"
+command = "cargo test -p openbmp-physics gravity::tests --locked && cargo test -p openbmp-scenario tesseral_gravity --locked && cargo test -p openbmp-scenario third_body_can_use_tesseral_central_gravity_base --locked && cargo test -p openbmp-scenario egm2008_coefficients_file --locked && cargo test -p openbmp-runner point_mass_wires_frame_coupled_tesseral_gravity --locked && cargo test -p openbmp-runner builds_third_body_gravity_with_tesseral_central_model --locked && cargo test -p openbmp-runner environment_sample_reports_tesseral_gravity --locked && cargo test -p openbmp-runner point_mass_wires_file_backed_egm2008_pines_gravity --locked && cargo test -p openbmp-runner builds_file_backed_egm2008_named_tier_gravity --locked"
 paths = [
   "crates/openbmp-physics/Cargo.toml",
+  "crates/openbmp-physics/src/frames.rs",
   "crates/openbmp-physics/src/gravity.rs",
   "crates/openbmp-physics/src/lib.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-scenario/src/registry.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/atmosphere.rs",
+  "crates/openbmp-runner/src/celestial.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
   "data/gravity/wgs84-degree2-normalized-v1.toml",
   "data/gravity/egm2008-zonal-degree6-normalized-v1.toml",
+  "data/gravity/egm2008-degree10-normalized-icgem-v1.gfc",
   "data/gravity/synthetic-degree4-normalized-field-v1.toml",
   "data/gravity/synthetic-degree4-normalized-icgem-v1.gfc",
   "data/gravity/provenance.md",
+  "docs/scenario-format.md",
   "docs/parity/08-environment-gravity-and-frames.md",
   "docs/parity/progress.md",
 ]
 contains = [
   "TesseralGravity",
   "FiniteDifferencePinesGravity",
+  "EarthFixedGravity",
   "Egm2008ZonalGravity",
   "DegreeTwoTesseralCoefficients",
   "NormalizedDegreeTwoTesseralCoefficients",
@@ -2794,6 +3172,7 @@ contains = [
   "HarmonicTruncation",
   "HarmonicSynthesisPlan",
   "HarmonicSynthesisTier",
+  "from_egm2008_tag",
   "PinesLegendreTable",
   "PinesLongitudePolynomials",
   "PinesSynthesisPoint",
@@ -2807,7 +3186,10 @@ contains = [
   "gottlieb_potential_correction_acceleration_gradient_finite_difference_s2",
   "new_from_full_normalized_field",
   "new_from_icgem_gfc_str",
+  "new_from_icgem_gfc_str_with_synthesis_tier",
   "acceleration_gradient_eci_s2",
+  "eci_to_ecef_vector",
+  "ecef_to_eci_vector",
   "HARMONIC_LONGITUDE_MAX_ORDER",
   "HARMONIC_SYNTHESIS_EGM2008_DEGREE_70",
   "HARMONIC_SYNTHESIS_EGM2008_DEGREE_120",
@@ -2821,6 +3203,7 @@ contains = [
   "fully_normalized_zonal_scale",
   "wgs84-degree2-normalized-v1.toml",
   "egm2008-zonal-degree6-normalized-v1.toml",
+  "egm2008-degree10-normalized-icgem-v1.gfc",
   "synthetic-degree4-normalized-field-v1.toml",
   "synthetic-degree4-normalized-icgem-v1.gfc",
   "TideSystem",
@@ -2830,6 +3213,7 @@ contains = [
   "tesseral_gravity_loads_normalized_degree_two_pin",
   "tesseral_gravity_loads_normalized_harmonic_field_pin",
   "tesseral_normalized_harmonic_field_parses_egm2008_zonal_toml_pin",
+  "tesseral_normalized_harmonic_field_parses_egm2008_degree10_icgem_pin",
   "tesseral_normalized_harmonic_field_parses_synthetic_general_toml_pin",
   "tesseral_normalized_harmonic_field_parses_synthetic_icgem_gfc_pin",
   "tesseral_normalized_harmonic_field_parses_icgem_gfc_metadata_pin",
@@ -2861,6 +3245,7 @@ contains = [
   "finite_difference_pines_gravity_zero_field_gradient_reduces_to_point_mass",
   "finite_difference_pines_gravity_accepts_full_icgem_field_after_central_strip",
   "finite_difference_pines_gravity_builds_from_icgem_gfc_metadata",
+  "finite_difference_pines_gravity_builds_from_egm2008_degree10_icgem_pin",
   "finite_difference_pines_gravity_accepts_resolved_runtime_tier",
   "finite_difference_pines_gravity_rejects_invalid_inputs",
   "tesseral_normalized_harmonic_field_defaults_missing_coefficients_to_zero",
@@ -2869,6 +3254,32 @@ contains = [
   "tesseral_gravity_zero_degree_reduces_to_point_mass",
   "tesseral_gravity_sectoral_term_changes_longitude_acceleration",
   "tesseral_gravity_tesseral_terms_are_finite_near_pole",
+  "earth_fixed_gravity_toy_frame_matches_body_fixed_model",
+  "earth_fixed_gravity_wgs84_rotates_body_fixed_model_through_frame",
+  "earth_fixed_gravity_iers_cio_generated_xys_rotates_tesseral_through_frame",
+  "environment.gravity = \"tesseral\"",
+  "gravity_base = \"tesseral\"",
+  "RuntimeEgm2008Gravity",
+  "build_egm2008_gravity",
+  "egm2008_coefficients_file",
+  "egm2008_tier",
+  "egm2008_degree",
+  "egm2008_order",
+  "egm2008_finite_difference_step_m",
+  "build_tesseral_gravity",
+  "tesseral_degree",
+  "tesseral_order",
+  "tesseral_c20",
+  "tesseral_gravity_is_v3_only_and_validates_under_v3",
+  "tesseral_gravity_rejects_bad_degree_and_foreign_fields",
+  "third_body_can_use_tesseral_central_gravity_base",
+  "point_mass_wires_frame_coupled_tesseral_gravity",
+  "builds_third_body_gravity_with_tesseral_central_model",
+  "environment_sample_reports_tesseral_gravity",
+  "egm2008_coefficients_file_requires_degree_order_and_validates",
+  "egm2008_coefficients_file_sha_requires_file_and_resolves",
+  "point_mass_wires_file_backed_egm2008_pines_gravity",
+  "builds_file_backed_egm2008_named_tier_gravity",
   "tesseral_gravity_rejects_unsupported_degree_order_and_nonfinite_coefficients",
   "egm2008_zonal_loads_normalized_degree6_pin",
   "egm2008_zonal_from_normalized_field_defaults_missing_zonals_to_zero",
@@ -2924,6 +3335,172 @@ contains = [
   "**implementation_status:** partial",
 ]
 requirements = ["REQ-ENV-003"]
+
+[[verification]]
+id = "V-ENV-004"
+kind = "test"
+command = "cargo test -p openbmp-physics --locked frames::tests::iers && cargo check -p openbmp-physics --no-default-features --locked && cargo test -p openbmp-runner --locked frames && cargo test -p openbmp-runner --locked converts_utc_epoch_to_tdb_axis && cargo test -p openbmp-runner --locked local_origin_supplies_topocentric_dtdb_geometry && cargo test -p openbmp-runner --locked epoch_eop_supplies_ut1_offset_for_dtdb_phase"
+paths = [
+  "crates/openbmp-physics/src/frames.rs",
+  "crates/openbmp-physics/src/erfa_dtdb_data.rs",
+  "crates/openbmp-physics/src/lib.rs",
+  "crates/openbmp-runner/src/celestial.rs",
+  "crates/openbmp-runner/src/frames.rs",
+  "data/eop/finals2000a-2017-001-004.raw",
+  "data/eop/finals2000a-2017-001-004-openbmp-eop-v1.toml",
+  "data/eop/eopc04-14-iau2000a-2017-001-004.raw",
+  "data/eop/provenance.md",
+  "docs/parity/08-environment-gravity-and-frames.md",
+  "docs/parity/progress.md",
+  "docs/frames-time.md",
+  "docs/scenario-format.md",
+]
+contains = [
+  "cip_offset_x_rad",
+  "cip_offset_y_rad",
+  "cip_offset_x_arcsec",
+  "cip_offset_y_arcsec",
+  "with_cip_offsets",
+  "EarthOrientationTable::sample",
+  "TimeScaleBridge",
+  "TT_MINUS_TAI_S",
+  "utc_julian_date_to_tdb_approx",
+  "tdb_minus_tt_erfa_approx_s",
+  "utc_julian_date_to_tdb_erfa_approx",
+  "tt_julian_date_to_tdb_erfa_approx",
+  "FAIRHEAD_TERMS",
+  "time_scale_bridge_matches_erfa_dtdb_reference_pins",
+  "time_scale_bridge_converts_utc_epoch_with_erfa_dtdb_reference",
+  "69.183_950_5",
+  "DtdbObserverGeometry",
+  "dtdb_observer_geometry",
+  "epoch_ut1_minus_utc_s",
+  "local_origin_supplies_topocentric_dtdb_geometry",
+  "epoch_eop_supplies_ut1_offset_for_dtdb_phase",
+  "time_scale_bridge_matches_existing_utc_to_tdb_pin",
+  "converts_utc_epoch_to_tdb_axis",
+  "optional_cip_offsets_arcsec",
+  "earth_orientation_table_interpolates_celestial_pole_offsets",
+  "earth_orientation_sample_rejects_nonfinite_celestial_pole_offsets",
+  "openbmp.eop.finals2000a.2017-001-004.v1",
+  "parse_finals2000a_earth_orientation_table",
+  "parse_eop14_c04_earth_orientation_table",
+  "parses_raw_finals2000a_eop_subset",
+  "parses_provenance_pinned_eop14_c04_subset",
+  "8b51d2fafe4b474fe6af68c6e93698f5ddd70b03a9c619d16aa5237b7bc4b389",
+  "c28e05cb04563bfc3b99adf3ea4a1400e49bbfca2742c3429035ba78c8cab88d",
+  "parses_provenance_pinned_finals2000a_eop_subset",
+  "b26049e519db72a585118186ca2edb74e6441a86a632a5816ad4b7ab6ce8110f",
+  "rejects_partial_cip_offset_eop_sample",
+  "WP-08.3 is now **implemented**",
+  "**implementation_status:** implemented",
+]
+requirements = ["REQ-ENV-004"]
+
+[[verification]]
+id = "V-ENV-005"
+kind = "test"
+command = "cargo test -p openbmp-physics --locked cio_ && cargo test -p openbmp-physics --locked earth_fixed_gravity && cargo test -p openbmp-physics --locked fukushima_williams_iau2006 && cargo test -p openbmp-physics --locked iau2000a_nutation && cargo test -p openbmp-runner --locked iers_cio && cargo test -p openbmp-runner --locked cio_xys && cargo test -p openbmp-runner --locked bridge_frame_policy_allows_rotating_frame_with_barometer && cargo test -p openbmp-scenario --locked iers_cio && cargo test -p openbmp-scenario --locked resolved_files_includes_epoch_cio_xys && cargo check -p openbmp-physics --no-default-features --locked"
+paths = [
+  "crates/openbmp-physics/src/erfa_nut00a_data.rs",
+  "crates/openbmp-physics/src/frames.rs",
+  "crates/openbmp-physics/src/gravity.rs",
+  "crates/openbmp-physics/src/lib.rs",
+  "crates/openbmp-runner/src/frames.rs",
+  "crates/openbmp-runner/src/celestial.rs",
+  "crates/openbmp-runner/src/fc_bridge.rs",
+  "crates/openbmp-scenario/src/checks.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "docs/scenario-format.md",
+  "docs/frames-time.md",
+  "docs/parity/08-environment-gravity-and-frames.md",
+  "docs/parity/progress.md",
+  "requirements.toml",
+]
+contains = [
+  "earth_rotation_angle_iau2000",
+  "earth_rotation_angle_iau2000_parts",
+  "tio_locator_sp00",
+  "tio_locator_sp00_parts",
+  "cio_locator_s06",
+  "cio_locator_s06_parts",
+  "CioXysCoordinates",
+  "FukushimaWilliamsAngles",
+  "mean_obliquity_iau2006",
+  "mean_obliquity_iau2006_parts",
+  "fukushima_williams_angles_iau2006",
+  "fukushima_williams_angles_iau2006_parts",
+  "fukushima_williams_matrix",
+  "nutation_angles_iau2000a",
+  "nutation_angles_iau2000a_parts",
+  "nutation_angles_iau2006a",
+  "nutation_angles_iau2006a_parts",
+  "bias_precession_nutation_matrix_iau2006a",
+  "bias_precession_nutation_matrix_iau2006a_parts",
+  "cio_xys_iau2006a",
+  "cio_xys_iau2006a_parts",
+  "cip_xy_from_bias_precession_nutation_matrix",
+  "cio_celestial_to_intermediate_matrix",
+  "polar_motion_matrix_iau2000",
+  "cio_celestial_to_terrestrial_matrix",
+  "eraC2tcio",
+  "CioXysSample",
+  "CioXysTable",
+  "CioFrameSample",
+  "CioFrameModel",
+  "FrameProfile::IersCio",
+  "EarthFixedGravity",
+  "eci_to_ecef_vector",
+  "ecef_to_eci_vector",
+  "iers-cio",
+  "epoch.cio_xys",
+  "openbmp-cio-xys-v1",
+  "gcrs_to_itrs_matrix",
+  "itrs_to_gcrs_matrix",
+  "cio_primitives_match_erfa_reference_pins",
+  "cio_locator_s06_matches_erfa_reference_pins",
+  "fukushima_williams_iau2006_primitives_match_erfa_reference_pins",
+  "iau2000a_nutation_primitives_match_erfa_reference_pins",
+  "cio_xys_iau2006a_matches_erfa_reference_pins",
+  "cio_xys_iau2006a_matches_iers_tn36_table_reference_pin",
+  "cio_frame_model_can_generate_iau2006a_xys",
+  "cio_frame_model_generated_xys_matches_erfa_c2tcio_grid",
+  "cio_primitives_reject_invalid_inputs",
+  "cio_xys_table_interpolates_samples",
+  "cio_frame_model_reproduces_erfa_reference_matrix_pin",
+  "cio_frame_model_adds_eop_cip_offsets_before_matrix_build",
+  "cio_frame_model_rejects_invalid_inputs",
+  "iers_cio_context_uses_cio_model_matrix",
+  "iers_cio_context_can_generate_iau2006a_xys",
+  "earth_fixed_gravity_iers_cio_generated_xys_rotates_tesseral_through_frame",
+  "parses_openbmp_cio_xys_table",
+  "builds_iers_cio_frame_context",
+  "builds_iers_cio_frame_context_with_generated_xys",
+  "rejects_iers_cio_xys_table_that_does_not_cover_run",
+  "bridge_frame_policy_allows_rotating_frame_with_barometer",
+  "iers_cio_frame_allows_generated_xys_without_epoch_cio_xys",
+  "iers_cio_frame_requires_leap_second_source",
+  "resolved_files_includes_epoch_cio_xys",
+  "IERS TN36 Ch.5 electronic Tables",
+  "91c092c322d070305ba02873005bcb03110d7c26674fbdc7105477c50543ffb5",
+  "120c1363c7f912272ed689ca186df1d16f3a8f8992dd7b981c94e9cba4a8980a",
+  "6ad19dd59c3150d9f065b3f76d254c1cf3adb0cb6bacd6422c1dc6b6f14122ea",
+  "a1538ec0277745db974ab76ca4b678a7602249bccecf9474e2b0268f9c2032ef",
+  "819c36a689c28e50aaf71ec6d9774da5130df09657a07ab07520ae3712414d07",
+  "a0b87f7a16b843254d11df469ce3b809cd44155611e361b25580ea6d4086f6ae",
+  "ea1814a86aad0895b6f1d5a48ef0308474df1f8fcf27abe6c0293165d8367b99",
+  "550260874d5e5fa3be77296b85b92c54c726fee6fbb1bb44748d04c17ffb37c2",
+  "085f49861026fab98633d8479795090b3278a0d246a938ebdf10fde326ef1987",
+  "480d1ae7780566980b8f80f4c6daa2be330a80e99861d892dc5a9f7b11da47c0",
+  "8771bc7db7aeb18f8d9d6fc258d5a28db55e05f3345df0564b4c71a20cc01dfb",
+  "1a219863130bcb49ae67f424264776339aea8db5fdd0e716dbff660fbdd65a44",
+  "8b220605ef6bb81757b53e5ee7df638e9a0c834d0d8fb8a312d2a603f4877f36",
+  "19182ef9805c998ed46ec6304a6fb2e869856b85a97cb2391e3e1ec26687f043",
+  "CIO primitive/profile substrate is now **partial**",
+  "WP-08.4 is now **partial**",
+]
+requirements = ["REQ-ENV-005"]
 
 [[verification]]
 id = "V-CONTACT-001"
@@ -3016,7 +3593,7 @@ requirements = ["REQ-CONTACT-002"]
 [[verification]]
 id = "V-CONTACT-003"
 kind = "test"
-command = "cargo test -p openbmp-contact scalar_ --locked && cargo test -p openbmp-contact backlash_ --locked && cargo test -p openbmp-contact latch_ --locked"
+command = "cargo test -p openbmp-contact scalar_ --locked && cargo test -p openbmp-contact backlash_ --locked && cargo test -p openbmp-contact latch_ --locked && cargo test -p openbmp-contact mechanism --locked && cargo test -p openbmp-scenario contact_mechanism --locked && cargo test -p openbmp-runner articulated_gimbal_contact_mechanism_stop_adds_joint_generalized_force --locked"
 paths = [
   "Cargo.toml",
   "crates/openbmp-contact/Cargo.toml",
@@ -3024,6 +3601,11 @@ paths = [
   "crates/openbmp-contact/src/stop.rs",
   "crates/openbmp-contact/src/backlash.rs",
   "crates/openbmp-contact/src/latch.rs",
+  "crates/openbmp-contact/src/mechanism.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "docs/scenario-format.md",
   "docs/parity/14-contact-dynamics-touchdown-and-landing.md",
 ]
 contains = [
@@ -3039,9 +3621,25 @@ contains = [
   "LatchState",
   "LatchWindow",
   "LatchTransition",
+  "ScalarMechanismElement",
+  "ScalarMechanismResponse",
+  "evaluate_scalar_mechanism",
+  "scalar_mechanism_latch_count",
+  "ContactMechanismConfig",
+  "ContactMechanismKindConfig",
+  "[[contact.mechanism]]",
+  "mechanism_id",
+  "ArticulatedGimbalMechanism",
+  "articulated_gimbal_mechanism_from_document",
+  "articulated_gimbal_contact_mechanism_stop_adds_joint_generalized_force",
   "scalar_stop_restitution_matches_closed_form",
   "backlash_dead_zone_width_is_exact",
   "latch_monotone_property_engages_once_and_never_releases",
+  "scalar_mechanism_evaluator_sums_stop_and_backlash_forces",
+  "scalar_mechanism_evaluator_updates_latches_in_declaration_order",
+  "scalar_mechanism_evaluator_fails_closed_on_latch_storage_mismatch",
+  "contact_mechanism_fixtures_parse_under_contact_block",
+  "contact_mechanism_latch_rejects_force_fields",
 ]
 requirements = ["REQ-CONTACT-003"]
 
@@ -3236,6 +3834,10 @@ contains = [
   "Welford",
   "run_scalar_campaign",
   "clopper_pearson",
+  "campaign_report_bytes",
+  "scalar_campaign_report_bytes_match_across_worker_counts",
+  "scalar_campaign_report_bytes_match_pinned_golden",
+  "e5c90b1286aebc3d",
   "mc_summarize_reads_scalar_samples_and_success_interval",
   "phalcon9_orbit_monte_carlo_is_deterministic",
 ]
@@ -3487,7 +4089,7 @@ requirements = ["REQ-MC-010"]
 [[verification]]
 id = "V-MC-011"
 kind = "test"
-command = "cargo test -p openbmp-testkit order_report --locked && cargo test -p openbmp-cli verify_order --locked && cargo run -p openbmp-cli --locked -- verify-order --method all"
+command = "cargo test -p openbmp-testkit order_report --locked && cargo test -p openbmp-cli verify_order --locked && cargo run -p openbmp-cli --locked -- verify-order --method all && cargo run -p openbmp-cli --locked -- verify-order --method all --campaign-cases 3"
 paths = [
   "crates/openbmp-cli/Cargo.toml",
   "crates/openbmp-cli/src/cli.rs",
@@ -3518,13 +4120,21 @@ contains = [
   "verify_order",
   "VerifyOrderCliReport",
   "VerifyOrderMethodReport",
+  "run_campaign",
+  "campaign_cases",
+  "CampaignCase",
+  "CAMPAIGN_LAMBDAS_PER_S",
   "Rk4FixedStep",
   "Dopri853FixedStep",
   "verify_order_runs_rk4_and_dop853",
   "verify_order_writes_toml",
+  "verify_order_campaign_runs_deterministic_lambda_sweep",
+  "verify_order_campaign_rejects_empty_campaign",
   "order_report_recovers_fourth_order_and_monotone_gci",
   "order_report_rejects_non_halving_steps",
   "openbmp verify-order",
+  "--campaign-cases",
+  "mms-lambda-02",
 ]
 requirements = ["REQ-MC-011"]
 
@@ -3681,6 +4291,37 @@ contains = [
 requirements = ["REQ-MC-016"]
 
 [[verification]]
+id = "V-MC-017"
+kind = "test"
+command = "cargo test -p openbmp-cli local_workflow_writes_local_only_manifest_without_copying_reference --locked && cargo run -p openbmp-cli --locked -- reconstruct local-workflow scenarios/closed-loop-attitude-hold/scenario.toml --output-toml /tmp/openbmp-local-bet-workflow.toml --trajectory-csv /tmp/openbmp-local-trajectory.csv --mapping-toml /tmp/openbmp-local-map.toml --external-reference-csv /tmp/local-open-telemetry.csv --pack leo-research"
+paths = [
+  "crates/openbmp-cli/src/cli.rs",
+  "crates/openbmp-cli/src/commands/reconstruct.rs",
+  "crates/openbmp-cli/src/main.rs",
+  "docs/parity/11-monte-carlo-uq-and-validation.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "LocalWorkflow",
+  "LocalWorkflowCliReport",
+  "run_local_workflow",
+  "write_local_workflow_toml",
+  "local_workflow_commands",
+  "local_workflow_writes_local_only_manifest_without_copying_reference",
+  "bet_code_to_code_local",
+  "committed_external_telemetry = false",
+  "external_reference_is_local_only",
+  "external_reference_is_not_read_by_this_command",
+  "external_reference_is_not_copied_into_repo",
+  "not_a_flight_or_targeting_input",
+  "openbmp reconstruct local-workflow",
+  "openbmp compare-telemetry",
+  "leo-research",
+  "LOCAL-only",
+]
+requirements = ["REQ-MC-017"]
+
+[[verification]]
 id = "V-UQ-001"
 kind = "test"
 command = "cargo test -p openbmp-uq --locked && cargo test -p openbmp-physics uq --locked"
@@ -3735,6 +4376,7 @@ contains = [
   "summarize_with_credibility",
   "McCredibilityOptions",
   "evaluate_credibility_options",
+  "evaluate_campaign_credibility_inputs",
   "FootprintMonteCarloCliReport",
   "McPropulsionFaultCampaignOptions",
   "PropulsionFaultLibraryUqDocument",
@@ -3816,16 +4458,24 @@ requirements = ["REQ-UQ-003"]
 [[verification]]
 id = "V-UQ-004"
 kind = "test"
-command = "cargo test -p openbmp-uq upstream_margin --locked && cargo test -p openbmp-uq cross_discipline_deck_margin_helpers_emit_stable_source_tags --locked && cargo test -p openbmp-uq propulsion_c_star_efficiency_band_flows_into_epistemic_budget --locked && cargo test -p openbmp-runner build_engine_applies_thermochemical_performance --locked && cargo test -p openbmp-runner rigid_liquid_plume_telemetry_uses_engine_snapshots --locked && cargo test -p openbmp-cli mc_propulsion_fault_campaign_consumes_runner_upstream_uq --locked"
+command = "cargo test -p openbmp-uq upstream_margin --locked && cargo test -p openbmp-uq cross_discipline_deck_margin_helpers_emit_stable_source_tags --locked && cargo test -p openbmp-uq propulsion_c_star_efficiency_band_flows_into_epistemic_budget --locked && cargo test -p openbmp-runner build_engine_applies_thermochemical_performance --locked && cargo test -p openbmp-runner rigid_liquid_plume_telemetry_uses_engine_snapshots --locked && cargo test -p openbmp-runner rigid_bending_uq_band_flows_into_upstream_budget --locked && cargo test -p openbmp-runner aero_upstream_uq_budget_reads_declared_coefficient_band --locked && cargo test -p openbmp-runner aerothermal_upstream_uq_budget_reads_declared_q_conv_band --locked && cargo test -p openbmp-runner point_mass_upstream_uq_gathers_aero_and_aerothermal_bands --locked && cargo test -p openbmp-cli --test mc_cli mc_campaign_credibility_inputs --locked && cargo test -p openbmp-cli --test mc_cli mc_campaign_credibility_contract --locked && cargo test -p openbmp-cli --test mc_cli mc_propulsion_fault_campaign_consumes_runner_upstream_uq --locked && cargo test -p openbmp-cli --test footprint_mc_e2e footprint_mc_consumes_runner_upstream_uq --locked"
 paths = [
   "crates/openbmp-uq/src/lib.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lint.rs",
   "crates/openbmp-cli/src/commands/mc.rs",
+  "crates/openbmp-cli/src/commands/footprint_mc.rs",
   "crates/openbmp-cli/tests/mc_cli.rs",
+  "crates/openbmp-cli/tests/footprint_mc_e2e.rs",
   "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/aero.rs",
+  "crates/openbmp-runner/src/aerothermal.rs",
   "crates/openbmp-runner/src/lib.rs",
   "crates/openbmp-runner/src/engines.rs",
+  "crates/openbmp-runner/src/footprint.rs",
   "crates/openbmp-runner/src/point_mass.rs",
   "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-runner/src/structural.rs",
   "crates/openbmp-runner/tests/fixtures/thermochem/synthetic-grain.toml",
   "data/thermochem/lox-lch4-cantera-gri30-schema-1.toml",
   "data/aero/synthetic-finned-cylinder.toml",
@@ -3839,12 +4489,29 @@ contains = [
   "aero_coefficient_margin_source",
   "aerothermal_model_margin_source",
   "propulsion_c_star_efficiency_margin_source",
+  "BendingUqConfig",
+  "AeroUqConfig",
+  "AerothermalUqConfig",
   "RunOutcome",
+  "FootprintMonteCarloReport",
   "upstream_uq",
   "upstream_uq_sources",
   "upstream_uq_budget",
   "append_independent_uq_sources",
+  "append_independent_uq_budget",
+  "CampaignCredibilityInputs",
+  "evaluate_campaign_credibility_contract",
+  "evaluate_campaign_credibility_inputs",
+  "mc_campaign_credibility_contract_merges_sidecar_and_upstream_sources",
+  "mc_campaign_credibility_inputs_emit_upstream_only_report",
+  "mc_campaign_credibility_inputs_merge_sidecar_and_upstream_sources",
   "mc_propulsion_fault_campaign_consumes_runner_upstream_uq",
+  "footprint_upstream_uq_budget",
+  "footprint_mc_consumes_runner_upstream_uq",
+  "rigid_bending_uq_band_flows_into_upstream_budget",
+  "aero_upstream_uq_budget_reads_declared_coefficient_band",
+  "aerothermal_upstream_uq_budget_reads_declared_q_conv_band",
+  "point_mass_upstream_uq_gathers_aero_and_aerothermal_bands",
   "uniform_credibility_record",
   "conservative_one_sigma",
   "02.structural.first_mode.generic.v1.frequency_hz",
@@ -4383,14 +5050,21 @@ paths = [
 ]
 contains = [
   "PropulsionPogoConfig",
+  "PropulsionPogoModeSource",
   "propulsion.pogo",
+  "mode_source",
+  "vehicle_bending",
   "open_loop_gain_rad2_s2",
   "PogoStabilityRack",
   "require_stable",
   "PogoStability::new",
   "parses_propulsion_pogo_schema",
+  "parses_propulsion_pogo_vehicle_bending_mode_source",
   "rejects_propulsion_pogo_invalid_numeric_values",
+  "rejects_propulsion_pogo_vehicle_bending_with_explicit_mode_fields",
   "pogo_rack_accepts_stable_required_config",
+  "pogo_rack_consumes_vehicle_bending_mode_source",
+  "pogo_rack_rejects_vehicle_bending_mode_source_without_bending_block",
   "pogo_rack_rejects_required_unstable_config",
 ]
 requirements = ["REQ-PROP-019"]
@@ -4652,10 +5326,14 @@ requirements = ["REQ-PROP-029"]
 [[verification]]
 id = "V-PROP-030"
 kind = "test"
-command = "cargo test -p openbmp-runner --test thermochem_reference cantera_gri30_reference_table --locked"
+command = "cargo test -p openbmp-runner --test thermochem_reference cantera_reference_tables --locked"
 paths = [
   "data/thermochem/lox-lch4-cantera-gri30-schema-1.toml",
   "data/thermochem/lox-lch4-cantera-gri30-tolerance-v1.toml",
+  "data/thermochem/lox-lh2-cantera-gri30-schema-1.toml",
+  "data/thermochem/lox-lh2-cantera-gri30-tolerance-v1.toml",
+  "data/thermochem/lox-rp1-ndodecane-cantera-reitz-schema-1.toml",
+  "data/thermochem/lox-rp1-ndodecane-cantera-reitz-tolerance-v1.toml",
   "data/thermochem/provenance.md",
   "scripts/generate_cantera_thermochem_reference.py",
   "crates/openbmp-runner/tests/thermochem_reference.rs",
@@ -4666,9 +5344,26 @@ contains = [
   "openbmp.thermochem_reference = 1",
   "Cantera 3.2.0",
   "gri30.yaml",
+  "nDodecane_Reitz.yaml",
   "LOX/LCH4",
-  "pc2mpa_mr3p1_interpolated",
-  "cantera_gri30_reference_table_matches_thermochem_and_liquid_performance",
+  "LOX/LH2",
+  "LOX/RP-1 n-dodecane surrogate",
+  "pc30mpa_mr3p6",
+  "pc30mpa_mr6p5",
+  "pc30mpa_mr3",
+  "pc1p5mpa_mr2p7_interpolated",
+  "pc2mpa_mr3p1_log_pressure_interpolated",
+  "pc6mpa_mr3p25_interpolated",
+  "pc18mpa_mr3p5_interpolated",
+  "pc1p5mpa_mr4p75_interpolated",
+  "pc2mpa_mr5p5_log_pressure_interpolated",
+  "pc6mpa_mr5p75_interpolated",
+  "pc18mpa_mr6p25_interpolated",
+  "pc1p5mpa_mr2p3_interpolated",
+  "pc2mpa_mr2p6_log_pressure_interpolated",
+  "pc6mpa_mr2p7_interpolated",
+  "pc18mpa_mr2p9_interpolated",
+  "cantera_reference_tables_match_thermochem_and_liquid_performance",
   "ThermochemTable::load_from_str",
   "ThermochemQuery",
   "LiquidEnginePerformance::from_thermochemistry_with_efficiency",
@@ -4676,6 +5371,331 @@ contains = [
   "expected_isp_s",
 ]
 requirements = ["REQ-PROP-030"]
+
+[[verification]]
+id = "V-SENSOR-001"
+kind = "test"
+command = "cargo test -p openbmp-scenario specific_force_source --locked && cargo test -p openbmp-runner --test specific_force_truth force_accumulator --locked"
+paths = [
+  "crates/openbmp-sensors/src/sensor.rs",
+  "crates/openbmp-sensors/src/lib.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/fc_bridge.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-runner/tests/specific_force_truth.rs",
+  "docs/parity/09-sensors-navigation-and-actuators.md",
+  "docs/parity/progress.md",
+  "docs/scenario-format.md",
+]
+contains = [
+  "SpecificForceTruth",
+  "SpecificForceSourceConfig",
+  "specific_force_source",
+  "ForceAccumulator",
+  "uses_force_accumulator_truth",
+  "point_mass_specific_force_truth",
+  "rigid_body_specific_force_truth",
+  "force_accumulator_specific_force_truth_uses_thrust_over_mass",
+  "imu_accepts_force_accumulator_specific_force_source",
+  "rejects_specific_force_source_on_non_imu_sensor",
+]
+requirements = ["REQ-SENSOR-001"]
+
+[[verification]]
+id = "V-SENSOR-002"
+kind = "test"
+command = "cargo test -p openbmp-physics stationary_rotating_frame --locked && cargo test -p openbmp-scenario specific_force_source --locked && cargo test -p openbmp-runner --test specific_force_truth stationary_rotating_frame --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-physics/src/frames.rs",
+  "crates/openbmp-physics/src/lib.rs",
+  "crates/openbmp-runner/src/fc_bridge.rs",
+  "crates/openbmp-runner/tests/specific_force_truth.rs",
+  "docs/parity/09-sensors-navigation-and-actuators.md",
+  "docs/parity/progress.md",
+  "docs/scenario-format.md",
+]
+contains = [
+  "StationaryRotatingFrameImuTruth",
+  "StationaryRotatingFrame",
+  "stationary_rotating_frame",
+  "stationary_rotating_frame_imu_truth_eci",
+  "stationary_rotating_frame_imu_truth_equator_matches_closed_form",
+  "stationary_rotating_frame_gyro_projects_to_local_ned",
+  "stationary_rotating_frame_imu_truth_rejects_nonfinite_inputs",
+  "imu_accepts_stationary_rotating_frame_specific_force_source",
+  "stationary_rotating_frame_truth_projects_wgs84_equator_to_body_ned",
+]
+requirements = ["REQ-SENSOR-002"]
+
+[[verification]]
+id = "V-SENSOR-003"
+kind = "test"
+command = "cargo test -p openbmp-vehicle second_order --locked && cargo test -p openbmp-vehicle oscillatory --locked && cargo test -p openbmp-scenario second_order_servo --locked && cargo test -p openbmp-scenario oscillatory --locked && cargo test -p openbmp-runner second_order_servo --locked && cargo test -p openbmp-runner oscillatory --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/effectors.rs",
+  "crates/openbmp-vehicle/src/effector/linear.rs",
+  "crates/openbmp-vehicle/src/effector/mod.rs",
+  "crates/openbmp-vehicle/src/effector/rcs.rs",
+  "crates/openbmp-vehicle/src/effector/second_order.rs",
+  "crates/openbmp-vehicle/src/lib.rs",
+  "docs/scenario-format.md",
+  "docs/parity/09-sensors-navigation-and-actuators.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "SecondOrderServoParams",
+  "SecondOrderServo",
+  "RateLimitBacklashDescribingFunction",
+  "rate_limit_backlash_describing_function",
+  "EffectorFault::Oscillatory",
+  "EffectorKindConfig::SecondOrderServo",
+  "kind = \"second_order_servo\"",
+  "step_response_matches_closed_form_second_order",
+  "acceleration_limit_bounds_initial_motion",
+  "backlash_holds_small_reversal_until_dead_zone_is_crossed",
+  "rate_limit_backlash_fundamental_matches_describing_function",
+  "rate_limit_backlash_describing_function_rejects_invalid_inputs",
+  "latency_delays_command_before_servo_dynamics",
+  "jam_fault_locks_position_and_clears_rate",
+  "oscillatory_fault_adds_deterministic_command_offset",
+  "oscillatory_fault_enters_before_bandwidth_dynamics",
+  "rcs_pulse_effector_oscillatory_fault_is_quantized",
+  "parses_second_order_servo_effector_under_v2",
+  "second_order_servo_rejects_invalid_parameters",
+  "parses_oscillatory_effector_fault",
+  "rejects_oscillatory_effector_fault_with_invalid_frequency",
+  "second_order_servo_kind_builds_and_steps_from_scenario",
+  "oscillatory_fault_builds_and_offsets_command_from_scenario",
+]
+requirements = ["REQ-SENSOR-003"]
+
+[[verification]]
+id = "V-SENSOR-004"
+kind = "test"
+command = "cargo test -p openbmp-vehicle rcs --locked && cargo test -p openbmp-scenario direct_torque_rcs --locked && cargo test -p openbmp-runner direct_torque_rcs --locked"
+paths = [
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/effectors.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-runner/src/tanks.rs",
+  "crates/openbmp-vehicle/src/effector/mod.rs",
+  "crates/openbmp-vehicle/src/effector/rcs.rs",
+  "crates/openbmp-vehicle/src/lib.rs",
+  "crates/openbmp-vehicle/src/propellant_budget.rs",
+  "docs/scenario-format.md",
+  "docs/parity/09-sensors-navigation-and-actuators.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "RcsMinimumImpulseBit",
+  "RcsPulse",
+  "PwpfParams",
+  "PwpfModulator",
+  "PwpfStep",
+  "PulsePolarity",
+  "RcsPulseEffectorParams",
+  "RcsPulseEffector",
+  "RcsBlowdownParams",
+  "RcsThrusterConfig",
+  "RcsThrusterBankEffectorParams",
+  "RcsThrusterBankEffector",
+  "RcsThrusterBankPulse",
+  "RcsCoupledThrusterPulse",
+  "RcsCoupledAllocation",
+  "RcsCoupledAllocator",
+  "RcsError",
+  "RcsTankFeedConfig",
+  "blowdown_pressure_scale",
+  "set_rcs_feed_drain_rates",
+  "feed = { tank",
+  "CoupledBank",
+  "mode = \"coupled_bank\"",
+  "mib_quantizer_zero_floor_and_linear_regions",
+  "mib_quantizer_rejects_invalid_inputs_and_step_capacity",
+  "pwpf_schmitt_hysteresis_tracks_positive_command",
+  "pwpf_schmitt_supports_negative_polarity",
+  "rcs_pulse_effector_quantizes_direct_command_to_average_output",
+  "rcs_pulse_effector_pwpf_gates_nominal_pulses",
+  "rcs_thruster_bank_allocates_geometry_to_equivalent_command",
+  "rcs_thruster_bank_blowdown_reduces_later_capacity",
+  "rcs_coupled_allocator_allocates_cross_axis_thruster_geometry",
+  "rcs_coupled_allocator_reports_mib_quantization_without_saturation",
+  "rcs_coupled_allocator_rejects_invalid_geometry_or_request",
+  "parses_direct_torque_rcs_pulse_config_under_v3",
+  "parses_direct_torque_rcs_bank_config_under_v3",
+  "parses_direct_torque_rcs_bank_tank_feed_under_v3",
+  "parses_direct_torque_rcs_coupled_bank_group_under_v3",
+  "parses_direct_torque_rcs_coupled_bank_pwpf_under_v3",
+  "parses_direct_torque_rcs_coupled_bank_tank_feed_under_v3",
+  "direct_torque_rcs_pulse_config_rejects_bad_pwpf_thresholds",
+  "direct_torque_rcs_bank_rejects_missing_axis_authority",
+  "direct_torque_rcs_coupled_bank_rejects_missing_axis_member",
+  "direct_torque_rcs_tank_feed_rejects_unknown_tank",
+  "direct_torque_rcs_tank_feed_rejects_tank_without_ullage",
+  "direct_torque_rcs_pulse_kind_builds_and_quantizes_from_scenario",
+  "direct_torque_rcs_bank_kind_builds_and_quantizes_from_scenario",
+  "direct_torque_rcs_bank_tank_feed_derates_thrust_and_reports_drain",
+  "direct_torque_rcs_coupled_bank_group_builds_and_quantizes_from_scenario",
+  "direct_torque_rcs_coupled_bank_pwpf_gates_group_axes_from_scenario",
+  "direct_torque_rcs_coupled_bank_tank_feed_reports_shared_drain",
+]
+requirements = ["REQ-SENSOR-004"]
+
+[[verification]]
+id = "V-SENSOR-005"
+kind = "test"
+command = "cargo test -p openbmp-sensors airdata --locked && cargo test -p openbmp-msgs --locked && cargo test -p openbmp-bridge sensor_packet_round_trips --locked && cargo test -p openbmp-fc airdata --locked && cargo test -p openbmp-scenario parses_all_supported_sensor_kinds --locked && cargo test -p openbmp-runner build_sensor_accepts_airdata_budget --locked && cargo test -p openbmp-runner append_bridge_measurement_serializes_airdata_fields --locked && cargo test -p openbmp-runner fc_runner_step_bridge_packet_routes_sensor_packet_through_fc_step --locked"
+paths = [
+  "crates/openbmp-msgs/src/lib.rs",
+  "crates/openbmp-bridge/src/packet.rs",
+  "crates/openbmp-bridge/src/codec.rs",
+  "crates/openbmp-fc/src/sensor_ingest.rs",
+  "crates/openbmp-fc/src/step.rs",
+  "crates/openbmp-fc/tests/sensor_ingest.rs",
+  "crates/openbmp-sensors/src/airdata.rs",
+  "crates/openbmp-sensors/src/lib.rs",
+  "crates/openbmp-sensors/src/sensor.rs",
+  "crates/openbmp-sensors/src/stimulus.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/registry.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-runner/src/fc.rs",
+  "crates/openbmp-runner/src/fc_bridge.rs",
+  "data/sensors/airdata-textbook.toml",
+  "data/sensors/provenance.md",
+  "docs/scenario-format.md",
+  "docs/parity/09-sensors-navigation-and-actuators.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "AirDataNoiseBudget",
+  "SyntheticAirData",
+  "pitot_impact_pressure_pa",
+  "mach_from_pitot_impact_pressure",
+  "calibrated_airspeed_from_impact_pressure",
+  "pressure_altitude_from_static_pressure",
+  "vane_angles_from_body_velocity",
+  "SensorMeasurement::AirData",
+  "AirDataSample",
+  "AirDataIngest",
+  "VotedAirDataIngest",
+  "with_airdata",
+  "PROTOCOL_VERSION: u16 = 4",
+  "airdata_static_pressure_pa",
+  "air_relative_velocity_body_m_s",
+  "pressure_altitude_m",
+  "openbmp.airdata_noise_budget = 1",
+  "kind = \"airdata\"",
+  "subsonic_pitot_pressure_matches_closed_form",
+  "supersonic_pitot_pressure_inverts_to_original_mach",
+  "vanes_recover_alpha_beta_from_body_velocity",
+  "fixed_latency_reports_delayed_timestamp_on_adapter",
+  "sensor_packet_round_trips",
+  "airdata_ingest_publishes_sample",
+  "voted_airdata_ingest_publishes_lane_status",
+  "fc_step_publishes_airdata_input_before_dispatch",
+  "parses_all_supported_sensor_kinds",
+  "build_sensor_accepts_airdata_budget",
+  "append_bridge_measurement_serializes_airdata_fields",
+  "fc_runner_step_bridge_packet_routes_sensor_packet_through_fc_step",
+]
+requirements = ["REQ-SENSOR-005"]
+
+[[verification]]
+id = "V-SENSOR-006"
+kind = "test"
+command = "cargo test -p openbmp-msgs --locked && cargo test -p openbmp-bridge sensor_packet_round_trips --locked && cargo test -p openbmp-bridge sensor_fault_mutates_imu_increment_fields --locked && cargo test -p openbmp-fc static_topic_indices_are_unique_and_in_range --locked && cargo test -p openbmp-fc fc_step_publishes_imu_increment_window_before_dispatch --locked && cargo test -p openbmp-sensors high_rate --locked && cargo test -p openbmp-sensors strapdown --locked && cargo test -p openbmp-scenario high_rate --locked && cargo test -p openbmp-scenario fc_transport_faults_block_is_v3_only_and_validates_under_v3 --locked && cargo test -p openbmp-runner imu_ --locked && cargo test -p openbmp-runner bridge_packet_input_carries_imu_increment_window --locked && cargo test -p openbmp-runner transport_fault_config_mapping_mutates_sensor_packet --locked && cargo test -p openbmp-pil pil_sensor_packet_input_carries_imu_increment_window --locked"
+paths = [
+  "crates/openbmp-bridge/src/codec.rs",
+  "crates/openbmp-bridge/src/fault.rs",
+  "crates/openbmp-bridge/src/lib.rs",
+  "crates/openbmp-bridge/src/packet.rs",
+  "crates/openbmp-msgs/src/lib.rs",
+  "crates/openbmp-fc/src/step.rs",
+  "crates/openbmp-fc/src/topics.rs",
+  "crates/openbmp-fc/README.md",
+  "crates/openbmp-pil/src/lib.rs",
+  "crates/openbmp-runner/src/fc.rs",
+  "crates/openbmp-runner/src/fc_bridge.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "crates/openbmp-sensors/src/imu.rs",
+  "crates/openbmp-sensors/src/lib.rs",
+  "crates/openbmp-sensors/src/strapdown.rs",
+  "docs/scenario-format.md",
+  "docs/parity/09-sensors-navigation-and-actuators.md",
+  "docs/parity/progress.md",
+]
+contains = [
+  "InertialIncrement",
+  "IncrementQuantization",
+  "HighRateImuConfig",
+  "InertialTruthSample",
+  "ConingScullingAlgo",
+  "ConingScullingWindow",
+  "SensorHighRateImuConfig",
+  "ImuInertialIncrement",
+  "ImuIncrementWindow",
+  "ImuIncrementPacket",
+  "BridgeScalarSignal",
+  "ImuIncrementDeltaThetaRad",
+  "ImuIncrementDeltaVMs",
+  "ImuIncrementDtS",
+  "SENSOR_IMU_INCREMENTS",
+  "PROTOCOL_VERSION: u16 = 4",
+  "sensor.imu_increments",
+  "imu_increments",
+  "with_imu_increment_window",
+  "quantize_increment_vector",
+  "inertial_increment_from_constant_truth",
+  "inertial_increment_from_rk4_truth",
+  "integrate_constant_truth_window",
+  "integrate_rk4_truth_window",
+  "coning_sculling_window",
+  "coning_sculling_update",
+  "with_high_rate",
+  "last_high_rate_increments",
+  "high_rate",
+  "constant_truth_increment_quantizes_delta_theta_and_delta_v",
+  "constant_truth_window_assigns_locked_sequence_numbers",
+  "rk4_truth_increment_integrates_linear_truth_exactly",
+  "rk4_truth_window_assigns_locked_sequence_numbers",
+  "rk4_truth_increment_rejects_non_finite_truth",
+  "high_rate_config_rejects_zero_sub_samples",
+  "high_rate_imu_generates_quantized_increment_window_without_changing_sample",
+  "high_rate_imu_uses_time_varying_truth_after_first_sample",
+  "two_sample_coning_matches_closed_form_cross_product",
+  "two_sample_sculling_matches_manufactured_cross_product",
+  "coning_sculling_rejects_empty_or_bad_increment_window",
+  "imu_accepts_high_rate_increment_config",
+  "rejects_high_rate_increment_config_on_non_imu_sensor",
+  "rejects_high_rate_increment_config_with_zero_sub_samples",
+  "fc_step_publishes_imu_increment_window_before_dispatch",
+  "sensor_fault_mutates_imu_increment_fields",
+  "fc_transport_faults_block_is_v3_only_and_validates_under_v3",
+  "transport_fault_config_mapping_mutates_sensor_packet",
+  "build_sensor_accepts_imu_high_rate_config",
+  "bridge_sensor_reports_imu_increment_window_after_read",
+  "bridge_packet_input_carries_imu_increment_window",
+  "pil_sensor_packet_input_carries_imu_increment_window",
+  "append_bridge_imu_increment_window",
+  "publish_imu_increment_window",
+]
+requirements = ["REQ-SENSOR-006"]
 
 [[verification]]
 id = "V-PLUME-001"
@@ -4912,3 +5932,320 @@ contains = [
   "stimulus_commands_fail_closed",
 ]
 requirements = ["REQ-WEB-003"]
+
+[[requirements]]
+id = "REQ-COMM-001"
+title = "The communications substrate exposes ground-site visibility and pass geometry"
+statement = "The workspace contains an openbmp-comm L3 crate registered in the workspace and independent of openbmp-fc; it exposes WGS84 GeodeticPosition conversion to ECEF, GroundSite line-of-sight observations with slant range, range rate, azimuth, elevation, and visibility against a site elevation floor plus optional azimuth-binned MaskDeck terrain masks, and deterministic visibility_events / pass_intervals extraction over strictly time-ordered single-site samples with byte-stable CSV pass-table serialization. The crate parses a provenance-recorded data/comm/geometric-visibility-oracle-v1.toml tolerance table and checks point geometry plus fixed-Earth line-scan rise/set extraction against that repository-local analytic oracle, and parses data/comm/sgp4-visibility-oracle-v1.toml to check OpenBMP fixed-step rise/set extraction against bisection-refined SGP4/TLE LEO visibility crossings from the external sgp4 2.4.0 library. The schema-v3 [comm] / [[comm.sites]] parser surface accepts site ids, latitude_deg, longitude_deg, altitude_m, min_elevation_deg, and optional terrain_mask bins while rejecting v2 declarations and out-of-range fields fail-closed. The runner converts sampled point-mass and rigid-body primary ECI truth states through the active FrameContext, accumulates site observations, exposes deterministic pass-table bytes through RunOutcome.comm, and publishes per-site comm.<site>.slant_range_m, range_rate_m_s, elevation_rad, azimuth_rad, mask_elevation_rad, and visible telemetry channels for [comm] scenarios. This closes WP-20.1 only; link budgets, packet effects, blackout, station networks, tracking observables, and frame-shaped stream export remain later WP-20 work."
+verification = ["V-COMM-001"]
+
+[[verification]]
+id = "V-COMM-001"
+kind = "test"
+command = "cargo test -p openbmp-comm --locked && cargo test -p openbmp-scenario comm_block --locked && cargo test -p openbmp-runner point_mass_comm_report_contains_byte_stable_pass_table --locked"
+paths = [
+  "Cargo.toml",
+  "crates/openbmp-comm/Cargo.toml",
+  "crates/openbmp-comm/src/lib.rs",
+  "crates/openbmp-runner/Cargo.toml",
+  "crates/openbmp-runner/src/comm.rs",
+  "crates/openbmp-runner/src/lib.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "data/comm/geometric-visibility-oracle-v1.toml",
+  "data/comm/sgp4-visibility-oracle-v1.toml",
+  "data/comm/provenance.md",
+  "docs/parity/20-telemetry-rf-links-and-ground-network.md",
+  "docs/parity/progress.md",
+  "docs/scenario-format.md",
+]
+contains = [
+  "openbmp-comm",
+  "GeodeticPosition",
+  "GroundSite",
+  "MaskDeck",
+  "VisibilitySample",
+  "MixedSiteSamples",
+  "visibility_events",
+  "pass_intervals",
+  "write_pass_intervals_csv",
+  "CommRunAccumulator",
+  "CommRunReport",
+  "CommTelemetryChannels",
+  "RunOutcome",
+  "comm.equator-zero.slant_range_m",
+  "comm.equator-zero.elevation_rad",
+  "comm.equator-zero.mask_elevation_rad",
+  "comm.equator-zero.visible",
+  "CommConfig",
+  "CommGroundSiteConfig",
+  "CommTerrainMaskBinConfig",
+  "comm_block_is_v3_only_and_validates_under_v3",
+  "comm_block_rejects_out_of_range_mask_elevation",
+  "overhead_site_geometry_matches_analytic_range",
+  "terrain_mask_interpolates_across_wrap",
+  "visibility_events_and_passes_are_deterministic",
+  "pass_extraction_rejects_mixed_site_samples",
+  "pass_interval_csv_is_byte_stable",
+  "geometric_visibility_matches_oracle_tolerance_table",
+  "sgp4_visibility_matches_external_oracle_tolerance_table",
+  "Synthetic fixed-Earth communications visibility tolerance table",
+  "sgp4 2.4.0 ISS TLE visibility pass oracle",
+  "expected_aos_s",
+  "minimum_event_count",
+  "point_mass_comm_report_contains_byte_stable_pass_table",
+]
+requirements = ["REQ-COMM-001"]
+
+[[requirements]]
+id = "REQ-COMM-002"
+title = "The communications substrate exposes antenna gain and body-mask decks"
+statement = "The openbmp-comm crate exposes a WP-20.2 antenna/body-mask substrate: AntennaGainDeck validates an axisymmetric boresight plus strictly increasing off-boresight gain samples and interpolates dBi gain for body-frame directions; BodyMaskDeck validates or precomputes body-frame occlusion samples from BodyMaskTriangle direct ray casts, exposes allocation-free nearest-direction runtime lookup, rejects degenerate vectors/triangles fail-closed, and computes a deterministic SHA-256 deck digest bound to a supplied mesh hash. The repository records data/comm/antenna-body-mask-v1.toml, data/comm/antenna-link-budget-v1.toml, and provenance for synthetic gain/intersection fixtures that prove interpolation values, direct triangle mask precompute, runtime lookup, stable deck hashing, and link-budget application. The schema-v3 [comm] surface accepts [[comm.antennas]] entries with optional gain_deck/body_mask_deck paths plus gain_deck_sha256/body_mask_deck_sha256 pins, rejects duplicate antenna ids and orphan pins fail-closed, and resolves/hashes those files through the standard Scenario::resolved_files_with_reader mechanism. The runner point-mass and rigid-body paths parse declared comm antenna decks from the resolved byte map, validate gain/body-mask data through openbmp-comm constructors, precompute body masks, report resolved file hashes, derived body-mask hashes, and sample counts in RunOutcome.comm, rotate vehicle-to-site line of sight into the body frame, add sampled antenna gain to link EIRP, gate link visibility when the body-mask lookup is blocked, and publish comm.link.<link>.antenna_gain_dbi plus comm.link.<link>.body_blocked telemetry. This is a WP-20.2 partial implementation only: doc-03 watertight mesh/BVH integration and real mesh-derived regeneration tooling remain open."
+verification = ["V-COMM-002"]
+
+[[verification]]
+id = "V-COMM-002"
+kind = "test"
+command = "cargo test -p openbmp-comm antenna_body_mask_deck_matches_fixture --locked && cargo test -p openbmp-scenario comm_antenna --locked && cargo test -p openbmp-runner point_mass_comm_report_contains_byte_stable_pass_table --locked"
+paths = [
+  "crates/openbmp-comm/Cargo.toml",
+  "crates/openbmp-comm/src/lib.rs",
+  "crates/openbmp-runner/src/comm.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "data/comm/antenna-body-mask-v1.toml",
+  "data/comm/antenna-link-budget-v1.toml",
+  "data/comm/provenance.md",
+  "docs/parity/20-telemetry-rf-links-and-ground-network.md",
+  "docs/parity/progress.md",
+  "docs/scenario-format.md",
+]
+contains = [
+  "AntennaGainDeck",
+  "AntennaGainSample",
+  "BodyMaskDeck",
+  "BodyMaskSample",
+  "BodyMaskTriangle",
+  "precompute_from_triangles",
+  "is_blocked_nearest",
+  "sha256_hex_with_mesh_hash",
+  "antenna_body_mask_deck_matches_fixture",
+  "Synthetic antenna gain and body-mask deck tolerance table",
+  "CommAntennaConfig",
+  "gain_deck_sha256",
+  "body_mask_deck_sha256",
+  "comm_antenna_decks_resolve_and_hash_with_injected_reader",
+  "comm_antenna_deck_sha256_requires_deck_path",
+  "CommAntennaDeckReport",
+  "load_antenna_decks",
+  "vehicle_to_site_body_direction",
+  "antenna_gain_dbi",
+  "body_blocked",
+  "body_mask_derived_sha256_hex",
+  "Synthetic antenna gain/body-mask link budget fixture",
+  "point_mass_comm_report_contains_byte_stable_pass_table",
+]
+requirements = ["REQ-COMM-002"]
+
+[[requirements]]
+id = "REQ-COMM-003"
+title = "The communications substrate evaluates link budgets and FER curves"
+statement = "The openbmp-comm crate exposes a WP-20.3 link-budget substrate: LinkBudgetInput validates per-link EIRP, receiver G/T, slant range, carrier frequency, bit rate, required Eb/N0, nonnegative loss terms, visibility, and blackout flags; free_space_path_loss_db computes deterministic free-space loss; evaluate_link_budget applies the locked dB operand order to produce LinkState fields for free-space loss, C/N0, Eb/N0, margin, FER, visibility, and blackout; FerCurveDeck validates monotone coded-performance samples then performs log-linear FER interpolation while failing closed outside the sampled Eb/N0 envelope; and ElevationLossDeck validates elevation-indexed nonnegative atmospheric/rain loss samples with fail-closed interpolation. The repository records data/comm/link-budget-fer-v1.toml, data/comm/attenuation-loss-v1.toml, data/comm/antenna-link-budget-v1.toml, and provenance for synthetic S-band budget/FER, elevation-loss, and antenna-link fixtures that prove arithmetic, interpolation, monotonicity, no-link FER behavior, additive atmospheric/rain loss application, antenna gain application to EIRP, body-mask visibility gating, and out-of-envelope rejection. The schema-v3 [comm] surface accepts [[comm.links]] budget constants, fer_curve_deck/fer_curve_deck_sha256 pins, optional atmospheric_loss_deck/atmospheric_loss_deck_sha256 pins, and optional rain_loss_deck/rain_loss_deck_sha256 pins, validates site/antenna references fail-closed, resolves/hashes those decks through Scenario::resolved_files_with_reader, and the point-mass/rigid-body runner paths load those decks, resolve the referenced antenna decks, and publish comm.link.<link>.free_space_loss_db, .c_n0_dbhz, .eb_n0_db, .margin_db, .fer, .visible, .blackout, .antenna_gain_dbi, and .body_blocked telemetry channels. This is a WP-20.3 partial implementation only: blackout attenuation and packet-effect integration remain open."
+verification = ["V-COMM-003"]
+
+[[verification]]
+id = "V-COMM-003"
+kind = "test"
+command = "cargo test -p openbmp-comm link_budget_and_fer_curve_match_fixture --locked && cargo test -p openbmp-comm elevation_loss_deck_matches_fixture --locked && cargo test -p openbmp-scenario comm_ --locked && cargo test -p openbmp-runner point_mass_comm_report_contains_byte_stable_pass_table --locked"
+paths = [
+  "crates/openbmp-comm/src/lib.rs",
+  "crates/openbmp-runner/src/comm.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "data/comm/attenuation-loss-v1.toml",
+  "data/comm/antenna-link-budget-v1.toml",
+  "data/comm/link-budget-fer-v1.toml",
+  "data/comm/provenance.md",
+  "docs/parity/20-telemetry-rf-links-and-ground-network.md",
+  "docs/parity/progress.md",
+  "docs/scenario-format.md",
+  "requirements.toml",
+]
+contains = [
+  "LinkBudgetInput",
+  "LinkState",
+  "FerCurveDeck",
+  "FerCurveSample",
+  "ElevationLossDeck",
+  "ElevationLossSample",
+  "free_space_path_loss_db",
+  "evaluate_link_budget",
+  "link_budget_and_fer_curve_match_fixture",
+  "elevation_loss_deck_matches_fixture",
+  "CommLinkConfig",
+  "CommLinkReport",
+  "fer_curve_deck_sha256",
+  "atmospheric_loss_deck_sha256",
+  "rain_loss_deck_sha256",
+  "comm_link_rejects_unknown_site_id",
+  "comm.link.s-band-equator.c_n0_dbhz",
+  "comm.link.s-band-equator.antenna_gain_dbi",
+  "comm.link.s-band-equator.body_blocked",
+  "vehicle_to_site_body_direction",
+  "point_mass_comm_report_contains_byte_stable_pass_table",
+  "Synthetic link budget and FER tolerance table",
+  "Synthetic elevation-indexed attenuation and rain loss table",
+  "Synthetic antenna gain/body-mask link budget fixture",
+]
+requirements = ["REQ-COMM-003"]
+
+[[requirements]]
+id = "REQ-COMM-004"
+title = "The communications substrate maps link state to deterministic packet effects"
+statement = "The openbmp-comm crate exposes a WP-20.4 link-channel packet-effect substrate: LinkChannelModel validates a finite non-negative processing delay and packet error action, LinkPacketContext keys each packet by scenario seed, step, stable link stream id, packet index, direction, and slant range, LinkPacketEffect reports propagation delay, processing delay, total latency, deterministic FER draw evidence, and packet disposition, link_stream_id_from_id provides a stable per-link stream id, no-visibility or blackout LinkState drops packets fail-closed without drawing, and physical-link FER draws are generated from a domain-keyed DeterministicRng stream to produce deliver, drop, or bit-flip dispositions. LinkLossRateGate and evaluate_link_loss_rate_gate evaluate deterministic packet streams and gate observed dropped-or-corrupted packet counts against a two-sided exact binomial acceptance interval for the expected FER, treating no-visibility or blackout as expected 100% errored packets. The repository records data/comm/link-channel-model-v1.toml and provenance for a synthetic packet-effect fixture that proves one-way light-time latency, declared processing delay addition, deterministic repeated draws, no-link drop behavior, validation failures, packet-index/domain separation, and bit-flip error action. The schema-v3 [comm] surface accepts bridge_link_selection = \"first_declared\" or \"best_margin\", optional non-negative bridge_link_hysteresis_db, [[comm.links]].packet_processing_delay_s, packet_error_action = { kind = \"drop\" } or { kind = \"bit_flip\", mask = <nonzero> }, optional packet_loss_rate_gate = { packet_count = <1..1000000>, alpha = <0..1> }, and optional positive data_loss_timeout_s, validates negative hysteresis, negative delay, zero masks, invalid packet counts, invalid alpha, and non-positive timeouts fail-closed, and the runner validates those declarations through LinkChannelModel while reporting packet_processing_delay_s, packet_error_action, packet_error_bit_flip_mask, downlink/uplink packet_loss_rate_gate evidence, and downlink data_loss_timeout latch evidence in RunOutcome.comm link reports. The runner stores the latest comm observation, evaluates the selected comm link for FC bridge sensor and command frames, preserves first-declared fail-closed behavior by default, can select the visible non-blackout declared link with the highest current margin under bridge_link_selection = \"best_margin\", retains the active visible non-blackout link while the best candidate remains inside bridge_link_hysteresis_db, preserves zero-hysteresis greedy tie-break behavior, queues delivered frames by step-quantized downlink/uplink latency, preserves direct-vs-transport determinism for zero-step delivered comm links, and fails closed at the [fc.transport] seam on drop or bit-flip packet effects before configured transport faults. This is a WP-20.4 partial implementation only: blackout attenuation remains open, while declared pass-plan handover and relay composition are tracked by REQ-COMM-005."
+verification = ["V-COMM-004"]
+
+[[verification]]
+id = "V-COMM-004"
+kind = "test"
+command = "cargo test -p openbmp-comm link_channel --locked && cargo test -p openbmp-comm link_loss_rate --locked && cargo test -p openbmp-scenario comm_ --locked && cargo test -p openbmp-runner point_mass_comm --locked && cargo test -p openbmp-runner comm_link_effect --locked && cargo test -p openbmp-runner comm_latency_step_delay --locked && cargo test -p openbmp-runner comm_frame_queue --locked && cargo test -p openbmp-runner best_margin --locked && cargo test -p openbmp-runner fc_transport_comm_processing_delay_queues_actuator_commands --locked && cargo test -p openbmp-runner fc_transport_zero_step_comm_link_preserves_direct_bridge_bytes --locked && cargo test -p openbmp-runner fc_transport_best_margin_comm_link_handover_uses_visible_second_link --locked && cargo test -p openbmp-runner fc_transport_first_declared_comm_link_fails_closed_on_blocked_first_link --locked"
+paths = [
+  "crates/openbmp-comm/src/lib.rs",
+  "crates/openbmp-runner/src/comm.rs",
+  "crates/openbmp-runner/src/fc_bridge.rs",
+  "crates/openbmp-runner/tests/fc_transport.rs",
+  "crates/openbmp-runner/src/point_mass.rs",
+  "crates/openbmp-runner/src/rigid_body.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/lint.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "data/comm/link-channel-model-v1.toml",
+  "data/comm/provenance.md",
+  "docs/parity/20-telemetry-rf-links-and-ground-network.md",
+  "docs/parity/progress.md",
+  "docs/scenario-format.md",
+  "requirements.toml",
+]
+contains = [
+  "LinkChannelModel",
+  "LinkPacketContext",
+  "LinkPacketEffect",
+  "LinkPacketDisposition",
+  "LinkLossRateGate",
+  "evaluate_link_loss_rate_gate",
+  "LinkErrorAction",
+  "LinkPacketDirection",
+  "link_stream_id_from_id",
+  "CommPacketErrorActionConfig",
+  "CommPacketLossRateGateConfig",
+  "CommBridgeLinkSelectionConfig",
+  "bridge_link_selection",
+  "bridge_link_hysteresis_db",
+  "packet_processing_delay_s",
+  "packet_error_action",
+  "packet_error_bit_flip_mask",
+  "packet_loss_rate_gate",
+  "data_loss_timeout_s",
+  "CommPacketLossRateGateReport",
+  "CommPacketLossRateDirectionReport",
+  "CommDataLossTimeoutReport",
+  "link_channel_model_matches_fixture",
+  "link_channel_model_drops_no_link_and_validates_inputs",
+  "link_channel_model_domain_separates_draws_and_bitflip_errors",
+  "link_loss_rate_gate_accepts_expected_fer_stream",
+  "link_loss_rate_gate_handles_no_link_and_validates_inputs",
+  "comm_link_rejects_invalid_packet_effect_fields",
+  "set_comm_link_effects",
+  "bridge_link_index",
+  "best_margin_bridge_link_index",
+  "active_bridge_link_id",
+  "best_margin_selection_hysteresis_keeps_active_link_inside_deadband",
+  "best_margin_zero_hysteresis_preserves_greedy_tie_break",
+  "best_margin_selection_falls_back_to_first_declared_when_no_link_is_usable",
+  "CommLinkFrameQueues",
+  "comm_latency_step_delay",
+  "apply_comm_link_packet_effect",
+  "comm_link_effect_drops_sensor_frame_fail_closed",
+  "comm_link_effect_corrupts_command_frame_fail_closed",
+  "fc_transport_comm_processing_delay_queues_actuator_commands",
+  "fc_transport_zero_step_comm_link_preserves_direct_bridge_bytes",
+  "fc_transport_best_margin_comm_link_handover_uses_visible_second_link",
+  "fc_transport_first_declared_comm_link_fails_closed_on_blocked_first_link",
+  "point_mass_comm_report_contains_byte_stable_pass_table",
+  "point_mass_comm_data_loss_timeout_latches_on_no_link",
+  "Synthetic link-channel packet effect fixture",
+]
+requirements = ["REQ-COMM-004"]
+
+[[requirements]]
+id = "REQ-COMM-005"
+title = "The communications bridge supports declared pass-plan handover"
+statement = "The schema-v3 [comm] surface accepts bridge_link_selection = \"declared_plan\" and non-overlapping [[comm.bridge_pass_plan]] windows keyed by declared comm link id, with finite non-negative start_s and finite end_s greater than start_s. It also accepts [[comm.relays]] declared GEO relay nodes with relay-to-ground budget constants and FER decks, plus [[comm.links]].relay_id references that compose vehicle-to-relay and relay-to-ground budgets into a two-hop LinkState using bottleneck margin and combined independent-hop FER. The parser validates unknown link ids, unknown relay ids, missing declared-plan windows, invalid times, overlapping windows, and invalid relay geometry or budget fields fail-closed. The runner stores the latest comm observation time, selects the active declared link for FC bridge sensor and command frames when the current time is inside a pass-plan window, keeps comm effects active with deterministic no-link packet drops during declared-plan schedule gaps instead of silently bypassing the [fc.transport] comm seam, resolves relay deck files, reports relay evidence in RunOutcome.comm.links[*].relay, and evaluates relay links through the composed two-hop state. RunOutcome.comm.bridge_selections reports contiguous bridge link/gap selection intervals with step/time span, sample count, and sensor/command drop or bit-flip counts, RunOutcome.comm.bridge_handovers reports explicit link/gap transition events with from/to identities and transition step/time, and RunOutcome.comm.link_passes reports sampled visible/non-blackout link passes with step/time span, duration, sample count, min/max/mean margin, sampled margin profile, and bridge packet drop or bit-flip counts attributed to each pass. This is a WP-20.6 partial implementation only: richer relay scheduling and continuous/interpolated pass-profile artifacts remain open."
+verification = ["V-COMM-005"]
+
+[[verification]]
+id = "V-COMM-005"
+kind = "test"
+command = "cargo test -p openbmp-scenario comm_ --locked && cargo test -p openbmp-runner declared_pass_plan --locked && cargo test -p openbmp-runner link_pass --locked && cargo test -p openbmp-runner --lib relay --locked"
+paths = [
+  "crates/openbmp-runner/src/comm.rs",
+  "crates/openbmp-scenario/src/document.rs",
+  "crates/openbmp-scenario/src/lib.rs",
+  "crates/openbmp-scenario/src/scenario.rs",
+  "docs/parity/20-telemetry-rf-links-and-ground-network.md",
+  "docs/parity/progress.md",
+  "docs/scenario-format.md",
+  "requirements.toml",
+]
+contains = [
+  "DeclaredPlan",
+  "CommBridgePassPlanConfig",
+  "bridge_pass_plan",
+  "validate_comm_bridge_pass_plan_schedule",
+  "CommBridgePassPlan",
+  "CommBridgeSelection",
+  "CommBridgeSelectionReport",
+  "CommBridgeHandoverReport",
+  "CommBridgeSelectionAccumulator",
+  "CommRelayConfig",
+  "CommRelayReport",
+  "CommRuntimeRelay",
+  "CommLinkPassReport",
+  "CommLinkPassMarginSampleReport",
+  "CommLinkStateHistorySample",
+  "CommBridgePacketReportSample",
+  "CommLinkPassAccumulator",
+  "comm.relays",
+  "relay_id",
+  "bridge_selections",
+  "bridge_handovers",
+  "link_passes",
+  "margin_profile",
+  "ScheduledGap",
+  "scheduled_gap_link_state",
+  "declared_pass_plan_bridge_selection",
+  "record_bridge_selection",
+  "link_pass_reports",
+  "load_relays",
+  "relay_budget_template",
+  "compose_two_hop_link_state",
+  "comm_declared_bridge_pass_plan_validates_under_v3",
+  "comm_relay_two_hop_budget_validates_under_v3",
+  "declared_pass_plan_selects_active_window_link",
+  "declared_pass_plan_gap_drops_bridge_packets_fail_closed",
+  "declared_pass_plan_reports_selection_intervals_and_gap_drops",
+  "link_pass_reports_include_margin_profile_and_bridge_packet_counts",
+  "relay_two_hop_composition_uses_bottleneck_margin_and_combined_fer",
+]
+requirements = ["REQ-COMM-005"]

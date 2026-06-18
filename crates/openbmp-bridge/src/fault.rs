@@ -5,6 +5,9 @@
 //! deliberately signal-level and do not model any electrical bus or
 //! device-specific failure mode.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use openbmp_core::DeterministicRng;
 use thiserror::Error;
 
@@ -73,6 +76,25 @@ pub enum BridgeScalarSignal {
     ImuAccelBodyMps2(VectorAxis),
     /// IMU gyro axis in body frame, rad/s.
     ImuGyroBodyRadS(VectorAxis),
+    /// High-rate IMU delta-theta increment component, rad.
+    ImuIncrementDeltaThetaRad {
+        /// Zero-based increment index inside the bridge frame.
+        sample_index: u32,
+        /// Vector axis.
+        axis: VectorAxis,
+    },
+    /// High-rate IMU delta-v increment component, m/s.
+    ImuIncrementDeltaVMs {
+        /// Zero-based increment index inside the bridge frame.
+        sample_index: u32,
+        /// Vector axis.
+        axis: VectorAxis,
+    },
+    /// High-rate IMU increment duration, s.
+    ImuIncrementDtS {
+        /// Zero-based increment index inside the bridge frame.
+        sample_index: u32,
+    },
     /// Barometric altitude, m.
     BaroAltitudeM,
     /// Barometric pressure, Pa.
@@ -615,6 +637,18 @@ fn apply_sensor_signal(
         BridgeScalarSignal::ImuGyroBodyRadS(axis) => {
             Some(&mut packet.imu_gyro_body_rad_s[axis.index()])
         }
+        BridgeScalarSignal::ImuIncrementDeltaThetaRad { sample_index, axis } => packet
+            .imu_increments
+            .get_mut(sample_index as usize)
+            .map(|increment| &mut increment.delta_theta_rad[axis.index()]),
+        BridgeScalarSignal::ImuIncrementDeltaVMs { sample_index, axis } => packet
+            .imu_increments
+            .get_mut(sample_index as usize)
+            .map(|increment| &mut increment.delta_v_m_s[axis.index()]),
+        BridgeScalarSignal::ImuIncrementDtS { sample_index } => packet
+            .imu_increments
+            .get_mut(sample_index as usize)
+            .map(|increment| &mut increment.dt_s),
         BridgeScalarSignal::BaroAltitudeM => packet.baro_altitude_m.as_mut(),
         BridgeScalarSignal::BaroPressurePa => packet.baro_pressure_pa.as_mut(),
         BridgeScalarSignal::BaroBiasPa => packet.baro_bias_pa.as_mut(),
@@ -704,6 +738,9 @@ fn apply_command_signal(
         }
         BridgeScalarSignal::ImuAccelBodyMps2(_)
         | BridgeScalarSignal::ImuGyroBodyRadS(_)
+        | BridgeScalarSignal::ImuIncrementDeltaThetaRad { .. }
+        | BridgeScalarSignal::ImuIncrementDeltaVMs { .. }
+        | BridgeScalarSignal::ImuIncrementDtS { .. }
         | BridgeScalarSignal::BaroAltitudeM
         | BridgeScalarSignal::BaroPressurePa
         | BridgeScalarSignal::BaroBiasPa
@@ -813,6 +850,15 @@ const fn stable_signal_id(signal: BridgeScalarSignal) -> u64 {
     match signal {
         BridgeScalarSignal::ImuAccelBodyMps2(axis) => signal_with_axis_id(1, axis.index()),
         BridgeScalarSignal::ImuGyroBodyRadS(axis) => signal_with_axis_id(2, axis.index()),
+        BridgeScalarSignal::ImuIncrementDeltaThetaRad { sample_index, axis } => {
+            signal_with_index_axis_id(17, sample_index, axis.index())
+        }
+        BridgeScalarSignal::ImuIncrementDeltaVMs { sample_index, axis } => {
+            signal_with_index_axis_id(18, sample_index, axis.index())
+        }
+        BridgeScalarSignal::ImuIncrementDtS { sample_index } => {
+            signal_with_index_id(19, sample_index)
+        }
         BridgeScalarSignal::BaroAltitudeM => 3_u64 << 32,
         BridgeScalarSignal::BaroPressurePa => 4_u64 << 32,
         BridgeScalarSignal::BaroBiasPa => 5_u64 << 32,
@@ -842,11 +888,15 @@ const fn signal_with_index_id(tag: u64, index: u32) -> u64 {
     (tag << 32) | index as u64
 }
 
+const fn signal_with_index_axis_id(tag: u64, index: u32, axis: usize) -> u64 {
+    (tag << 48) | ((index as u64) << 16) | axis as u64
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::packet::EngineCommandPacket;
+    use crate::packet::{EngineCommandPacket, ImuIncrementPacket};
 
     #[test]
     fn empty_fault_set_leaves_sensor_message_unchanged() {
@@ -905,6 +955,86 @@ mod tests {
                 600.0_f64.to_bits()
             ]
         );
+    }
+
+    #[test]
+    fn sensor_fault_mutates_imu_increment_fields() {
+        let mut packet = SensorPacket {
+            step: 10,
+            imu_increments: vec![
+                ImuIncrementPacket {
+                    delta_theta_rad: [1.0e-4, 2.0e-4, 3.0e-4],
+                    delta_v_m_s: [0.001, 0.002, 0.003],
+                    dt_s: 0.00025,
+                    seq: 20,
+                },
+                ImuIncrementPacket {
+                    delta_theta_rad: [4.0e-4, 5.0e-4, 6.0e-4],
+                    delta_v_m_s: [0.004, 0.005, 0.006],
+                    dt_s: 0.00025,
+                    seq: 21,
+                },
+            ],
+            ..SensorPacket::default()
+        };
+        let faults = BridgeFaultTransformSet::new(vec![
+            BridgeFaultRule::new(
+                "bias-dtheta",
+                10,
+                None,
+                BridgeScalarSignal::ImuIncrementDeltaThetaRad {
+                    sample_index: 1,
+                    axis: VectorAxis::Y,
+                },
+                BridgeScalarTransform::AdditiveBias { offset: 1.0e-5 },
+            ),
+            BridgeFaultRule::new(
+                "scale-dv",
+                10,
+                None,
+                BridgeScalarSignal::ImuIncrementDeltaVMs {
+                    sample_index: 0,
+                    axis: VectorAxis::Z,
+                },
+                BridgeScalarTransform::Scale { factor: -2.0 },
+            ),
+            BridgeFaultRule::new(
+                "stuck-dt",
+                10,
+                None,
+                BridgeScalarSignal::ImuIncrementDtS { sample_index: 1 },
+                BridgeScalarTransform::Stuck { value: 0.0005 },
+            ),
+            BridgeFaultRule::new(
+                "missing-increment",
+                10,
+                None,
+                BridgeScalarSignal::ImuIncrementDeltaVMs {
+                    sample_index: 7,
+                    axis: VectorAxis::X,
+                },
+                BridgeScalarTransform::Stuck { value: 99.0 },
+            ),
+        ]);
+
+        let applied = faults
+            .apply_to_sensor(&mut packet)
+            .expect("apply increment faults");
+
+        assert_eq!(applied, vec!["bias-dtheta", "scale-dv", "stuck-dt"]);
+        assert_eq!(
+            packet.imu_increments[1].delta_theta_rad[1].to_bits(),
+            5.1e-4_f64.to_bits()
+        );
+        assert_eq!(
+            packet.imu_increments[0].delta_v_m_s[2].to_bits(),
+            (-0.006_f64).to_bits()
+        );
+        assert_eq!(
+            packet.imu_increments[1].dt_s.to_bits(),
+            0.0005_f64.to_bits()
+        );
+        assert_eq!(packet.imu_increments[1].seq, 21);
     }
 
     #[test]

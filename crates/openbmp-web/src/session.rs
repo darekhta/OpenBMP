@@ -10,9 +10,7 @@ use std::collections::VecDeque;
 
 use openbmp_core::{BodyId, EngineId};
 use openbmp_runner::{EngineFault, Session};
-use openbmp_scenario::{
-    BodyGeometryConfig, FcEstimatorKind, ScenarioDocument, TankGeometryConfig,
-};
+use openbmp_scenario::{BodyGeometryConfig, FcEstimatorKind, ScenarioDocument, TankGeometryConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::assets;

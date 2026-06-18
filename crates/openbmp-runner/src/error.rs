@@ -7,6 +7,7 @@
 
 use openbmp_aero::AeroError;
 use openbmp_aerothermal::AerothermalError;
+use openbmp_afts::AftsError;
 use openbmp_bridge::BridgeError;
 use openbmp_feedsystem::FeedSystemError;
 use openbmp_physics::PhysicsError;
@@ -95,6 +96,9 @@ pub enum RunnerError {
     /// A live aerothermal model construction or evaluation failed.
     #[error("aerothermal error")]
     Aerothermal(#[from] AerothermalError),
+    /// An AFTS monitor configuration or forward-IIP evaluation failed.
+    #[error("AFTS monitor error")]
+    Afts(#[from] AftsError),
     /// A plume-similarity model construction or evaluation failed.
     #[error("plume similarity error")]
     Plume(#[from] PlumeError),
@@ -143,6 +147,7 @@ impl RunnerError {
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
             | Self::Aerothermal(_)
+            | Self::Afts(_)
             | Self::Plume(_)
             | Self::AeroEffectorMismatch { .. }
             | Self::Motor(_)

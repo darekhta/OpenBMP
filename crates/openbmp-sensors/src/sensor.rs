@@ -6,8 +6,8 @@
 //! into telemetry. HAL-backed code implements [`Sensor`] directly and
 //! does not need the synthetic truth port.
 //!
-//! Provides three synthetic sensors: `IdealStateSensor`,
-//! `SyntheticBarometer`, and `SyntheticImu`.
+//! Provides synthetic truth-driven sensor models plus the common
+//! hardware-portable `Sensor` surface.
 
 use nalgebra::{UnitQuaternion, Vector3};
 #[cfg(feature = "synthetic")]
@@ -46,6 +46,12 @@ pub struct SensorTruth {
     pub specific_force_body_m_s2: Vector3<f64>,
     /// Local atmospheric static pressure (Pa).
     pub static_pressure_pa: f64,
+    /// Local atmospheric density (kg/m³).
+    pub atmosphere_density_kg_m3: f64,
+    /// Local atmospheric speed of sound (m/s).
+    pub speed_of_sound_m_s: f64,
+    /// Air-relative velocity resolved in the body frame (m/s).
+    pub air_relative_velocity_body_m_s: Vector3<f64>,
     /// Geometric altitude above the model reference surface (m).
     pub altitude_geometric_m: f64,
     /// Body-frame magnetic flux density (nT). The
@@ -56,6 +62,18 @@ pub struct SensorTruth {
     pub magnetic_field_body_nt: Vector3<f64>,
     /// Truth timestamp on the caller-owned monotonic timeline.
     pub time: SimTime,
+}
+
+/// Force-based inertial truth sourced from the equations-of-motion
+/// accumulator instead of finite differences.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SpecificForceTruth {
+    /// Non-gravitational specific force at the vehicle CG, body frame (m/s²).
+    pub f_cg_body_m_s2: Vector3<f64>,
+    /// Body-frame angular velocity (rad/s).
+    pub omega_body_rad_s: Vector3<f64>,
+    /// Body-frame angular acceleration from rotational dynamics (rad/s²).
+    pub alpha_body_rad_s2: Vector3<f64>,
 }
 
 // ---------------------------------------------------------------------
@@ -76,6 +94,32 @@ pub enum SensorMeasurement {
         pressure_pa: f64,
         /// Current bias state (Pa) — useful for telemetry and audit.
         bias_pa: f64,
+    },
+    /// Pitot-static plus angle-vane air-data measurement.
+    AirData {
+        /// Reported static pressure (Pa).
+        static_pressure_pa: f64,
+        /// Pitot impact pressure `p_t - p_s` (Pa).
+        impact_pressure_pa: f64,
+        /// Freestream Mach number inferred from air-relative speed
+        /// and local speed of sound.
+        mach: f64,
+        /// Calibrated airspeed against the ISA sea-level reference
+        /// (m/s). Subsonic equivalent-airflow inversion is used for
+        /// the reported impact pressure.
+        calibrated_airspeed_m_s: f64,
+        /// True airspeed from the body-frame air-relative velocity
+        /// norm (m/s).
+        true_airspeed_m_s: f64,
+        /// Angle of attack from the body x-z velocity projection
+        /// (rad), using the same `atan2(v_z, v_x)` convention as
+        /// the aero deck input.
+        angle_of_attack_rad: f64,
+        /// Sideslip angle from the body y velocity component (rad).
+        sideslip_rad: f64,
+        /// ISA tropospheric pressure altitude inferred from static
+        /// pressure (m).
+        pressure_altitude_m: f64,
     },
     /// IMU triaxial gyro + triaxial accelerometer measurement after
     /// the IEEE 952 five-component noise model.
@@ -381,6 +425,11 @@ pub(crate) fn require_truth_finite(truth: &SensorTruth) -> Result<(), SensorErro
         truth.specific_force_body_m_s2.y,
         truth.specific_force_body_m_s2.z,
         truth.static_pressure_pa,
+        truth.atmosphere_density_kg_m3,
+        truth.speed_of_sound_m_s,
+        truth.air_relative_velocity_body_m_s.x,
+        truth.air_relative_velocity_body_m_s.y,
+        truth.air_relative_velocity_body_m_s.z,
         truth.altitude_geometric_m,
         truth.magnetic_field_body_nt.x,
         truth.magnetic_field_body_nt.y,
@@ -457,6 +506,9 @@ mod tests {
             angular_acceleration_body_rad_s2: Vector3::zeros(),
             specific_force_body_m_s2: Vector3::zeros(),
             static_pressure_pa: 101_325.0,
+            atmosphere_density_kg_m3: 1.225,
+            speed_of_sound_m_s: 340.294,
+            air_relative_velocity_body_m_s: Vector3::zeros(),
             altitude_geometric_m: 0.0,
             magnetic_field_body_nt: Vector3::zeros(),
             time: SimTime::from_seconds(time_s),

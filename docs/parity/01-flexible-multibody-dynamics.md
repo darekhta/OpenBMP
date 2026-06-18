@@ -923,9 +923,10 @@ justification first, reviewed before the implementation lands.
   articulated root slots back into `RigidBodyState`, preserving the parent mass
   properties and proving powered translational and angular root response
   (`REQ-MULTIBODY-037`). The multibody crate now also ingests a
-  provenance-bearing Spatial_v2-compatible ABA oracle fixture for the sample
-  tree and compares ABA output against the checked static acceleration vector
-  while labeling the source as self-consistency (`REQ-MULTIBODY-038`). The
+  provenance-bearing Spatial_v2-compatible ABA oracle fixture matrix for three
+  deterministic sample-tree cases and compares ABA output against checked
+  static acceleration vectors while labeling the source as self-consistency
+  (`REQ-MULTIBODY-038`). The
   schema and runner now also expose guarded
   `propagation_authority = "primary_root_free_flyer"` mode, reject
   separated/articulated combinations for that mode, and record the applied

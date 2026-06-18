@@ -280,6 +280,36 @@ fn footprint_mc_uses_scenario_declared_uq_credibility_report() {
 }
 
 #[test]
+fn footprint_mc_consumes_runner_upstream_uq() {
+    let temp = Builder::new()
+        .prefix("openbmp_footprint_mc_upstream_uq")
+        .tempdir()
+        .expect("tempdir");
+    let csv = temp.path().join("samples.csv");
+    let parquet = temp.path().join("samples.parquet");
+    let summary = temp.path().join("summary.toml");
+    let scenario = stage_scenario(temp.path(), &csv, &parquet, &summary);
+    append_aero_upstream_uq_config(&scenario);
+
+    let report = footprint_mc::run(&scenario, None, None, "host-clean", None)
+        .expect("footprint mc with upstream uq");
+
+    let credibility = report.credibility.expect("upstream credibility report");
+    assert_eq!(credibility.floor, CredibilityLevel::L0);
+    assert_eq!(credibility.binding_level, CredibilityLevel::L2);
+    assert!(credibility.accepted);
+    assert!((credibility.aggregate_one_sigma - 0.03).abs() < 1.0e-15);
+    assert_eq!(report.credibility_report_md, None);
+    assert!(csv.exists());
+    assert!(summary.exists());
+    assert!(
+        credibility
+            .markdown
+            .contains("03.aero.synthetic_footprint.v1.cd")
+    );
+}
+
+#[test]
 fn footprint_mc_refuses_uq_below_credibility_floor() {
     let temp = Builder::new()
         .prefix("openbmp_footprint_mc_uq_floor")
@@ -370,6 +400,23 @@ fn append_uq_config(scenario: &Path, uq: &Path, floor: CredibilityLevel, report_
         text.push_str(&format!("report_md = {}\n", toml_literal_path(report_md)));
     }
     fs::write(scenario, text).expect("write scenario uq");
+}
+
+fn append_aero_upstream_uq_config(scenario: &Path) {
+    let mut text = fs::read_to_string(scenario).expect("read staged scenario");
+    text.push_str(
+        "\n[aero]\n\
+         \n\
+         [aero.uq]\n\
+         deck_id = \"synthetic_footprint.v1\"\n\
+         coefficient_id = \"cd\"\n\
+         coefficient_lower = 0.18\n\
+         coefficient_nominal = 0.20\n\
+         coefficient_upper = 0.23\n\
+         credibility_level = 2\n\
+         evidence = \"crates/openbmp-cli/tests/footprint_mc_e2e.rs#synthetic_footprint\"\n",
+    );
+    fs::write(scenario, text).expect("write scenario upstream uq");
 }
 
 fn uq_budget_toml(level: u8) -> String {

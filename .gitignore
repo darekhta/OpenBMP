@@ -23,6 +23,7 @@ out/
 *.csv.tmp
 __pycache__/
 *.pyc
+.wrangler/cache/
 
 # Fuzz corpora (committed selectively per cargo-fuzz convention)
 crates/*/fuzz/corpus/

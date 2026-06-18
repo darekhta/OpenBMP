@@ -31,6 +31,7 @@ use openbmp_scenario::{
     Scenario, ScenarioDocument, ScenarioError,
 };
 use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, TelemetryTable};
+use openbmp_uq::CorrelatedErrorBudget;
 use serde::{Deserialize, Serialize};
 
 use crate::RunnerError;
@@ -74,6 +75,9 @@ pub fn landing_footprint_for_state(
 pub struct FootprintMonteCarloReport {
     /// Physics result with sample cloud and summary statistics.
     pub result: FootprintMonteCarloResult,
+    /// Runner-gathered upstream UQ sources from discipline models that
+    /// feed this campaign.
+    pub upstream_uq: CorrelatedErrorBudget,
     /// Deterministic tabular sample cloud for CSV/Parquet export.
     pub samples: TelemetryTable,
     /// Deterministic TOML summary text.
@@ -550,7 +554,11 @@ pub fn landing_footprint_monte_carlo_for_state(
             numerical_gravity_footprint_monte_carlo(&gravity, &env, &input)?
         }
     };
-    Ok(Some(monte_carlo_report(monte_carlo, result)?))
+    Ok(Some(monte_carlo_report(
+        monte_carlo,
+        result,
+        footprint_upstream_uq_budget(scenario)?,
+    )?))
 }
 
 /// Run configured Monte-Carlo footprint analysis from a caller-supplied nominal
@@ -577,7 +585,7 @@ pub fn landing_footprint_monte_carlo_for_state_checkpointed(
     let input = monte_carlo_input(&scenario.document, &env, monte_carlo, state)?;
     let seed = monte_carlo.seed.unwrap_or(scenario.document.time.seed);
     let report = checkpointed_footprint_monte_carlo(
-        &scenario.document,
+        scenario,
         config.method,
         &env,
         monte_carlo,
@@ -589,7 +597,7 @@ pub fn landing_footprint_monte_carlo_for_state_checkpointed(
 }
 
 fn checkpointed_footprint_monte_carlo(
-    document: &ScenarioDocument,
+    scenario: &Scenario,
     method: LandingFootprintMethod,
     env: &FootprintEnvironment,
     config: &LandingFootprintMonteCarloConfig,
@@ -641,7 +649,8 @@ fn checkpointed_footprint_monte_carlo(
             .collect::<Vec<_>>();
         let mut batch_input = input.clone();
         batch_input.samples = batch_samples;
-        let batch = run_footprint_monte_carlo_for_method(document, method, env, &batch_input)?;
+        let batch =
+            run_footprint_monte_carlo_for_method(&scenario.document, method, env, &batch_input)?;
         checkpoint.record_batch(&batch)?;
         save_footprint_checkpoint(options.checkpoint_json, &checkpoint)?;
     } else {
@@ -650,32 +659,52 @@ fn checkpointed_footprint_monte_carlo(
 
     let completed = checkpoint.completed_count()?;
     let report = if completed == config.samples {
-        Some(checkpoint.to_report(&input.confidence_levels)?)
+        let result = checkpoint.to_report(&input.confidence_levels)?;
+        let upstream_uq = footprint_upstream_uq_budget(scenario)?;
+        Some(monte_carlo_report(config, result, upstream_uq)?)
     } else {
         None
     };
     Ok(FootprintMonteCarloCheckpointReport {
         sample_count: config.samples,
         completed,
-        report: report
-            .map(|result| monte_carlo_report(config, result))
-            .transpose()?,
+        report,
     })
 }
 
 fn monte_carlo_report(
     config: &LandingFootprintMonteCarloConfig,
     result: FootprintMonteCarloResult,
+    upstream_uq: CorrelatedErrorBudget,
 ) -> Result<FootprintMonteCarloReport, RunnerError> {
     let nested = nested_monte_carlo_report(config, &result)?;
     let samples = monte_carlo_samples_table(&result)?;
     let summary_toml = monte_carlo_summary_toml(config, &result, nested.as_ref());
     Ok(FootprintMonteCarloReport {
         result,
+        upstream_uq,
         samples,
         summary_toml,
         nested,
     })
+}
+
+fn footprint_upstream_uq_budget(scenario: &Scenario) -> Result<CorrelatedErrorBudget, RunnerError> {
+    let document = &scenario.document;
+    let resolved_files = scenario.resolved_files()?;
+    let mut upstream_uq = crate::structural::StructuralRack::build(document)?.upstream_uq_budget();
+    upstream_uq
+        .sources
+        .extend(crate::aero::upstream_uq_budget(document)?.sources);
+    upstream_uq
+        .sources
+        .extend(crate::aerothermal::upstream_uq_budget(document)?.sources);
+    upstream_uq.sources.extend(
+        crate::engines::EngineRack::build(document, &resolved_files)?
+            .upstream_uq_budget()
+            .sources,
+    );
+    Ok(upstream_uq)
 }
 
 fn nested_monte_carlo_report(

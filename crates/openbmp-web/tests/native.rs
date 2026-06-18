@@ -221,8 +221,8 @@ fn fc_modes_fly_to_orbit_with_bounded_nav_error() {
                 .step_many(50)
                 .unwrap_or_else(|err| panic!("fc mode `{mode}` failed to step: {err}"));
             let s = session.snapshot();
-            let alt = (s[i_pos].powi(2) + s[i_pos + 1].powi(2) + s[i_pos + 2].powi(2)).sqrt()
-                - R_EARTH_M;
+            let alt =
+                (s[i_pos].powi(2) + s[i_pos + 1].powi(2) + s[i_pos + 2].powi(2)).sqrt() - R_EARTH_M;
             max_alt_m = max_alt_m.max(alt);
             let speed = (s[i_vel].powi(2) + s[i_vel + 1].powi(2) + s[i_vel + 2].powi(2)).sqrt();
             max_speed_m_s = max_speed_m_s.max(speed);

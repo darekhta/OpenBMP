@@ -50,6 +50,9 @@ mod synthetic_adapter_path {
             angular_acceleration_body_rad_s2: Vector3::zeros(),
             specific_force_body_m_s2: Vector3::new(0.0, 0.0, 9.806_65),
             static_pressure_pa: 101_325.0,
+            atmosphere_density_kg_m3: 1.225,
+            speed_of_sound_m_s: 340.294,
+            air_relative_velocity_body_m_s: Vector3::zeros(),
             altitude_geometric_m: 0.0,
             magnetic_field_body_nt: Vector3::zeros(),
             time,
@@ -120,10 +123,11 @@ mod voted_status_for_all_sensor_kinds {
     use openbmp_fc::clock::FixedClock;
     use openbmp_fc::scheduler::{Job, JobContext};
     use openbmp_fc::sensor_ingest::{
-        VotedBarometerIngest, VotedGnssIngest, VotedMagnetometerIngest,
+        AirDataIngest, VotedAirDataIngest, VotedBarometerIngest, VotedGnssIngest,
+        VotedMagnetometerIngest,
     };
     use openbmp_fc::topics::{
-        BarometerSample, GnssSample, MagnetometerSample, SensorKind, SensorStatus,
+        AirDataSample, BarometerSample, GnssSample, MagnetometerSample, SensorKind, SensorStatus,
     };
     use openbmp_fc::voter::MidValueSelectScalar;
     use openbmp_sensors::{Sensor, SensorError, SensorMeasurement, Timestamped};
@@ -151,6 +155,79 @@ mod voted_status_for_all_sensor_kinds {
 
     fn context<'a>(bus: &'a Bus, clock: &'a FixedClock) -> JobContext<'a> {
         JobContext { bus, clock }
+    }
+
+    fn airdata_measurement(offset: f64) -> SensorMeasurement {
+        SensorMeasurement::AirData {
+            static_pressure_pa: 95_000.0 + offset,
+            impact_pressure_pa: 1_250.0 + offset,
+            mach: 0.25 + offset * 1.0e-3,
+            calibrated_airspeed_m_s: 78.0 + offset,
+            true_airspeed_m_s: 82.0 + offset,
+            angle_of_attack_rad: 0.02 + offset * 1.0e-4,
+            sideslip_rad: -0.01 + offset * 1.0e-4,
+            pressure_altitude_m: 550.0 + offset,
+        }
+    }
+
+    #[test]
+    fn airdata_ingest_publishes_sample() {
+        let bus = Bus::new();
+        bus.register::<AirDataSample>().unwrap();
+        let clock = FixedClock::new(SimTime::from_seconds(0.02), StepIndex::new(2));
+        let mut ingest = AirDataIngest::new(FixedLane {
+            id: SensorId::from_path("sensors.airdata.simplex"),
+            value: airdata_measurement(3.0),
+        });
+
+        ingest.run(&context(&bus, &clock)).unwrap();
+
+        let (sample, _) = bus.latest::<AirDataSample>().unwrap().unwrap();
+        assert_eq!(sample.time, SimTime::from_seconds(0.01));
+        assert_eq!(sample.static_pressure_pa, 95_003.0);
+        assert_eq!(sample.impact_pressure_pa, 1_253.0);
+        assert_eq!(sample.mach, 0.253);
+        assert_eq!(sample.pressure_altitude_m, 553.0);
+        assert!(sample.healthy);
+    }
+
+    #[test]
+    fn voted_airdata_ingest_publishes_lane_status() {
+        let bus = Bus::new();
+        bus.register::<AirDataSample>().unwrap();
+        bus.register::<SensorStatus>().unwrap();
+        let clock = FixedClock::new(SimTime::from_seconds(0.02), StepIndex::new(2));
+        let mut ingest = VotedAirDataIngest::new(
+            vec![
+                FixedLane {
+                    id: SensorId::from_path("sensors.airdata.a"),
+                    value: airdata_measurement(0.0),
+                },
+                FixedLane {
+                    id: SensorId::from_path("sensors.airdata.b"),
+                    value: airdata_measurement(1.0),
+                },
+                FixedLane {
+                    id: SensorId::from_path("sensors.airdata.c"),
+                    value: airdata_measurement(200.0),
+                },
+            ],
+            MidValueSelectScalar {
+                divergence_tol: 10.0,
+            },
+        );
+
+        ingest.run(&context(&bus, &clock)).unwrap();
+
+        let (sample, _) = bus.latest::<AirDataSample>().unwrap().unwrap();
+        let (status, _) = bus.latest::<SensorStatus>().unwrap().unwrap();
+        assert_eq!(sample.static_pressure_pa, 95_001.0);
+        assert_eq!(sample.impact_pressure_pa, 1_251.0);
+        assert!(!sample.healthy);
+        assert_eq!(status.kind, SensorKind::AirData);
+        assert_eq!(status.lane_count, 3);
+        assert!(status.any_divergent);
+        assert!(status.lanes[2].divergent);
     }
 
     #[test]

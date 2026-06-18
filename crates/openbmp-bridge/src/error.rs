@@ -42,6 +42,7 @@ pub enum BridgeError {
     #[error("bridge transport closed")]
     TransportClosed,
     /// The underlying stream transport returned an I/O error.
+    #[cfg(feature = "std")]
     #[error("bridge transport I/O failed: {0}")]
     Io(#[from] std::io::Error),
     /// A peer sent a different message kind than the current lockstep

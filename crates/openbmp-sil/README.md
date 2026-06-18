@@ -27,8 +27,9 @@ deterministic runner, not a live real-time rig.
   `SilRunReport`.
 - `SilStimulation` — pre-run scenario stimulation: `FaultInjection`
   (plant engine/effector load-time faults or scheduled propulsion engine
-  rules), `ParameterOverride` (dotted TOML path), and `CommandWrite`
-  (scheduled engine/effector commands).
+  rules), `AftsZoneStimulus` (in-memory `[[afts.zone]]` rules),
+  `ParameterOverride` (dotted TOML path), and `CommandWrite` (scheduled
+  engine/effector commands).
 - `EvidenceBundle` — a reviewable JSON artifact: provenance
   (git/toolchain/host + per-file hashes), mission event / phase / region
   / command traces, synthesized bus frames, requirement verdicts, and a

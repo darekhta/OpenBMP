@@ -206,8 +206,8 @@ impl Scenario {
     ///
     /// Telemetry output paths are excluded (they are written, not read,
     /// and may not exist before the run). Aero deck, motor file,
-    /// per-sensor noise budget, and data-package references are all
-    /// included with their declared `*_sha256` pins.
+    /// per-sensor noise budget, AFTS evidence files, and data-package
+    /// references are all included with their declared `*_sha256` pins.
     ///
     /// Keys are deterministic field paths so repeated calls produce
     /// identical iteration order via `BTreeMap`.
@@ -282,6 +282,95 @@ impl Scenario {
             files.insert("vehicle.landing_gear.data_file".to_owned(), resolved);
         }
 
+        if let Some(comm) = &self.document.comm {
+            for (index, antenna) in comm.antennas.iter().enumerate() {
+                if let Some(path) = &antenna.gain_deck {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(antenna.gain_deck_sha256.as_deref())?;
+                    files.insert(format!("comm.antennas[{index}].gain_deck"), resolved);
+                }
+                if let Some(path) = &antenna.body_mask_deck {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(antenna.body_mask_deck_sha256.as_deref())?;
+                    files.insert(format!("comm.antennas[{index}].body_mask_deck"), resolved);
+                }
+            }
+            for (index, link) in comm.links.iter().enumerate() {
+                let resolved = resolve_with(read, self.resolve_path(&link.fer_curve_deck))?;
+                resolved.verify_pin(link.fer_curve_deck_sha256.as_deref())?;
+                files.insert(format!("comm.links[{index}].fer_curve_deck"), resolved);
+                if let Some(path) = &link.atmospheric_loss_deck {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(link.atmospheric_loss_deck_sha256.as_deref())?;
+                    files.insert(
+                        format!("comm.links[{index}].atmospheric_loss_deck"),
+                        resolved,
+                    );
+                }
+                if let Some(path) = &link.rain_loss_deck {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(link.rain_loss_deck_sha256.as_deref())?;
+                    files.insert(format!("comm.links[{index}].rain_loss_deck"), resolved);
+                }
+            }
+            for (index, relay) in comm.relays.iter().enumerate() {
+                let resolved = resolve_with(read, self.resolve_path(&relay.fer_curve_deck))?;
+                resolved.verify_pin(relay.fer_curve_deck_sha256.as_deref())?;
+                files.insert(format!("comm.relays[{index}].fer_curve_deck"), resolved);
+                if let Some(path) = &relay.atmospheric_loss_deck {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(relay.atmospheric_loss_deck_sha256.as_deref())?;
+                    files.insert(
+                        format!("comm.relays[{index}].atmospheric_loss_deck"),
+                        resolved,
+                    );
+                }
+                if let Some(path) = &relay.rain_loss_deck {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(relay.rain_loss_deck_sha256.as_deref())?;
+                    files.insert(format!("comm.relays[{index}].rain_loss_deck"), resolved);
+                }
+            }
+        }
+
+        if let Some(afts) = &self.document.afts {
+            for (index, rule) in afts.keep_inside.iter().enumerate() {
+                if let Some(path) = &rule.evidence_file {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(rule.evidence_file_sha256.as_deref())?;
+                    files.insert(format!("afts.keep_inside[{index}].evidence_file"), resolved);
+                }
+            }
+            for (index, rule) in afts.keep_out.iter().enumerate() {
+                if let Some(path) = &rule.evidence_file {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(rule.evidence_file_sha256.as_deref())?;
+                    files.insert(format!("afts.keep_out[{index}].evidence_file"), resolved);
+                }
+            }
+            for (index, rule) in afts.corridor.iter().enumerate() {
+                if let Some(path) = &rule.evidence_file {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(rule.evidence_file_sha256.as_deref())?;
+                    files.insert(format!("afts.corridor[{index}].evidence_file"), resolved);
+                }
+            }
+            for (index, rule) in afts.gate.iter().enumerate() {
+                if let Some(path) = &rule.evidence_file {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(rule.evidence_file_sha256.as_deref())?;
+                    files.insert(format!("afts.gate[{index}].evidence_file"), resolved);
+                }
+            }
+            for (index, rule) in afts.zone.iter().enumerate() {
+                if let Some(path) = &rule.evidence_file {
+                    let resolved = resolve_with(read, self.resolve_path(path))?;
+                    resolved.verify_pin(rule.evidence_file_sha256.as_deref())?;
+                    files.insert(format!("afts.zone[{index}].evidence_file"), resolved);
+                }
+            }
+        }
+
         if let Some(sensors) = &self.document.sensors {
             for (name, sensor) in sensors {
                 if let Some(file) = &sensor.file {
@@ -300,11 +389,29 @@ impl Scenario {
             files.insert("epoch.eop".to_owned(), resolved);
         }
         if let Some(epoch) = &self.document.epoch
+            && let Some(cio_xys) = &epoch.cio_xys
+        {
+            let resolved = resolve_with(read, self.resolve_path(cio_xys))?;
+            resolved.verify_pin(epoch.cio_xys_sha256.as_deref())?;
+            files.insert("epoch.cio_xys".to_owned(), resolved);
+        }
+        if let Some(epoch) = &self.document.epoch
             && let Some(leap_second_table) = &epoch.leap_second_table
         {
             let resolved = resolve_with(read, self.resolve_path(leap_second_table))?;
             resolved.verify_pin(epoch.leap_second_table_sha256.as_deref())?;
             files.insert("epoch.leap_second_table".to_owned(), resolved);
+        }
+
+        if let Some(coefficients_file) = &self.document.environment.egm2008_coefficients_file {
+            let resolved = resolve_with(read, self.resolve_path(coefficients_file))?;
+            resolved.verify_pin(
+                self.document
+                    .environment
+                    .egm2008_coefficients_file_sha256
+                    .as_deref(),
+            )?;
+            files.insert("environment.egm2008_coefficients_file".to_owned(), resolved);
         }
 
         if let Some(ephemeris_file) = &self.document.environment.ephemeris_file {
@@ -674,12 +781,12 @@ fn substitute_spice_path_symbols(
 mod tests {
     use super::*;
     use crate::document::{
-        ContactFrictionLawConfig, ContactGeometryConfig, ContactNormalLawConfig,
-        EventTriggerConfig, FcAntiWindupConfig, FcAttitudeLoopKind, FcAttitudeMpcConfig,
-        FcFdirDetectorKindV5, FcIndiConfig, FcIndiFilterKind, FcLqrConfig, FcRateLoopKind,
-        GrainGeometryConfig, GrainRegressionModeConfig, MissionScope, MissionScopeKind,
-        NozzleAmbientPressureCorrectionConfig, NozzleSeparationConfig, PropulsionFeedNetworkConfig,
-        WGS84_J2_DEFAULT,
+        ContactFrictionLawConfig, ContactGeometryConfig, ContactMechanismKindConfig,
+        ContactNormalLawConfig, EventTriggerConfig, FcAntiWindupConfig, FcAttitudeLoopKind,
+        FcAttitudeMpcConfig, FcFdirDetectorKindV5, FcIndiConfig, FcIndiFilterKind, FcLqrConfig,
+        FcRateLoopKind, GrainGeometryConfig, GrainRegressionModeConfig, MissionScope,
+        MissionScopeKind, NozzleAmbientPressureCorrectionConfig, NozzleSeparationConfig,
+        PropulsionFeedNetworkConfig, SpecificForceSourceConfig, WGS84_J2_DEFAULT,
     };
     use openbmp_core::ValidationStatus;
 
@@ -822,6 +929,101 @@ period_s = 0.02
 wcet_s = 0.002
 "#;
 
+    const AFTS_BLOCK: &str = r#"
+[afts]
+
+[[afts.keep_inside]]
+id = "range_box"
+evidence = "data/afts/range-box/provenance.md"
+vertices = [
+  { latitude_deg = -1.0, longitude_deg = -1.0 },
+  { latitude_deg = -1.0, longitude_deg = 1.0 },
+  { latitude_deg = 1.0, longitude_deg = 1.0 },
+  { latitude_deg = 1.0, longitude_deg = -1.0 },
+]
+"#;
+
+    const AFTS_CORRIDOR_BLOCK: &str = r#"
+[afts]
+
+[[afts.corridor]]
+id = "altitude-band"
+evidence = "data/afts/altitude-band/provenance.md"
+metric = "altitude_m"
+min_altitude_m = -10.0
+max_altitude_m = 100000.0
+"#;
+
+    const AFTS_GATE_BLOCK: &str = r#"
+[afts]
+
+[[afts.gate]]
+id = "iip-gate"
+evidence = "data/afts/iip-gate/provenance.md"
+start = { latitude_deg = -1.0, longitude_deg = 0.0 }
+end = { latitude_deg = 1.0, longitude_deg = 0.0 }
+direction = "any"
+"#;
+
+    const AFTS_ZONE_BLOCK: &str = r#"
+[afts]
+
+[[afts.zone]]
+id = "red-zone"
+evidence = "data/afts/red-zone/provenance.md"
+color = "red"
+vertices = [
+  { latitude_deg = -1.0, longitude_deg = -1.0 },
+  { latitude_deg = -1.0, longitude_deg = 1.0 },
+  { latitude_deg = 1.0, longitude_deg = 1.0 },
+  { latitude_deg = 1.0, longitude_deg = -1.0 },
+]
+	"#;
+
+    const COMM_BLOCK: &str = r#"
+[comm]
+bridge_link_selection = "best_margin"
+bridge_link_hysteresis_db = 0.75
+
+[[comm.sites]]
+id = "ksc"
+latitude_deg = 28.572872
+longitude_deg = -80.648981
+altitude_m = 3.0
+min_elevation_deg = 5.0
+terrain_mask = [
+  { azimuth_deg = 0.0, min_elevation_deg = 6.0 },
+  { azimuth_deg = 180.0, min_elevation_deg = 8.0 },
+]
+
+[[comm.antennas]]
+id = "s-band-low-gain"
+gain_deck = "data/comm/antenna-body-mask-v1.toml"
+body_mask_deck = "data/comm/antenna-body-mask-v1.toml"
+
+[[comm.links]]
+id = "s-band-ksc"
+site_id = "ksc"
+antenna_id = "s-band-low-gain"
+eirp_dbw = -40.0
+receiver_g_over_t_db_k = 0.0
+frequency_hz = 2.0e9
+bit_rate_bps = 1000.0
+required_eb_n0_db = 3.0
+atmospheric_loss_db = 1.0
+atmospheric_loss_deck = "data/comm/attenuation-loss-v1.toml"
+rain_loss_db = 0.5
+rain_loss_deck = "data/comm/attenuation-loss-v1.toml"
+pointing_loss_db = 0.25
+polarization_loss_db = 0.1
+implementation_loss_db = 0.0
+fer_curve_deck = "data/comm/link-budget-fer-v1.toml"
+packet_processing_delay_s = 0.02
+packet_error_action = { kind = "bit_flip", mask = 165 }
+packet_loss_rate_gate = { packet_count = 2048, alpha = 0.001 }
+data_loss_timeout_s = 1.5
+"#;
+
     #[test]
     fn schedule_block_is_v3_only() {
         let toml_v2 = format!("{MINIMAL}{SCHEDULE_BLOCK}");
@@ -857,6 +1059,956 @@ wcet_s = 0.002
         assert_eq!(realtime.tasks.len(), 2);
         assert_eq!(realtime.tasks[0].label, "estimator");
         assert_eq!(realtime.tasks[1].period_s.to_bits(), 0.02_f64.to_bits());
+    }
+
+    #[test]
+    fn afts_block_is_v3_only_and_validates_under_v3() {
+        let toml_v2 = format!("{MINIMAL}{AFTS_BLOCK}");
+        assert_v3_block_reserved_under_v2(&toml_v2, "afts");
+        let v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&v3).expect("afts block validates under v3");
+        let afts = scenario.document.afts.expect("afts parsed");
+        assert!(afts.enabled);
+        assert_eq!(afts.keep_inside.len(), 1);
+        assert!(afts.keep_out.is_empty());
+        assert!(afts.corridor.is_empty());
+        assert!(afts.gate.is_empty());
+        assert!(afts.zone.is_empty());
+        assert_eq!(afts.keep_inside[0].id, "range_box");
+        assert_eq!(afts.keep_inside[0].vertices.len(), 4);
+    }
+
+    #[test]
+    fn comm_block_is_v3_only_and_validates_under_v3() {
+        let toml_v2 = format!("{MINIMAL}{COMM_BLOCK}");
+        assert_v3_block_reserved_under_v2(&toml_v2, "comm");
+        let v3 = toml_v2.replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&v3).expect("comm block validates under v3");
+        let comm = scenario.document.comm.expect("comm parsed");
+        assert_eq!(
+            comm.bridge_link_selection,
+            crate::CommBridgeLinkSelectionConfig::BestMargin
+        );
+        assert_eq!(comm.bridge_link_hysteresis_db.to_bits(), 0.75_f64.to_bits());
+        assert_eq!(comm.sites.len(), 1);
+        assert_eq!(comm.sites[0].id, "ksc");
+        assert_eq!(comm.sites[0].terrain_mask.len(), 2);
+        assert_eq!(comm.sites[0].min_elevation_deg.to_bits(), 5.0_f64.to_bits());
+        assert_eq!(comm.antennas.len(), 1);
+        assert_eq!(comm.antennas[0].id, "s-band-low-gain");
+        assert_eq!(
+            comm.antennas[0].gain_deck.as_deref(),
+            Some(std::path::Path::new("data/comm/antenna-body-mask-v1.toml"))
+        );
+        assert_eq!(comm.links.len(), 1);
+        assert_eq!(comm.links[0].id, "s-band-ksc");
+        assert_eq!(comm.links[0].site_id, "ksc");
+        assert_eq!(comm.links[0].antenna_id, "s-band-low-gain");
+        assert_eq!(
+            comm.links[0].fer_curve_deck.as_path(),
+            std::path::Path::new("data/comm/link-budget-fer-v1.toml")
+        );
+        assert_eq!(
+            comm.links[0].atmospheric_loss_deck.as_deref(),
+            Some(std::path::Path::new("data/comm/attenuation-loss-v1.toml"))
+        );
+        assert_eq!(
+            comm.links[0].rain_loss_deck.as_deref(),
+            Some(std::path::Path::new("data/comm/attenuation-loss-v1.toml"))
+        );
+        assert_eq!(
+            comm.links[0].packet_processing_delay_s.to_bits(),
+            0.02_f64.to_bits()
+        );
+        assert_eq!(
+            comm.links[0].packet_error_action,
+            crate::CommPacketErrorActionConfig::BitFlip { mask: 165 }
+        );
+        let loss_gate = comm.links[0]
+            .packet_loss_rate_gate
+            .expect("packet loss-rate gate parsed");
+        assert_eq!(loss_gate.packet_count, 2048);
+        assert_eq!(loss_gate.alpha.to_bits(), 0.001_f64.to_bits());
+        assert_eq!(
+            comm.links[0]
+                .data_loss_timeout_s
+                .expect("data-loss timeout parsed")
+                .to_bits(),
+            1.5_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn comm_block_rejects_out_of_range_mask_elevation() {
+        let block = COMM_BLOCK.replace("min_elevation_deg = 8.0", "min_elevation_deg = 91.0");
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(matches!(
+            err,
+            ScenarioError::InvalidNumber { ref field, .. }
+                if field == "comm.sites[0].terrain_mask[1].min_elevation_deg"
+        ));
+    }
+
+    #[test]
+    fn comm_declared_bridge_pass_plan_validates_under_v3() {
+        let block = COMM_BLOCK
+            .replace(
+                "bridge_link_selection = \"best_margin\"",
+                "bridge_link_selection = \"declared_plan\"",
+            )
+            .replace(
+                "data_loss_timeout_s = 1.5",
+                "data_loss_timeout_s = 1.5\n\n\
+                 [[comm.bridge_pass_plan]]\n\
+                 link_id = \"s-band-ksc\"\n\
+                 start_s = 0.0\n\
+                 end_s = 12.5",
+            );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&toml).expect("declared pass plan validates");
+        let comm = scenario.document.comm.expect("comm parsed");
+
+        assert_eq!(
+            comm.bridge_link_selection,
+            crate::CommBridgeLinkSelectionConfig::DeclaredPlan
+        );
+        assert_eq!(comm.bridge_pass_plan.len(), 1);
+        assert_eq!(comm.bridge_pass_plan[0].link_id, "s-band-ksc");
+        assert_eq!(
+            comm.bridge_pass_plan[0].start_s.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(comm.bridge_pass_plan[0].end_s.to_bits(), 12.5_f64.to_bits());
+    }
+
+    #[test]
+    fn comm_relay_two_hop_budget_validates_under_v3() {
+        let block = COMM_BLOCK
+            .replace(
+                "antenna_id = \"s-band-low-gain\"",
+                "antenna_id = \"s-band-low-gain\"\nrelay_id = \"tdrss-east\"",
+            )
+            .replace(
+                "data_loss_timeout_s = 1.5",
+                "data_loss_timeout_s = 1.5\n\n\
+                 [[comm.relays]]\n\
+                 id = \"tdrss-east\"\n\
+                 longitude_deg = -41.0\n\
+                 altitude_m = 35786000.0\n\
+                 min_elevation_deg = 10.0\n\
+                 eirp_dbw = 36.0\n\
+                 receiver_g_over_t_db_k = 24.0\n\
+                 frequency_hz = 2.2e9\n\
+                 bit_rate_bps = 1000.0\n\
+                 required_eb_n0_db = 3.0\n\
+                 atmospheric_loss_db = 0.4\n\
+                 rain_loss_db = 0.2\n\
+                 pointing_loss_db = 0.1\n\
+                 polarization_loss_db = 0.1\n\
+                 implementation_loss_db = 0.1\n\
+                 fer_curve_deck = \"data/comm/link-budget-fer-v1.toml\"",
+            );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str(&toml).expect("comm relay validates");
+        let comm = scenario.document.comm.expect("comm parsed");
+
+        assert_eq!(comm.relays.len(), 1);
+        assert_eq!(comm.relays[0].id, "tdrss-east");
+        assert_eq!(
+            comm.relays[0].longitude_deg.to_bits(),
+            (-41.0_f64).to_bits()
+        );
+        assert_eq!(
+            comm.relays[0].altitude_m.to_bits(),
+            35_786_000.0_f64.to_bits()
+        );
+        assert_eq!(comm.links[0].relay_id.as_deref(), Some("tdrss-east"));
+    }
+
+    #[test]
+    fn comm_antenna_decks_resolve_and_hash_with_injected_reader() {
+        let source_dir = PathBuf::from("/scenario");
+        let gain_path = source_dir.join("data/comm/gain.toml");
+        let mask_path = source_dir.join("data/comm/body-mask.toml");
+        let fer_curve_path = source_dir.join("data/comm/fer-curve.toml");
+        let relay_fer_curve_path = source_dir.join("data/comm/relay-fer-curve.toml");
+        let atmospheric_loss_path = source_dir.join("data/comm/atmosphere-loss.toml");
+        let rain_loss_path = source_dir.join("data/comm/rain-loss.toml");
+        let gain_bytes = b"gain deck bytes\n".to_vec();
+        let mask_bytes = b"mask deck bytes\n".to_vec();
+        let fer_curve_bytes = b"fer curve bytes\n".to_vec();
+        let relay_fer_curve_bytes = b"relay fer curve bytes\n".to_vec();
+        let atmospheric_loss_bytes = b"atmosphere loss bytes\n".to_vec();
+        let rain_loss_bytes = b"rain loss bytes\n".to_vec();
+        let gain_sha256 =
+            ResolvedFile::from_bytes(gain_path.clone(), gain_bytes.clone()).sha256_hex;
+        let mask_sha256 =
+            ResolvedFile::from_bytes(mask_path.clone(), mask_bytes.clone()).sha256_hex;
+        let fer_curve_sha256 =
+            ResolvedFile::from_bytes(fer_curve_path.clone(), fer_curve_bytes.clone()).sha256_hex;
+        let relay_fer_curve_sha256 =
+            ResolvedFile::from_bytes(relay_fer_curve_path.clone(), relay_fer_curve_bytes.clone())
+                .sha256_hex;
+        let atmospheric_loss_sha256 = ResolvedFile::from_bytes(
+            atmospheric_loss_path.clone(),
+            atmospheric_loss_bytes.clone(),
+        )
+        .sha256_hex;
+        let rain_loss_sha256 =
+            ResolvedFile::from_bytes(rain_loss_path.clone(), rain_loss_bytes.clone()).sha256_hex;
+        let block = COMM_BLOCK
+            .replace(
+                "gain_deck = \"data/comm/antenna-body-mask-v1.toml\"",
+                &format!(
+                    "gain_deck = \"data/comm/gain.toml\"\n\
+                     gain_deck_sha256 = \"{gain_sha256}\""
+                ),
+            )
+            .replace(
+                "body_mask_deck = \"data/comm/antenna-body-mask-v1.toml\"",
+                &format!(
+                    "body_mask_deck = \"data/comm/body-mask.toml\"\n\
+                     body_mask_deck_sha256 = \"{mask_sha256}\""
+                ),
+            )
+            .replace(
+                "fer_curve_deck = \"data/comm/link-budget-fer-v1.toml\"",
+                &format!(
+                    "fer_curve_deck = \"data/comm/fer-curve.toml\"\n\
+                     fer_curve_deck_sha256 = \"{fer_curve_sha256}\""
+                ),
+            )
+            .replace(
+                "antenna_id = \"s-band-low-gain\"",
+                "antenna_id = \"s-band-low-gain\"\nrelay_id = \"tdrss-east\"",
+            )
+            .replace(
+                "atmospheric_loss_deck = \"data/comm/attenuation-loss-v1.toml\"",
+                &format!(
+                    "atmospheric_loss_deck = \"data/comm/atmosphere-loss.toml\"\n\
+                     atmospheric_loss_deck_sha256 = \"{atmospheric_loss_sha256}\""
+                ),
+            )
+            .replace(
+                "rain_loss_deck = \"data/comm/attenuation-loss-v1.toml\"",
+                &format!(
+                    "rain_loss_deck = \"data/comm/rain-loss.toml\"\n\
+                     rain_loss_deck_sha256 = \"{rain_loss_sha256}\""
+                ),
+            )
+            .replace(
+                "data_loss_timeout_s = 1.5",
+                &format!(
+                    "data_loss_timeout_s = 1.5\n\n\
+                     [[comm.relays]]\n\
+                     id = \"tdrss-east\"\n\
+                     longitude_deg = -41.0\n\
+                     eirp_dbw = 36.0\n\
+                     receiver_g_over_t_db_k = 24.0\n\
+                     frequency_hz = 2.2e9\n\
+                     bit_rate_bps = 1000.0\n\
+                     required_eb_n0_db = 3.0\n\
+                     fer_curve_deck = \"data/comm/relay-fer-curve.toml\"\n\
+                     fer_curve_deck_sha256 = \"{relay_fer_curve_sha256}\""
+                ),
+            );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(source_dir))
+            .expect("comm antenna decks parse");
+
+        let files = scenario
+            .resolved_files_with_reader(&|path| {
+                if path == gain_path.as_path() {
+                    Ok(gain_bytes.clone())
+                } else if path == mask_path.as_path() {
+                    Ok(mask_bytes.clone())
+                } else if path == fer_curve_path.as_path() {
+                    Ok(fer_curve_bytes.clone())
+                } else if path == relay_fer_curve_path.as_path() {
+                    Ok(relay_fer_curve_bytes.clone())
+                } else if path == atmospheric_loss_path.as_path() {
+                    Ok(atmospheric_loss_bytes.clone())
+                } else if path == rain_loss_path.as_path() {
+                    Ok(rain_loss_bytes.clone())
+                } else {
+                    panic!("unexpected resolved comm deck path: {path:?}")
+                }
+            })
+            .expect("comm antenna deck files resolve");
+
+        assert_eq!(
+            files
+                .get("comm.antennas[0].gain_deck")
+                .expect("gain deck resolved")
+                .sha256_hex,
+            gain_sha256
+        );
+        assert_eq!(
+            files
+                .get("comm.antennas[0].body_mask_deck")
+                .expect("body-mask deck resolved")
+                .sha256_hex,
+            mask_sha256
+        );
+        assert_eq!(
+            files
+                .get("comm.links[0].fer_curve_deck")
+                .expect("FER curve deck resolved")
+                .sha256_hex,
+            fer_curve_sha256
+        );
+        assert_eq!(
+            files
+                .get("comm.relays[0].fer_curve_deck")
+                .expect("relay FER curve deck resolved")
+                .sha256_hex,
+            relay_fer_curve_sha256
+        );
+        assert_eq!(
+            files
+                .get("comm.links[0].atmospheric_loss_deck")
+                .expect("atmospheric loss deck resolved")
+                .sha256_hex,
+            atmospheric_loss_sha256
+        );
+        assert_eq!(
+            files
+                .get("comm.links[0].rain_loss_deck")
+                .expect("rain loss deck resolved")
+                .sha256_hex,
+            rain_loss_sha256
+        );
+    }
+
+    #[test]
+    fn comm_antenna_deck_sha256_requires_deck_path() {
+        let block = COMM_BLOCK.replace(
+            "gain_deck = \"data/comm/antenna-body-mask-v1.toml\"\n",
+            "gain_deck_sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n",
+        );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. }
+                if field == "comm.antennas[0].gain_deck_sha256"),
+            "expected orphan comm antenna deck sha rejection, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn comm_link_rejects_unknown_site_id() {
+        let block = COMM_BLOCK.replace("site_id = \"ksc\"", "site_id = \"missing-site\"");
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnsupportedValue { ref field, ref value }
+                if field == "comm.links[0].site_id" && value == "missing-site"),
+            "expected comm link site reference rejection, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn comm_link_rejects_invalid_packet_effect_fields() {
+        let block = COMM_BLOCK.replace(
+            "bridge_link_hysteresis_db = 0.75",
+            "bridge_link_hysteresis_db = -0.1",
+        );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field == "comm.bridge_link_hysteresis_db"),
+            "expected negative comm bridge hysteresis rejection, got {err:?}"
+        );
+
+        let block = COMM_BLOCK.replace(
+            "packet_processing_delay_s = 0.02",
+            "packet_processing_delay_s = -0.01",
+        );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field == "comm.links[0].packet_processing_delay_s"),
+            "expected negative packet delay rejection, got {err:?}"
+        );
+
+        let block = COMM_BLOCK.replace(
+            "packet_error_action = { kind = \"bit_flip\", mask = 165 }",
+            "packet_error_action = { kind = \"bit_flip\", mask = 0 }",
+        );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field == "comm.links[0].packet_error_action.mask"),
+            "expected zero bit-flip mask rejection, got {err:?}"
+        );
+
+        let block = COMM_BLOCK.replace(
+            "packet_loss_rate_gate = { packet_count = 2048, alpha = 0.001 }",
+            "packet_loss_rate_gate = { packet_count = 0, alpha = 0.001 }",
+        );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field == "comm.links[0].packet_loss_rate_gate.packet_count"),
+            "expected zero packet-count rejection, got {err:?}"
+        );
+
+        let block = COMM_BLOCK.replace(
+            "packet_loss_rate_gate = { packet_count = 2048, alpha = 0.001 }",
+            "packet_loss_rate_gate = { packet_count = 2048, alpha = 1.0 }",
+        );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field == "comm.links[0].packet_loss_rate_gate.alpha"),
+            "expected alpha rejection, got {err:?}"
+        );
+
+        let block = COMM_BLOCK.replace("data_loss_timeout_s = 1.5", "data_loss_timeout_s = 0.0");
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field == "comm.links[0].data_loss_timeout_s"),
+            "expected data-loss timeout rejection, got {err:?}"
+        );
+
+        let block = COMM_BLOCK.replace(
+            "bridge_link_selection = \"best_margin\"",
+            "bridge_link_selection = \"declared_plan\"",
+        );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::EmptyList { ref field }
+                if field == "comm.bridge_pass_plan"),
+            "expected declared pass-plan selector to require a plan, got {err:?}"
+        );
+
+        let block = COMM_BLOCK.replace(
+            "antenna_id = \"s-band-low-gain\"",
+            "antenna_id = \"s-band-low-gain\"\nrelay_id = \"missing-relay\"",
+        );
+        let toml =
+            format!("{MINIMAL}{block}").replace("openbmp.scenario = 2", "openbmp.scenario = 3");
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnsupportedValue { ref field, ref value }
+                if field == "comm.links[0].relay_id" && value == "missing-relay"),
+            "expected unknown comm relay reference rejection, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn afts_keep_out_rule_validates_under_v3() {
+        let block = AFTS_BLOCK
+            .replace("[[afts.keep_inside]]", "[[afts.keep_out]]")
+            .replace("range_box", "hazard_zone");
+        let toml = format!(
+            "{}{}",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            block
+        );
+
+        let scenario = Scenario::from_toml_str(&toml).expect("afts keep-out rule validates");
+        let afts = scenario.document.afts.expect("afts parsed");
+
+        assert!(afts.keep_inside.is_empty());
+        assert_eq!(afts.keep_out.len(), 1);
+        assert_eq!(afts.keep_out[0].id, "hazard_zone");
+    }
+
+    #[test]
+    fn afts_corridor_rule_validates_under_v3() {
+        let toml = format!(
+            "{}{}",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            AFTS_CORRIDOR_BLOCK
+        );
+
+        let scenario = Scenario::from_toml_str(&toml).expect("afts corridor rule validates");
+        let afts = scenario.document.afts.expect("afts parsed");
+
+        assert!(afts.keep_inside.is_empty());
+        assert!(afts.keep_out.is_empty());
+        assert_eq!(afts.corridor.len(), 1);
+        assert_eq!(afts.corridor[0].id, "altitude-band");
+        assert_eq!(
+            afts.corridor[0].metric,
+            crate::AftsCorridorMetricConfig::AltitudeM
+        );
+    }
+
+    #[test]
+    fn afts_gate_rule_validates_under_v3() {
+        let toml = format!(
+            "{}{}",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            AFTS_GATE_BLOCK
+        );
+
+        let scenario = Scenario::from_toml_str(&toml).expect("afts gate rule validates");
+        let afts = scenario.document.afts.expect("afts parsed");
+
+        assert!(afts.keep_inside.is_empty());
+        assert!(afts.keep_out.is_empty());
+        assert!(afts.corridor.is_empty());
+        assert_eq!(afts.gate.len(), 1);
+        assert_eq!(afts.gate[0].id, "iip-gate");
+        assert_eq!(afts.gate[0].direction, crate::AftsGateDirectionConfig::Any);
+    }
+
+    #[test]
+    fn afts_zone_rule_validates_under_v3() {
+        let toml = format!(
+            "{}{}",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            AFTS_ZONE_BLOCK
+        );
+
+        let scenario = Scenario::from_toml_str(&toml).expect("afts zone rule validates");
+        let afts = scenario.document.afts.expect("afts parsed");
+
+        assert!(afts.keep_inside.is_empty());
+        assert!(afts.keep_out.is_empty());
+        assert!(afts.corridor.is_empty());
+        assert!(afts.gate.is_empty());
+        assert_eq!(afts.zone.len(), 1);
+        assert_eq!(afts.zone[0].id, "red-zone");
+        assert_eq!(afts.zone[0].color, crate::AftsZoneColorConfig::Red);
+    }
+
+    #[test]
+    fn afts_propagator_options_validate_under_v3() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[afts]
+
+[afts.propagator]
+surface = "wgs84_ellipsoid"
+earth_rotation = "wgs84_uniform"
+step_s = 0.5
+max_time_s = 120.0
+radius_tolerance_m = 0.01
+
+[afts.propagator.drag]
+reference_density_kg_m3 = 0.01
+scale_height_m = 8500.0
+ballistic_coefficient_kg_m2 = 250.0
+
+[[afts.keep_inside]]
+id = "range_box"
+evidence = "range-box synthetic provenance"
+vertices = [
+  { latitude_deg = -1.0, longitude_deg = -1.0 },
+  { latitude_deg = -1.0, longitude_deg = 1.0 },
+  { latitude_deg = 1.0, longitude_deg = 1.0 },
+  { latitude_deg = 1.0, longitude_deg = -1.0 },
+]
+"#,
+        );
+
+        let scenario = Scenario::from_toml_str(&toml).expect("afts propagator options validate");
+        let afts = scenario.document.afts.expect("afts parsed");
+        assert_eq!(
+            afts.propagator.surface,
+            crate::AftsPropagatorSurfaceConfig::Wgs84Ellipsoid
+        );
+        assert_eq!(
+            afts.propagator.earth_rotation,
+            crate::AftsPropagatorEarthRotationConfig::Wgs84Uniform
+        );
+        assert_eq!(
+            afts.propagator.step_s.map(f64::to_bits),
+            Some(0.5_f64.to_bits())
+        );
+        assert_eq!(
+            afts.propagator
+                .drag
+                .expect("drag parsed")
+                .ballistic_coefficient_kg_m2
+                .to_bits(),
+            250.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn afts_propagator_drag_rejects_non_positive_ballistic_coefficient() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[afts]
+
+[afts.propagator.drag]
+reference_density_kg_m3 = 0.01
+scale_height_m = 8500.0
+ballistic_coefficient_kg_m2 = 0.0
+
+[[afts.keep_inside]]
+id = "range_box"
+evidence = "range-box synthetic provenance"
+vertices = [
+  { latitude_deg = -1.0, longitude_deg = -1.0 },
+  { latitude_deg = -1.0, longitude_deg = 1.0 },
+  { latitude_deg = 1.0, longitude_deg = 1.0 },
+  { latitude_deg = 1.0, longitude_deg = -1.0 },
+]
+"#,
+        );
+
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field == "afts.propagator.drag.ballistic_coefficient_kg_m2"),
+            "expected invalid AFTS drag ballistic coefficient, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn afts_evidence_file_resolves_and_hashes_with_injected_reader() {
+        let block = AFTS_BLOCK.replace(
+            "evidence = \"data/afts/range-box/provenance.md\"",
+            "evidence = \"range-box synthetic provenance\"\n\
+             evidence_file = \"data/afts/range-box/provenance.md\"",
+        );
+        let toml = format!(
+            "{}{}",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            block
+        );
+        let source_dir = PathBuf::from("/scenario");
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(source_dir.clone()))
+            .expect("afts evidence file scenario parses");
+        let expected_path = source_dir.join("data/afts/range-box/provenance.md");
+        let bytes = b"range-box provenance\n".to_vec();
+        let files = scenario
+            .resolved_files_with_reader(&|path| {
+                assert_eq!(path, expected_path.as_path());
+                Ok(bytes.clone())
+            })
+            .expect("afts evidence file resolves");
+        let resolved = files
+            .get("afts.keep_inside[0].evidence_file")
+            .expect("AFTS evidence file is resolved");
+        assert_eq!(resolved.path, expected_path);
+        assert_eq!(
+            resolved.sha256_hex,
+            ResolvedFile::from_bytes(resolved.path.clone(), bytes).sha256_hex
+        );
+    }
+
+    #[test]
+    fn afts_keep_out_evidence_file_resolves_and_hashes_with_injected_reader() {
+        let block = AFTS_BLOCK
+            .replace("[[afts.keep_inside]]", "[[afts.keep_out]]")
+            .replace(
+                "evidence = \"data/afts/range-box/provenance.md\"",
+                "evidence = \"hazard synthetic provenance\"\n\
+                 evidence_file = \"data/afts/hazard/provenance.md\"",
+            );
+        let toml = format!(
+            "{}{}",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            block
+        );
+        let source_dir = PathBuf::from("/scenario");
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(source_dir.clone()))
+            .expect("afts keep-out evidence file scenario parses");
+        let expected_path = source_dir.join("data/afts/hazard/provenance.md");
+        let bytes = b"hazard provenance\n".to_vec();
+        let files = scenario
+            .resolved_files_with_reader(&|path| {
+                assert_eq!(path, expected_path.as_path());
+                Ok(bytes.clone())
+            })
+            .expect("afts keep-out evidence file resolves");
+        let resolved = files
+            .get("afts.keep_out[0].evidence_file")
+            .expect("AFTS keep-out evidence file is resolved");
+        assert_eq!(resolved.path, expected_path);
+        assert_eq!(
+            resolved.sha256_hex,
+            ResolvedFile::from_bytes(resolved.path.clone(), bytes).sha256_hex
+        );
+    }
+
+    #[test]
+    fn afts_corridor_evidence_file_resolves_and_hashes_with_injected_reader() {
+        let block = AFTS_CORRIDOR_BLOCK.replace(
+            "evidence = \"data/afts/altitude-band/provenance.md\"",
+            "evidence = \"altitude band synthetic provenance\"\n\
+             evidence_file = \"data/afts/altitude-band/provenance.md\"",
+        );
+        let toml = format!(
+            "{}{}",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            block
+        );
+        let source_dir = PathBuf::from("/scenario");
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(source_dir.clone()))
+            .expect("afts corridor evidence file scenario parses");
+        let expected_path = source_dir.join("data/afts/altitude-band/provenance.md");
+        let bytes = b"altitude band provenance\n".to_vec();
+        let files = scenario
+            .resolved_files_with_reader(&|path| {
+                assert_eq!(path, expected_path.as_path());
+                Ok(bytes.clone())
+            })
+            .expect("afts corridor evidence file resolves");
+        let resolved = files
+            .get("afts.corridor[0].evidence_file")
+            .expect("AFTS corridor evidence file is resolved");
+        assert_eq!(resolved.path, expected_path);
+        assert_eq!(
+            resolved.sha256_hex,
+            ResolvedFile::from_bytes(resolved.path.clone(), bytes).sha256_hex
+        );
+    }
+
+    #[test]
+    fn afts_gate_evidence_file_resolves_and_hashes_with_injected_reader() {
+        let block = AFTS_GATE_BLOCK.replace(
+            "evidence = \"data/afts/iip-gate/provenance.md\"",
+            "evidence = \"iip gate synthetic provenance\"\n\
+             evidence_file = \"data/afts/iip-gate/provenance.md\"",
+        );
+        let toml = format!(
+            "{}{}",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            block
+        );
+        let source_dir = PathBuf::from("/scenario");
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(source_dir.clone()))
+            .expect("afts gate evidence file scenario parses");
+        let expected_path = source_dir.join("data/afts/iip-gate/provenance.md");
+        let bytes = b"iip gate provenance\n".to_vec();
+        let files = scenario
+            .resolved_files_with_reader(&|path| {
+                assert_eq!(path, expected_path.as_path());
+                Ok(bytes.clone())
+            })
+            .expect("afts gate evidence file resolves");
+        let resolved = files
+            .get("afts.gate[0].evidence_file")
+            .expect("AFTS gate evidence file is resolved");
+        assert_eq!(resolved.path, expected_path);
+        assert_eq!(
+            resolved.sha256_hex,
+            ResolvedFile::from_bytes(resolved.path.clone(), bytes).sha256_hex
+        );
+    }
+
+    #[test]
+    fn afts_zone_evidence_file_resolves_and_hashes_with_injected_reader() {
+        let block = AFTS_ZONE_BLOCK.replace(
+            "evidence = \"data/afts/red-zone/provenance.md\"",
+            "evidence = \"red zone synthetic provenance\"\n\
+             evidence_file = \"data/afts/red-zone/provenance.md\"",
+        );
+        let toml = format!(
+            "{}{}",
+            MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            block
+        );
+        let source_dir = PathBuf::from("/scenario");
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(source_dir.clone()))
+            .expect("afts zone evidence file scenario parses");
+        let expected_path = source_dir.join("data/afts/red-zone/provenance.md");
+        let bytes = b"red zone provenance\n".to_vec();
+        let files = scenario
+            .resolved_files_with_reader(&|path| {
+                assert_eq!(path, expected_path.as_path());
+                Ok(bytes.clone())
+            })
+            .expect("afts zone evidence file resolves");
+        let resolved = files
+            .get("afts.zone[0].evidence_file")
+            .expect("AFTS zone evidence file is resolved");
+        assert_eq!(resolved.path, expected_path);
+        assert_eq!(
+            resolved.sha256_hex,
+            ResolvedFile::from_bytes(resolved.path.clone(), bytes).sha256_hex
+        );
+    }
+
+    #[test]
+    fn afts_evidence_file_sha256_requires_evidence_file() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[afts]
+
+[[afts.keep_inside]]
+id = "range_box"
+evidence = "range-box synthetic provenance"
+evidence_file_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+vertices = [
+  { latitude_deg = -1.0, longitude_deg = -1.0 },
+  { latitude_deg = -1.0, longitude_deg = 1.0 },
+  { latitude_deg = 1.0, longitude_deg = -1.0 },
+]
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. }
+                if field == "afts.keep_inside[0].evidence_file_sha256"),
+            "expected orphan AFTS evidence_file_sha256 rejection, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn afts_enabled_requires_keep_inside_rule() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[afts]
+enabled = true
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::EmptyList { ref field }
+                if field == "afts.keep_inside|afts.keep_out|afts.corridor|afts.gate|afts.zone"),
+            "expected empty AFTS rule table, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn afts_gate_rejects_degenerate_endpoints() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[afts]
+
+[[afts.gate]]
+id = "bad-gate"
+evidence = "data/afts/bad/provenance.md"
+start = { latitude_deg = 1.0, longitude_deg = 1.0 }
+end = { latitude_deg = 1.0, longitude_deg = 1.0 }
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, rule, .. }
+                if field == "afts.gate[0].end.latitude_deg"
+                    && rule == "gate endpoints must be distinct"),
+            "expected invalid AFTS gate endpoint rejection, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn afts_corridor_requires_at_least_one_bound() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[afts]
+
+[[afts.corridor]]
+id = "bad-corridor"
+evidence = "data/afts/bad/provenance.md"
+metric = "speed_m_s"
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::EmptyList { ref field }
+                if field == "afts.corridor[0].min_speed_m_s|afts.corridor[0].max_speed_m_s"),
+            "expected empty AFTS corridor bounds rejection, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn afts_corridor_rejects_out_of_range_flight_path_angle_bound() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[afts]
+
+[[afts.corridor]]
+id = "bad-fpa"
+evidence = "data/afts/bad/provenance.md"
+metric = "flight_path_angle_rad"
+max_flight_path_angle_rad = 2.0
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field == "afts.corridor[0].max_flight_path_angle_rad"),
+            "expected invalid AFTS corridor fpa bound, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn afts_rejects_out_of_range_vertex_latitude() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[afts]
+
+[[afts.keep_inside]]
+id = "bad_latitude"
+evidence = "data/afts/bad/provenance.md"
+vertices = [
+  { latitude_deg = -1.0, longitude_deg = -1.0 },
+  { latitude_deg = 91.0, longitude_deg = 1.0 },
+  { latitude_deg = 1.0, longitude_deg = -1.0 },
+]
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field == "afts.keep_inside[0].vertices[1].latitude_deg"),
+            "expected invalid AFTS latitude, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn afts_rejects_antimeridian_crossing_polygon() {
+        let toml = append(
+            &MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            r#"
+[afts]
+
+[[afts.keep_inside]]
+id = "crosses_antimeridian"
+evidence = "data/afts/bad/provenance.md"
+vertices = [
+  { latitude_deg = -1.0, longitude_deg = 179.0 },
+  { latitude_deg = -1.0, longitude_deg = -179.0 },
+  { latitude_deg = 1.0, longitude_deg = 179.0 },
+]
+"#,
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, rule, .. }
+                if field == "afts.keep_inside[0].vertices[0].longitude_deg"
+                    && rule == "polygon segments must not cross the antimeridian"),
+            "expected antimeridian rejection, got {err:?}",
+        );
     }
 
     #[test]
@@ -1062,6 +2214,69 @@ bogus_field = 1
     }
 
     #[test]
+    fn tesseral_gravity_is_v3_only_and_validates_under_v3() {
+        let tesseral_block = "gravity       = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 2\ntesseral_order = 2\ntesseral_c20 = -1.082626683e-3\ntesseral_c21 = 2.0e-7\ntesseral_s21 = -3.0e-7\ntesseral_c22 = 1.0e-7\ntesseral_s22 = -2.0e-7\ntesseral_tide_system = \"tide_free\"\n";
+        let toml_v2 = MINIMAL.replace(
+            "gravity       = \"constant\"",
+            "gravity       = \"tesseral\"",
+        );
+        assert_v3_block_reserved_under_v2(&toml_v2, "environment.gravity = \"tesseral\"");
+
+        let toml_v3 = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665\n",
+                tesseral_block,
+            );
+        let scenario = Scenario::from_toml_str(&toml_v3).expect("tesseral must validate under v3");
+        assert_eq!(scenario.document.environment.gravity, "tesseral");
+        assert_eq!(scenario.document.environment.tesseral_order, Some(2));
+    }
+
+    #[test]
+    fn tesseral_gravity_rejects_bad_degree_and_foreign_fields() {
+        let base = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665\n",
+                "gravity       = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 1\ntesseral_order = 0\ntesseral_c20 = -1.082626683e-3\ntesseral_c21 = 0.0\ntesseral_s21 = 0.0\ntesseral_c22 = 0.0\ntesseral_s22 = 0.0\n",
+            );
+        let err = Scenario::from_toml_str(&base).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "environment.tesseral_degree"),
+            "got {err:?}",
+        );
+
+        let foreign = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity_m_s2  = 9.80665",
+                "gravity_m_s2  = 9.80665\ntesseral_c20 = 0.0",
+            );
+        let err = Scenario::from_toml_str(&foreign).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "environment.tesseral_*"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn third_body_can_use_tesseral_central_gravity_base() {
+        let toml_v3 = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665\n",
+                "gravity       = \"third_body\"\ngravity_base  = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 2\ntesseral_order = 1\ntesseral_c20 = -1.082626683e-3\ntesseral_c21 = 2.0e-7\ntesseral_s21 = -3.0e-7\ntesseral_c22 = 0.0\ntesseral_s22 = 0.0\nthird_bodies  = [\"moon\"]\nephemeris     = \"low_precision_sun_moon\"\n",
+            );
+        let scenario =
+            Scenario::from_toml_str(&toml_v3).expect("third_body tesseral base validates");
+        assert_eq!(
+            scenario.document.environment.gravity_base.as_deref(),
+            Some("tesseral")
+        );
+    }
+
+    #[test]
     fn third_body_gravity_rejects_duplicate_bodies() {
         let toml = MINIMAL
             .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
@@ -1227,7 +2442,7 @@ axis_priority = ["roll", "yaw", "pitch"]
 [fc.transport]
 mode = "in_process"
 max_payload_len = 4096
-peer_protocol_version = 2
+peer_protocol_version = 3
 "#;
         let toml = append(fc_v2_scenario(), block);
         assert_v3_block_reserved_under_v2(&toml, "fc.transport");
@@ -1245,7 +2460,7 @@ peer_protocol_version = 2
             crate::document::FcTransportModeConfig::InProcess
         );
         assert_eq!(transport.max_payload_len, Some(4096));
-        assert_eq!(transport.peer_protocol_version, Some(2));
+        assert_eq!(transport.peer_protocol_version, Some(3));
     }
 
     #[test]
@@ -1327,6 +2542,24 @@ start_step = 7
 signal     = { kind = "imu_gyro_body_rad_s", axis = "z" }
 transform  = { kind = "noise_burst", amplitude = 0.05, seed = 99 }
 
+[[fc.transport_faults.rules]]
+id         = "increment-dtheta-y"
+start_step = 8
+signal     = { kind = "imu_increment_delta_theta_rad", sample_index = 1, axis = "y" }
+transform  = { kind = "additive_bias", offset = 1.0e-6 }
+
+[[fc.transport_faults.rules]]
+id         = "increment-dv-z"
+start_step = 9
+signal     = { kind = "imu_increment_delta_v_m_s", sample_index = 2, axis = "z" }
+transform  = { kind = "scale", factor = 1.01 }
+
+[[fc.transport_faults.rules]]
+id         = "increment-dt"
+start_step = 10
+signal     = { kind = "imu_increment_dt_s", sample_index = 3 }
+transform  = { kind = "stuck", value = 0.002 }
+
 [[fc.transport_faults.packet_rules]]
 id         = "drop-sensor-frame"
 start_step = 6
@@ -1364,7 +2597,7 @@ transform  = { kind = "bit_flip", mask = 5 }
             .and_then(|fc| fc.transport_faults.as_ref())
             .expect("transport faults block present");
 
-        assert_eq!(faults.rules.len(), 5);
+        assert_eq!(faults.rules.len(), 8);
         assert_eq!(faults.rules[0].id, "imu-x-bias");
         assert_eq!(
             faults.rules[0].signal,
@@ -1388,6 +2621,24 @@ transform  = { kind = "bit_flip", mask = 5 }
             faults.rules[4].transform,
             crate::document::FcTransportFaultTransformConfig::NoiseBurst { .. }
         ));
+        assert_eq!(
+            faults.rules[5].signal,
+            crate::document::FcTransportFaultSignalConfig::ImuIncrementDeltaThetaRad {
+                sample_index: 1,
+                axis: crate::document::FcTransportVectorAxisConfig::Y,
+            }
+        );
+        assert_eq!(
+            faults.rules[6].signal,
+            crate::document::FcTransportFaultSignalConfig::ImuIncrementDeltaVMs {
+                sample_index: 2,
+                axis: crate::document::FcTransportVectorAxisConfig::Z,
+            }
+        );
+        assert_eq!(
+            faults.rules[7].signal,
+            crate::document::FcTransportFaultSignalConfig::ImuIncrementDtS { sample_index: 3 }
+        );
         assert_eq!(faults.packet_rules.len(), 4);
         assert_eq!(faults.packet_rules[0].id, "drop-sensor-frame");
         assert_eq!(
@@ -4006,6 +5257,108 @@ kind = "isothermal""#,
     }
 
     #[test]
+    fn imu_accepts_force_accumulator_specific_force_source() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"",
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"\nspecific_force_source = \"force_accumulator\"",
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let imu = scenario
+            .document
+            .sensors
+            .as_ref()
+            .expect("sensors block")
+            .get("imu")
+            .expect("imu sensor");
+        assert_eq!(
+            imu.specific_force_source,
+            Some(SpecificForceSourceConfig::ForceAccumulator)
+        );
+    }
+
+    #[test]
+    fn imu_accepts_stationary_rotating_frame_specific_force_source() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"",
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"\nspecific_force_source = \"stationary_rotating_frame\"",
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let imu = scenario
+            .document
+            .sensors
+            .as_ref()
+            .expect("sensors block")
+            .get("imu")
+            .expect("imu sensor");
+        assert_eq!(
+            imu.specific_force_source,
+            Some(SpecificForceSourceConfig::StationaryRotatingFrame)
+        );
+    }
+
+    #[test]
+    fn rejects_specific_force_source_on_non_imu_sensor() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[sensors.truth]\nkind = \"ideal_state\"",
+            "[sensors.truth]\nkind = \"ideal_state\"\nspecific_force_source = \"force_accumulator\"",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "sensors.truth.specific_force_source"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn imu_accepts_high_rate_increment_config() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"",
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"\n\n[sensors.imu.high_rate]\nsub_samples = 4\ndelta_theta_lsb_rad = 1.0e-6\ndelta_v_lsb_m_s = 1.0e-5",
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let imu = scenario
+            .document
+            .sensors
+            .as_ref()
+            .expect("sensors block")
+            .get("imu")
+            .expect("imu sensor");
+        let high_rate = imu.high_rate.expect("high-rate config");
+        assert_eq!(high_rate.sub_samples, 4);
+        assert_eq!(
+            high_rate.delta_theta_lsb_rad.to_bits(),
+            1.0e-6_f64.to_bits()
+        );
+        assert_eq!(high_rate.delta_v_lsb_m_s.to_bits(), 1.0e-5_f64.to_bits());
+    }
+
+    #[test]
+    fn rejects_high_rate_increment_config_on_non_imu_sensor() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[sensors.truth]\nkind = \"ideal_state\"",
+            "[sensors.truth]\nkind = \"ideal_state\"\n\n[sensors.truth.high_rate]\nsub_samples = 4",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "sensors.truth.high_rate"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_high_rate_increment_config_with_zero_sub_samples() {
+        let toml = SOUNDING_ROCKET.replace(
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"",
+            "[sensors.imu]\nkind = \"imu\"\nfile = \"../sensors/imu-tactical.toml\"\n\n[sensors.imu.high_rate]\nsub_samples = 0",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "sensors.imu.high_rate.sub_samples"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
     fn rejects_constant_gravity_with_mu() {
         let toml = SOUNDING_ROCKET.replace(
             "gravity       = \"j2\"\nmu_m3_s2      = 4.0e14\nr_e_m         = 6_400_000.0\nj2            = 1.0e-3",
@@ -4052,6 +5405,91 @@ kind = "isothermal""#,
                 .to_bits(),
             WGS84_J2_DEFAULT.to_bits()
         );
+    }
+
+    #[test]
+    fn egm2008_coefficients_file_requires_degree_order_and_validates() {
+        let valid = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665",
+                "gravity       = \"egm2008\"\negm2008_coefficients_file = \"egm.gfc\"\negm2008_degree = 10\negm2008_order = 10\negm2008_finite_difference_step_m = 25.0",
+            );
+        let scenario = Scenario::from_toml_str(&valid).unwrap();
+        assert_eq!(scenario.document.environment.egm2008_degree, Some(10));
+
+        let missing_degree = valid.replace("egm2008_degree = 10\n", "");
+        let err = Scenario::from_toml_str(&missing_degree).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "environment.egm2008_degree"),
+            "got {err:?}",
+        );
+
+        let bad_order = valid.replace("egm2008_order = 10", "egm2008_order = 11");
+        let err = Scenario::from_toml_str(&bad_order).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. } if field == "environment.egm2008_order"),
+            "got {err:?}",
+        );
+
+        let tier = valid
+            .replace("egm2008_degree = 10\n", "")
+            .replace("egm2008_order = 10\n", "egm2008_tier = \"degree70\"\n");
+        let scenario = Scenario::from_toml_str(&tier).unwrap();
+        assert_eq!(
+            scenario.document.environment.egm2008_tier.as_deref(),
+            Some("degree70")
+        );
+
+        let unknown_tier = tier.replace("degree70", "degree10");
+        let err = Scenario::from_toml_str(&unknown_tier).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnsupportedValue { ref field, .. } if field == "environment.egm2008_tier"),
+            "got {err:?}",
+        );
+
+        let mixed_tier_and_degree = tier.replace(
+            "egm2008_tier = \"degree70\"",
+            "egm2008_tier = \"degree70\"\negm2008_degree = 70",
+        );
+        let err = Scenario::from_toml_str(&mixed_tier_and_degree).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "environment.egm2008_degree / environment.egm2008_order"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
+    fn egm2008_coefficients_file_sha_requires_file_and_resolves() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let orphan_sha = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665",
+                &format!(
+                    "gravity       = \"egm2008\"\negm2008_coefficients_file_sha256 = \"{}\"",
+                    "0".repeat(64)
+                ),
+            );
+        let err = Scenario::from_toml_str(&orphan_sha).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::UnexpectedField { ref field, .. } if field == "environment.egm2008_coefficients_file_sha256"),
+            "got {err:?}",
+        );
+
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("egm.gfc"), b"stub gfc").expect("write gfc");
+        let toml = MINIMAL
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "gravity       = \"constant\"\ngravity_m_s2  = 9.80665",
+                "gravity       = \"egm2008\"\negm2008_coefficients_file = \"egm.gfc\"\negm2008_degree = 10\negm2008_order = 10",
+            );
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(dir.path())).unwrap();
+        let files = scenario.resolved_files().expect("resolve files");
+        assert!(files.contains_key("environment.egm2008_coefficients_file"));
     }
 
     #[test]
@@ -4278,6 +5716,61 @@ profile = "iers-tabulated"
     }
 
     #[test]
+    fn iers_cio_frame_allows_generated_xys_without_epoch_cio_xys() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("eop.toml"), "format = \"openbmp-eop-v1\"\n").expect("write eop");
+        fs::write(
+            dir.path().join("leaps.toml"),
+            "format = \"openbmp-leap-seconds-v1\"\n",
+        )
+        .expect("write leaps");
+        let toml = MINIMAL.replace(
+            r#"frame_profile = "toy-fixed-earth""#,
+            r#"frame_profile = "iers-cio""#,
+        ) + r#"
+[epoch]
+scale = "UTC"
+iso8601 = "2000-01-01T12:00:00Z"
+eop = "eop.toml"
+leap_second_table = "leaps.toml"
+
+[frames]
+profile = "iers-cio"
+"#;
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(dir.path()))
+            .expect("parse generated-XYS iers-cio scenario");
+        let files = scenario.resolved_files().expect("resolve files");
+        assert!(files.contains_key("epoch.eop"));
+        assert!(files.contains_key("epoch.leap_second_table"));
+        assert!(!files.contains_key("epoch.cio_xys"));
+    }
+
+    #[test]
+    fn iers_cio_frame_requires_leap_second_source() {
+        let toml = MINIMAL.replace(
+            r#"frame_profile = "toy-fixed-earth""#,
+            r#"frame_profile = "iers-cio""#,
+        ) + r#"
+[epoch]
+scale = "UTC"
+iso8601 = "2000-01-01T12:00:00Z"
+eop = "eop.toml"
+cio_xys = "cio-xys.toml"
+
+[frames]
+profile = "iers-cio"
+"#;
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::MissingRequiredField { ref field, .. } if field == "epoch.leap_second_table"),
+            "got {err:?}",
+        );
+    }
+
+    #[test]
     fn resolved_files_includes_epoch_eop() {
         use std::fs;
         use tempfile::tempdir;
@@ -4300,6 +5793,45 @@ profile = "iers-tabulated"
             .expect("parse iers scenario");
         let files = scenario.resolved_files().expect("resolve files");
         assert!(files.contains_key("epoch.eop"));
+    }
+
+    #[test]
+    fn resolved_files_includes_epoch_cio_xys() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("eop.toml"), "format = \"openbmp-eop-v1\"\n").expect("write eop");
+        fs::write(
+            dir.path().join("cio-xys.toml"),
+            "format = \"openbmp-cio-xys-v1\"\n",
+        )
+        .expect("write cio xys");
+        fs::write(
+            dir.path().join("leaps.toml"),
+            "format = \"openbmp-leap-seconds-v1\"\n",
+        )
+        .expect("write leaps");
+        let toml = MINIMAL.replace(
+            r#"frame_profile = "toy-fixed-earth""#,
+            r#"frame_profile = "iers-cio""#,
+        ) + r#"
+[epoch]
+scale = "UTC"
+iso8601 = "2000-01-01T12:00:00Z"
+eop = "eop.toml"
+cio_xys = "cio-xys.toml"
+leap_second_table = "leaps.toml"
+
+[frames]
+profile = "iers-cio"
+"#;
+        let scenario = Scenario::from_toml_str_with_source_dir(&toml, Some(dir.path()))
+            .expect("parse iers-cio scenario");
+        let files = scenario.resolved_files().expect("resolve files");
+        assert!(files.contains_key("epoch.eop"));
+        assert!(files.contains_key("epoch.cio_xys"));
+        assert!(files.contains_key("epoch.leap_second_table"));
     }
 
     #[test]
@@ -5170,6 +6702,7 @@ angular_velocity_body_rad_s     = [0.0, 0.0, 0.0]
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn accepts_welded_release_jettison_propagation_authority() {
         let toml = VALID_STAGE_SEPARATION_SCENARIO.replace(
             "\n[multi_body]\n",
@@ -6482,6 +8015,81 @@ substeps = 32
     }
 
     #[test]
+    fn contact_mechanism_fixtures_parse_under_contact_block() {
+        let toml = format!(
+            r#"{}
+
+[[contact.mechanism]]
+id = "deploy-lower-stop"
+coordinate = "gear.deploy_angle_rad"
+kind = "stop"
+side = "lower"
+limit_rad = 0.0
+stiffness_n_m = 1000.0
+damping_n_s_m = 2.0
+
+[[contact.mechanism]]
+id = "drive-backlash"
+coordinate = "gear.drive_angle_rad"
+kind = "backlash"
+center_rad = 0.0
+dead_zone_width_rad = 0.05
+stiffness_n_m = 500.0
+
+[[contact.mechanism]]
+id = "lock-latch"
+coordinate = "gear.lock_angle_rad"
+kind = "latch"
+center_rad = 1.0
+half_width_rad = 0.01
+"#,
+            with_contact_block(
+                &without_forces(MINIMAL).replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            )
+        );
+
+        let scenario = Scenario::from_toml_str(&toml).expect("contact mechanisms parse");
+        let mechanisms = &scenario
+            .document
+            .contact
+            .as_ref()
+            .expect("contact block")
+            .mechanisms;
+
+        assert_eq!(mechanisms.len(), 3);
+        assert_eq!(mechanisms[0].id, "deploy-lower-stop");
+        assert_eq!(mechanisms[0].kind, ContactMechanismKindConfig::Stop);
+        assert_eq!(mechanisms[1].kind, ContactMechanismKindConfig::Backlash);
+        assert_eq!(mechanisms[2].kind, ContactMechanismKindConfig::Latch);
+    }
+
+    #[test]
+    fn contact_mechanism_latch_rejects_force_fields() {
+        let toml = format!(
+            r#"{}
+
+[[contact.mechanism]]
+id = "bad-latch"
+coordinate = "gear.lock_angle_rad"
+kind = "latch"
+center_rad = 1.0
+half_width_rad = 0.01
+stiffness_n_m = 500.0
+"#,
+            with_contact_block(
+                &without_forces(MINIMAL).replace("openbmp.scenario = 2", "openbmp.scenario = 3"),
+            )
+        );
+
+        let err = Scenario::from_toml_str(&toml).expect_err("latch force fields fail closed");
+        assert!(matches!(
+            err,
+            ScenarioError::UnexpectedField { ref field, .. }
+                if field == "contact.mechanism[0].stiffness_n_m"
+        ));
+    }
+
+    #[test]
     fn contact_block_requires_contact_force_when_forces_are_explicit() {
         let toml =
             with_contact_block(&MINIMAL.replace("openbmp.scenario = 2", "openbmp.scenario = 3"));
@@ -7094,11 +8702,51 @@ substeps = 32
             .expect("pogo parsed");
 
         assert_eq!(
-            pogo.mode_natural_frequency_rad_s.to_bits(),
+            pogo.mode_natural_frequency_rad_s.unwrap().to_bits(),
             60.0_f64.to_bits()
         );
-        assert_eq!(pogo.mode_damping_ratio.to_bits(), 0.04_f64.to_bits());
+        assert_eq!(
+            pogo.mode_damping_ratio.unwrap().to_bits(),
+            0.04_f64.to_bits()
+        );
         assert!(pogo.require_stable);
+    }
+
+    #[test]
+    fn parses_propulsion_pogo_vehicle_bending_mode_source() {
+        let pogo = pogo_block(true)
+            .replace("mode_natural_frequency_rad_s = 60.0\n", "")
+            .replace(
+                "mode_damping_ratio = 0.04\n",
+                "mode_source = \"vehicle_bending\"\n",
+            );
+        let toml = ASCENT_REFERENCE_SCENARIO
+            .replace(
+                "[vehicle.assembly]\n",
+                "[vehicle.bending]\n\
+             frequency_hz = 9.25\n\
+             damping_ratio = 0.03\n\
+             modal_mass_kg = 1200.0\n\
+             slope_at_engine = 0.15\n\
+             slope_at_gyro = 0.02\n\
+             \n\
+             [vehicle.assembly]\n",
+            )
+            .replace("[validation]\n", &format!("{pogo}\n[validation]\n"));
+        let scenario = Scenario::from_toml_str(&toml).unwrap();
+        let pogo = scenario
+            .document
+            .propulsion
+            .as_ref()
+            .and_then(|propulsion| propulsion.pogo.as_ref())
+            .expect("pogo parsed");
+
+        assert_eq!(
+            pogo.mode_source,
+            crate::document::PropulsionPogoModeSource::VehicleBending
+        );
+        assert!(pogo.mode_natural_frequency_rad_s.is_none());
+        assert!(pogo.mode_damping_ratio.is_none());
     }
 
     #[test]
@@ -7116,6 +8764,27 @@ substeps = 32
                     if field == "propulsion.pogo.feed_time_constant_s"
             ),
             "expected invalid propulsion.pogo.feed_time_constant_s, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn rejects_propulsion_pogo_vehicle_bending_with_explicit_mode_fields() {
+        let pogo = pogo_block(false).replace(
+            "[propulsion.pogo]\n",
+            "[propulsion.pogo]\nmode_source = \"vehicle_bending\"\n",
+        );
+        let toml =
+            ASCENT_REFERENCE_SCENARIO.replace("[validation]\n", &format!("{pogo}\n[validation]\n"));
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ScenarioError::InconsistentSection { ref field_a, ref value_a, ref field_b, .. }
+                    if field_a == "propulsion.pogo.mode_source"
+                        && value_a == "vehicle_bending"
+                        && field_b == "propulsion.pogo.mode_natural_frequency_rad_s"
+            ),
+            "expected mode_source/explicit-field conflict, got {err:?}",
         );
     }
 
@@ -7439,6 +9108,9 @@ substeps = 32
             crate::EffectorKindConfig::LinearActuator { tau_s } => {
                 assert!((tau_s.unwrap_or(0.0) - 0.05).abs() < 1e-12);
             }
+            crate::EffectorKindConfig::SecondOrderServo { .. } => {
+                panic!("expected LinearActuator effector kind in fixture")
+            }
             crate::EffectorKindConfig::DirectTorque { .. } => {
                 panic!("expected LinearActuator effector kind in fixture")
             }
@@ -7466,14 +9138,471 @@ substeps = 32
             crate::EffectorKindConfig::DirectTorque {
                 axis,
                 effectiveness_n_m_per_rad,
+                rcs,
             } => {
                 assert_eq!(*axis, crate::TorqueAxis::Roll);
                 assert!((effectiveness_n_m_per_rad - 0.5).abs() < 1e-12);
+                assert!(rcs.is_none());
             }
-            crate::EffectorKindConfig::LinearActuator { .. } => {
+            crate::EffectorKindConfig::LinearActuator { .. }
+            | crate::EffectorKindConfig::SecondOrderServo { .. } => {
                 panic!("expected DirectTorque effector kind")
             }
         }
+    }
+
+    #[test]
+    fn parses_direct_torque_rcs_pulse_config_under_v3() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+                "kind             = { kind = \"direct_torque\", axis = \"roll\", \
+                 effectiveness_n_m_per_rad = 1.0, rcs = { minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2, pwpf = { gain = 1.0, time_constant_s = 0.01, \
+                 on_threshold = 0.5, off_threshold = 0.2 } } }",
+            )
+            .replace(
+                "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                "",
+            );
+        let scenario = Scenario::from_toml_str(&toml)
+            .expect("v3 direct_torque RCS pulse config should validate");
+        let crate::EffectorKindConfig::DirectTorque { rcs: Some(rcs), .. } =
+            &scenario.document.vehicle.assembly.effectors[0].kind
+        else {
+            panic!("expected DirectTorque RCS config");
+        };
+        assert_eq!(rcs.resolved_mode(), crate::DirectTorqueRcsMode::Scalar);
+        assert!((rcs.minimum_impulse_n_s.expect("minimum impulse") - 0.001).abs() < 1e-12);
+        assert!((rcs.nominal_thrust_n.expect("nominal thrust") - 0.2).abs() < 1e-12);
+        let pwpf = rcs.pwpf.as_ref().expect("pwpf");
+        assert!((pwpf.on_threshold - 0.5).abs() < 1e-12);
+        assert!((pwpf.off_threshold - 0.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn parses_direct_torque_rcs_bank_config_under_v3() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+                "kind             = { kind = \"direct_torque\", axis = \"pitch\", \
+                 effectiveness_n_m_per_rad = 2.0, rcs = { mode = \"bank\", \
+                 thrusters = [ \
+                 { id = \"pitch_pos\", position_body_m = [1.0, 0.0, 0.0], \
+                 direction_body = [0.0, 0.0, -1.0], minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2, blowdown = { initial_pressure_pa = 1000000.0, \
+                 minimum_pressure_pa = 500000.0, usable_impulse_n_s = 10.0 } }, \
+                 { id = \"pitch_neg\", position_body_m = [1.0, 0.0, 0.0], \
+                 direction_body = [0.0, 0.0, 1.0], minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2 } ] } }",
+            )
+            .replace(
+                "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                "",
+            );
+        let scenario =
+            Scenario::from_toml_str(&toml).expect("v3 direct_torque RCS bank should validate");
+        let crate::EffectorKindConfig::DirectTorque { rcs: Some(rcs), .. } =
+            &scenario.document.vehicle.assembly.effectors[0].kind
+        else {
+            panic!("expected DirectTorque RCS bank config");
+        };
+        assert_eq!(rcs.resolved_mode(), crate::DirectTorqueRcsMode::Bank);
+        assert_eq!(rcs.thrusters.len(), 2);
+        assert_eq!(rcs.thrusters[0].id, "pitch_pos");
+        let blowdown = rcs.thrusters[0].blowdown.as_ref().expect("blowdown");
+        assert!((blowdown.pressure_exponent - 1.0).abs() < 1e-12);
+    }
+
+    fn rcs_feed_tank_toml() -> &'static str {
+        "[[vehicle.assembly.tanks]]\n\
+         id = \"rcs_prop\"\n\
+         mounted_to = \"main\"\n\
+         mount_point_body_m = [0.0, 0.0, 0.0]\n\
+         geometry = { kind = \"cylinder\", radius_m = 0.5, height_m = 1.0 }\n\
+         propellant = { density_kg_m3 = 1000.0, label = \"mono_textbook\" }\n\
+         initial_fill_fraction = 0.5\n\
+         moving_mass = { kind = \"rigid_liquid\" }\n\
+         ullage = { initial_pressure_pa = 2000000.0, gas_gamma = 2.0 }\n"
+    }
+
+    fn with_rcs_feed_tank(toml: &str) -> String {
+        toml.replace(
+            "dry_mass_kg   = 1.0\n\n[[vehicle.assembly.effectors]]",
+            &format!(
+                "dry_mass_kg   = 1.0\n\n{}\n[[vehicle.assembly.effectors]]",
+                rcs_feed_tank_toml()
+            ),
+        )
+    }
+
+    #[test]
+    fn parses_direct_torque_rcs_bank_tank_feed_under_v3() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+                "kind             = { kind = \"direct_torque\", axis = \"pitch\", \
+                 effectiveness_n_m_per_rad = 2.0, rcs = { mode = \"bank\", \
+                 thrusters = [ \
+                 { id = \"pitch_pos\", position_body_m = [1.0, 0.0, 0.0], \
+                 direction_body = [0.0, 0.0, -1.0], minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2, feed = { tank = \"rcs_prop\", \
+                 specific_impulse_s = 220.0, pressure_exponent = 0.75 } }, \
+                 { id = \"pitch_neg\", position_body_m = [1.0, 0.0, 0.0], \
+                 direction_body = [0.0, 0.0, 1.0], minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2 } ] } }",
+            )
+            .replace(
+                "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                "",
+            );
+        let scenario = Scenario::from_toml_str(&with_rcs_feed_tank(&toml))
+            .expect("v3 direct_torque RCS bank tank feed should validate");
+        let crate::EffectorKindConfig::DirectTorque { rcs: Some(rcs), .. } =
+            &scenario.document.vehicle.assembly.effectors[0].kind
+        else {
+            panic!("expected DirectTorque RCS bank config");
+        };
+        let feed = rcs.thrusters[0].feed.as_ref().expect("tank feed");
+        assert_eq!(feed.tank, "rcs_prop");
+        assert!((feed.specific_impulse_s - 220.0).abs() < 1e-12);
+        assert!((feed.pressure_exponent - 0.75).abs() < 1e-12);
+    }
+
+    fn coupled_rcs_thrusters_toml() -> &'static str {
+        "{ id = \"roll_pos\", position_body_m = [0.0, 1.0, 0.0], direction_body = [0.0, 0.0, 1.0], minimum_impulse_n_s = 0.0001, nominal_thrust_n = 0.2 }, \
+         { id = \"roll_neg\", position_body_m = [0.0, 1.0, 0.0], direction_body = [0.0, 0.0, -1.0], minimum_impulse_n_s = 0.0001, nominal_thrust_n = 0.2 }, \
+         { id = \"pitch_pos\", position_body_m = [0.0, 0.0, 1.0], direction_body = [1.0, 0.0, 0.0], minimum_impulse_n_s = 0.0001, nominal_thrust_n = 0.2 }, \
+         { id = \"pitch_neg\", position_body_m = [0.0, 0.0, 1.0], direction_body = [-1.0, 0.0, 0.0], minimum_impulse_n_s = 0.0001, nominal_thrust_n = 0.2 }, \
+         { id = \"yaw_pos\", position_body_m = [1.0, 0.0, 0.0], direction_body = [0.0, 1.0, 0.0], minimum_impulse_n_s = 0.0001, nominal_thrust_n = 0.2 }, \
+         { id = \"yaw_neg\", position_body_m = [1.0, 0.0, 0.0], direction_body = [0.0, -1.0, 0.0], minimum_impulse_n_s = 0.0001, nominal_thrust_n = 0.2 }"
+    }
+
+    fn coupled_rcs_three_axis_effectors() -> String {
+        let thrusters = coupled_rcs_thrusters_toml();
+        format!(
+            "[[vehicle.assembly.effectors]]\n\
+             id = \"roll_rcs\"\n\
+             kind = {{ kind = \"direct_torque\", axis = \"roll\", effectiveness_n_m_per_rad = 1.0, rcs = {{ mode = \"coupled_bank\", group = \"acs\", thrusters = [ {thrusters} ] }} }}\n\
+             limits = {{ min = -0.349, max = 0.349, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }}\n\
+             initial_position = 0.0\n\
+             unit = \"rad\"\n\n\
+             [[vehicle.assembly.effectors]]\n\
+             id = \"pitch_rcs\"\n\
+             kind = {{ kind = \"direct_torque\", axis = \"pitch\", effectiveness_n_m_per_rad = 1.0, rcs = {{ mode = \"coupled_bank\", group = \"acs\", thrusters = [ {thrusters} ] }} }}\n\
+             limits = {{ min = -0.349, max = 0.349, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }}\n\
+             initial_position = 0.0\n\
+             unit = \"rad\"\n\n\
+             [[vehicle.assembly.effectors]]\n\
+             id = \"yaw_rcs\"\n\
+             kind = {{ kind = \"direct_torque\", axis = \"yaw\", effectiveness_n_m_per_rad = 1.0, rcs = {{ mode = \"coupled_bank\", group = \"acs\", thrusters = [ {thrusters} ] }} }}\n\
+             limits = {{ min = -0.349, max = 0.349, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }}\n\
+             initial_position = 0.0\n\
+            unit = \"rad\""
+        )
+    }
+
+    #[test]
+    fn parses_direct_torque_rcs_coupled_bank_tank_feed_under_v3() {
+        let effectors = coupled_rcs_three_axis_effectors().replace(
+            "nominal_thrust_n = 0.2",
+            "nominal_thrust_n = 0.2, feed = { tank = \"rcs_prop\", specific_impulse_s = 220.0 }",
+        );
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "[[vehicle.assembly.effectors]]\nid               = \"delta_e\"\nkind             = { kind = \"linear_actuator\", tau_s = 0.05 }\nlimits           = { min = -0.349, max = 0.349, max_rate_per_s = 5.236, deadband = 0.0, latency_s = 0.020 }\ninitial_position = 0.0\nunit             = \"rad\"\ncommand_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                &effectors,
+            );
+        let scenario = Scenario::from_toml_str(&with_rcs_feed_tank(&toml))
+            .expect("v3 direct_torque RCS coupled bank tank feed should validate");
+        for effector in &scenario.document.vehicle.assembly.effectors {
+            let crate::EffectorKindConfig::DirectTorque { rcs: Some(rcs), .. } = &effector.kind
+            else {
+                panic!("expected DirectTorque RCS coupled bank config");
+            };
+            assert_eq!(rcs.resolved_mode(), crate::DirectTorqueRcsMode::CoupledBank);
+            let feed = rcs.thrusters[0].feed.as_ref().expect("tank feed");
+            assert_eq!(feed.tank, "rcs_prop");
+            assert!((feed.pressure_exponent - 1.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn parses_direct_torque_rcs_coupled_bank_group_under_v3() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "[[vehicle.assembly.effectors]]\nid               = \"delta_e\"\nkind             = { kind = \"linear_actuator\", tau_s = 0.05 }\nlimits           = { min = -0.349, max = 0.349, max_rate_per_s = 5.236, deadband = 0.0, latency_s = 0.020 }\ninitial_position = 0.0\nunit             = \"rad\"\ncommand_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                &coupled_rcs_three_axis_effectors(),
+            );
+        let scenario = Scenario::from_toml_str(&toml)
+            .expect("v3 direct_torque RCS coupled bank should validate");
+        let effectors = &scenario.document.vehicle.assembly.effectors;
+        assert_eq!(effectors.len(), 3);
+        for effector in effectors {
+            let crate::EffectorKindConfig::DirectTorque { rcs: Some(rcs), .. } = &effector.kind
+            else {
+                panic!("expected DirectTorque RCS coupled bank config");
+            };
+            assert_eq!(rcs.resolved_mode(), crate::DirectTorqueRcsMode::CoupledBank);
+            assert_eq!(rcs.group.as_deref(), Some("acs"));
+            assert_eq!(rcs.thrusters.len(), 6);
+        }
+    }
+
+    #[test]
+    fn parses_direct_torque_rcs_coupled_bank_pwpf_under_v3() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "[[vehicle.assembly.effectors]]\nid               = \"delta_e\"\nkind             = { kind = \"linear_actuator\", tau_s = 0.05 }\nlimits           = { min = -0.349, max = 0.349, max_rate_per_s = 5.236, deadband = 0.0, latency_s = 0.020 }\ninitial_position = 0.0\nunit             = \"rad\"\ncommand_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                &coupled_rcs_three_axis_effectors().replace(
+                    "group = \"acs\", thrusters",
+                    "group = \"acs\", pwpf = { gain = 1.0, time_constant_s = 0.01, on_threshold = 10.0, off_threshold = 0.0 }, thrusters",
+                ),
+            );
+        let scenario = Scenario::from_toml_str(&toml)
+            .expect("v3 direct_torque RCS coupled bank PWPF should validate");
+        for effector in &scenario.document.vehicle.assembly.effectors {
+            let crate::EffectorKindConfig::DirectTorque { rcs: Some(rcs), .. } = &effector.kind
+            else {
+                panic!("expected DirectTorque RCS coupled bank config");
+            };
+            let pwpf = rcs.pwpf.as_ref().expect("pwpf");
+            assert!((pwpf.on_threshold - 10.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn direct_torque_rcs_coupled_bank_rejects_missing_axis_member() {
+        let thrusters = coupled_rcs_thrusters_toml();
+        let coupled_two_axis = format!(
+            "[[vehicle.assembly.effectors]]\n\
+             id = \"roll_rcs\"\n\
+             kind = {{ kind = \"direct_torque\", axis = \"roll\", effectiveness_n_m_per_rad = 1.0, rcs = {{ mode = \"coupled_bank\", group = \"acs\", thrusters = [ {thrusters} ] }} }}\n\
+             limits = {{ min = -0.349, max = 0.349, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }}\n\n\
+             [[vehicle.assembly.effectors]]\n\
+             id = \"pitch_rcs\"\n\
+             kind = {{ kind = \"direct_torque\", axis = \"pitch\", effectiveness_n_m_per_rad = 1.0, rcs = {{ mode = \"coupled_bank\", group = \"acs\", thrusters = [ {thrusters} ] }} }}\n\
+             limits = {{ min = -0.349, max = 0.349, max_rate_per_s = 100.0, deadband = 0.0, latency_s = 0.0 }}"
+        );
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "[[vehicle.assembly.effectors]]\nid               = \"delta_e\"\nkind             = { kind = \"linear_actuator\", tau_s = 0.05 }\nlimits           = { min = -0.349, max = 0.349, max_rate_per_s = 5.236, deadband = 0.0, latency_s = 0.020 }\ninitial_position = 0.0\nunit             = \"rad\"\ncommand_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                &coupled_two_axis,
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, .. }
+                if field.contains("kind.rcs.group")),
+            "expected IncompatibleAssemblyEntry on coupled group, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn direct_torque_rcs_bank_rejects_missing_axis_authority() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+                "kind             = { kind = \"direct_torque\", axis = \"pitch\", \
+                 effectiveness_n_m_per_rad = 1.0, rcs = { mode = \"bank\", \
+                 thrusters = [ { id = \"bad\", position_body_m = [1.0, 0.0, 0.0], \
+                 direction_body = [1.0, 0.0, 0.0], minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2 } ] } }",
+            )
+            .replace(
+                "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                "",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field.contains("direction_body")),
+            "expected InvalidNumber on bank direction_body, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn direct_torque_rcs_tank_feed_rejects_unknown_tank() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+                "kind             = { kind = \"direct_torque\", axis = \"pitch\", \
+                 effectiveness_n_m_per_rad = 1.0, rcs = { mode = \"bank\", \
+                 thrusters = [ { id = \"pitch_pos\", position_body_m = [1.0, 0.0, 0.0], \
+                 direction_body = [0.0, 0.0, -1.0], minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2, feed = { tank = \"missing\", \
+                 specific_impulse_s = 220.0 } }, \
+                 { id = \"pitch_neg\", position_body_m = [1.0, 0.0, 0.0], \
+                 direction_body = [0.0, 0.0, 1.0], minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2 } ] } }",
+            )
+            .replace(
+                "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                "",
+            );
+        let err = Scenario::from_toml_str(&with_rcs_feed_tank(&toml)).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, .. }
+                if field.contains("kind.rcs.thrusters[0].feed.tank")),
+            "expected IncompatibleAssemblyEntry on feed.tank, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn direct_torque_rcs_tank_feed_rejects_tank_without_ullage() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+                "kind             = { kind = \"direct_torque\", axis = \"pitch\", \
+                 effectiveness_n_m_per_rad = 1.0, rcs = { mode = \"bank\", \
+                 thrusters = [ { id = \"pitch_pos\", position_body_m = [1.0, 0.0, 0.0], \
+                 direction_body = [0.0, 0.0, -1.0], minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2, feed = { tank = \"rcs_prop\", \
+                 specific_impulse_s = 220.0 } }, \
+                 { id = \"pitch_neg\", position_body_m = [1.0, 0.0, 0.0], \
+                 direction_body = [0.0, 0.0, 1.0], minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2 } ] } }",
+            )
+            .replace(
+                "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                "",
+            );
+        let toml = with_rcs_feed_tank(&toml).replace(
+            "ullage = { initial_pressure_pa = 2000000.0, gas_gamma = 2.0 }\n",
+            "",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::IncompatibleAssemblyEntry { ref field, .. }
+                if field.contains("kind.rcs.thrusters[0].feed.tank")),
+            "expected IncompatibleAssemblyEntry on feed.tank, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn direct_torque_rcs_pulse_config_rejects_bad_pwpf_thresholds() {
+        let toml = ASSEMBLY_WITH_EFFECTOR
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+                "kind             = { kind = \"direct_torque\", axis = \"roll\", \
+                 effectiveness_n_m_per_rad = 1.0, rcs = { minimum_impulse_n_s = 0.001, \
+                 nominal_thrust_n = 0.2, pwpf = { gain = 1.0, time_constant_s = 0.01, \
+                 on_threshold = 0.5, off_threshold = 0.5 } } }",
+            )
+            .replace(
+                "command_schedule = { kind = \"step_at\", time_s = 0.5, before = 0.0, after = 0.087 }",
+                "",
+            );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field.contains("off_threshold")),
+            "expected InvalidNumber on off_threshold, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parses_second_order_servo_effector_under_v2() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+            "kind             = { kind = \"second_order_servo\", \
+             natural_frequency_rad_s = 20.0, damping_ratio = 0.7, \
+             max_accel_per_s2 = 1000.0, backlash_half_width = 0.002 }",
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("second_order_servo should validate");
+        let effector = &scenario.document.vehicle.assembly.effectors[0];
+        match &effector.kind {
+            crate::EffectorKindConfig::SecondOrderServo {
+                natural_frequency_rad_s,
+                damping_ratio,
+                max_accel_per_s2,
+                backlash_half_width,
+            } => {
+                assert!((natural_frequency_rad_s - 20.0).abs() < 1e-12);
+                assert!((damping_ratio - 0.7).abs() < 1e-12);
+                assert!((max_accel_per_s2 - 1000.0).abs() < 1e-12);
+                assert!((backlash_half_width - 0.002).abs() < 1e-12);
+            }
+            other => panic!("expected SecondOrderServo effector kind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn second_order_servo_rejects_invalid_parameters() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+            "kind             = { kind = \"second_order_servo\", \
+             natural_frequency_rad_s = 0.0, damping_ratio = 0.7, \
+             max_accel_per_s2 = 1000.0, backlash_half_width = 0.002 }",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field.contains("natural_frequency_rad_s")),
+            "expected InvalidNumber on natural_frequency_rad_s, got {err:?}",
+        );
+
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "kind             = { kind = \"linear_actuator\", tau_s = 0.05 }",
+            "kind             = { kind = \"second_order_servo\", \
+             natural_frequency_rad_s = 20.0, damping_ratio = 0.7, \
+             max_accel_per_s2 = 1000.0, backlash_half_width = 0.350 }",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field.contains("backlash_half_width")),
+            "expected InvalidNumber on backlash_half_width, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parses_oscillatory_effector_fault() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "initial_position = 0.0",
+            "initial_position = 0.0\nfault = { kind = \"oscillatory\", amplitude = 0.01, frequency_hz = 2.0, phase_rad = 1.5707963267948966 }",
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("oscillatory fault should validate");
+        let fault = scenario.document.vehicle.assembly.effectors[0]
+            .fault
+            .as_ref()
+            .expect("fault");
+        match fault {
+            crate::EffectorFaultConfig::Oscillatory {
+                amplitude,
+                frequency_hz,
+                phase_rad,
+            } => {
+                assert!((amplitude - 0.01).abs() < 1e-12);
+                assert!((frequency_hz - 2.0).abs() < 1e-12);
+                assert!((phase_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+            }
+            other => panic!("expected Oscillatory fault, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_oscillatory_effector_fault_with_invalid_frequency() {
+        let toml = ASSEMBLY_WITH_EFFECTOR.replace(
+            "initial_position = 0.0",
+            "initial_position = 0.0\nfault = { kind = \"oscillatory\", amplitude = 0.01, frequency_hz = 0.0, phase_rad = 0.0 }",
+        );
+        let err = Scenario::from_toml_str(&toml).unwrap_err();
+        assert!(
+            matches!(err, ScenarioError::InvalidNumber { ref field, .. }
+                if field.contains("frequency_hz")),
+            "expected InvalidNumber on frequency_hz, got {err:?}",
+        );
     }
 
     #[test]
@@ -7839,17 +9968,22 @@ file = "../sensors/magnetometer-textbook.toml"
 
 [sensors.star]
 kind = "star_tracker"
-file = "../sensors/star-tracker-textbook.toml""#,
+file = "../sensors/star-tracker-textbook.toml"
+
+[sensors.airdata]
+kind = "airdata"
+file = "../sensors/airdata-textbook.toml""#,
         );
         let scenario = match Scenario::from_toml_str(&toml) {
             Ok(s) => s,
             Err(e) => panic!("parse failed: {e:?}"),
         };
         let sensors = scenario.document.sensors.as_ref().expect("sensors");
-        assert_eq!(sensors.len(), 6);
+        assert_eq!(sensors.len(), 7);
         assert_eq!(sensors.get("gnss").expect("gnss").kind, "gnss");
         assert_eq!(sensors.get("mag").expect("mag").kind, "magnetometer");
         assert_eq!(sensors.get("star").expect("star").kind, "star_tracker");
+        assert_eq!(sensors.get("airdata").expect("airdata").kind, "airdata");
     }
 
     #[test]

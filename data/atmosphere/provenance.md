@@ -127,6 +127,58 @@ a zero-density vacuum sample) for queries above the ceiling.
 
 ---
 
+# Provenance — `openbmp.det.gpu_offline.atmosphere_density.v1`
+
+Canonical OpenBMP provenance record for the synthetic offline
+GPU-boundary atmosphere-density deck shipped under `data/atmosphere/`.
+
+```yaml
+dataset_id:       openbmp.det.gpu_offline.atmosphere_density.v1
+files:
+  - data/atmosphere/gpu-offline-density-subset-v1.toml
+source_class:     synthetic-openbmp
+source_title:     Synthetic offline GPU-boundary atmosphere density subset
+source_authors:   OpenBMP maintainers
+source_id:        OpenBMP WP-12.4-b boundary fixture
+publication_date: 2026-06-18
+license_or_terms: OpenBMP repository license.
+source_hash_sha256: 74dea5cca998bd9e3e3af88d3f8784906be5a1050b910e3c89067490f15e2d96
+retrieved_utc:    2026-06-18
+transformation:
+  method: >-
+    Synthetic external-producer fixture generated from the public
+    piecewise-exponential atmosphere equation at seven sampled
+    geometric altitudes. The committed deck represents the in-repo
+    footprint an external GPU producer is allowed to leave: a static
+    data product with a declared UQ band and provenance, never a live
+    GPU code path.
+  script: none committed; values are reproduced by the deterministic
+    CPU test below.
+verification:
+  method: >-
+    `crates/openbmp-testkit/tests/gpu_offload_boundary.rs` loads the
+    deck, asserts the no-live-GPU boundary metadata, recomputes each
+    reproduced sample through
+    `openbmp_physics::PiecewiseExponentialAtmosphere` via the
+    `AtmosphereModel` trait, checks every density is inside the
+    declared relative UQ band, verifies this provenance record carries
+    the deck path and SHA-256 pin, and scans Cargo manifests for
+    known GPU framework dependencies.
+  test: cargo test -p openbmp-testkit --test gpu_offload_boundary --locked
+  tolerance: 0.5 percent relative density error.
+validation_status: checked
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Synthetic offline data-product boundary only. No GPU framework,
+    shader, kernel, driver binding, live dynamics path, actuator
+    command path, or operational environment table ships with this
+    fixture.
+```
+
+---
+
 # Provenance — `openbmp.atmosphere.nrlmsise00.static.v1`
 
 Canonical OpenBMP provenance record for the NRLMSISE-00

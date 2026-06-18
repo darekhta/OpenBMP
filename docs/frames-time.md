@@ -64,11 +64,17 @@ Rules:
   required by their selected frame profile.
 - UTC is used only at input/output boundaries.
 - The current `iers-tabulated` runner path requires `epoch.scale = "UTC"` and
-  converts UTC to UT1 using a pinned EOP table.
+  converts UTC to UT1 using a pinned EOP table. The `iers-cio` runner path also
+  requires leap-second data so it can derive TT, and it either generates
+  ERFA-pinned IAU 2006/2000A `xys06a` values from TT or consumes a pinned
+  `epoch.cio_xys` table when one is supplied.
 - Ephemeris paths convert `UTC` or `TT` epochs onto the TDB axis. UTC
   conversion uses the pinned `epoch.leap_second_table`, which may be an
   OpenBMP TOML table or a NAIF `KPL/LSK` leap-second text kernel. SPK UTC
-  epochs require it.
+  epochs require it. The runner uses the shared `TimeScaleBridge` ERFA
+  `eraDtdb`-compatible helper, samples `epoch.eop` UT1-UTC when available,
+  and supplies topocentric observer geometry from `[frames.local_origin]`
+  when present. Scenarios without a local origin use geocentric dtdb geometry.
 - Leap-second and Earth-orientation tables are data files and require
   provenance.
 
@@ -81,12 +87,14 @@ OpenBMP should support explicit frame profiles:
 | `toy-fixed-earth` | Textbook scenarios, no absolute epoch | Bit-stable |
 | `wgs84-uniform-rotation` | Earth rotation with constant rate, no EOP | Bit-stable |
 | `iers-tabulated` | Pinned UT1-UTC, polar motion, and optional LOD table | Bit-stable within platform profile when data is pinned |
+| `iers-cio` | Pinned EOP plus generated or caller-provided CIO X/Y/s | Bit-stable within platform profile when data is pinned |
 | `spice-reference` | Validation against public SPICE kernels | Validation only, not default runtime |
 
 The default profile for MVP scenarios is `wgs84-uniform-rotation` unless an
 analytic toy states otherwise.
 
-`iers-tabulated` consumes deterministic TOML EOP tables:
+`iers-tabulated` consumes deterministic TOML EOP tables, raw
+`finals2000A.data` rows, or raw IERS EOP 14 C04 IAU2000A text:
 
 ```toml
 format = "openbmp-eop-v1"
@@ -106,7 +114,9 @@ from the UTC scenario epoch plus interpolated UT1-UTC, then applies polar
 motion. If both bracketing EOP samples include optional `lod_s`, UT1-UTC
 uses length-of-day-constrained Hermite interpolation and the sampled Earth
 spin rate reports the corresponding LOD-adjusted value; otherwise UT1-UTC
-uses linear interpolation for backwards-compatible tables. SPICE frame
+uses linear interpolation for backwards-compatible tables. Raw `finals2000A`
+and EOP 14 C04 inputs convert each row's UTC MJD to scenario-relative
+`time_s` from `epoch.iso8601` before building the same table. SPICE frame
 chains, IAU 2006/2000A CIO-based transforms, and
 other high-fidelity Earth-orientation refinements remain future work.
 Velocity transforms include the finite-difference rate of the full
