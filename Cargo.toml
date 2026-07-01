@@ -92,8 +92,8 @@ toml_edit    = { version = "0.25.11" }
 postcard     = { version = "1.1.3", default-features = false, features = ["alloc"] }
 
 # --- Telemetry archive
-arrow   = { version = "58.1.0", default-features = false, features = ["ipc"] }
-parquet = { version = "58.1.0", default-features = false, features = ["arrow", "snap"] }
+arrow   = { version = "59.0.0", default-features = false, features = ["ipc"] }
+parquet = { version = "59.0.0", default-features = false, features = ["arrow", "snap"] }
 
 # --- CLI / errors / logging
 clap               = { version = "4.6.1", features = ["derive", "env", "wrap_help"] }
