@@ -27,7 +27,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -41,7 +41,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -56,7 +56,7 @@ jobs:
     name: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -70,7 +70,7 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -87,7 +87,7 @@ jobs:
     name: coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -115,7 +115,7 @@ jobs:
     name: doc-tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -129,7 +129,7 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -145,7 +145,7 @@ jobs:
     name: cargo-audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -161,7 +161,7 @@ jobs:
     name: cargo-machete
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -177,7 +177,7 @@ jobs:
     name: cargo-hack feature powerset
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -194,7 +194,7 @@ jobs:
     name: msrv
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -208,7 +208,7 @@ jobs:
     name: typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: taiki-e/install-action@v2
         with:
           tool: typos-cli@1.45.1
@@ -223,7 +223,7 @@ jobs:
     env:
       RUSTDOCFLAGS: "-D warnings"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -241,7 +241,7 @@ jobs:
     name: HAL portability
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -267,7 +267,7 @@ jobs:
     name: FC dependency graph tripwire
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -283,7 +283,7 @@ jobs:
     name: lockstep-clock tripwire
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -303,7 +303,7 @@ jobs:
     name: requirements traceability
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: python3 scripts/check_requirements_traceability.py
 
   # ----------------------------------------------------------------------
@@ -317,7 +317,7 @@ jobs:
     name: FMI export schema
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -335,7 +335,7 @@ jobs:
     name: FMI import point-mass
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -352,7 +352,7 @@ jobs:
     name: FMI import FMPy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -371,7 +371,7 @@ jobs:
     name: FMI Reference-FMU smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -389,7 +389,7 @@ jobs:
     name: FMI export FMPy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -408,7 +408,7 @@ jobs:
     name: data and scenario provenance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -429,7 +429,7 @@ jobs:
     name: SIL evidence and interchange
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -459,7 +459,7 @@ jobs:
     name: Phalcon-9 deterministic SIL
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -489,7 +489,7 @@ jobs:
     name: fc HAL build-time gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -559,7 +559,7 @@ jobs:
     name: determinism-gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -716,7 +716,7 @@ jobs:
     needs: determinism
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -785,7 +785,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
@@ -813,7 +813,7 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
         with:
           toolchain: "1.95"
