@@ -36,8 +36,8 @@ use openbmp_aero::{
     AeroContext, AeroDeck, AeroError, AeroMethod, knudsen_number, mean_free_path_m,
 };
 use openbmp_contact::{
-    AnchoredStictionFriction, AnchoredStictionState, ContactGeometry, ContactPair, HalfSpace,
-    NormalLaw, half_space_kinematics,
+    AnchoredStictionFriction, AnchoredStictionResponse, AnchoredStictionState, ContactError,
+    ContactGeometry, ContactPair, HalfSpace, NormalLaw, half_space_kinematics,
 };
 use openbmp_models::{
     ForceContext, ForceModel, MassModel, MassPropertiesRate, ModelEvalError, MomentContext,
@@ -50,7 +50,7 @@ use openbmp_state::{MassProperties, PointMassState, RigidBodyState};
 use openbmp_core::{Body, BodyId, ModelId, Position3, SimTime, ValidationStatus};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
 
@@ -214,7 +214,11 @@ impl HalfSpaceContactForceAdapter {
         }
     }
 
-    /// Construct a stateful anchored-stiction half-space adapter.
+    /// Construct an anchored-stiction half-space adapter.
+    ///
+    /// Trial force evaluations never advance friction history. Use
+    /// [`Self::anchored_runtime`] to commit accepted states, or construct with
+    /// [`Self::with_anchored_runtime`] to share an explicitly managed runtime.
     #[must_use]
     pub fn new_anchored_stiction(
         half_space: HalfSpace,
@@ -223,15 +227,43 @@ impl HalfSpaceContactForceAdapter {
         friction: AnchoredStictionFriction,
         model_id: ModelId,
     ) -> Self {
+        Self::with_anchored_runtime(
+            half_space,
+            geometry,
+            normal_law,
+            AnchoredContactRuntime::new(friction),
+            model_id,
+        )
+    }
+
+    /// Construct an adapter sharing accepted friction history with diagnostics
+    /// and other force views. The caller commits only accepted states through
+    /// the runtime; force evaluation itself is read-only.
+    #[must_use]
+    pub fn with_anchored_runtime(
+        half_space: HalfSpace,
+        geometry: ContactGeometry,
+        normal_law: NormalLaw,
+        runtime: AnchoredContactRuntime,
+        model_id: ModelId,
+    ) -> Self {
         Self {
             half_space,
             force: HalfSpaceContactForce::AnchoredStiction {
                 geometry,
                 normal_law,
-                friction,
-                state: Mutex::new(AnchoredContactState::default()),
+                runtime,
             },
             model_id,
+        }
+    }
+
+    /// Returns the shared accepted-state runtime for anchored friction.
+    #[must_use]
+    pub fn anchored_runtime(&self) -> Option<AnchoredContactRuntime> {
+        match &self.force {
+            HalfSpaceContactForce::RegularizedCoulomb { .. } => None,
+            HalfSpaceContactForce::AnchoredStiction { runtime, .. } => Some(runtime.clone()),
         }
     }
 
@@ -254,8 +286,7 @@ impl HalfSpaceContactForceAdapter {
             HalfSpaceContactForce::AnchoredStiction {
                 geometry,
                 normal_law,
-                friction,
-                state,
+                runtime,
             } => {
                 let kinematics =
                     half_space_kinematics(self.half_space, *geometry, position, velocity).map_err(
@@ -265,17 +296,11 @@ impl HalfSpaceContactForceAdapter {
                         },
                     )?;
                 let normal = normal_law.evaluate(kinematics);
-                let mut state = state.lock().map_err(|_| ModelEvalError::InvalidState {
-                    model: self.model_id,
-                    reason: Cow::Borrowed("anchored stiction state lock poisoned"),
-                })?;
-                let dt_s = state.advance_dt_s(time.as_seconds());
-                let friction = friction
-                    .evaluate(
-                        &mut state.stiction,
+                let friction = runtime
+                    .trial(
                         normal.normal_force_n,
                         kinematics.tangential_velocity_m_s,
-                        dt_s,
+                        time.as_seconds(),
                     )
                     .map_err(|err| ModelEvalError::InvalidState {
                         model: self.model_id,
@@ -348,8 +373,7 @@ enum HalfSpaceContactForce {
     AnchoredStiction {
         geometry: ContactGeometry,
         normal_law: NormalLaw,
-        friction: AnchoredStictionFriction,
-        state: Mutex<AnchoredContactState>,
+        runtime: AnchoredContactRuntime,
     },
 }
 
@@ -357,22 +381,211 @@ enum HalfSpaceContactForce {
 struct AnchoredContactState {
     stiction: AnchoredStictionState,
     last_time_s: Option<f64>,
+    last_signature: Option<[u64; 5]>,
+    last_response: Option<AnchoredStictionResponse>,
+    cumulative_dissipated_energy_j: f64,
 }
 
-impl AnchoredContactState {
-    fn advance_dt_s(&mut self, time_s: f64) -> f64 {
-        match self.last_time_s {
-            Some(last_time_s) if time_s > last_time_s => {
-                self.last_time_s = Some(time_s);
-                time_s - last_time_s
-            }
-            Some(_) => 0.0,
-            None => {
-                self.last_time_s = Some(time_s);
-                0.0
-            }
+/// Accepted anchored-friction history shared by force evaluation and telemetry.
+///
+/// Trials run against a copy of the last committed state. Rejected or reordered
+/// integrator stages therefore cannot advance the anchor or discard its energy.
+#[derive(Clone, Debug)]
+pub struct AnchoredContactRuntime {
+    friction: AnchoredStictionFriction,
+    state: Arc<Mutex<AnchoredContactState>>,
+}
+
+/// Opaque checkpoint of accepted anchored-friction history and energy counters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnchoredContactSnapshot(AnchoredContactState);
+
+impl AnchoredContactRuntime {
+    /// Creates a runtime with no committed contact state.
+    #[must_use]
+    pub fn new(friction: AnchoredStictionFriction) -> Self {
+        Self {
+            friction,
+            state: Arc::new(Mutex::new(AnchoredContactState::default())),
         }
     }
+
+    /// Evaluates a trial without changing accepted history or energy counters.
+    /// Identical queries at a committed state return its cached response.
+    ///
+    /// # Errors
+    ///
+    /// Returns a contact error for invalid inputs or a poisoned runtime lock.
+    pub fn trial(
+        &self,
+        normal_force_n: f64,
+        tangential_velocity_m_s: [f64; 3],
+        time_s: f64,
+    ) -> Result<AnchoredStictionResponse, ContactError> {
+        let signature = contact_signature(normal_force_n, tangential_velocity_m_s, time_s)?;
+        let state = self.state.lock().map_err(|_| contact_lock_error())?;
+        if state.last_signature == Some(signature)
+            && let Some(response) = state.last_response
+        {
+            return Ok(response);
+        }
+        let mut trial = state.stiction;
+        let dt_s = state
+            .last_time_s
+            .map_or(0.0, |last| (time_s - last).max(0.0));
+        self.friction
+            .evaluate(&mut trial, normal_force_n, tangential_velocity_m_s, dt_s)
+    }
+
+    /// Commits one accepted state and its dissipated-energy increment.
+    /// Repeating an identical commit is idempotent. Initialize at the starting
+    /// simulation time, then commit every accepted integration substep.
+    ///
+    /// # Errors
+    ///
+    /// Returns a contact error for invalid inputs, backward time, non-finite
+    /// accumulated dissipation, or a poisoned runtime lock. Errors leave the
+    /// accepted state unchanged.
+    pub fn commit(
+        &self,
+        normal_force_n: f64,
+        tangential_velocity_m_s: [f64; 3],
+        time_s: f64,
+    ) -> Result<(), ContactError> {
+        let signature = contact_signature(normal_force_n, tangential_velocity_m_s, time_s)?;
+        let mut state = self.state.lock().map_err(|_| contact_lock_error())?;
+        if state.last_signature == Some(signature) {
+            return Ok(());
+        }
+        if state.last_time_s.is_some_and(|last| time_s < last) {
+            return Err(ContactError::InvalidParameter {
+                field: "time_s",
+                reason: "accepted contact time must not move backward",
+            });
+        }
+        let mut next = *state;
+        let dt_s = next.last_time_s.map_or(0.0, |last| time_s - last);
+        let response = self.friction.evaluate(
+            &mut next.stiction,
+            normal_force_n,
+            tangential_velocity_m_s,
+            dt_s,
+        )?;
+        next.cumulative_dissipated_energy_j += response.dissipated_energy_j;
+        if !next.cumulative_dissipated_energy_j.is_finite() {
+            return Err(ContactError::InvalidParameter {
+                field: "cumulative_dissipated_energy_j",
+                reason: "must remain finite",
+            });
+        }
+        next.last_time_s = Some(time_s);
+        next.last_signature = Some(signature);
+        next.last_response = Some(response);
+        *state = next;
+        Ok(())
+    }
+
+    /// Relabels the last accepted endpoint without advancing friction history.
+    ///
+    /// Use after a successful kernel step canonicalizes its endpoint time, or
+    /// while a disabled force freezes its constitutive history. The anchor,
+    /// cached force, and energy counters are unchanged; no friction update or
+    /// integration occurs. An uninitialized runtime is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns a contact error for non-finite time or a poisoned runtime lock.
+    pub fn retime_committed(&self, time_s: f64) -> Result<(), ContactError> {
+        if !time_s.is_finite() {
+            return Err(ContactError::InvalidParameter {
+                field: "time_s",
+                reason: "must be finite",
+            });
+        }
+        let mut state = self.state.lock().map_err(|_| contact_lock_error())?;
+        if let Some(mut signature) = state.last_signature {
+            signature[0] = time_s.to_bits();
+            state.last_signature = Some(signature);
+            state.last_time_s = Some(time_s);
+        }
+        Ok(())
+    }
+
+    /// Returns the total dissipation from accepted updates, including anchor
+    /// release at zero elapsed time.
+    ///
+    /// # Errors
+    ///
+    /// Returns a contact error if the runtime lock is poisoned.
+    pub fn cumulative_dissipated_energy_j(&self) -> Result<f64, ContactError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| contact_lock_error())?
+            .cumulative_dissipated_energy_j)
+    }
+
+    /// Returns the last accepted response without making a friction trial.
+    /// This exposes stored anchor energy while a phase disables the force.
+    ///
+    /// # Errors
+    ///
+    /// Returns a contact error if the runtime lock is poisoned.
+    pub fn committed_response(&self) -> Result<Option<AnchoredStictionResponse>, ContactError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| contact_lock_error())?
+            .last_response)
+    }
+
+    /// Captures history before an enclosing kernel step that may fail.
+    ///
+    /// # Errors
+    ///
+    /// Returns a contact error if the runtime lock is poisoned.
+    pub fn snapshot(&self) -> Result<AnchoredContactSnapshot, ContactError> {
+        Ok(AnchoredContactSnapshot(
+            *self.state.lock().map_err(|_| contact_lock_error())?,
+        ))
+    }
+
+    /// Restores history and energy counters after a failed kernel step.
+    ///
+    /// # Errors
+    ///
+    /// Returns a contact error if the runtime lock is poisoned.
+    pub fn restore(&self, snapshot: AnchoredContactSnapshot) -> Result<(), ContactError> {
+        *self.state.lock().map_err(|_| contact_lock_error())? = snapshot.0;
+        Ok(())
+    }
+}
+
+fn contact_lock_error() -> ContactError {
+    ContactError::InvalidParameter {
+        field: "anchored_contact_state",
+        reason: "runtime lock poisoned",
+    }
+}
+
+fn contact_signature(
+    normal_force_n: f64,
+    tangential_velocity_m_s: [f64; 3],
+    time_s: f64,
+) -> Result<[u64; 5], ContactError> {
+    if !time_s.is_finite() {
+        return Err(ContactError::InvalidParameter {
+            field: "time_s",
+            reason: "must be finite",
+        });
+    }
+    Ok([
+        time_s.to_bits(),
+        normal_force_n.to_bits(),
+        tangential_velocity_m_s[0].to_bits(),
+        tangential_velocity_m_s[1].to_bits(),
+        tangential_velocity_m_s[2].to_bits(),
+    ])
 }
 
 fn scale_contact_vector(vector: [f64; 3], scalar: f64) -> [f64; 3] {
@@ -2562,6 +2775,128 @@ mod tests {
     use proptest::prelude::*;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
+
+    fn anchored_contact_fixture() -> (AnchoredContactRuntime, HalfSpaceContactForceAdapter) {
+        let runtime = AnchoredContactRuntime::new(
+            AnchoredStictionFriction::new(0.6, 0.4, 100.0, 0.0, 1.0).unwrap(),
+        );
+        let adapter = HalfSpaceContactForceAdapter::with_anchored_runtime(
+            HalfSpace::ground_z0(),
+            ContactGeometry::Point,
+            NormalLaw::KelvinVoigt(openbmp_contact::KelvinVoigtNormal::new(1000.0, 0.0).unwrap()),
+            runtime.clone(),
+            ModelId::new(391),
+        );
+        runtime.commit(10.0, [1.0, 0.0, 0.0], 0.0).unwrap();
+        (runtime, adapter)
+    }
+
+    #[test]
+    fn anchored_contact_trials_are_order_independent_and_leave_history_unchanged() {
+        let (runtime, adapter) = anchored_contact_fixture();
+        let initial = runtime.snapshot().unwrap();
+        let position = Vector3::new(0.0, 0.0, -0.01);
+        let query = |speed, time| {
+            adapter
+                .force_from_state_vectors(
+                    position,
+                    Vector3::new(speed, 0.0, 0.0),
+                    SimTime::from_seconds(time),
+                )
+                .unwrap()
+        };
+        let first_stage = query(1.0, 0.02);
+        let second_stage = query(2.0, 0.02);
+        assert_eq!(query(2.0, 0.02), second_stage);
+        assert_eq!(query(1.0, 0.02), first_stage);
+
+        // A later rejected probe would break the anchor in the old evaluator.
+        let _rejected = query(100.0, 10.0);
+        assert_eq!(query(1.0, 0.02), first_stage);
+        assert_eq!(query(2.0, 0.02), second_stage);
+        assert_eq!(runtime.snapshot().unwrap(), initial);
+        assert_eq!(runtime.cumulative_dissipated_energy_j().unwrap(), 0.0);
+        assert_eq!(first_stage.x, -2.0);
+        assert_eq!(second_stage.x, -4.0);
+    }
+
+    #[test]
+    fn anchored_contact_commit_caches_release_and_counts_energy_once() {
+        let (runtime, _) = anchored_contact_fixture();
+        runtime.commit(10.0, [1.0, 0.0, 0.0], 0.02).unwrap();
+        // The cone shrinks at the same time. Re-evaluating dt=0 would otherwise
+        // restick immediately and erase the committed kinetic-friction force.
+        runtime.commit(1.0, [0.5, 0.0, 0.0], 0.02).unwrap();
+        let released = runtime.trial(1.0, [0.5, 0.0, 0.0], 0.02).unwrap();
+        assert_eq!(released.mode, openbmp_contact::StictionMode::Sliding);
+        assert_eq!(released.friction_force_n[0], -0.4);
+        assert!((runtime.cumulative_dissipated_energy_j().unwrap() - 0.02).abs() < 1.0e-15);
+        let committed = runtime.snapshot().unwrap();
+        runtime.commit(1.0, [0.5, 0.0, 0.0], 0.02).unwrap();
+        assert_eq!(runtime.snapshot().unwrap(), committed);
+        assert_eq!(runtime.trial(1.0, [0.5, 0.0, 0.0], 0.02).unwrap(), released);
+    }
+
+    #[test]
+    fn anchored_contact_retime_preserves_committed_sliding_response_across_one_ulp() {
+        let (runtime, _) = anchored_contact_fixture();
+        let raw_time: f64 = 0.02;
+        runtime.commit(10.0, [1.0, 0.0, 0.0], raw_time).unwrap();
+        runtime.commit(1.0, [0.5, 0.0, 0.0], raw_time).unwrap();
+        let released = runtime.trial(1.0, [0.5, 0.0, 0.0], raw_time).unwrap();
+        let before = runtime.snapshot().unwrap();
+        let canonical_time = f64::from_bits(raw_time.to_bits() + 1);
+
+        // This genuinely different trial time must not hit an epsilon cache.
+        assert_eq!(
+            runtime
+                .trial(1.0, [0.5, 0.0, 0.0], canonical_time)
+                .unwrap()
+                .mode,
+            openbmp_contact::StictionMode::Sticking
+        );
+        runtime.retime_committed(canonical_time).unwrap();
+        assert_eq!(
+            runtime.trial(1.0, [0.5, 0.0, 0.0], canonical_time).unwrap(),
+            released
+        );
+        assert_eq!(released.mode, openbmp_contact::StictionMode::Sliding);
+        assert_eq!(released.friction_force_n[0], -0.4);
+        let after = runtime.snapshot().unwrap();
+        assert_eq!(after.0.stiction, before.0.stiction);
+        assert_eq!(after.0.last_response, before.0.last_response);
+        assert_eq!(
+            after.0.cumulative_dissipated_energy_j,
+            before.0.cumulative_dissipated_energy_j
+        );
+        assert_eq!(after.0.last_time_s, Some(canonical_time));
+        runtime
+            .commit(1.0, [0.5, 0.0, 0.0], canonical_time)
+            .unwrap();
+        assert_eq!(runtime.snapshot().unwrap(), after);
+        assert!(runtime.retime_committed(f64::NAN).is_err());
+        assert_eq!(runtime.snapshot().unwrap(), after);
+    }
+
+    #[test]
+    fn anchored_contact_checkpoint_restores_anchor_time_and_energy_after_failure() {
+        let (runtime, _) = anchored_contact_fixture();
+        runtime.commit(10.0, [1.0, 0.0, 0.0], 0.02).unwrap();
+        let before = runtime.snapshot().unwrap();
+        let expected = runtime.trial(10.0, [0.0, 0.0, 0.0], 0.03).unwrap();
+        runtime.commit(0.0, [0.0, 0.0, 0.0], 0.03).unwrap();
+        assert!(runtime.cumulative_dissipated_energy_j().unwrap() > 0.0);
+        assert!(runtime.commit(-1.0, [0.0, 0.0, 0.0], 0.04).is_err());
+        runtime.restore(before).unwrap();
+        assert_eq!(runtime.snapshot().unwrap(), before);
+        assert_eq!(
+            runtime.trial(10.0, [0.0, 0.0, 0.0], 0.03).unwrap(),
+            expected
+        );
+        assert_eq!(runtime.cumulative_dissipated_energy_j().unwrap(), 0.0);
+        assert!(runtime.commit(10.0, [0.0, 0.0, 0.0], 0.01).is_err());
+        assert_eq!(runtime.snapshot().unwrap(), before);
+    }
 
     fn fixture_state(z_position: f64, z_velocity: f64) -> PointMassState {
         PointMassState::new(

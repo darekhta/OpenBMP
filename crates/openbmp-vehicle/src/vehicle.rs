@@ -431,7 +431,11 @@ impl<S: SimState> KernelVehicle<S> {
         self.mass_model.0.as_ref()
     }
 
-    fn model_active(&self, phase_id: Option<u64>, name: &str) -> bool {
+    /// Reports whether a registered force or moment model participates in the
+    /// selected phase. Stateful runtime owners use the same gate when advancing
+    /// their accepted history so disabled models remain frozen.
+    #[must_use]
+    pub fn model_active(&self, phase_id: Option<u64>, name: &str) -> bool {
         phase_id
             .and_then(|phase| self.phase_force_overrides.get(&phase))
             .map_or_else(

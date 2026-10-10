@@ -247,6 +247,11 @@ impl RigidBodySession {
             crate::feed_network::FeedNetworkRack::build(document, resolved_files)?;
         let _pogo_rack = crate::pogo::PogoStabilityRack::build(document)?;
         let landing_gear_runtime = crate::landing_gear::LandingGearRuntime::maybe_build(document)?;
+        let contact_evaluator = document
+            .contact
+            .as_ref()
+            .map(crate::contact::ContactDiagnosticsEvaluator::from_config)
+            .transpose()?;
         // Recovery rack mirroring the point-mass runner.
         let recovery_rack = crate::recovery::RecoveryRack::build(document)?;
         let separated_attitude_targets =
@@ -359,6 +364,7 @@ impl RigidBodySession {
             resolved_files,
             landing_gear_runtime.clone(),
             aerothermal_sink.clone(),
+            contact_evaluator.as_ref(),
         )?;
         let breakdown_vehicle = build_vehicle(
             document,
@@ -367,6 +373,7 @@ impl RigidBodySession {
             resolved_files,
             landing_gear_runtime.clone(),
             aerothermal_sink,
+            contact_evaluator.as_ref(),
         )?;
         let mass_model = build_mass_model(
             &loaded,
@@ -520,11 +527,6 @@ impl RigidBodySession {
             &initial_tank_snapshot,
         )?;
         let channel_set = RigidChannelSet::new(document)?;
-        let contact_evaluator = document
-            .contact
-            .as_ref()
-            .map(crate::contact::ContactDiagnosticsEvaluator::from_config)
-            .transpose()?;
         let mut contact_accumulator = document
             .contact
             .as_ref()
@@ -591,6 +593,41 @@ impl RigidBodySession {
                 )
             })
             .transpose()?;
+        if let Some(runtime) = &landing_gear_runtime {
+            let active = breakdown_vehicle.model_active(
+                kernel.current_phase().map(openbmp_sim::PhaseId::value),
+                "landing_gear",
+            );
+            accept_landing_gear_state(
+                runtime,
+                kernel.current_state(),
+                kernel.primary_rigid_body(),
+                active,
+            )
+            .map_err(openbmp_sim::SimulationError::from)?;
+            for separated in kernel.separated_rigid_bodies() {
+                accept_landing_gear_state(runtime, &separated.state, Some(separated.body), active)
+                    .map_err(openbmp_sim::SimulationError::from)?;
+            }
+            // Initial preloading is part of the initial condition, not work
+            // performed during the simulated interval.
+            drop(runtime.take_samples()?);
+        }
+        if let Some(contact) = &contact_evaluator {
+            let state = kernel.current_state();
+            contact
+                .set_active(
+                    breakdown_vehicle.model_active(
+                        kernel.current_phase().map(openbmp_sim::PhaseId::value),
+                        "contact",
+                    ),
+                    state.time,
+                )
+                .map_err(openbmp_sim::SimulationError::from)?;
+            contact
+                .commit_accepted(state.position.vector, state.velocity.vector, state.time)
+                .map_err(openbmp_sim::SimulationError::from)?;
+        }
         record_step(
             document,
             &mut table,
@@ -868,9 +905,6 @@ impl RigidBodySession {
             // override pushes zero wind again (see `set_wind_override`).
             self.kernel.set_wind_sample(wind);
         }
-        self.mirror_primary_multibody_root_step()?;
-        self.mirror_separated_multibody_root_steps()?;
-        self.mirror_articulated_gimbal_steps(articulated_gimbal_root_authority_enabled(document))?;
         // Feed the bending mode's reaction moment to the rigid-body torque for
         // this step (held across the RK4 stages). Zero when no flex mode.
         if !self.structural_rack.is_inactive() {
@@ -879,10 +913,172 @@ impl RigidBodySession {
         }
         let prev_velocity_eci = self.kernel.current_state().velocity.vector;
         let prev_orientation = self.kernel.current_state().orientation.q;
-        self.kernel.step()?;
-        self.apply_primary_root_free_flyer_authority(document)?;
-        self.apply_separated_root_free_flyer_authority(document)?;
-        self.apply_articulated_gimbal_root_authority(document)?;
+        let gear_checkpoint = self
+            .landing_gear_runtime
+            .as_ref()
+            .map(crate::landing_gear::LandingGearRuntime::checkpoint)
+            .transpose()
+            .map_err(openbmp_sim::SimulationError::from)?;
+        let contact_checkpoint = self
+            .contact_evaluator
+            .as_ref()
+            .map(crate::contact::ContactDiagnosticsEvaluator::snapshot)
+            .transpose()
+            .map_err(openbmp_sim::SimulationError::from)?;
+        let primary_body = self.kernel.primary_rigid_body();
+        let replace_primary = primary_root_free_flyer_authority_enabled(document)
+            || articulated_gimbal_root_authority_enabled(document);
+        let replace_separated = separated_root_free_flyer_authority_enabled(document);
+        let deferred_separated_bodies: Vec<_> = if replace_separated {
+            self.kernel
+                .separated_rigid_bodies()
+                .iter()
+                .filter(|body| body.propagating)
+                .map(|body| body.body)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let interval_phase = self.kernel.current_phase().map(openbmp_sim::PhaseId::value);
+        let gear_active = self
+            .breakdown_vehicle
+            .model_active(interval_phase, "landing_gear");
+        let contact_active = self
+            .breakdown_vehicle
+            .model_active(interval_phase, "contact");
+        let step_result = (|| -> Result<(), RunnerError> {
+            if let Some(runtime) = &self.landing_gear_runtime {
+                runtime
+                    .begin_interval(self.kernel.current_state(), primary_body, gear_active)
+                    .map_err(openbmp_sim::SimulationError::from)?;
+                for body in self.kernel.separated_rigid_bodies() {
+                    runtime
+                        .begin_interval(&body.state, Some(body.body), gear_active)
+                        .map_err(openbmp_sim::SimulationError::from)?;
+                }
+            }
+            if let Some(contact) = &self.contact_evaluator {
+                let state = self.kernel.current_state();
+                contact
+                    .set_active(contact_active, state.time)
+                    .map_err(openbmp_sim::SimulationError::from)?;
+                contact
+                    .commit_accepted(state.position.vector, state.velocity.vector, state.time)
+                    .map_err(openbmp_sim::SimulationError::from)?;
+            }
+            // Forecasts use the same phase-selected constitutive state as
+            // the kernel, including any phase change from the controller.
+            self.mirror_primary_multibody_root_step()?;
+            self.mirror_separated_multibody_root_steps()?;
+            self.mirror_articulated_gimbal_steps(articulated_gimbal_root_authority_enabled(
+                document,
+            ))?;
+            self.kernel.step_with_accepted_steps(|state, active_body| {
+                let replacement_pending = if active_body == primary_body {
+                    replace_primary
+                } else {
+                    replace_separated
+                };
+                // These bodies are ultimately advanced by the pure RK4
+                // forecast. The provisional kernel path cannot own their
+                // irreversible history, even when it compresses more deeply.
+                if replacement_pending {
+                    return Ok(());
+                }
+                if let Some(runtime) = &self.landing_gear_runtime {
+                    accept_landing_gear_state(runtime, state, active_body, gear_active)?;
+                }
+                if active_body == primary_body
+                    && let Some(contact) = &self.contact_evaluator
+                {
+                    contact.commit_accepted(
+                        state.position.vector,
+                        state.velocity.vector,
+                        state.time,
+                    )?;
+                }
+                Ok(())
+            })?;
+            self.apply_primary_root_free_flyer_authority(document)?;
+            self.apply_separated_root_free_flyer_authority(document)?;
+            self.apply_articulated_gimbal_root_authority(document)?;
+            if replace_primary {
+                let state = self.kernel.current_state();
+                if let Some(runtime) = &self.landing_gear_runtime {
+                    accept_landing_gear_state(runtime, state, primary_body, gear_active)
+                        .map_err(openbmp_sim::SimulationError::from)?;
+                }
+                if let Some(contact) = &self.contact_evaluator {
+                    contact
+                        .commit_accepted(state.position.vector, state.velocity.vector, state.time)
+                        .map_err(openbmp_sim::SimulationError::from)?;
+                }
+            }
+            if let Some(runtime) = &self.landing_gear_runtime {
+                for body in self.kernel.separated_rigid_bodies() {
+                    if deferred_separated_bodies.contains(&body.body) {
+                        // Include lanes retired at this endpoint: their last
+                        // actual state must still update diagnostics/history.
+                        accept_landing_gear_state(
+                            runtime,
+                            &body.state,
+                            Some(body.body),
+                            gear_active,
+                        )
+                        .map_err(openbmp_sim::SimulationError::from)?;
+                    }
+                }
+            }
+            // Events can change the force set at this endpoint. Refresh its
+            // diagnostics and the next interval's power baseline without
+            // assigning any work from the completed interval to the new set.
+            let endpoint_phase = self.kernel.current_phase().map(openbmp_sim::PhaseId::value);
+            if let Some(runtime) = &self.landing_gear_runtime {
+                let active = self
+                    .breakdown_vehicle
+                    .model_active(endpoint_phase, "landing_gear");
+                runtime
+                    .begin_interval(self.kernel.current_state(), primary_body, active)
+                    .map_err(openbmp_sim::SimulationError::from)?;
+                for body in self.kernel.separated_rigid_bodies() {
+                    runtime
+                        .begin_interval(&body.state, Some(body.body), active)
+                        .map_err(openbmp_sim::SimulationError::from)?;
+                }
+            }
+            if let Some(contact) = &self.contact_evaluator {
+                let state = self.kernel.current_state();
+                contact
+                    .retime_accepted(self.kernel.current_time())
+                    .map_err(openbmp_sim::SimulationError::from)?;
+                contact
+                    .set_active(
+                        self.breakdown_vehicle
+                            .model_active(endpoint_phase, "contact"),
+                        state.time,
+                    )
+                    .map_err(openbmp_sim::SimulationError::from)?;
+                contact
+                    .commit_accepted(state.position.vector, state.velocity.vector, state.time)
+                    .map_err(openbmp_sim::SimulationError::from)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = step_result {
+            if let (Some(runtime), Some(checkpoint)) = (&self.landing_gear_runtime, gear_checkpoint)
+            {
+                runtime
+                    .restore(checkpoint)
+                    .map_err(openbmp_sim::SimulationError::from)?;
+            }
+            if let (Some(contact), Some(checkpoint)) = (&self.contact_evaluator, contact_checkpoint)
+            {
+                contact
+                    .restore(checkpoint)
+                    .map_err(openbmp_sim::SimulationError::from)?;
+            }
+            return Err(error);
+        }
         // Refresh tank-rack drivers from the post-step
         // rigid-body state. `accel_body_m_s2` is finite-differenced
         // from the velocity change rotated into the prior-step body
@@ -1602,6 +1798,19 @@ impl RigidBodySession {
             self.kernel.set_wind_sample(Vector3::zeros());
         }
         self.wind_override_ned_m_s = wind_ned_m_s;
+    }
+}
+
+fn accept_landing_gear_state(
+    runtime: &crate::landing_gear::LandingGearRuntime,
+    state: &RigidBodyState,
+    body: Option<BodyId>,
+    active: bool,
+) -> Result<(), openbmp_sim::ModelEvalError> {
+    if active {
+        runtime.commit_accepted(state, body)
+    } else {
+        runtime.begin_interval(state, body, false)
     }
 }
 
@@ -4521,6 +4730,7 @@ fn build_vehicle(
     resolved_files: &BTreeMap<String, ResolvedFile>,
     landing_gear_runtime: Option<crate::landing_gear::LandingGearRuntime>,
     aerothermal_sink: Option<crate::aerothermal::LiveAerothermalSink>,
+    contact_evaluator: Option<&crate::contact::ContactDiagnosticsEvaluator>,
 ) -> Result<KernelVehicle<RigidBodyState>, RunnerError> {
     let mut named: Vec<NamedForceModel<RigidBodyState>> = Vec::new();
     for name in document.force_model_universe() {
@@ -4666,13 +4876,10 @@ fn build_vehicle(
             }
             "contact" => {
                 let contact =
-                    document
-                        .contact
-                        .as_ref()
-                        .ok_or_else(|| RunnerError::UnsupportedScenario {
-                            what: "forces includes `contact` but [contact] block is missing"
-                                .to_owned(),
-                        })?;
+                    contact_evaluator.ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "forces includes `contact` but shared contact runtime is missing"
+                            .to_owned(),
+                    })?;
                 let adapter = crate::contact::build_half_space_contact_force_adapter(
                     contact,
                     RIGID_BODY_CONTACT_MODEL_ID,
@@ -6191,13 +6398,14 @@ where
             what: "[vehicle.landing_gear] telemetry requested without landing gear runtime"
                 .to_owned(),
         })?;
-        let samples = runtime.samples()?;
+        let samples = runtime.take_samples()?;
         landing_gear_channels.insert(&mut row, &samples)?;
         if let Some(accumulator) = landing_gear_accumulator {
             accumulator.record(
                 state.time.as_seconds(),
                 state.mass_props.mass_kg(),
                 &samples,
+                runtime.energy_integrals()?,
             )?;
         }
     }
@@ -7498,8 +7706,16 @@ mod tests {
         )
         .expect("seed builds")
         .expect("primary body seed present");
-        let force_model = build_vehicle(document, &loaded, &assembly, &BTreeMap::new(), None, None)
-            .expect("force model");
+        let force_model = build_vehicle(
+            document,
+            &loaded,
+            &assembly,
+            &BTreeMap::new(),
+            None,
+            None,
+            None,
+        )
+        .expect("force model");
         let moment_model = build_moment_model(document, &loaded, None).expect("moment model");
         let effector_rack = crate::effectors::EffectorRack::build(document).expect("effectors");
         let effector_actuals =
@@ -7688,6 +7904,169 @@ mod tests {
             actual_q.coords,
             predicted_q.coords - actual_q.coords
         );
+    }
+
+    fn primary_authority_crush_scenario() -> Scenario {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/landing-gear-four-leg-drop/scenario.toml");
+        let mut scenario = Scenario::from_file(path).expect("landing gear scenario");
+        scenario.document.time.dt_s = 0.2;
+        scenario.document.time.stop_s = 0.2;
+        scenario.document.vehicle.initial_position_eci_m = [0.0, 0.0, 1.0];
+        scenario
+            .document
+            .vehicle
+            .initial_angular_velocity_body_rad_s = Some([0.5, 0.25, 0.1]);
+        let mut ballast = scenario.document.vehicle.assembly.bodies[0].clone();
+        ballast.id = "ballast".to_owned();
+        scenario.document.vehicle.assembly.bodies.push(ballast);
+        scenario.document.forces = Some(openbmp_scenario::ForcesConfig {
+            models: vec!["landing_gear".to_owned()],
+            phase_override: Vec::new(),
+        });
+        let gear = scenario
+            .document
+            .vehicle
+            .landing_gear
+            .as_mut()
+            .expect("gear");
+        gear.data_file = None;
+        gear.data_file_sha256 = None;
+        for leg in &mut gear.legs {
+            leg.footpad = openbmp_scenario::ContactGeometryConfig::Point;
+            leg.footpad_radius_m = None;
+            leg.oleo = None;
+            leg.crush = Some(openbmp_scenario::LandingGearCrushConfig {
+                f_crush_n: 1_000.0,
+                stroke_max_m: 0.5,
+                k_elastic_n_m: 10_000.0,
+            });
+        }
+        scenario.document.multi_body = Some(
+            toml::from_str(
+                "primary_body_id = 'core'\npropagation_authority = 'primary_root_free_flyer'\n",
+            )
+            .expect("primary authority"),
+        );
+        scenario
+    }
+
+    #[test]
+    fn primary_authority_commits_landing_gear_history_from_its_actual_endpoint() {
+        let scenario = primary_authority_crush_scenario();
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session = RigidBodySession::prepare(&scenario, &resolved_files).expect("session");
+        session
+            .step_once(&scenario.document, None)
+            .expect("authority step");
+
+        // The primary-body authority advances the selected body's properties,
+        // while the discarded kernel initially advances the aggregate stack.
+        // Accepted history and diagnostics must follow the authoritative pose.
+        let state = session.state();
+        let samples = session
+            .landing_gear_runtime
+            .as_ref()
+            .expect("gear runtime")
+            .take_samples()
+            .expect("accepted samples");
+        let legs = &scenario
+            .document
+            .vehicle
+            .landing_gear
+            .as_ref()
+            .expect("gear")
+            .legs;
+        assert!(samples.iter().any(|sample| sample.crushed_m > 0.0));
+        for (sample, leg) in samples.iter().zip(legs) {
+            let foot_body = Vector3::from(leg.attach_body_m)
+                + Vector3::from(leg.strut_axis_body) * leg.free_length_m;
+            let offset_eci = state.orientation.q * foot_body;
+            let stroke_m = (-(state.position.vector + offset_eci).z).clamp(0.0, 0.5);
+            let expected_crushed_m = (stroke_m - 0.1).max(0.0);
+            let expected_force_n = (10_000.0 * (stroke_m - expected_crushed_m)).min(1_000.0);
+            let omega_eci = state.orientation.q * state.angular_velocity.vector;
+            let foot_velocity = state.velocity.vector + omega_eci.cross(&offset_eci);
+            assert!(
+                (sample.crushed_m - expected_crushed_m).abs() < 1e-10,
+                "discarded kernel path changed permanent stroke: {sample:?}; actual stroke={stroke_m}"
+            );
+            assert!((sample.stroke_m - stroke_m).abs() < 1e-10);
+            assert!((sample.force_n - expected_force_n).abs() < 1e-9);
+            assert!((sample.normal_velocity_m_s - foot_velocity.z).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn phase_disabled_landing_gear_preserves_uncrushed_history() {
+        let mut scenario = primary_authority_crush_scenario();
+        scenario.document.multi_body = None;
+        scenario.document.vehicle.assembly.bodies.truncate(1);
+        scenario.document.time.dt_s = 0.01;
+        scenario.document.time.stop_s = 0.02;
+        scenario.document.environment.gravity_m_s2 = Some(0.0);
+        scenario.document.vehicle.initial_position_eci_m = [0.0, 0.0, 0.8];
+        scenario.document.vehicle.initial_velocity_eci_m_s = [0.0, 0.0, -0.1];
+        scenario
+            .document
+            .vehicle
+            .initial_angular_velocity_body_rad_s = Some([0.0; 3]);
+        scenario.document.forces = Some(toml::from_str(
+            "models = ['gravity']\n[[phase_override]]\nphase = 'enabled'\nmodels = ['gravity', 'landing_gear']\n"
+        ).expect("phase force selection"));
+        scenario.document.mission = Some(
+            toml::from_str(
+                r#"
+initial_phase = "disabled"
+[[phases]]
+id = "disabled"
+label = "gear disabled"
+[[phases]]
+id = "enabled"
+label = "gear enabled"
+[[events]]
+id = "enable_gear"
+trigger = { kind = "at_time", time_s = 0.02 }
+action = { kind = "emit_telemetry_marker", tag = "enable_gear" }
+once = true
+[[transitions]]
+from = "disabled"
+to = "enabled"
+event = "enable_gear"
+"#,
+            )
+            .expect("phase transition"),
+        );
+        let resolved_files = scenario.resolved_files().expect("resolved files");
+        let mut session = RigidBodySession::prepare(&scenario, &resolved_files).expect("session");
+        let runtime = session
+            .landing_gear_runtime
+            .as_ref()
+            .expect("gear runtime")
+            .clone();
+        for sample in runtime.take_samples().expect("initial samples") {
+            // Disabled gear cannot acquire initial plastic preload.
+            approx::assert_abs_diff_eq!(sample.crushed_m, 0.0, epsilon = 0.0);
+            approx::assert_abs_diff_eq!(sample.force_n, 0.0, epsilon = 0.0);
+        }
+        session
+            .step_once(&scenario.document, None)
+            .expect("disabled step");
+        for sample in runtime.take_samples().expect("inactive samples") {
+            approx::assert_abs_diff_eq!(sample.crushed_m, 0.0, epsilon = 0.0);
+            approx::assert_abs_diff_eq!(sample.force_n, 0.0, epsilon = 0.0);
+        }
+        session
+            .step_once(&scenario.document, None)
+            .expect("activation endpoint");
+        for sample in runtime.take_samples().expect("active endpoint samples") {
+            // The interval before activation was inactive.
+            approx::assert_abs_diff_eq!(sample.crushed_m, 0.0, epsilon = 0.0);
+            assert!((sample.force_n - 1_000.0).abs() < 1e-9);
+        }
+        let energy = runtime.energy_integrals().expect("accepted energy");
+        approx::assert_abs_diff_eq!(energy.contact_work_on_vehicle_j, 0.0, epsilon = 0.0);
+        approx::assert_abs_diff_eq!(energy.dissipated_energy_j, 0.0, epsilon = 0.0);
     }
 
     #[test]

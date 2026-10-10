@@ -58,6 +58,91 @@ fn bool_column(outcome: &openbmp_runner::RunOutcome, name: &str) -> Vec<bool> {
         .collect()
 }
 
+fn run_crush_only_drop(dt_s: f64, method: Option<&str>) -> openbmp_runner::RunOutcome {
+    let mut scenario = openbmp_scenario::Scenario::from_file(scenario_path()).expect("fixture");
+    scenario.document.time.dt_s = dt_s;
+    scenario.document.time.stop_s = 1.0;
+    scenario.document.forces = Some(openbmp_scenario::ForcesConfig {
+        models: vec!["landing_gear".to_owned()],
+        phase_override: Vec::new(),
+    });
+    // A free drop into four identical elastic-perfectly-plastic struts,
+    // without gravity or other work: m=1000 kg, v=-1.5 m/s, Fy=4000 N,
+    // k=40000 N/m. At peak compression K0=1125 J = 200 J elastic
+    // + 925 J irreversible work, giving p=0.23125 m per leg.
+    scenario.document.vehicle.initial_position_eci_m = [0.0, 0.0, 1.0];
+    let gear = scenario
+        .document
+        .vehicle
+        .landing_gear
+        .as_mut()
+        .expect("gear");
+    gear.data_file = None;
+    gear.data_file_sha256 = None;
+    for leg in &mut gear.legs {
+        leg.footpad = openbmp_scenario::ContactGeometryConfig::Point;
+        leg.footpad_radius_m = None;
+        leg.oleo = None;
+        leg.crush = Some(openbmp_scenario::LandingGearCrushConfig {
+            f_crush_n: 1000.0,
+            stroke_max_m: 0.5,
+            k_elastic_n_m: 10_000.0,
+        });
+    }
+    if let Some(method) = method {
+        scenario.document.solver = Some(toml::from_str(&format!(
+            "profile = 'adaptive-explicit'\ntrajectory_method = '{method}'\ndeterminism = 'state-stable'\n\
+             [adaptive]\nrtol = 1e-8\natol = 1e-9\nmin_dt_s = 1e-8\nmax_dt_s = 0.001\ndense_output = false\n"
+        )).expect("adaptive solver"));
+    }
+    openbmp_runner::run(&scenario).expect("crush drop")
+}
+
+#[test]
+fn landing_gear_crush_drop_converges_to_analytic_work_and_rebound() {
+    let mut errors = Vec::new();
+    for dt_s in [0.002, 0.001] {
+        let outcome = run_crush_only_drop(dt_s, None);
+        let report = outcome.landing_gear.as_ref().expect("report");
+        let plastic_work = 4000.0 * report.final_summary.max_crushed_m;
+        errors.push((plastic_work - 925.0).abs());
+        assert!(
+            (plastic_work - 925.0).abs() < 2.0,
+            "dt={dt_s}: {plastic_work}"
+        );
+        assert!((report.energy.dissipated_energy_j - plastic_work).abs() < 1e-9);
+        let rebound = *f64_column(&outcome, "velocity_z_m_s")
+            .last()
+            .expect("velocity");
+        assert!((0.5 * 1000.0 * rebound * rebound - 200.0).abs() < 2.0);
+        assert!(
+            report.energy.relative_closure_error < 0.005,
+            "{:?}",
+            report.energy
+        );
+    }
+    assert!(
+        errors[1] < errors[0],
+        "refined plastic work errors: {errors:?}"
+    );
+}
+
+#[test]
+fn landing_gear_adaptive_drop_accounts_for_all_accepted_plastic_work() {
+    for method in ["dopri54", "dopri853"] {
+        // A telemetry interval 20 times the maximum adaptive substep
+        // requires work to accumulate across several accepted states.
+        let outcome = run_crush_only_drop(0.02, Some(method));
+        let report = outcome.landing_gear.as_ref().expect("report");
+        let plastic_work = 4000.0 * report.final_summary.max_crushed_m;
+        assert!(
+            (plastic_work - 925.0).abs() < 1.0,
+            "{method}: {plastic_work}"
+        );
+        assert!((report.energy.dissipated_energy_j - plastic_work).abs() < 1e-9);
+    }
+}
+
 #[test]
 fn landing_gear_four_leg_drop_publishes_loads_and_leg_telemetry() {
     let outcome = run_drop_fixture();

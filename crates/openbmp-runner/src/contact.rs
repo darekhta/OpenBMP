@@ -1,25 +1,29 @@
 //! Runner-side construction, diagnostics, and reports for compliant contact.
 
 use openbmp_contact::{
-    AnchoredStictionFriction, AnchoredStictionState, ContactEnergyAudit, ContactError,
-    ContactGeometry, ContactPair, HalfSpace, HertzNormal, HuntCrossleyNormal, KelvinVoigtNormal,
-    NormalLaw, RegularizedCoulombFriction, RestDetector, RestDetectorConfig, RestDetectorState,
-    RestStatus, half_space_kinematics,
+    AnchoredStictionFriction, ContactEnergyAudit, ContactError, ContactGeometry, ContactPair,
+    HalfSpace, HertzNormal, HuntCrossleyNormal, KelvinVoigtNormal, NormalLaw,
+    RegularizedCoulombFriction, RestDetector, RestDetectorConfig, RestDetectorState, RestStatus,
+    half_space_kinematics,
 };
-use openbmp_core::{ChannelId, ModelId};
+use openbmp_core::{ChannelId, ModelId, SimTime};
 use openbmp_scenario::{
     ContactConfig, ContactFrictionLawConfig, ContactGeometryConfig, ContactNormalLawConfig,
     ScenarioDocument,
 };
+use openbmp_sim::ModelEvalError;
 use openbmp_telemetry::{ChannelMetadata, TelemetryChannel, TelemetryRow};
 use openbmp_vehicle::HalfSpaceContactForceAdapter;
-use std::sync::Mutex;
+use openbmp_vehicle::adapters::{AnchoredContactRuntime, AnchoredContactSnapshot};
+use std::borrow::Cow;
+use std::sync::{Arc, Mutex};
 
 use crate::RunnerError;
 
 const REST_GAP_TOLERANCE_M: f64 = 1.0e-9;
 const REST_SPEED_TOLERANCE_M_S: f64 = 1.0e-9;
 const REST_HOLD_SAMPLES: u32 = 3;
+const CONTACT_RUNTIME_MODEL_ID: ModelId = ModelId::new(391);
 
 /// Returns the runner kernel step size after contact fixed sub-stepping.
 #[must_use]
@@ -61,8 +65,18 @@ pub struct ContactStepDiagnostics {
     pub elastic_energy_j: f64,
     /// `true` when the contact is statically stuck for rest detection.
     pub sticking: bool,
-    /// Instantaneous damping/friction dissipation power in watts.
+    /// Instantaneous normal damping and regularized friction dissipation power
+    /// in watts. Stateful anchored friction is accumulated separately.
     pub dissipated_power_w: f64,
+    /// Total anchored-friction dissipation from accepted updates, including
+    /// discrete anchor releases. Differences between samples enter the audit
+    /// directly, including releases at zero elapsed time.
+    pub cumulative_friction_dissipated_energy_j: f64,
+    /// Normal damping and regularized friction dissipation integrated at every
+    /// accepted substep, independent of telemetry sampling frequency.
+    pub cumulative_continuous_dissipated_energy_j: f64,
+    /// Contact work on the vehicle integrated at every accepted substep.
+    pub cumulative_contact_work_j: f64,
     /// Instantaneous contact-force power on the vehicle in watts.
     pub contact_power_on_vehicle_w: f64,
 }
@@ -101,23 +115,19 @@ pub struct ContactRunReport {
     pub energy: ContactRunEnergyAudit,
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct ContactDiagnosticsEvaluator {
     half_space: HalfSpace,
     geometry: ContactGeometry,
     normal_law: NormalLaw,
     friction: ContactDiagnosticsFriction,
+    accepted_energy: Arc<Mutex<ContactAcceptedEnergy>>,
 }
 
-// Manual impl: the stiction friction arm carries a `Mutex` of
-// integrator-internal state with no meaningful Debug rendering.
-impl std::fmt::Debug for ContactDiagnosticsEvaluator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ContactDiagnosticsEvaluator")
-            .field("half_space", &self.half_space)
-            .field("geometry", &self.geometry)
-            .field("normal_law", &self.normal_law)
-            .finish_non_exhaustive()
-    }
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ContactRuntimeSnapshot {
+    friction: Option<AnchoredContactSnapshot>,
+    energy: ContactAcceptedEnergy,
 }
 
 impl ContactDiagnosticsEvaluator {
@@ -128,7 +138,182 @@ impl ContactDiagnosticsEvaluator {
             geometry: parts.geometry,
             normal_law: parts.normal_law,
             friction: ContactDiagnosticsFriction::from_runtime(parts.friction),
+            accepted_energy: Arc::new(Mutex::new(ContactAcceptedEnergy::default())),
         })
+    }
+
+    /// Changes the force gate at an accepted boundary. Disabled intervals retain
+    /// the constitutive history but produce no force, work, or dissipation.
+    /// Commit the preceding interval first, then call this and commit the new
+    /// boundary state at the same time to establish its instantaneous powers.
+    /// This gate does not assign energy to the external phase switch itself.
+    pub(crate) fn set_active(&self, active: bool, time: SimTime) -> Result<(), ModelEvalError> {
+        let time_s = time.as_seconds();
+        if !time_s.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: CONTACT_RUNTIME_MODEL_ID,
+            });
+        }
+        let mut energy = self
+            .accepted_energy
+            .lock()
+            .map_err(|_| contact_energy_lock_error())?;
+        let inactive = !active;
+        if energy.inactive == inactive {
+            return Ok(());
+        }
+        if energy
+            .previous
+            .is_some_and(|previous| time_s < previous.time_s)
+        {
+            return Err(ModelEvalError::InvalidState {
+                model: CONTACT_RUNTIME_MODEL_ID,
+                reason: Cow::Borrowed("contact phase change must not move accepted time backward"),
+            });
+        }
+        if let ContactDiagnosticsFriction::AnchoredStiction(runtime) = &self.friction {
+            runtime
+                .retime_committed(time_s)
+                .map_err(contact_model_error)?;
+        }
+        energy.inactive = inactive;
+        energy.previous = Some(ContactPowerSample {
+            time_s,
+            dissipated_power_w: 0.0,
+            contact_power_on_vehicle_w: 0.0,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn commit_accepted(
+        &self,
+        position_m: nalgebra::Vector3<f64>,
+        velocity_m_s: nalgebra::Vector3<f64>,
+        time: SimTime,
+    ) -> Result<(), ModelEvalError> {
+        // Powers are evaluated against the same committed friction history as
+        // force trials. Integrate only accepted endpoints, never telemetry rows.
+        let diagnostics = self
+            .diagnostics_from_state_vectors(position_m, velocity_m_s, time.as_seconds())
+            .map_err(|err| ModelEvalError::InvalidState {
+                model: CONTACT_RUNTIME_MODEL_ID,
+                reason: Cow::Owned(err.to_string()),
+            })?;
+        let sample = ContactPowerSample {
+            time_s: time.as_seconds(),
+            dissipated_power_w: diagnostics.dissipated_power_w,
+            contact_power_on_vehicle_w: diagnostics.contact_power_on_vehicle_w,
+        };
+        let mut energy = self
+            .accepted_energy
+            .lock()
+            .map_err(|_| contact_energy_lock_error())?;
+        let mut next = *energy;
+        if let Some(previous) = next.previous {
+            if sample.time_s < previous.time_s {
+                return Err(ModelEvalError::InvalidState {
+                    model: CONTACT_RUNTIME_MODEL_ID,
+                    reason: Cow::Borrowed("accepted contact time must not move backward"),
+                });
+            }
+            let dt_s = sample.time_s - previous.time_s;
+            next.continuous_dissipated_energy_j +=
+                0.5 * (previous.dissipated_power_w + sample.dissipated_power_w) * dt_s;
+            next.contact_work_j += 0.5
+                * (previous.contact_power_on_vehicle_w + sample.contact_power_on_vehicle_w)
+                * dt_s;
+        }
+        next.previous = Some(sample);
+        if !sample.time_s.is_finite()
+            || !sample.dissipated_power_w.is_finite()
+            || !sample.contact_power_on_vehicle_w.is_finite()
+            || !next.continuous_dissipated_energy_j.is_finite()
+            || !next.contact_work_j.is_finite()
+        {
+            return Err(ModelEvalError::NonFinite {
+                model: CONTACT_RUNTIME_MODEL_ID,
+            });
+        }
+        if let ContactDiagnosticsFriction::AnchoredStiction(runtime) = &self.friction {
+            if next.inactive {
+                runtime
+                    .retime_committed(time.as_seconds())
+                    .map_err(contact_model_error)?;
+            } else {
+                let kinematics = half_space_kinematics(
+                    self.half_space,
+                    self.geometry,
+                    [position_m.x, position_m.y, position_m.z],
+                    [velocity_m_s.x, velocity_m_s.y, velocity_m_s.z],
+                )
+                .map_err(contact_model_error)?;
+                runtime
+                    .commit(
+                        self.normal_law.evaluate(kinematics).normal_force_n,
+                        kinematics.tangential_velocity_m_s,
+                        time.as_seconds(),
+                    )
+                    .map_err(contact_model_error)?;
+            }
+        }
+        *energy = next;
+        Ok(())
+    }
+
+    /// Relabels the accepted endpoint after the kernel canonicalizes its time.
+    /// This preserves force responses and cumulative energy without re-evaluation.
+    pub(crate) fn retime_accepted(&self, time: SimTime) -> Result<(), ModelEvalError> {
+        let time_s = time.as_seconds();
+        if !time_s.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: CONTACT_RUNTIME_MODEL_ID,
+            });
+        }
+        let mut energy = self
+            .accepted_energy
+            .lock()
+            .map_err(|_| contact_energy_lock_error())?;
+        if let ContactDiagnosticsFriction::AnchoredStiction(runtime) = &self.friction {
+            runtime
+                .retime_committed(time_s)
+                .map_err(contact_model_error)?;
+        }
+        if let Some(previous) = &mut energy.previous {
+            previous.time_s = time_s;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn snapshot(&self) -> Result<ContactRuntimeSnapshot, ModelEvalError> {
+        let friction = match &self.friction {
+            ContactDiagnosticsFriction::RegularizedCoulomb(_) => None,
+            ContactDiagnosticsFriction::AnchoredStiction(runtime) => {
+                Some(runtime.snapshot().map_err(contact_model_error)?)
+            }
+        };
+        let energy = *self
+            .accepted_energy
+            .lock()
+            .map_err(|_| contact_energy_lock_error())?;
+        Ok(ContactRuntimeSnapshot { friction, energy })
+    }
+
+    pub(crate) fn restore(&self, snapshot: ContactRuntimeSnapshot) -> Result<(), ModelEvalError> {
+        match (&self.friction, snapshot.friction) {
+            (ContactDiagnosticsFriction::RegularizedCoulomb(_), None) => Ok(()),
+            (ContactDiagnosticsFriction::AnchoredStiction(runtime), Some(snapshot)) => {
+                runtime.restore(snapshot).map_err(contact_model_error)
+            }
+            _ => Err(ModelEvalError::InvalidState {
+                model: CONTACT_RUNTIME_MODEL_ID,
+                reason: Cow::Borrowed("contact snapshot does not match friction law"),
+            }),
+        }?;
+        *self
+            .accepted_energy
+            .lock()
+            .map_err(|_| contact_energy_lock_error())? = snapshot.energy;
+        Ok(())
     }
 
     pub(crate) fn diagnostics_from_state_vectors(
@@ -141,25 +326,44 @@ impl ContactDiagnosticsEvaluator {
         let velocity = [velocity_m_s.x, velocity_m_s.y, velocity_m_s.z];
         let kinematics = half_space_kinematics(self.half_space, self.geometry, position, velocity)
             .map_err(contact_build_error)?;
+        let energy = *self
+            .accepted_energy
+            .lock()
+            .map_err(|_| RunnerError::Simulation(contact_energy_lock_error().into()))?;
         let normal = self.normal_law.evaluate(kinematics);
-        let friction = self
-            .friction
-            .evaluate(kinematics, normal.normal_force_n, time_s)?;
+        let friction = if energy.inactive {
+            self.friction.frozen_diagnostics()?
+        } else {
+            self.friction
+                .evaluate(kinematics, normal.normal_force_n, time_s)?
+        };
+        let normal_force_n = if energy.inactive {
+            0.0
+        } else {
+            normal.normal_force_n
+        };
         let total_force_n = add(
-            scale(self.half_space.normal(), normal.normal_force_n),
+            scale(self.half_space.normal(), normal_force_n),
             friction.force_n,
         );
-        let dissipated_power_w = normal.damping_power_w + friction.dissipated_power_w;
+        let dissipated_power_w = if energy.inactive {
+            0.0
+        } else {
+            normal.damping_power_w + friction.dissipated_power_w
+        };
         let contact_power_on_vehicle_w = dot(total_force_n, velocity);
         Ok(ContactStepDiagnostics {
             gap_m: kinematics.gap_m,
             penetration_m: kinematics.penetration_m(),
             normal_velocity_m_s: kinematics.normal_velocity_m_s,
             tangential_speed_m_s: kinematics.tangential_speed_m_s(),
-            normal_force_n: normal.normal_force_n,
+            normal_force_n,
             elastic_energy_j: normal.elastic_energy_j + friction.elastic_energy_j,
             sticking: friction.sticking,
             dissipated_power_w,
+            cumulative_friction_dissipated_energy_j: friction.cumulative_dissipated_energy_j,
+            cumulative_continuous_dissipated_energy_j: energy.continuous_dissipated_energy_j,
+            cumulative_contact_work_j: energy.contact_work_j,
             contact_power_on_vehicle_w,
         })
     }
@@ -171,26 +375,46 @@ struct ContactFrictionDiagnostics {
     elastic_energy_j: f64,
     sticking: bool,
     dissipated_power_w: f64,
+    cumulative_dissipated_energy_j: f64,
 }
 
+#[derive(Clone, Debug)]
 enum ContactDiagnosticsFriction {
     RegularizedCoulomb(RegularizedCoulombFriction),
-    AnchoredStiction {
-        friction: AnchoredStictionFriction,
-        state: Mutex<TimeGatedStictionState>,
-    },
+    AnchoredStiction(AnchoredContactRuntime),
 }
 
 impl ContactDiagnosticsFriction {
+    fn frozen_diagnostics(&self) -> Result<ContactFrictionDiagnostics, RunnerError> {
+        let (elastic_energy_j, cumulative_dissipated_energy_j) = match self {
+            Self::RegularizedCoulomb(_) => (0.0, 0.0),
+            Self::AnchoredStiction(runtime) => (
+                runtime
+                    .committed_response()
+                    .map_err(contact_build_error)?
+                    .map_or(0.0, |response| response.elastic_energy_j),
+                runtime
+                    .cumulative_dissipated_energy_j()
+                    .map_err(contact_build_error)?,
+            ),
+        };
+        Ok(ContactFrictionDiagnostics {
+            force_n: [0.0; 3],
+            elastic_energy_j,
+            sticking: false,
+            dissipated_power_w: 0.0,
+            cumulative_dissipated_energy_j,
+        })
+    }
+
     fn from_runtime(friction: ContactFrictionRuntime) -> Self {
         match friction {
             ContactFrictionRuntime::RegularizedCoulomb(friction) => {
                 Self::RegularizedCoulomb(friction)
             }
-            ContactFrictionRuntime::AnchoredStiction(friction) => Self::AnchoredStiction {
-                friction,
-                state: Mutex::new(TimeGatedStictionState::default()),
-            },
+            ContactFrictionRuntime::AnchoredStiction(friction) => {
+                Self::AnchoredStiction(AnchoredContactRuntime::new(friction))
+            }
         }
     }
 
@@ -210,68 +434,47 @@ impl ContactDiagnosticsFriction {
                         && kinematics.tangential_speed_m_s() <= REST_SPEED_TOLERANCE_M_S,
                     dissipated_power_w: (0.0 - dot(force, kinematics.tangential_velocity_m_s))
                         .max(0.0),
+                    cumulative_dissipated_energy_j: 0.0,
                 })
             }
-            Self::AnchoredStiction { friction, state } => {
-                let mut state = state.lock().map_err(|_| RunnerError::UnsupportedScenario {
-                    what: "anchored stiction diagnostics state lock poisoned".to_owned(),
-                })?;
-                let dt_s = state.advance_dt_s(time_s);
-                let response = friction
-                    .evaluate(
-                        &mut state.stiction,
-                        normal_force_n,
-                        kinematics.tangential_velocity_m_s,
-                        dt_s,
-                    )
+            Self::AnchoredStiction(runtime) => {
+                let response = runtime
+                    .trial(normal_force_n, kinematics.tangential_velocity_m_s, time_s)
                     .map_err(contact_build_error)?;
-                let power_w = if dt_s > 0.0 {
-                    response.dissipated_energy_j / dt_s
-                } else {
-                    (0.0 - dot(
-                        response.friction_force_n,
-                        kinematics.tangential_velocity_m_s,
-                    ))
-                    .max(0.0)
-                };
                 Ok(ContactFrictionDiagnostics {
                     force_n: response.friction_force_n,
                     elastic_energy_j: response.elastic_energy_j,
                     sticking: response.sticking,
-                    dissipated_power_w: power_w,
+                    dissipated_power_w: 0.0,
+                    cumulative_dissipated_energy_j: runtime
+                        .cumulative_dissipated_energy_j()
+                        .map_err(contact_build_error)?,
                 })
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct TimeGatedStictionState {
-    stiction: AnchoredStictionState,
-    last_time_s: Option<f64>,
-}
-
-impl TimeGatedStictionState {
-    fn advance_dt_s(&mut self, time_s: f64) -> f64 {
-        match self.last_time_s {
-            Some(last_time_s) if time_s > last_time_s => {
-                self.last_time_s = Some(time_s);
-                time_s - last_time_s
-            }
-            Some(_) => 0.0,
-            None => {
-                self.last_time_s = Some(time_s);
-                0.0
             }
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ContactEnergySample {
+struct ContactPowerSample {
     time_s: f64,
     dissipated_power_w: f64,
     contact_power_on_vehicle_w: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ContactAcceptedEnergy {
+    inactive: bool,
+    previous: Option<ContactPowerSample>,
+    continuous_dissipated_energy_j: f64,
+    contact_work_j: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ContactEnergySample {
+    cumulative_friction_dissipated_energy_j: f64,
+    cumulative_continuous_dissipated_energy_j: f64,
+    cumulative_contact_work_j: f64,
 }
 
 #[derive(Debug)]
@@ -317,7 +520,7 @@ impl ContactRunAccumulator {
         })
     }
 
-    pub(crate) fn record(&mut self, time_s: f64, diagnostics: ContactStepDiagnostics) {
+    pub(crate) fn record(&mut self, _time_s: f64, diagnostics: ContactStepDiagnostics) {
         self.samples += 1;
         self.max_penetration_m = self.max_penetration_m.max(diagnostics.penetration_m);
         self.max_normal_force_n = self.max_normal_force_n.max(diagnostics.normal_force_n);
@@ -325,17 +528,19 @@ impl ContactRunAccumulator {
             .get_or_insert(diagnostics.elastic_energy_j);
         self.final_elastic_energy_j = diagnostics.elastic_energy_j;
         let sample = ContactEnergySample {
-            time_s,
-            dissipated_power_w: diagnostics.dissipated_power_w,
-            contact_power_on_vehicle_w: diagnostics.contact_power_on_vehicle_w,
+            cumulative_friction_dissipated_energy_j: diagnostics
+                .cumulative_friction_dissipated_energy_j,
+            cumulative_continuous_dissipated_energy_j: diagnostics
+                .cumulative_continuous_dissipated_energy_j,
+            cumulative_contact_work_j: diagnostics.cumulative_contact_work_j,
         };
         if let Some(previous) = self.previous_energy_sample {
-            let dt_s = (sample.time_s - previous.time_s).max(0.0);
-            self.contact_work_on_vehicle_j += 0.5
-                * (previous.contact_power_on_vehicle_w + sample.contact_power_on_vehicle_w)
-                * dt_s;
-            self.dissipated_energy_j +=
-                0.5 * (previous.dissipated_power_w + sample.dissipated_power_w) * dt_s;
+            self.contact_work_on_vehicle_j +=
+                sample.cumulative_contact_work_j - previous.cumulative_contact_work_j;
+            self.dissipated_energy_j += sample.cumulative_continuous_dissipated_energy_j
+                - previous.cumulative_continuous_dissipated_energy_j;
+            self.dissipated_energy_j += sample.cumulative_friction_dissipated_energy_j
+                - previous.cumulative_friction_dissipated_energy_j;
         }
         self.previous_energy_sample = Some(sample);
         let kinetic_energy_j = 0.5
@@ -452,22 +657,23 @@ impl ContactTelemetryChannels {
 /// Build a half-space contact force adapter from a parsed `[contact]`
 /// block.
 pub(crate) fn build_half_space_contact_force_adapter(
-    config: &ContactConfig,
+    evaluator: &ContactDiagnosticsEvaluator,
     model_id: ModelId,
 ) -> Result<HalfSpaceContactForceAdapter, RunnerError> {
-    let parts = build_half_space_contact_parts(config)?;
-    Ok(match parts.friction {
-        ContactFrictionRuntime::RegularizedCoulomb(friction) => HalfSpaceContactForceAdapter::new(
-            parts.half_space,
-            ContactPair::new(parts.geometry, parts.normal_law, friction),
-            model_id,
-        ),
-        ContactFrictionRuntime::AnchoredStiction(friction) => {
-            HalfSpaceContactForceAdapter::new_anchored_stiction(
-                parts.half_space,
-                parts.geometry,
-                parts.normal_law,
-                friction,
+    Ok(match &evaluator.friction {
+        ContactDiagnosticsFriction::RegularizedCoulomb(friction) => {
+            HalfSpaceContactForceAdapter::new(
+                evaluator.half_space,
+                ContactPair::new(evaluator.geometry, evaluator.normal_law, *friction),
+                model_id,
+            )
+        }
+        ContactDiagnosticsFriction::AnchoredStiction(runtime) => {
+            HalfSpaceContactForceAdapter::with_anchored_runtime(
+                evaluator.half_space,
+                evaluator.geometry,
+                evaluator.normal_law,
+                runtime.clone(),
                 model_id,
             )
         }
@@ -591,6 +797,20 @@ fn contact_build_error(err: ContactError) -> RunnerError {
     }
 }
 
+fn contact_model_error(err: ContactError) -> ModelEvalError {
+    ModelEvalError::InvalidState {
+        model: CONTACT_RUNTIME_MODEL_ID,
+        reason: Cow::Owned(err.to_string()),
+    }
+}
+
+fn contact_energy_lock_error() -> ModelEvalError {
+    ModelEvalError::InvalidState {
+        model: CONTACT_RUNTIME_MODEL_ID,
+        reason: Cow::Borrowed("contact accepted-energy lock poisoned"),
+    }
+}
+
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -621,7 +841,265 @@ fn classify_contact_outcome(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use approx::assert_abs_diff_eq;
+
     use super::*;
+
+    fn history_fixture_config(friction_law: ContactFrictionLawConfig) -> ContactConfig {
+        ContactConfig {
+            kind: "half_space".to_owned(),
+            ground_altitude_m: 0.0,
+            geometry: ContactGeometryConfig::Point,
+            radius_m: None,
+            normal_law: ContactNormalLawConfig::KelvinVoigt,
+            stiffness_n_m: Some(1000.0),
+            stiffness_n_m_3_2: None,
+            damping_n_s_m: Some(10.0),
+            damping_factor_s_m: None,
+            restitution: None,
+            reference_impact_speed_m_s: None,
+            stability_stiffness_n_m: None,
+            friction_coefficient: 0.0,
+            friction_law,
+            friction_regularization_speed_m_s: None,
+            static_friction_coefficient: Some(0.6),
+            kinetic_friction_coefficient: Some(0.4),
+            tangential_stiffness_n_m: Some(100.0),
+            tangential_damping_n_s_m: Some(0.0),
+            restick_speed_m_s: Some(1.0),
+            effective_mass_kg: 1.0,
+            substeps: 1,
+            mechanisms: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn contact_runtime_shares_committed_history_with_force_views_and_rolls_back() {
+        let config = history_fixture_config(ContactFrictionLawConfig::AnchoredStiction);
+        let evaluator = ContactDiagnosticsEvaluator::from_config(&config).unwrap();
+        let adapter =
+            build_half_space_contact_force_adapter(&evaluator, ModelId::new(391)).unwrap();
+        let force_history = adapter.anchored_runtime().unwrap();
+        let position = nalgebra::Vector3::new(0.0, 0.0, -0.01);
+        let velocity = nalgebra::Vector3::new(1.0, 0.0, 0.0);
+        evaluator
+            .commit_accepted(position, velocity, SimTime::ZERO)
+            .unwrap();
+        evaluator
+            .commit_accepted(position, velocity, SimTime::from_seconds(0.02))
+            .unwrap();
+        let committed = evaluator
+            .diagnostics_from_state_vectors(position, velocity, 0.02)
+            .unwrap();
+        let force_response = force_history.trial(10.0, [1.0, 0.0, 0.0], 0.02).unwrap();
+        assert!(
+            (committed.contact_power_on_vehicle_w - force_response.friction_force_n[0]).abs()
+                < 1.0e-14
+        );
+        assert!(
+            (committed.elastic_energy_j - 0.05 - force_response.elastic_energy_j).abs() < 1.0e-14
+        );
+
+        let checkpoint = evaluator.snapshot().unwrap();
+        // Neither force probes nor diagnostics probes may mutate the shared
+        // anchor, even when they explore far beyond the accepted endpoint.
+        force_history.trial(0.0, [100.0, 0.0, 0.0], 10.0).unwrap();
+        evaluator
+            .diagnostics_from_state_vectors(position, nalgebra::Vector3::new(100.0, 0.0, 0.0), 10.0)
+            .unwrap();
+        assert_eq!(
+            evaluator
+                .diagnostics_from_state_vectors(position, velocity, 0.02)
+                .unwrap(),
+            committed
+        );
+
+        evaluator
+            .commit_accepted(
+                position,
+                nalgebra::Vector3::new(10.0, 0.0, 0.0),
+                SimTime::from_seconds(0.03),
+            )
+            .unwrap();
+        assert!(force_history.cumulative_dissipated_energy_j().unwrap() > 0.0);
+        evaluator.restore(checkpoint).unwrap();
+        assert_eq!(
+            evaluator
+                .diagnostics_from_state_vectors(position, velocity, 0.02)
+                .unwrap(),
+            committed
+        );
+        assert_eq!(
+            force_history.trial(10.0, [1.0, 0.0, 0.0], 0.02).unwrap(),
+            force_response
+        );
+    }
+
+    #[test]
+    fn contact_audit_counts_zero_time_anchor_release_once_from_initial_baseline() {
+        let config = history_fixture_config(ContactFrictionLawConfig::AnchoredStiction);
+        let evaluator = ContactDiagnosticsEvaluator::from_config(&config).unwrap();
+        let position = nalgebra::Vector3::new(0.0, 0.0, -0.01);
+        let loading_velocity = nalgebra::Vector3::new(1.0, 0.0, 0.0);
+        evaluator
+            .commit_accepted(position, loading_velocity, SimTime::ZERO)
+            .unwrap();
+        evaluator
+            .commit_accepted(position, loading_velocity, SimTime::from_seconds(0.02))
+            .unwrap();
+        let loaded = evaluator
+            .diagnostics_from_state_vectors(position, loading_velocity, 0.02)
+            .unwrap();
+        let mut accumulator = ContactRunAccumulator::from_config(&config).unwrap();
+        accumulator.record(0.02, loaded);
+
+        // Unloading clips normal force to zero while normal spring energy is
+        // unchanged. The tangential anchor releases at this same timestamp.
+        let release_velocity = nalgebra::Vector3::new(0.0, 0.0, 1.0);
+        evaluator
+            .commit_accepted(position, release_velocity, SimTime::from_seconds(0.02))
+            .unwrap();
+        let released = evaluator
+            .diagnostics_from_state_vectors(position, release_velocity, 0.02)
+            .unwrap();
+        accumulator.record(0.02, released);
+        evaluator
+            .commit_accepted(position, release_velocity, SimTime::from_seconds(0.02))
+            .unwrap();
+        let repeated = evaluator
+            .diagnostics_from_state_vectors(position, release_velocity, 0.02)
+            .unwrap();
+        accumulator.record(0.02, repeated);
+        assert_eq!(released, repeated);
+        let canonical_time = f64::from_bits(0.02_f64.to_bits() + 1);
+        evaluator
+            .retime_accepted(SimTime::from_seconds(canonical_time))
+            .unwrap();
+        let retimed = evaluator
+            .diagnostics_from_state_vectors(position, release_velocity, canonical_time)
+            .unwrap();
+        assert_eq!(retimed, released);
+        assert_eq!(
+            evaluator
+                .snapshot()
+                .unwrap()
+                .energy
+                .previous
+                .unwrap()
+                .time_s
+                .to_bits(),
+            canonical_time.to_bits()
+        );
+        accumulator.record(canonical_time, retimed);
+        let report = accumulator.finish().unwrap().unwrap();
+        assert!((report.energy.dissipated_energy_j - 0.02).abs() < 1.0e-14);
+        assert!(report.energy.contact_work_on_vehicle_j.abs() < 1.0e-14);
+        assert!(report.energy.closure_error_j.abs() < 1.0e-14);
+    }
+
+    #[test]
+    fn contact_audit_retains_interior_accepted_work_between_telemetry_rows() {
+        let config = history_fixture_config(ContactFrictionLawConfig::RegularizedCoulomb);
+        let evaluator = ContactDiagnosticsEvaluator::from_config(&config).unwrap();
+        let mut accumulator = ContactRunAccumulator::from_config(&config).unwrap();
+        // Prescribed contact cycle: endpoint powers vanish, but the interior
+        // accepted states carry -20 W of work and 10 W of dissipation.
+        for (index, (time, z, vz)) in [
+            (0.0, 0.0, -1.0),
+            (0.01, -0.01, -1.0),
+            (0.02, -0.01, 1.0),
+            (0.03, 0.0, 1.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let position = nalgebra::Vector3::new(0.0, 0.0, z);
+            let velocity = nalgebra::Vector3::new(0.0, 0.0, vz);
+            evaluator
+                .commit_accepted(position, velocity, SimTime::from_seconds(time))
+                .unwrap();
+            if index == 0 || index == 3 {
+                let diagnostics = evaluator
+                    .diagnostics_from_state_vectors(position, velocity, time)
+                    .unwrap();
+                assert!(diagnostics.contact_power_on_vehicle_w.abs() < 1.0e-14);
+                accumulator.record(time, diagnostics);
+            }
+        }
+        let report = accumulator.finish().unwrap().unwrap();
+        assert!((report.energy.contact_work_on_vehicle_j + 0.2).abs() < 1.0e-14);
+        assert!((report.energy.dissipated_energy_j - 0.2).abs() < 1.0e-14);
+        assert!(report.energy.closure_error_j.abs() < 1.0e-14);
+    }
+
+    #[test]
+    fn inactive_contact_freezes_loaded_anchor_and_power_baseline_until_resumed() {
+        let config = history_fixture_config(ContactFrictionLawConfig::AnchoredStiction);
+        let evaluator = ContactDiagnosticsEvaluator::from_config(&config).unwrap();
+        let position = nalgebra::Vector3::new(0.0, 0.0, -0.01);
+        let velocity = nalgebra::Vector3::new(1.0, 0.0, 0.0);
+        evaluator
+            .commit_accepted(position, velocity, SimTime::ZERO)
+            .unwrap();
+        evaluator
+            .commit_accepted(position, velocity, SimTime::from_seconds(0.02))
+            .unwrap();
+        let loaded = evaluator
+            .diagnostics_from_state_vectors(position, velocity, 0.02)
+            .unwrap();
+        evaluator
+            .set_active(false, SimTime::from_seconds(0.02))
+            .unwrap();
+        // Neither large slip nor geometric separation while disabled may erase
+        // or load the retained constitutive anchor.
+        let separated = nalgebra::Vector3::new(0.0, 0.0, 1.0);
+        let fast_slip = nalgebra::Vector3::new(100.0, 0.0, 0.0);
+        evaluator
+            .commit_accepted(separated, fast_slip, SimTime::from_seconds(10.0))
+            .unwrap();
+        let paused = evaluator
+            .diagnostics_from_state_vectors(separated, fast_slip, 10.0)
+            .unwrap();
+        assert!((paused.elastic_energy_j - 0.02).abs() < 1.0e-14);
+        assert_abs_diff_eq!(paused.normal_force_n, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(paused.contact_power_on_vehicle_w, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(paused.dissipated_power_w, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(
+            paused.cumulative_contact_work_j,
+            loaded.cumulative_contact_work_j,
+            epsilon = 0.0
+        );
+        assert_abs_diff_eq!(
+            paused.cumulative_friction_dissipated_energy_j,
+            loaded.cumulative_friction_dissipated_energy_j,
+            epsilon = 0.0
+        );
+        assert_abs_diff_eq!(
+            paused.cumulative_continuous_dissipated_energy_j,
+            loaded.cumulative_continuous_dissipated_energy_j,
+            epsilon = 0.0
+        );
+        let checkpoint = evaluator.snapshot().unwrap();
+
+        evaluator
+            .set_active(true, SimTime::from_seconds(10.0))
+            .unwrap();
+        evaluator
+            .commit_accepted(position, velocity, SimTime::from_seconds(10.0))
+            .unwrap();
+        let resumed = evaluator
+            .diagnostics_from_state_vectors(position, velocity, 10.0)
+            .unwrap();
+        assert_eq!(resumed, loaded);
+        // A failed enclosing step restores the phase gate as well as history.
+        evaluator.restore(checkpoint).unwrap();
+        assert_eq!(
+            evaluator
+                .diagnostics_from_state_vectors(separated, fast_slip, 10.0)
+                .unwrap(),
+            paused
+        );
+    }
 
     #[test]
     fn contact_outcome_classifier_distinguishes_no_contact_rest_and_unsettled() {
@@ -635,6 +1113,9 @@ mod tests {
                 elastic_energy_j: 0.0,
                 sticking: false,
                 dissipated_power_w: 0.0,
+                cumulative_friction_dissipated_energy_j: 0.0,
+                cumulative_continuous_dissipated_energy_j: 0.0,
+                cumulative_contact_work_j: 0.0,
                 contact_power_on_vehicle_w: 0.0,
             },
             0.0,
@@ -656,6 +1137,9 @@ mod tests {
                 elastic_energy_j: 0.1,
                 sticking: true,
                 dissipated_power_w: 0.0,
+                cumulative_friction_dissipated_energy_j: 0.0,
+                cumulative_continuous_dissipated_energy_j: 0.0,
+                cumulative_contact_work_j: 0.0,
                 contact_power_on_vehicle_w: 0.0,
             },
             0.01,
@@ -677,6 +1161,9 @@ mod tests {
                 elastic_energy_j: 0.1,
                 sticking: true,
                 dissipated_power_w: 0.0,
+                cumulative_friction_dissipated_energy_j: 0.0,
+                cumulative_continuous_dissipated_energy_j: 0.0,
+                cumulative_contact_work_j: 0.0,
                 contact_power_on_vehicle_w: 0.02,
             },
             0.01,
@@ -773,8 +1260,14 @@ mod tests {
         let position = nalgebra::Vector3::new(0.0, 0.0, -0.01);
         let velocity = nalgebra::Vector3::new(0.001, 0.0, 0.0);
 
+        evaluator
+            .commit_accepted(position, velocity, SimTime::ZERO)
+            .unwrap();
         let first = evaluator
             .diagnostics_from_state_vectors(position, velocity, 0.0)
+            .unwrap();
+        evaluator
+            .commit_accepted(position, velocity, SimTime::from_seconds(0.001))
             .unwrap();
         let second = evaluator
             .diagnostics_from_state_vectors(position, velocity, 0.001)
