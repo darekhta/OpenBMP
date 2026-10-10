@@ -552,8 +552,35 @@ where
     /// fails, [`SimulationError::Time`] if the step counter overflows,
     /// or [`SimulationError::InvalidPostStepState`] if the integrated
     /// state fails post-step validation.
-    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)] // step values stay well under 2^52; wind splice expands the body
     pub fn step(&mut self) -> Result<(), SimulationError> {
+        self.step_with_accepted_steps(|_, _| Ok(()))
+    }
+
+    /// Advance one kernel step, observing accepted integration sub-steps.
+    ///
+    /// The point-mass observer receives `None` for the body identifier. It runs
+    /// after each accepted internal sub-step, before the next derivative
+    /// evaluation, and never for rejected trials or an already stopped kernel.
+    /// State timestamps are the integrator's sub-step times; canonical kernel
+    /// time assignment and final validation happen afterward.
+    ///
+    /// An observation does not guarantee that the entire kernel step will
+    /// succeed. Later integration, event evaluation, or post-step validation
+    /// can fail. The caller must snapshot external constitutive model history
+    /// before this call and restore it on any returned error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as `step()`. Observer errors are wrapped in
+    /// [`SimulationError::Integrator`] containing [`IntegratorError::ModelEval`].
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    pub fn step_with_accepted_steps<O>(
+        &mut self,
+        mut accepted_step: O,
+    ) -> Result<(), SimulationError>
+    where
+        O: FnMut(&PointMassState, Option<BodyId>) -> Result<(), crate::error::ModelEvalError>,
+    {
         if self.stopped.is_some() {
             return Ok(());
         }
@@ -633,7 +660,12 @@ where
             })
         };
 
-        let raw_new = match self.integrator.advance(&self.state, derive, self.dt) {
+        let raw_new = match self.integrator.advance_with_accepted_steps(
+            &self.state,
+            derive,
+            self.dt,
+            |state| accepted_step(state, None),
+        ) {
             Ok(state) => state,
             Err(err @ (IntegratorError::NonFiniteDerivative | IntegratorError::NonFiniteState)) => {
                 self.stopped = Some(StopReason::NonFiniteState { step: next_step });
@@ -1517,8 +1549,40 @@ where
     /// # Errors
     ///
     /// Same shape as the point-mass `step()`.
-    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     pub fn step(&mut self) -> Result<(), SimulationError> {
+        self.step_with_accepted_steps(|_, _| Ok(()))
+    }
+
+    /// Advance one rigid-body kernel step, observing accepted sub-steps.
+    ///
+    /// Each observer runs after an accepted integration sub-step and before the
+    /// next derivative evaluation for that body. The primary body is reported
+    /// with its optional configured identifier, followed by each propagating
+    /// separated body as `Some(body_id)`. Thus times increase per body, but
+    /// callbacks are not globally ordered by time across different bodies.
+    /// Rejected trials and frozen separated bodies do not invoke the observer.
+    /// Sub-step times precede canonical kernel time assignment.
+    ///
+    /// Accepted sub-steps are provisional until the entire kernel step
+    /// succeeds: another body, event evaluation, or post-step validation may
+    /// still fail. The caller must snapshot external constitutive model history
+    /// before this call and restore it on any returned error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as `step()`. Observer errors are wrapped in
+    /// [`SimulationError::Integrator`] containing [`IntegratorError::ModelEval`].
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    pub fn step_with_accepted_steps<O>(
+        &mut self,
+        mut accepted_step: O,
+    ) -> Result<(), SimulationError>
+    where
+        O: FnMut(
+            &openbmp_state::RigidBodyState,
+            Option<BodyId>,
+        ) -> Result<(), crate::error::ModelEvalError>,
+    {
         if self.stopped.is_some() {
             return Ok(());
         }
@@ -1635,7 +1699,12 @@ where
             })
         };
 
-        let raw_new = match self.integrator.advance(&self.state, derive, self.dt) {
+        let raw_new = match self.integrator.advance_with_accepted_steps(
+            &self.state,
+            derive,
+            self.dt,
+            |state| accepted_step(state, primary_body),
+        ) {
             Ok(state) => state,
             Err(err @ (IntegratorError::NonFiniteDerivative | IntegratorError::NonFiniteState)) => {
                 self.stopped = Some(StopReason::NonFiniteState { step: next_step });
@@ -1742,21 +1811,21 @@ where
                     inertia_rate_body: rate.inertia_rate_body,
                 })
             };
-            let raw_separated =
-                match self
-                    .integrator
-                    .advance(&separated.state, derive_separated, self.dt)
-                {
-                    Ok(state) => state,
-                    Err(
-                        err @ (IntegratorError::NonFiniteDerivative
-                        | IntegratorError::NonFiniteState),
-                    ) => {
-                        self.stopped = Some(StopReason::NonFiniteState { step: next_step });
-                        return Err(SimulationError::Integrator(err));
-                    }
-                    Err(err) => return Err(SimulationError::Integrator(err)),
-                };
+            let raw_separated = match self.integrator.advance_with_accepted_steps(
+                &separated.state,
+                derive_separated,
+                self.dt,
+                |state| accepted_step(state, separated_body),
+            ) {
+                Ok(state) => state,
+                Err(
+                    err @ (IntegratorError::NonFiniteDerivative | IntegratorError::NonFiniteState),
+                ) => {
+                    self.stopped = Some(StopReason::NonFiniteState { step: next_step });
+                    return Err(SimulationError::Integrator(err));
+                }
+                Err(err) => return Err(SimulationError::Integrator(err)),
+            };
             let separated_state = raw_separated.with_time(SimTime::from_seconds(canonical_time_s));
             if let Err(source) =
                 separated_state.require_valid(POST_STEP_QUATERNION_TOL, POST_STEP_INERTIA_TOL)
@@ -2963,6 +3032,67 @@ mod tests {
     }
 
     #[test]
+    fn point_mass_observer_reports_only_completed_steps_before_stop() {
+        let mut kernel = one_kg_drop_kernel(0.125, 0.125);
+        let mut observations = Vec::new();
+        for _ in 0..3 {
+            kernel
+                .step_with_accepted_steps(|state, body| {
+                    observations.push((state.time, body));
+                    Ok(())
+                })
+                .expect("observed step or stopped no-op");
+        }
+        assert_eq!(observations, [(SimTime::from_seconds(0.125), None)]);
+        assert_eq!(kernel.current_step().value(), 1);
+    }
+
+    #[test]
+    fn point_mass_observer_error_does_not_commit_the_kernel_state() {
+        let mut kernel = one_kg_drop_kernel(0.125, 1.0);
+        let expected = ModelEvalError::InvalidState {
+            model: ModelId::new(0xacce_0002),
+            reason: "synthetic history update failure".into(),
+        };
+        let err = kernel
+            .step_with_accepted_steps(|_, _| Err(expected.clone()))
+            .expect_err("observer failure");
+        assert!(matches!(
+            err,
+            SimulationError::Integrator(IntegratorError::ModelEval(error)) if error == expected
+        ));
+        assert_eq!(kernel.current_time(), SimTime::ZERO);
+        assert_eq!(kernel.current_step(), StepIndex::ZERO);
+        assert_eq!(kernel.current_state().position, Position3::origin());
+    }
+
+    #[test]
+    fn point_mass_kernel_forwards_each_adaptive_substep() {
+        let mut kernel = SimulationKernel::new(SimulationConfig {
+            initial_state: *one_kg_drop_kernel(0.5, 1.0).current_state(),
+            integrator: crate::integrator::Dopri54Adaptive::new(1e-10, 1e-10, 1e-6, 0.125)
+                .expect("adaptive integrator"),
+            force_model: ZeroForce,
+            mass_model: ConstantMass::new(1.0),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(0.5),
+            scenario_seed: 1,
+        })
+        .expect("adaptive point-mass kernel");
+        let mut times = Vec::new();
+        kernel
+            .step_with_accepted_steps(|state, body| {
+                assert_eq!(body, None);
+                times.push(state.time.as_seconds());
+                Ok(())
+            })
+            .expect("adaptive step");
+        assert_eq!(times, [0.125, 0.25, 0.375, 0.5]);
+        assert_eq!(kernel.current_step().value(), 1);
+    }
+
+    #[test]
     fn run_terminates_at_end_time() {
         let mut kernel = one_kg_drop_kernel(0.01, 0.10);
         let reason = kernel.run().expect("run must succeed");
@@ -3088,6 +3218,105 @@ mod tests {
             scenario_seed: 1,
         };
         SimulationKernel::new_rigid(config).expect("construct")
+    }
+
+    #[test]
+    fn rigid_kernel_observer_reports_primary_and_separated_adaptive_substeps() {
+        let initial = *zero_force_rigid_kernel(0.5).current_state();
+        let mut kernel = SimulationKernel::new_rigid(SimulationConfig {
+            initial_state: initial,
+            integrator: crate::integrator::Dopri853Adaptive::new(1e-10, 1e-10, 1e-6, 0.25)
+                .expect("adaptive integrator"),
+            force_model: ZeroForce,
+            mass_model: RigidModels::new(ZeroMoment, ConstantMassRigid::new(initial.mass_props)),
+            environment: NullEnvironment,
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(0.5),
+            scenario_seed: 1,
+        })
+        .expect("adaptive rigid kernel");
+        let primary = BodyId::new(10);
+        let separated = BodyId::new(20);
+        let frozen = BodyId::new(30);
+        kernel
+            .seed_rigid_body_lanes(
+                primary,
+                initial.mass_props,
+                &[
+                    InitialRigidBodyLane {
+                        body: separated,
+                        state: initial,
+                    },
+                    InitialRigidBodyLane {
+                        body: frozen,
+                        state: initial,
+                    },
+                ],
+            )
+            .expect("seed body lanes");
+        kernel.separated_rigid_bodies[1].propagating = false;
+        let mut observations = Vec::new();
+        kernel
+            .step_with_accepted_steps(|state, body| {
+                observations.push((body, state.time.as_seconds()));
+                Ok(())
+            })
+            .expect("observed rigid step");
+        assert_eq!(
+            observations,
+            [
+                (Some(primary), 0.25),
+                (Some(primary), 0.5),
+                (Some(separated), 0.25),
+                (Some(separated), 0.5),
+            ]
+        );
+        assert_eq!(kernel.current_time(), SimTime::from_seconds(0.5));
+        assert_eq!(
+            kernel.separated_rigid_bodies[1].state.time,
+            kernel.current_time()
+        );
+    }
+
+    #[test]
+    fn rigid_observer_error_after_primary_acceptance_does_not_commit_body_states() {
+        let mut kernel = zero_force_rigid_kernel(0.125);
+        let initial = *kernel.current_state();
+        let primary = BodyId::new(10);
+        let separated = BodyId::new(20);
+        kernel
+            .seed_rigid_body_lanes(
+                primary,
+                initial.mass_props,
+                &[InitialRigidBodyLane {
+                    body: separated,
+                    state: initial,
+                }],
+            )
+            .expect("seed separated body");
+        let expected = ModelEvalError::InvalidState {
+            model: ModelId::new(0xacce_0003),
+            reason: "synthetic separated history update failure".into(),
+        };
+        let mut observations = Vec::new();
+        let err = kernel
+            .step_with_accepted_steps(|_, body| {
+                observations.push(body);
+                if body == Some(separated) {
+                    Err(expected.clone())
+                } else {
+                    Ok(())
+                }
+            })
+            .expect_err("separated observer failure");
+        assert!(matches!(
+            err,
+            SimulationError::Integrator(IntegratorError::ModelEval(error)) if error == expected
+        ));
+        assert_eq!(observations, [Some(primary), Some(separated)]);
+        assert_eq!(kernel.current_time(), SimTime::ZERO);
+        assert_eq!(kernel.current_step(), StepIndex::ZERO);
+        assert_eq!(kernel.separated_rigid_bodies[0].state.time, SimTime::ZERO);
     }
 
     #[test]

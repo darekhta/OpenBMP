@@ -121,6 +121,41 @@ pub trait Integrator<S: SimState> {
     fn advance<F>(&self, state: &S, derive_fn: F, dt: Duration) -> Result<S, IntegratorError>
     where
         F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>;
+
+    /// Advance and observe each accepted integration sub-step.
+    ///
+    /// The default reports the single successful endpoint returned by
+    /// [`Integrator::advance`]. Adaptive implementations report each accepted
+    /// internal endpoint after projection and validity checks, before evaluating
+    /// the next sub-step. Rejected trials never invoke `accepted_step`.
+    ///
+    /// The observer may update constitutive model history shared with
+    /// `derive_fn`. Adaptive solvers reevaluate the next sub-step's first
+    /// derivative after the observer; no derivative cached before a history
+    /// update may be reused. Observations are provisional with respect to the
+    /// whole call: a later sub-step or observer can still fail. The caller must
+    /// snapshot and roll back external model history on any returned error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Integrator::advance`], and wraps observer
+    /// failures in [`IntegratorError::ModelEval`]. No further derivatives or
+    /// observers run after an observer error.
+    fn advance_with_accepted_steps<F, O>(
+        &self,
+        state: &S,
+        derive_fn: F,
+        dt: Duration,
+        mut accepted_step: O,
+    ) -> Result<S, IntegratorError>
+    where
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+        O: FnMut(&S) -> Result<(), ModelEvalError>,
+    {
+        let next = self.advance(state, derive_fn, dt)?;
+        accepted_step(&next)?;
+        Ok(next)
+    }
 }
 
 /// Local dense-output interpolant over one or more accepted adaptive
@@ -1059,6 +1094,20 @@ impl<S: SimState> Integrator<S> for Dopri54Adaptive {
     where
         F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
     {
+        self.advance_with_accepted_steps(state, derive_fn, dt, |_| Ok(()))
+    }
+
+    fn advance_with_accepted_steps<F, O>(
+        &self,
+        state: &S,
+        derive_fn: F,
+        dt: Duration,
+        mut accepted_step: O,
+    ) -> Result<S, IntegratorError>
+    where
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+        O: FnMut(&S) -> Result<(), ModelEvalError>,
+    {
         let dt_total = dt.as_seconds();
         if !dt_total.is_finite() || dt_total <= 0.0 {
             return Err(IntegratorError::InvalidStep {
@@ -1112,6 +1161,9 @@ impl<S: SimState> Integrator<S> for Dopri54Adaptive {
             if err <= 1.0 {
                 // Accept.
                 current = proposed_state;
+                // try_substep reevaluates k1 on its next call, so a history
+                // update here cannot leave a stale FSAL derivative behind.
+                accepted_step(&current)?;
                 elapsed += h_try;
                 last_accepted_err = Some(err.max(1.0e-10));
                 let factor = self.pi_step_factor(err.max(1.0e-10));
@@ -2539,6 +2591,20 @@ impl<S: SimState> Integrator<S> for Dopri853Adaptive {
     where
         F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
     {
+        self.advance_with_accepted_steps(state, derive_fn, dt, |_| Ok(()))
+    }
+
+    fn advance_with_accepted_steps<F, O>(
+        &self,
+        state: &S,
+        derive_fn: F,
+        dt: Duration,
+        mut accepted_step: O,
+    ) -> Result<S, IntegratorError>
+    where
+        F: Fn(&S, SimTime) -> Result<S::Derivative, ModelEvalError>,
+        O: FnMut(&S) -> Result<(), ModelEvalError>,
+    {
         let dt_total = dt.as_seconds();
         if !dt_total.is_finite() || dt_total <= 0.0 {
             return Err(IntegratorError::InvalidStep {
@@ -2584,6 +2650,9 @@ impl<S: SimState> Integrator<S> for Dopri853Adaptive {
 
             if err <= 1.0 {
                 current = proposed_state;
+                // The next try_substep recomputes k1 after any observer
+                // update to model history; no endpoint derivative is reused.
+                accepted_step(&current)?;
                 elapsed += h_try;
                 let mut factor = self.i_controller_factor(err.max(1.0e-10));
                 // SciPy convention: after a rejected step, the next
