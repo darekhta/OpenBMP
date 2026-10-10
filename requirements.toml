@@ -561,7 +561,7 @@ verification = ["V-CONTACT-004"]
 [[requirements]]
 id = "REQ-CONTACT-005"
 title = "Anchored stiction contact is scenario-reachable"
-statement = "Schema-v3 [contact] blocks can select regularized_coulomb or anchored_stiction friction, validate anchored static and kinetic coefficients plus tangential stiffness, damping, and restick speed fields fail-closed, route anchored_stiction through the point-mass and rigid-body contact force adapters with deterministic time-gated anchor updates, and classify contact rest from a kinetic-energy floor plus sticking hold while preserving the default regularized_coulomb behavior for existing contact scenarios."
+statement = "Schema-v3 [contact] blocks can select regularized_coulomb or anchored_stiction friction, validate anchored static and kinetic coefficients plus tangential stiffness, damping, and restick speed fields fail-closed, route anchored_stiction through the point-mass and rigid-body contact force adapters with deterministic accepted-substep anchor updates and rollback on failed kernel steps, and classify contact rest from a kinetic-energy floor plus sticking hold while preserving the default regularized_coulomb behavior for existing contact scenarios."
 verification = ["V-CONTACT-005"]
 
 [[requirements]]
@@ -3678,7 +3678,7 @@ requirements = ["REQ-CONTACT-004"]
 [[verification]]
 id = "V-CONTACT-005"
 kind = "test"
-command = "cargo test -p openbmp-scenario contact_anchored_stiction --locked && cargo test -p openbmp-runner point_mass_contact_anchored_stiction --locked"
+command = "cargo test -p openbmp-scenario contact_anchored_stiction --locked && cargo test -p openbmp-vehicle anchored_contact --locked && cargo test -p openbmp-runner contact_ --locked"
 paths = [
   "Cargo.toml",
   "crates/openbmp-contact/src/stiction.rs",
@@ -3700,7 +3700,9 @@ contains = [
   "tangential_stiffness_n_m",
   "restick_speed_m_s",
   "new_anchored_stiction",
-  "TimeGatedStictionState",
+  "AnchoredContactRuntime",
+  "commit_accepted",
+  "contact_audit_retains_interior_accepted_work_between_telemetry_rows",
   "tangential_speed_m_s",
   "sticking",
   "RestDetector",

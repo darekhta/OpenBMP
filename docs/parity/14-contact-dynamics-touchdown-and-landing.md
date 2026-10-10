@@ -454,10 +454,14 @@ Loss of ground contact unloads the spring but preserves the permanent stroke
 in telemetry. Unit tests cover below-yield loading and a loading/unloading
 cycle with an exact piecewise-linear work balance.
 
-The current runner still updates plastic history during force evaluations,
-including intermediate RK stages. Accepted-step commits and rollback of
-rejected trial evaluations require further coupling work; the local material
-and energy tests do not validate that integration-history behavior.
+Force and moment evaluations use the last accepted plastic history without
+mutating it. The integrator's accepted-substep observer commits each successful
+fixed/adaptive endpoint; a checkpoint restores history and energy counters if
+the enclosing kernel step later fails. Accepted intermediate compression peaks
+remain irreversible even when the telemetry endpoint has unloaded. Contact
+work, damping and plastic work are accumulated at these accepted endpoints,
+independently of telemetry spacing. The synthetic crush-only drop and a
+prescribed loading/unloading cycle exercise this coupling.
 Gear-load *line loads* into the airframe are recovered through doc `02`'s
 LTM/OTM machinery, and "touchdown" joins doc `02`'s CLA flight-event forcing
 library as a load event.
@@ -917,7 +921,8 @@ sibling notation (`WP-NN.t`, doc `NN`).
   `RestDetector`; and `HousnerRockingBlock` threshold/frequency/period
   anchors. Schema-v3 `[contact]` can select
   `friction_law = "anchored_stiction"`, and point-mass/rigid-body contact
-  force adapters route it through a time-gated anchor state. Runner contact
+  force adapters share an anchor state committed only at accepted integration
+  substeps, with rollback on a failed enclosing step. Runner contact
   diagnostics carry tangential speed and sticking state, include tangential
   anchor energy in the contact energy audit, and classify rest through a
   kinetic-energy floor plus consecutive sticking hold.
