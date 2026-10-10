@@ -4039,6 +4039,11 @@ tesseral_s22 = 0.0
 tesseral_tide_system = "tide_free" # optional; defaults to tide_free
 ```
 
+The WGS84 GM, reference radius, and zonal coefficient in this example cite
+the canonical [gravity coefficient table](../data/gravity/wgs84-j2.toml)
+and its [NIMA TR 8350.2 provenance](../data/gravity/provenance.md).
+The sectoral coefficient is a synthetic example value.
+
 Selects the current bounded degree-2 Earth-fixed tesseral/sectoral
 gravity path. The runner builds `openbmp_physics::TesseralGravity`,
 wraps it in `EarthFixedGravity`, and evaluates it through the scenario

@@ -2428,10 +2428,10 @@ dry_cg_body_m = [0.0, 0.0, 0.0]
 frame_profile = "wgs84-uniform-rotation"
 gravity = "tesseral"
 mu_m3_s2 = 3.986004418e14
-r_e_m = 6378137.0
+r_e_m = "@WGS84_A_M@"
 tesseral_degree = 2
 tesseral_order = 2
-tesseral_c20 = -1.082626683e-3
+tesseral_c20 = "@NEG_WGS84_J2@"
 tesseral_c21 = 2.0e-7
 tesseral_s21 = -3.0e-7
 tesseral_c22 = 1.0e-7
@@ -3940,8 +3940,18 @@ event = "enable_contact"
 
     #[test]
     fn point_mass_wires_frame_coupled_tesseral_gravity() {
-        let scenario = Scenario::from_toml_str(TESSERAL_POINT_MASS_SCENARIO)
-            .expect("tesseral scenario must parse");
+        let scenario = Scenario::from_toml_str(
+            &TESSERAL_POINT_MASS_SCENARIO
+                .replace(
+                    "\"@WGS84_A_M@\"",
+                    &format!("{:.1}", openbmp_physics::WGS84_A_M),
+                )
+                .replace(
+                    "\"@NEG_WGS84_J2@\"",
+                    &format!("{:.9e}", -openbmp_physics::WGS84_J2),
+                ),
+        )
+        .expect("tesseral scenario must parse");
         let resolved_files = scenario.resolved_files().expect("resolve files");
         let outcome = run(&scenario, &resolved_files, None).expect("tesseral run succeeds");
 

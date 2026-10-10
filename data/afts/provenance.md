@@ -1,5 +1,13 @@
 # AFTS Data Provenance
 
+The scalar WGS84 impact-surface radius, GM, and rotation-rate inputs in
+`closed-form-iip-tolerance-v1.toml` cite the canonical
+[gravity coefficient table](../gravity/wgs84-j2.toml) and its
+[NIMA TR 8350.2 provenance](../gravity/provenance.md). The orbit state and
+tolerances remain synthetic analytic test inputs. The inline-data tripwire
+permits this explicit data-file citation; it does not permit copying these
+constants into the consuming Rust tests.
+
 ```yaml
 dataset_id: openbmp.afts.closed_form_iip.v1
 files:

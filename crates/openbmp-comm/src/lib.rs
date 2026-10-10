@@ -14,8 +14,18 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// WGS84 semi-major axis, metres.
+///
+/// Source: NIMA TR 8350.2, *Department of Defense World Geodetic System
+/// 1984*, 3rd ed. (2000), table 3.1. The WP-20.1 compile-time scalar
+/// exception is pinned bit-for-bit to `data/gravity/wgs84-j2.toml` by
+/// `wgs84_geometry_constants_match_canonical_data`.
 pub const WGS84_A_M: f64 = 6_378_137.0;
 /// WGS84 flattening.
+///
+/// Source: NIMA TR 8350.2, *Department of Defense World Geodetic System
+/// 1984*, 3rd ed. (2000), table 3.1 (reciprocal of inverse flattening).
+/// The WP-20.1 compile-time scalar exception is pinned bit-for-bit to
+/// `data/gravity/wgs84-j2.toml` by `wgs84_geometry_constants_match_canonical_data`.
 pub const WGS84_F: f64 = 1.0 / 298.257_223_563;
 const WGS84_E2: f64 = WGS84_F * (2.0 - WGS84_F);
 const TWO_PI: f64 = 2.0 * core::f64::consts::PI;
@@ -1775,6 +1785,23 @@ mod tests {
 
     const SECONDS_PER_JULIAN_YEAR: f64 = 365.25 * 86_400.0;
     const WGS84_EARTH_RATE_RAD_S: f64 = 7.292_115_146_706_979e-5;
+
+    #[test]
+    fn wgs84_geometry_constants_match_canonical_data() {
+        let canonical: toml::value::Table =
+            toml::from_str(include_str!("../../../data/gravity/wgs84-j2.toml"))
+                .expect("canonical WGS84 coefficients");
+        assert_eq!(
+            WGS84_A_M.to_bits(),
+            f64_field(&canonical, "semi_major_axis_m").to_bits(),
+            "compile-time WGS84 radius must match the canonical data exactly"
+        );
+        assert_eq!(
+            WGS84_F.to_bits(),
+            (1.0 / f64_field(&canonical, "inverse_flattening")).to_bits(),
+            "compile-time WGS84 flattening must match the canonical data exactly"
+        );
+    }
 
     #[test]
     fn antenna_body_mask_deck_matches_fixture() {

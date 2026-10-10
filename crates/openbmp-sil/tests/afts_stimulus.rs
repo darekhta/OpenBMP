@@ -8,55 +8,24 @@ use std::path::Path;
 use openbmp_scenario::AftsZoneColorConfig;
 use openbmp_sil::{AftsZoneStimulus, AftsZoneStimulusVertex, MissionPackage, SilStimulation};
 
-const POINT_MASS_SCENARIO: &str = r#"
-openbmp.scenario = 3
-
-[meta]
-name = "sil-afts-stimulus-test"
-description = "Synthetic point-mass SIL AFTS stimulation regression."
-validation = "validated-toy"
-
-[time]
-start_s = 0.0
-stop_s = 0.1
-dt_s = 0.1
-seed = 21
-
-[vehicle]
-kind = "point_mass"
-initial_position_eci_m = [6379137.0, 0.0, 0.0]
-initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
-
-[vehicle.assembly]
-id = "sil-afts-stimulus-test"
-
-[[vehicle.assembly.bodies]]
-id = "body"
-geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
-dry_mass_kg = 1.0
-dry_cg_body_m = [0.0, 0.0, 0.0]
-
-[environment]
-frame_profile = "toy-fixed-earth"
-gravity = "point_mass"
-mu_m3_s2 = 3.986004418e14
-atmosphere = "none"
-wind = "none"
-
-[forces]
-models = ["gravity"]
-
-[telemetry]
-output.csv = "out/sil-afts-stimulus-test.csv"
-
-[validation]
-require_finite_state = true
-require_monotonic_time = true
-"#;
+fn point_mass_scenario() -> String {
+    let reference: toml::Value =
+        toml::from_str(include_str!("../../../data/gravity/wgs84-j2.toml"))
+            .expect("canonical WGS84 coefficients parse");
+    let mu = reference["gravitational_parameter_m3_s2"]
+        .as_float()
+        .expect("WGS84 GM scalar");
+    include_str!("fixtures/afts-stimulus-point-mass.toml")
+        // Keep the serialized scenario bytes unchanged by the fixture label.
+        .split_once('\n')
+        .expect("synthetic fixture header")
+        .1
+        .replace("\"@WGS84_MU_M3_S2@\"", &format!("{mu:.9e}"))
+}
 
 fn write_package(dir: &Path) -> (MissionPackage, std::path::PathBuf) {
     let scenario_path = dir.join("scenario.toml");
-    fs::write(&scenario_path, POINT_MASS_SCENARIO).expect("write scenario");
+    fs::write(&scenario_path, point_mass_scenario()).expect("write scenario");
     let manifest_path = dir.join("mission-package.toml");
     fs::write(
         &manifest_path,
