@@ -41,10 +41,11 @@ pub enum StateError {
         /// `I_zz`.
         izz: f64,
     },
-    /// Diagonal inertia moments violated rigid-body triangle
-    /// inequalities.
+    /// Principal inertia moments violated rigid-body triangle inequalities.
+    /// The body-frame diagonal is included for context; it need not coincide
+    /// with the principal moments for a tensor with products of inertia.
     #[error(
-        "inertia tensor diagonal violates triangle inequalities: \
+        "inertia tensor violates principal-moment triangle inequalities; body diagonal: \
          (Ixx={ixx}, Iyy={iyy}, Izz={izz}) kg*m^2"
     )]
     InertiaTriangleInequalityViolated {
@@ -58,14 +59,14 @@ pub enum StateError {
     /// A symmetric inertia tensor was not positive-definite.
     #[error(
         "inertia tensor is not positive-definite: \
-         leading minors were ({leading_minor_1}, {leading_minor_2}, {determinant})"
+         scale-normalized leading minors were ({leading_minor_1}, {leading_minor_2}, {determinant})"
     )]
     InertiaNotPositiveDefinite {
-        /// First leading principal minor.
+        /// First leading principal minor of the scale-normalized tensor.
         leading_minor_1: f64,
-        /// Second leading principal minor.
+        /// Second leading principal minor of the scale-normalized tensor.
         leading_minor_2: f64,
-        /// Full determinant.
+        /// Full determinant of the scale-normalized tensor.
         determinant: f64,
     },
     /// Off-diagonal entries violated symmetry within tolerance.
