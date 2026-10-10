@@ -23,8 +23,8 @@ use openbmp_bridge::{
 };
 use openbmp_core::{SimTime, StepIndex};
 use openbmp_fc::topics::{
-    BarometerSample, EffectorCommandSet, EngineCommandSet, GnssSample, ImuIncrementWindow,
-    ImuInertialIncrement, ImuSample, MagnetometerSample, StarTrackerSample,
+    AirDataSample, BarometerSample, EffectorCommandSet, EngineCommandSet, GnssSample,
+    ImuIncrementWindow, ImuInertialIncrement, ImuSample, MagnetometerSample, StarTrackerSample,
 };
 use openbmp_fc::{ControllerError, FcStepInput, FcStepOutput, FlightController, fc_step};
 
@@ -1240,6 +1240,12 @@ pub fn fc_step_from_sensor_packet(
 }
 
 /// Build the topic-level FC input bundle represented by a bridge sensor packet.
+///
+/// An air-data sample is present only when all eight optional air-data fields
+/// are supplied, matching the runner's bridge adapter. Values retain their
+/// packet units (Pa, m/s, rad, m, and dimensionless Mach), and the sample uses
+/// the packet's simulation timestamp. Incomplete groups stay absent rather
+/// than publishing a partial measurement with fabricated defaults.
 #[must_use]
 pub fn fc_step_input_from_sensor_packet(sensor: &SensorPacket) -> FcStepInput {
     let time = SimTime::from_seconds(sensor.sim_time_s);
@@ -1258,6 +1264,38 @@ pub fn fc_step_input_from_sensor_packet(sensor: &SensorPacket) -> FcStepInput {
             time,
             pressure_pa,
             bias_pa,
+            healthy: true,
+        });
+    }
+    if let (
+        Some(static_pressure_pa),
+        Some(impact_pressure_pa),
+        Some(mach),
+        Some(calibrated_airspeed_m_s),
+        Some(true_airspeed_m_s),
+        Some(angle_of_attack_rad),
+        Some(sideslip_rad),
+        Some(pressure_altitude_m),
+    ) = (
+        sensor.airdata_static_pressure_pa,
+        sensor.airdata_impact_pressure_pa,
+        sensor.airdata_mach,
+        sensor.airdata_calibrated_airspeed_m_s,
+        sensor.airdata_true_airspeed_m_s,
+        sensor.airdata_angle_of_attack_rad,
+        sensor.airdata_sideslip_rad,
+        sensor.airdata_pressure_altitude_m,
+    ) {
+        input = input.with_airdata(AirDataSample {
+            time,
+            static_pressure_pa,
+            impact_pressure_pa,
+            mach,
+            calibrated_airspeed_m_s,
+            true_airspeed_m_s,
+            angle_of_attack_rad,
+            sideslip_rad,
+            pressure_altitude_m,
             healthy: true,
         });
     }
@@ -1514,6 +1552,74 @@ mod tests {
             openbmp_bridge::deframe(frame).expect("command frame should deframe");
         assert_eq!(consumed, frame.len());
         decode(payload).unwrap()
+    }
+
+    fn airdata_sensor_packet() -> SensorPacket {
+        SensorPacket {
+            sim_time_s: 12.345,
+            step: 42,
+            airdata_static_pressure_pa: Some(86_250.0),
+            airdata_impact_pressure_pa: Some(1_250.0),
+            airdata_mach: Some(0.63),
+            airdata_calibrated_airspeed_m_s: Some(180.0),
+            airdata_true_airspeed_m_s: Some(185.0),
+            airdata_angle_of_attack_rad: Some(0.12),
+            airdata_sideslip_rad: Some(-0.034),
+            airdata_pressure_altitude_m: Some(1_240.0),
+            ..SensorPacket::default()
+        }
+    }
+
+    #[test]
+    fn pil_sensor_packet_input_preserves_airdata_units_and_timestamp() {
+        // Exercise the wire round trip as well as the topic adapter: Pa,
+        // m/s, rad, metres, and dimensionless Mach must remain distinct.
+        let bytes = encode(&airdata_sensor_packet()).unwrap();
+        let packet: SensorPacket = decode(&bytes).unwrap();
+        let input = fc_step_input_from_sensor_packet(&packet);
+        assert_eq!(input.tick, StepIndex::new(42));
+        assert_eq!(input.time, SimTime::from_seconds(12.345));
+        assert_eq!(
+            input.airdata,
+            Some(openbmp_fc::topics::AirDataSample {
+                time: SimTime::from_seconds(12.345),
+                static_pressure_pa: 86_250.0,
+                impact_pressure_pa: 1_250.0,
+                mach: 0.63,
+                calibrated_airspeed_m_s: 180.0,
+                true_airspeed_m_s: 185.0,
+                angle_of_attack_rad: 0.12,
+                sideslip_rad: -0.034,
+                pressure_altitude_m: 1_240.0,
+                healthy: true,
+            })
+        );
+    }
+
+    #[test]
+    fn pil_sensor_packet_input_requires_complete_airdata() {
+        let remove_fields: [fn(&mut SensorPacket); 8] = [
+            |packet| packet.airdata_static_pressure_pa = None,
+            |packet| packet.airdata_impact_pressure_pa = None,
+            |packet| packet.airdata_mach = None,
+            |packet| packet.airdata_calibrated_airspeed_m_s = None,
+            |packet| packet.airdata_true_airspeed_m_s = None,
+            |packet| packet.airdata_angle_of_attack_rad = None,
+            |packet| packet.airdata_sideslip_rad = None,
+            |packet| packet.airdata_pressure_altitude_m = None,
+        ];
+        for (index, remove) in remove_fields.iter().enumerate() {
+            let mut packet = airdata_sensor_packet();
+            remove(&mut packet);
+            let input = fc_step_input_from_sensor_packet(&packet);
+            assert!(input.airdata.is_none(), "missing airdata field {index}");
+            assert!(input.imu.is_some());
+        }
+        assert!(
+            fc_step_input_from_sensor_packet(&SensorPacket::default())
+                .airdata
+                .is_none()
+        );
     }
 
     #[test]
