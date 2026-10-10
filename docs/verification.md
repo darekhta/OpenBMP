@@ -37,6 +37,32 @@ No OpenBMP artifact uses labels such as `flight-qualified`, `certified`,
 | Provenance check | `openbmp check-provenance` | Data source review | Every PR once data exists |
 | Supply-chain check | `cargo deny`, `cargo audit`, `cargo machete` | Dependency policy | Every PR or dependency PR |
 
+## Numerical and Contact Regression Checks
+
+`openbmp-sim/tests/stage_time.rs` checks a non-autonomous analytic trajectory,
+`a(t) = t`, starting at a nonzero time. Every RK stage must carry the same
+timestamp as the derivative callback's evaluation time. The checks cover RK4,
+fixed and adaptive DOPRI5/DOP853, and adaptive dense-output midpoints. This
+guards against advancing every intermediate state's clock by the full step
+while evaluating the derivative at a fractional-stage time.
+
+`openbmp-state` checks inertia in arbitrary body axes: positive definiteness
+and principal-moment triangle inequalities must both hold. Tests cover rotated
+planar bodies, off-diagonal counterexamples, and uniform scaling that would
+overflow or underflow raw determinant products.
+
+`openbmp-contact` checks instantaneous power balance through compression,
+unloading, and unilateral force clamping. The scalar-stop restitution check
+compares numerical impacts at two time steps with release at zero normal force,
+including critical and overdamped cases. These checks retain the existing
+normal-force laws; they correct the associated energy and restitution audit.
+
+The runner's landing-gear unit tests check the crush core's elastic yield
+travel, irreversible deformation, unloading/reloading, and work balance.
+Permanent crush telemetry must survive loss of contact. These local checks do
+not validate the timing of plastic-state commits within RK trial stages; that
+coupling still requires a separate accepted-step/rollback design and tests.
+
 ## Requirements Traceability
 
 Machine-readable requirements live in [`../requirements.toml`](../requirements.toml).
