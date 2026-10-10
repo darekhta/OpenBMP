@@ -1846,8 +1846,6 @@ where
                 ..*separated
             });
         }
-        self.separated_rigid_bodies = separated_updates;
-
         // Event evaluation. Early-exit when no events are
         // declared so legacy byte-stability is preserved.
         if self.has_event_bindings() {
@@ -1877,21 +1875,21 @@ where
                         Some(rigid_body_relative_distances_m(
                             self.primary_rigid_body,
                             &self.state,
-                            &self.separated_rigid_bodies,
+                            &separated_updates,
                         ));
                 }
                 if self.previous_event_relative_speeds_m_s.is_none() {
                     self.previous_event_relative_speeds_m_s = Some(rigid_body_relative_speeds_m_s(
                         self.primary_rigid_body,
                         &self.state,
-                        &self.separated_rigid_bodies,
+                        &separated_updates,
                     ));
                 }
                 if self.previous_event_body_altitudes_m.is_none() {
                     self.previous_event_body_altitudes_m = Some(rigid_body_altitudes_m(
                         self.primary_rigid_body,
                         &self.state,
-                        &self.separated_rigid_bodies,
+                        &separated_updates,
                     ));
                 }
             }
@@ -1917,18 +1915,15 @@ where
             let relative_distances_m = rigid_body_relative_distances_m(
                 self.primary_rigid_body,
                 &new_state,
-                &self.separated_rigid_bodies,
+                &separated_updates,
             );
             let relative_speeds_m_s = rigid_body_relative_speeds_m_s(
                 self.primary_rigid_body,
                 &new_state,
-                &self.separated_rigid_bodies,
+                &separated_updates,
             );
-            let body_altitudes_m = rigid_body_altitudes_m(
-                self.primary_rigid_body,
-                &new_state,
-                &self.separated_rigid_bodies,
-            );
+            let body_altitudes_m =
+                rigid_body_altitudes_m(self.primary_rigid_body, &new_state, &separated_updates);
             self.evaluate_events(
                 scalars,
                 relative_distances_m,
@@ -1956,7 +1951,10 @@ where
             None
         };
 
+        // Commit all physical body states together only after every fallible
+        // integration, event-environment query, and validation has succeeded.
         self.state = new_state;
+        self.separated_rigid_bodies = separated_updates;
         self.step_index = next_step;
 
         if let Some(reason) = post_step_stop {
@@ -3317,6 +3315,95 @@ mod tests {
         assert_eq!(kernel.current_time(), SimTime::ZERO);
         assert_eq!(kernel.current_step(), StepIndex::ZERO);
         assert_eq!(kernel.separated_rigid_bodies[0].state.time, SimTime::ZERO);
+    }
+
+    #[test]
+    fn late_rigid_event_environment_error_does_not_commit_body_states() {
+        use std::{cell::Cell, rc::Rc};
+
+        struct FailAfterBodyAcceptance(Rc<Cell<usize>>);
+        impl EnvironmentModel for FailAfterBodyAcceptance {
+            fn sample(&self, query: EnvironmentQuery) -> Result<EnvironmentSample, ModelEvalError> {
+                if self.0.get() >= 2 && query.time.as_seconds() > 0.0 {
+                    return Err(ModelEvalError::OutOfEnvelope {
+                        model: ModelId::new(0xacce_0004),
+                        reason: "synthetic final event environment failure".into(),
+                    });
+                }
+                NullEnvironment.sample(query)
+            }
+        }
+
+        let accepted = Rc::new(Cell::new(0));
+        let mut initial = *zero_force_rigid_kernel(0.125).current_state();
+        initial.velocity = Velocity3::new(1.0, 0.0, 0.0);
+        let mut separated_initial = initial;
+        separated_initial.position = Position3::new(0.0, 0.0, 2.0);
+        separated_initial.velocity = Velocity3::new(2.0, 0.0, 0.0);
+        let events = vec![crate::events::EventBinding {
+            id: crate::events::EventId::from_path("test.events.late_environment_error"),
+            trigger: crate::events::BuiltInEventTrigger::AtTime { time_s: 100.0 },
+            action: crate::events::MissionAction::Stop {
+                label: "unused-stop".to_owned(),
+            },
+            once: true,
+        }];
+        let mut kernel = SimulationKernel::new_rigid(SimulationConfig {
+            initial_state: initial,
+            integrator: Rk4FixedStep,
+            force_model: ZeroForce,
+            mass_model: RigidModels::new(ZeroMoment, ConstantMassRigid::new(initial.mass_props)),
+            environment: FailAfterBodyAcceptance(Rc::clone(&accepted)),
+            stop_condition: AlwaysContinue,
+            dt: Duration::from_seconds(0.125),
+            scenario_seed: 1,
+        })
+        .expect("rigid kernel")
+        .with_mission_split(events, Vec::new(), None, None)
+        .expect("event wiring");
+        kernel
+            .seed_rigid_body_lanes(
+                BodyId::new(10),
+                initial.mass_props,
+                &[InitialRigidBodyLane {
+                    body: BodyId::new(20),
+                    state: separated_initial,
+                }],
+            )
+            .expect("seed separated body");
+        let err = kernel
+            .step_with_accepted_steps(|_, _| {
+                accepted.set(accepted.get() + 1);
+                Ok(())
+            })
+            .expect_err("event environment fails after both body integrations");
+        assert!(matches!(
+            err,
+            SimulationError::ModelEval(ModelEvalError::OutOfEnvelope { model, .. })
+                if model == ModelId::new(0xacce_0004)
+        ));
+        assert_eq!(accepted.get(), 2);
+        assert_eq!(kernel.current_step(), StepIndex::ZERO);
+        for (actual, previous) in [
+            (kernel.current_state(), &initial),
+            (&kernel.separated_rigid_bodies[0].state, &separated_initial),
+        ] {
+            assert_eq!(actual.time, previous.time);
+            assert_eq!(actual.position, previous.position);
+            assert_eq!(actual.velocity, previous.velocity);
+            assert_eq!(actual.orientation.q, previous.orientation.q);
+            assert_eq!(actual.angular_velocity, previous.angular_velocity);
+            assert_eq!(actual.mass_props.mass, previous.mass_props.mass);
+            assert_eq!(
+                actual.mass_props.center_of_mass_body,
+                previous.mass_props.center_of_mass_body
+            );
+            assert_eq!(
+                actual.mass_props.inertia_body,
+                previous.mass_props.inertia_body
+            );
+        }
+        assert!(kernel.separated_rigid_bodies[0].propagating);
     }
 
     #[test]
