@@ -284,13 +284,17 @@ impl RuntimeLeg {
         let compression_rate_m_s = kinematics.penetration_rate_m_s().max(0.0);
 
         if raw_stroke_m <= 0.0 {
-            return Ok(InternalLegSample::zero_with_gap_and_contact_point(
+            let mut sample = InternalLegSample::zero_with_gap_and_contact_point(
                 self.id.clone(),
                 gap_m,
                 foot_body,
                 kinematics.normal_velocity_m_s,
                 kinematics.tangential_speed_m_s(),
-            ));
+            );
+            // Loss of contact unloads the elastic stage, but cannot undo
+            // permanent crushing recorded during the preceding contact.
+            sample.public.crushed_m = self.crush.map_or(0.0, CrushCore::crushed_m);
+            return Ok(sample);
         }
 
         let oleo_stroke_max = self.leg.oleo().map_or(0.0, OleoStage::stroke_max_m);
@@ -333,25 +337,30 @@ impl RuntimeLeg {
             let crush_stroke_m = (stroke_m - oleo_stroke_max)
                 .max(0.0)
                 .min(crush.stroke_max_m());
-            let pre_force_n = crush.force_at_stroke_n(crush_stroke_m).map_err(|err| {
-                ModelEvalError::InvalidState {
-                    model: LANDING_GEAR_INTERNAL_MODEL_ID,
-                    reason: Cow::Owned(err.to_string()),
-                }
-            })?;
-            let mut crush_force_n = pre_force_n;
-            if mutate && crush_stroke_m > crush.crushed_m() {
-                let energy_j = (crush_stroke_m - crush.crushed_m()) * crush.f_crush_n();
+            // Only travel beyond the elastic yield stroke is permanent.
+            // Retaining F_y / k of elastic travel keeps the plateau force
+            // continuous through a state update and allows elastic unloading.
+            let yield_stroke_m = crush.f_crush_n() / crush.k_elastic_n_m();
+            let plastic_stroke_m = (crush_stroke_m - yield_stroke_m).max(0.0);
+            if mutate && plastic_stroke_m > crush.crushed_m() {
+                let energy_j = (plastic_stroke_m - crush.crushed_m()) * crush.f_crush_n();
                 let response = crush.absorb_energy_j(energy_j).map_err(|err| {
                     ModelEvalError::InvalidState {
                         model: LANDING_GEAR_INTERNAL_MODEL_ID,
                         reason: Cow::Owned(err.to_string()),
                     }
                 })?;
-                crush_force_n = crush_force_n.max(response.force_n);
                 plastic_dissipated_energy_j += response.absorbed_energy_j;
             }
+            let crush_force_n = crush.force_at_stroke_n(crush_stroke_m).map_err(|err| {
+                ModelEvalError::InvalidState {
+                    model: LANDING_GEAR_INTERNAL_MODEL_ID,
+                    reason: Cow::Owned(err.to_string()),
+                }
+            })?;
             force_n += crush_force_n;
+            let elastic_stroke_m = crush_force_n / crush.k_elastic_n_m();
+            elastic_energy_j += 0.5 * crush_force_n * elastic_stroke_m;
         }
 
         if !force_n.is_finite() {
@@ -1160,6 +1169,126 @@ fn test_state(z_m: f64, vz_m_s: f64) -> RigidBodyState {
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+
+    fn crush_only_leg() -> RuntimeLeg {
+        RuntimeLeg::from_config(&LandingGearLegConfig {
+            id: "crush".to_owned(),
+            mounted_to: "core".to_owned(),
+            attach_body_m: [0.0, 0.0, 0.0],
+            strut_axis_body: [0.0, 0.0, -1.0],
+            free_length_m: 1.0,
+            footpad: ContactGeometryConfig::Point,
+            footpad_radius_m: None,
+            footpad_friction_coefficient: 0.0,
+            footpad_friction_regularization_speed_m_s: 1.0e-3,
+            oleo: None,
+            crush: Some(openbmp_scenario::LandingGearCrushConfig {
+                f_crush_n: 1_000.0,
+                stroke_max_m: 0.5,
+                k_elastic_n_m: 10_000.0,
+            }),
+        })
+        .unwrap()
+    }
+
+    fn crush_sample(leg: &mut RuntimeLeg, stroke_m: f64, mutate: bool) -> LandingGearLegSample {
+        leg.evaluate(
+            &test_state(1.0 - stroke_m, 0.0),
+            HalfSpace::new([0.0, 0.0, 1.0], 0.0).unwrap(),
+            None,
+            mutate,
+        )
+        .unwrap()
+        .public
+    }
+
+    #[test]
+    fn landing_gear_crush_below_yield_remains_elastic() {
+        let mut leg = crush_only_leg();
+        let trial = crush_sample(&mut leg, 0.01, false);
+        let committed = crush_sample(&mut leg, 0.01, true);
+        let repeated = crush_sample(&mut leg, 0.01, false);
+
+        for sample in [trial, committed, repeated] {
+            assert_abs_diff_eq!(sample.force_n, 100.0, epsilon = 1.0e-10);
+            assert_abs_diff_eq!(sample.crushed_m, 0.0, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(sample.elastic_energy_j, 0.5, epsilon = 1.0e-12);
+            assert_abs_diff_eq!(sample.plastic_dissipated_energy_j, 0.0, epsilon = 1.0e-15);
+        }
+    }
+
+    #[test]
+    fn landing_gear_crush_loading_and_unloading_preserve_elastic_travel() {
+        let mut leg = crush_only_leg();
+        // (total stroke, force, permanent stroke, elastic energy, plastic increment)
+        let loading_cycle = [
+            (0.05, 500.0, 0.0, 12.5, 0.0),
+            (0.15, 1_000.0, 0.05, 50.0, 50.0),
+            (0.15, 1_000.0, 0.05, 50.0, 0.0),
+            (0.10, 500.0, 0.05, 12.5, 0.0),
+            (0.05, 0.0, 0.05, 0.0, 0.0),
+            (0.125, 750.0, 0.05, 28.125, 0.0),
+            (0.20, 1_000.0, 0.10, 50.0, 50.0),
+        ];
+        for (stroke, force, crushed, elastic, dissipated) in loading_cycle {
+            let sample = crush_sample(&mut leg, stroke, true);
+            let repeated = crush_sample(&mut leg, stroke, false);
+            assert_abs_diff_eq!(sample.force_n, force, epsilon = 1.0e-10);
+            assert_abs_diff_eq!(sample.crushed_m, crushed, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(sample.elastic_energy_j, elastic, epsilon = 1.0e-10);
+            assert_abs_diff_eq!(
+                sample.plastic_dissipated_energy_j,
+                dissipated,
+                epsilon = 1.0e-10
+            );
+            assert_abs_diff_eq!(repeated.force_n, sample.force_n, epsilon = 1.0e-10);
+            assert_abs_diff_eq!(
+                repeated.elastic_energy_j,
+                sample.elastic_energy_j,
+                epsilon = 1.0e-10
+            );
+            assert_abs_diff_eq!(repeated.plastic_dissipated_energy_j, 0.0, epsilon = 0.0);
+        }
+    }
+
+    #[test]
+    fn landing_gear_crush_telemetry_retains_permanent_stroke_after_liftoff() {
+        let mut leg = crush_only_leg();
+        let compressed = crush_sample(&mut leg, 0.15, true);
+        let separated = crush_sample(&mut leg, -0.05, true);
+
+        assert!(compressed.crushed_m > 0.0);
+        assert!(!separated.in_contact);
+        assert_abs_diff_eq!(separated.force_n, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(separated.elastic_energy_j, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(separated.plastic_dissipated_energy_j, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(separated.crushed_m, compressed.crushed_m, epsilon = 0.0);
+    }
+
+    #[test]
+    fn landing_gear_crush_cycle_work_equals_stored_and_dissipated_energy() {
+        let mut leg = crush_only_leg();
+        let mut previous = crush_sample(&mut leg, 0.0, true);
+        let mut work_j = 0.0;
+        let mut dissipated_j = 0.0;
+        // Include each yield/unloading breakpoint so trapezoidal integration
+        // is exact for the piecewise-linear elasto-plastic force law.
+        for stroke in [0.05, 0.10, 0.15, 0.20, 0.15, 0.10, 0.15, 0.20, 0.25] {
+            let sample = crush_sample(&mut leg, stroke, true);
+            work_j +=
+                0.5 * (previous.force_n + sample.force_n) * (sample.stroke_m - previous.stroke_m);
+            dissipated_j += sample.plastic_dissipated_energy_j;
+            assert_abs_diff_eq!(
+                work_j,
+                sample.elastic_energy_j + dissipated_j,
+                epsilon = 1.0e-10
+            );
+            previous = sample;
+        }
+        assert_abs_diff_eq!(work_j, 200.0, epsilon = 1.0e-10);
+        assert_abs_diff_eq!(dissipated_j, 150.0, epsilon = 1.0e-10);
+        assert_abs_diff_eq!(previous.elastic_energy_j, 50.0, epsilon = 1.0e-10);
+    }
 
     #[test]
     fn landing_gear_runtime_reports_four_leg_loads() {

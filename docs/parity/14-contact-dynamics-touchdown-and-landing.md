@@ -445,6 +445,19 @@ The crush core is the elasto-plastic element: elastic up to the plateau force
 `crushed_m` advancing monotonically (irreversible by construction — unloading
 is elastic from the crushed length). The 1-D energy identity `stroke =
 E_absorbed / F_crush` is the Layer-2 drop-test verification case (§5.2).
+
+In the runner, total crush-stage travel `s` includes the recoverable elastic
+travel `F_crush/k_elastic`. A plastic update uses
+`p_new = max(p_old, s - F_crush/k_elastic)`, dissipates
+`F_crush * (p_new - p_old)`, and retains elastic energy `F^2/(2*k_elastic)`.
+Loss of ground contact unloads the spring but preserves the permanent stroke
+in telemetry. Unit tests cover below-yield loading and a loading/unloading
+cycle with an exact piecewise-linear work balance.
+
+The current runner still updates plastic history during force evaluations,
+including intermediate RK stages. Accepted-step commits and rollback of
+rejected trial evaluations require further coupling work; the local material
+and energy tests do not validate that integration-history behavior.
 Gear-load *line loads* into the airframe are recovered through doc `02`'s
 LTM/OTM machinery, and "touchdown" joins doc `02`'s CLA flight-event forcing
 library as a load event.
