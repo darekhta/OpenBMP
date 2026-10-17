@@ -147,7 +147,7 @@ cargo hack check --workspace --feature-powerset --locked
 typos
 ```
 
-Or, equivalently, the CI aliases:
+Or use the CI aliases, followed by the spelling check:
 
 ```bash
 cargo ci-fmt
@@ -155,12 +155,15 @@ cargo ci-clippy
 cargo ci-test
 cargo ci-deny
 cargo ci-audit
+cargo ci-machete
 cargo ci-hack
+typos
 ```
 
 ## Data Contributions
 
-Data files (`data/`, `scenarios/`, `tests/validation/`) require a
+Data files, including those under `data/`, `scenarios/`, and test-fixture
+directories, require a
 provenance record per [`docs/data-provenance.md`](docs/data-provenance.md).
 A data PR without a provenance record will not pass CI.
 
