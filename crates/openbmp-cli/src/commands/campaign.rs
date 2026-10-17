@@ -224,8 +224,14 @@ pub fn run(
 
     let executed_runs = execute_campaign_runs(&plan.runs, &context, worker_count)?;
     let mut index = RunIndex::new();
-    for executed in &executed_runs {
-        index.append(executed.record.clone())?;
+    let mut run_reports = Vec::with_capacity(executed_runs.len());
+    let mut verdict_reports = Vec::new();
+    for executed in executed_runs {
+        index.append(executed.record)?;
+        run_reports.push(executed.report);
+        if let Some(verdict_report) = executed.verdict_report {
+            verdict_reports.push(verdict_report);
+        }
     }
     fs::write(&run_index_jsonl, index.to_jsonl_bytes()?).map_err(|source| CliError::Io {
         path: run_index_jsonl.clone(),
@@ -245,10 +251,6 @@ pub fn run(
         None
     };
 
-    let verdict_reports = executed_runs
-        .iter()
-        .filter_map(|run| run.verdict_report.clone())
-        .collect::<Vec<_>>();
     let verdict_summary = if verdict_reports.is_empty() {
         None
     } else {
@@ -267,10 +269,6 @@ pub fn run(
     let ci_failures = campaign_ci_failures(verdict_summary.as_ref(), trend_summary.as_ref());
 
     let summary_json = output_dir.join("summary.json");
-    let run_reports = executed_runs
-        .into_iter()
-        .map(|executed| executed.report)
-        .collect::<Vec<_>>();
     let report = CampaignRunCliReport {
         schema_version: "openbmp.rundata.campaign_run.v1".to_owned(),
         campaign_id: plan.campaign_id,
