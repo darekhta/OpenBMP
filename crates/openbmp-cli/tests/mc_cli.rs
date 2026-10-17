@@ -1149,7 +1149,8 @@ fn mc_acoustics_ascent_campaign_reports_downstream_p95_50() {
         "acoustics_response_p95_50_wilks_sizing_csv",
     ];
     assert_eq!(entries.len(), expected_artifacts.len());
-    for ((entry, relative_path), role) in entries.iter().zip(&expected_artifacts).zip(expected_roles) {
+    let expected_entries = entries.iter().zip(&expected_artifacts).zip(expected_roles);
+    for ((entry, relative_path), role) in expected_entries {
         let expected_path = relative_path.to_string_lossy().replace('\\', "/");
         assert_eq!(entry["path"].as_str(), Some(expected_path.as_str()));
         assert_eq!(entry["role"].as_str(), Some(role));
