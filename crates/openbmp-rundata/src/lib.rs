@@ -386,9 +386,15 @@ impl RunRecord {
     ///
     /// Returns [`RundataError::Json`] if serialization fails.
     pub fn to_jsonl_line(&self) -> Result<Vec<u8>, RundataError> {
-        let mut bytes = serde_json::to_vec(self)?;
-        bytes.push(b'\n');
+        let mut bytes = Vec::new();
+        self.append_jsonl_line(&mut bytes)?;
         Ok(bytes)
+    }
+
+    fn append_jsonl_line(&self, bytes: &mut Vec<u8>) -> Result<(), RundataError> {
+        serde_json::to_writer(&mut *bytes, self)?;
+        bytes.push(b'\n');
+        Ok(())
     }
 
     /// SHA-256 digest of the canonical JSONL record line.
@@ -641,6 +647,33 @@ mod tests {
         assert_eq!(
             a.record_sha256_hex().unwrap(),
             b.record_sha256_hex().unwrap()
+        );
+    }
+
+    #[test]
+    fn jsonl_writers_preserve_literal_bytes_and_append_prefix() {
+        let expected = concat!(
+            r#"{"run_id":"literal-run","scenario_sha256_hex":"#,
+            r#""1111111111111111111111111111111111111111111111111111111111111111","#,
+            r#""seed":7,"code_id":"quoted \"code\"\nβ","gates":[],"#,
+            r#""channel_digests":[],"artifacts":[],"labels":[]}"#,
+            "\n"
+        )
+        .as_bytes();
+        let entry: RunRecord = serde_json::from_slice(expected).unwrap();
+        assert_eq!(entry.to_jsonl_line().unwrap(), expected);
+
+        let mut index = RunIndex::new();
+        assert!(index.to_jsonl_bytes().unwrap().is_empty());
+        index.append(entry.clone()).unwrap();
+        assert_eq!(index.to_jsonl_bytes().unwrap(), expected);
+
+        let prefix = record(1).to_jsonl_line().unwrap();
+        let mut expected_appended = prefix.clone();
+        expected_appended.extend_from_slice(expected);
+        assert_eq!(
+            append_record_jsonl(&prefix, &entry).unwrap(),
+            expected_appended
         );
     }
 

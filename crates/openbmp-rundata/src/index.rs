@@ -79,7 +79,7 @@ impl RunIndex {
     pub fn to_jsonl_bytes(&self) -> Result<Vec<u8>, RundataError> {
         let mut bytes = Vec::new();
         for record in &self.records {
-            bytes.extend(record.to_jsonl_line()?);
+            record.append_jsonl_line(&mut bytes)?;
         }
         Ok(bytes)
     }
@@ -192,7 +192,7 @@ pub fn append_record_jsonl(existing: &[u8], record: &RunRecord) -> Result<Vec<u8
         return Err(RundataError::UnterminatedIndex);
     }
     let mut bytes = existing.to_vec();
-    bytes.extend(record.to_jsonl_line()?);
+    record.append_jsonl_line(&mut bytes)?;
     RunIndex::from_jsonl_bytes(&bytes)?;
     Ok(bytes)
 }
