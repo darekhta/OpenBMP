@@ -10,8 +10,9 @@ OpenBMP is intended for engineering education, simulation research, controller
 prototyping, autotest-driven aerospace software experiments, and reproducible
 trajectory studies. The project ships a simulator; **its abstractions are
 designed to be re-implementable against real hardware** through a downstream
-HAL, but the OpenBMP repository itself ships no HAL and does not validate or
-support hardware deployment. See [Scope Boundaries](safety-boundaries.md)
+HAL. The repository includes abstract HAL contracts, but ships no concrete
+hardware adapters or board support and does not validate or support hardware
+deployment. See [Scope Boundaries](safety-boundaries.md)
 for the project scope and validation boundaries.
 
 ## Purpose
@@ -238,7 +239,10 @@ from any of these projects.
 
 ## Product Shape
 
-OpenBMP is a workspace of small Rust crates organized in five layers:
+OpenBMP is a workspace of Rust crates. The following is a conceptual overview,
+not an exhaustive crate inventory or dependency graph. See the workspace
+members in [`Cargo.toml`](../Cargo.toml) for the current inventory and
+[Software Architecture](software-architecture.md) for the documented layering:
 
 ```text
        openbmp-cli           (binary)        scenarios + reports + plots
@@ -259,8 +263,10 @@ OpenBMP is a workspace of small Rust crates organized in five layers:
 ```
 
 Crates expose narrow APIs. The deterministic kernel sits below all model
-crates. The CLI sits at the top and is the only entry point that produces
-artifacts the user sees.
+crates. The CLI is the command-line entry point for scenario runs and output
+artifacts. The repository also includes the separate
+[Ascent browser demo](../web/ascent/README.md); its build and usage are
+documented alongside the demo.
 
 The first public release should feel like a research-grade simulator — a user
 defines a toy virtual body or rocket, runs a scenario, inspects state history,
