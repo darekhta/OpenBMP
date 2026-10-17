@@ -459,6 +459,29 @@ fn hex_digest(bytes: &[u8]) -> String {
     out
 }
 
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = *chunk.get(1).unwrap_or(&0);
+        let third = *chunk.get(2).unwrap_or(&0);
+        out.push(ALPHABET[(first >> 2) as usize] as char);
+        out.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(third & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -478,6 +501,25 @@ mod tests {
         for value in ["", "plain text", "Δοκιμή", "a\\b\r\tc"] {
             assert_eq!(markdown_cell(value), value);
         }
+    }
+
+    #[test]
+    fn base64_encoding_matches_standard_vectors() {
+        for (input, expected) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64_encode(input.as_bytes()), expected);
+        }
+        assert_eq!(base64_encode(&[0xfb, 0xff, 0xff]), "+///");
+        assert_eq!(base64_encode(&[0]), "AA==");
+        assert_eq!(base64_encode(&[0, 0]), "AAA=");
+        assert_eq!(base64_encode(&[0, 0, 0]), "AAAA");
     }
 
     fn fixture_table() -> TelemetryTable {

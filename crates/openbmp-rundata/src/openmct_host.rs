@@ -9,6 +9,7 @@ use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 
 use thiserror::Error;
 
+use crate::base64_encode;
 use crate::openmct::OpenMctReplayFrame;
 
 const MAX_REQUEST_BYTES: usize = 8192;
@@ -274,29 +275,6 @@ fn invalid_request(reason: impl Into<String>) -> OpenMctHostError {
     OpenMctHostError::InvalidRequest {
         reason: reason.into(),
     }
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = *chunk.get(1).unwrap_or(&0);
-        let third = *chunk.get(2).unwrap_or(&0);
-        out.push(ALPHABET[(first >> 2) as usize] as char);
-        out.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(ALPHABET[(third & 0x3f) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
 }
 
 fn sha1_digest(input: &[u8]) -> [u8; 20] {

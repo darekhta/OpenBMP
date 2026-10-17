@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::require_non_empty;
+use crate::{base64_encode, require_non_empty};
 use openbmp_core::ChannelId;
 use openbmp_telemetry::{TelemetryRow, TelemetryTable, TelemetryValue};
 
@@ -1022,29 +1022,6 @@ fn invalid_document<T>(format: &'static str, message: &str) -> Result<T, Export3
 
 fn format_s(value: f64) -> String {
     format!("{value:.17e}")
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = *chunk.get(1).unwrap_or(&0);
-        let third = *chunk.get(2).unwrap_or(&0);
-        out.push(ALPHABET[(first >> 2) as usize] as char);
-        out.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(ALPHABET[(third & 0x3f) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
 }
 
 #[cfg(test)]
