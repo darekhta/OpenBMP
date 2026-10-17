@@ -1,5 +1,6 @@
 //! Subcommand implementations.
 
+mod artifact_catalog;
 pub mod campaign;
 pub mod check;
 pub mod compare_telemetry;

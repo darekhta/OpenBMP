@@ -1130,6 +1130,33 @@ fn mc_acoustics_ascent_campaign_reports_downstream_p95_50() {
     assert!(manifest.contains("acoustics_response_p95_50_acceleration_psd_csv"));
     assert!(manifest.contains("response/p95_50_acceleration_psd.csv"));
     assert!(manifest.contains("sha256_hex"));
+    assert_eq!(manifest.as_bytes().last(), Some(&b'\n'));
+    let manifest_json: serde_json::Value =
+        serde_json::from_str(&manifest).expect("parse artifact manifest");
+    let entries = manifest_json["artifacts"]
+        .as_array()
+        .expect("artifact manifest entries");
+    let expected_roles = [
+        "acoustics_ascent_p95_50_environment_csv",
+        "acoustics_ascent_p95_50_wilks_sizing_csv",
+        "acoustics_fairing_internal_p95_50_environment_csv",
+        "acoustics_fairing_internal_p95_50_sample_trace_csv",
+        "acoustics_fairing_internal_p95_50_wilks_sizing_csv",
+        "acoustics_response_loads_handoff_csv",
+        "acoustics_response_p95_50_acceleration_psd_csv",
+        "acoustics_response_p95_50_modal_force_psd_csv",
+        "acoustics_response_p95_50_sample_trace_csv",
+        "acoustics_response_p95_50_wilks_sizing_csv",
+    ];
+    assert_eq!(entries.len(), expected_artifacts.len());
+    for ((entry, relative_path), role) in entries.iter().zip(&expected_artifacts).zip(expected_roles) {
+        let expected_path = relative_path.to_string_lossy().replace('\\', "/");
+        assert_eq!(entry["path"].as_str(), Some(expected_path.as_str()));
+        assert_eq!(entry["role"].as_str(), Some(role));
+        let bytes = fs::read(artifact_dir.join(relative_path)).expect("read manifest artifact");
+        let digest = sha256_hex(&bytes);
+        assert_eq!(entry["sha256_hex"].as_str(), Some(digest.as_str()));
+    }
 }
 
 #[test]

@@ -18,6 +18,7 @@ use openbmp_rundata::{
 use openbmp_runner as runner;
 use openbmp_scenario::Scenario;
 
+use super::artifact_catalog::visit_acoustics_artifacts;
 use super::digest::sha256_bytes;
 use super::output::{ensure_parent_dir, open_for_write};
 use crate::error::CliError;
@@ -428,113 +429,20 @@ fn write_acoustics_run_data_artifacts(
     let base_dir = run_data_artifact_root(run_data, scenario_path, seed).join("acoustics");
     let mut artifacts = Vec::new();
 
-    if let Some(ascent) = &acoustics.ascent {
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("ascent/p95_50_environment.csv"),
-            "acoustics_ascent_p95_50_environment_csv",
-            &ascent.p95_50_environment_csv,
-            written,
-            &mut artifacts,
-        )?;
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("ascent/p95_50_wilks_sizing.csv"),
-            "acoustics_ascent_p95_50_wilks_sizing_csv",
-            &ascent.p95_50_wilks_sizing_csv,
-            written,
-            &mut artifacts,
-        )?;
-    }
-
-    if let Some(fairing) = &acoustics.fairing_internal {
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("fairing_internal/p95_50_environment.csv"),
-            "acoustics_fairing_internal_p95_50_environment_csv",
-            &fairing.p95_50_environment_csv,
-            written,
-            &mut artifacts,
-        )?;
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("fairing_internal/p95_50_sample_trace.csv"),
-            "acoustics_fairing_internal_p95_50_sample_trace_csv",
-            &fairing.p95_50_sample_trace_csv,
-            written,
-            &mut artifacts,
-        )?;
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("fairing_internal/p95_50_wilks_sizing.csv"),
-            "acoustics_fairing_internal_p95_50_wilks_sizing_csv",
-            &fairing.p95_50_wilks_sizing_csv,
-            written,
-            &mut artifacts,
-        )?;
-    }
-
-    if let Some(response) = &acoustics.response {
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("response/loads_handoff.csv"),
-            "acoustics_response_loads_handoff_csv",
-            &response.loads_handoff_csv,
-            written,
-            &mut artifacts,
-        )?;
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("response/p95_50_acceleration_psd.csv"),
-            "acoustics_response_p95_50_acceleration_psd_csv",
-            &response.p95_50_acceleration_psd_csv,
-            written,
-            &mut artifacts,
-        )?;
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("response/p95_50_modal_force_psd.csv"),
-            "acoustics_response_p95_50_modal_force_psd_csv",
-            &response.p95_50_modal_force_psd_csv,
-            written,
-            &mut artifacts,
-        )?;
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("response/p95_50_sample_trace.csv"),
-            "acoustics_response_p95_50_sample_trace_csv",
-            &response.p95_50_sample_trace_csv,
-            written,
-            &mut artifacts,
-        )?;
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("response/p95_50_wilks_sizing.csv"),
-            "acoustics_response_p95_50_wilks_sizing_csv",
-            &response.p95_50_wilks_sizing_csv,
-            written,
-            &mut artifacts,
-        )?;
-    }
-
-    if let Some(structural) = &outcome.structural_acoustics {
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("structural/first_bending_response.csv"),
-            "structural_acoustics_first_bending_response_csv",
-            &structural.band_response_csv,
-            written,
-            &mut artifacts,
-        )?;
-        write_optional_run_data_artifact(
-            &base_dir,
-            Path::new("structural/first_bending_line_load_recovery.csv"),
-            "structural_acoustics_first_bending_line_load_recovery_csv",
-            &structural.line_load_recovery_csv,
-            written,
-            &mut artifacts,
-        )?;
-    }
+    visit_acoustics_artifacts(
+        acoustics,
+        outcome.structural_acoustics.as_ref(),
+        |relative_path, role, bytes| {
+            write_optional_run_data_artifact(
+                &base_dir,
+                relative_path,
+                role,
+                bytes,
+                written,
+                &mut artifacts,
+            )
+        },
+    )?;
 
     Ok(artifacts)
 }
