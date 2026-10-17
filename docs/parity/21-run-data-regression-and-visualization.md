@@ -104,12 +104,14 @@ emission — this document owns everything after the bytes land.
   emission; golden scenario archive workflow in CI (`docs/verification.md`).
 - `crates/openbmp-mc/src/lib.rs` — Welford/Clopper-Pearson reducers whose
   outputs need a home and a trend line.
-- Criterion benchmarks produce HTML locally (dev-only); no deterministic
-  plotting exists for results.
+- Criterion benchmarks produce HTML locally (dev-only), separately from the
+  deterministic SVG and Markdown artifacts produced by `openbmp-rundata`.
 - `crates/openbmp-rundata` now provides the WP-21.1 file-index substrate:
   deterministic `RunRecord`, artifact/gate/label records, per-channel
   telemetry digests, canonical JSONL bytes, append-only JSONL index helpers
   with duplicate-run-id rejection, and deterministic Parquet index mirrors.
+  Index persistence lives in the private `src/index.rs` module; `RunIndex`
+  and `append_record_jsonl` remain exported from the crate root.
   It also has the WP-21.2 verdict-rule core: closed TOML rule documents for
   limits, tolerance-vs-golden, monotonicity, event windows, statistical bands,
   and cross-run deltas, evaluated fail-closed over telemetry tables and
@@ -157,9 +159,10 @@ emission — this document owns everything after the bytes land.
 `openbmp-rundata` (L7): consumes telemetry artifacts and scenario/provenance
 metadata; produces records, verdicts, trends, reports, and exports. Host-side
 by nature; never an `openbmp-fc` dependency; the runner gains only a thin
-emission hook. Plotting uses a pinned pure-Rust SVG path (the `plotters` SVG
-backend or equivalent reviewed in the skeleton PR) to keep byte-stable
-artifacts.
+emission hook. The current `render` module writes SVG directly using
+`std::fmt::Write` with fixed layout and numeric formatting. A replacement
+rendering backend would need to preserve the declared byte-stability contract;
+`plotters` is not a current dependency of this crate.
 
 ### 3.2 Run records & campaign index (T1)
 
@@ -332,7 +335,7 @@ shape. CI consumes manifests for the canonical regression set.
 | OpenC3 COSMOS | named alternative consumer | AGPL-3.0 core (external) |
 | CZML specification (CesiumJS) | export format | open spec; viewers external |
 | glTF 2.0 | export format | Khronos open spec |
-| plotters (SVG backend) | deterministic plot rendering (pinned) | MIT/Apache-2.0 |
+| plotters (SVG backend) | considered alternative; current renderer emits SVG directly | MIT/Apache-2.0 |
 | DON v3 / EDGE-DOUG public pages | reference architecture descriptions | public |
 | Practitioner documentation of unified-store practice | method anchor for §3.3-§3.4 | public web |
 
@@ -499,8 +502,8 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **fidelity_tier:** T3
 - **depends_on:** [WP-21.1; WP-21.3 for fan/band overlays]
 - **new_crates:** none.
-- **touched:** `crates/openbmp-rundata` (render module; pinned plotters SVG
-  backend), booklet schema, goldens under `tests/expected/`.
+- **touched:** `crates/openbmp-rundata/src/render.rs` (direct SVG emission),
+  booklet schema, goldens under `crates/openbmp-rundata/tests/fixtures/`.
 - **approach:** §3.5; fixed layout/fonts/format; spike hunt = top-k |Δ|
   windows with deterministic tie-breaking.
 - **acceptance:**
