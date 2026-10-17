@@ -58,10 +58,10 @@ wire format. Real protocol adapters are out of repository scope.
 
 ## Determinism
 
-This crate is only schema, framing, and validation logic; it ships no async
-runtime or socket loop. Deterministic lockstep is enforced by exact
-`step`/`sim_time_s` matching, while wall-clock timing and retry behavior belong
-to downstream transports.
+With the `std` feature, this crate includes blocking in-process and stream
+transports, TCP listener/connect helpers, and Unix-domain sockets on Unix.
+It ships no async runtime. Deterministic lockstep is enforced by exact
+`step`/`sim_time_s` matching; callers own wall-clock timing and retry policy.
 
 ## Validation
 

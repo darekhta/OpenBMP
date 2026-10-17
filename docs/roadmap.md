@@ -160,9 +160,10 @@ per mission phase with `[[forces.phase_override]]`, emit live
   implementation is shipped.
 - Public-benchmark cross-validation against Apollo-class and Stardust re-entry
   trajectories, and against PX4 / ArduPilot flight logs.
-- A concrete socket transport for the abstract HIL message schema (the schema
-  and codec ship; the transport and any hardware adapter are downstream-adopter
-  territory by design).
+- Hardware-specific adapters for the abstract HIL message schema remain
+  downstream-adopter territory. Generic blocking TCP transports and, on Unix,
+  Unix-domain-socket transports already ship with `openbmp-bridge`'s `std`
+  feature.
 
 ## Out of Scope for Upstream
 

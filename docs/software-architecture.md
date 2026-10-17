@@ -32,7 +32,7 @@ project framing.
 | Scenario lint | `openbmp check` validates schema, provenance, units/frames, and determinism |
 | Telemetry channels | Typed in-process bus (software bus pattern) |
 | Telemetry archive | Parquet with explicit unit/frame metadata |
-| Testing | proptest, insta, cargo-fuzz, criterion, golden CSV |
+| Testing | proptest, insta, criterion, golden CSV; cargo-fuzz planned |
 | Data provenance | Required `provenance.md` for every shipped data source |
 | Supply chain | `cargo deny`, `cargo audit`, `cargo machete`, CycloneDX SBOM for releases; `cargo vet` once the audit ledger lands |
 | Hardware path | None shipped (HIL pattern is a generic socket bridge) |
@@ -44,21 +44,21 @@ The choice of crates is part of the architecture because it determines what
 
 | Concern | Crate | Rationale |
 |---|---|---|
-| Linear algebra | **nalgebra** | f64 default, full feature set, generic over scalar, integrates with `argmin` / `ndarray`. Compile-time slower than `glam` but precision and feature breadth matter more than SIMD speed for an academic simulator. |
+| Linear algebra | **nalgebra** | Shared f64 vector, matrix, and quaternion types. |
 | Units | **uom** | De-facto type-safe units crate. Quantity-based (length / mass / time, not unit-specific), zero-cost, supports many storage types. Used at public API boundaries; internal hot loops may use raw `f64`. |
 | Quaternion / rotation | nalgebra (`UnitQuaternion`) | Standard aerospace double-precision quaternion. We do not use rotors (ultraviolet) — non-standard interop. |
-| Serialization | **serde** | Universal. CSV, JSON, TOML, RON via `serde` derives. |
+| Serialization | **serde** | Shared derives and data models for the workspace's CSV, JSON, and TOML readers/writers. |
 | Scenario file format | **toml** (via serde) | Human-friendly, deterministic ordering, supports comments, easy to version. |
 | Telemetry archive | **parquet** + **arrow** (`apache/arrow-rs`) | Columnar, queryable from Python/duckdb/polars, embeds schema and metadata. Aligned with InfluxDB 3 Rust-on-Arrow direction. |
 | Property testing | **proptest** | Explicit `Strategy` objects, per-value shrinking. Stronger than quickcheck for invariant-heavy code. |
 | Snapshot tests | **insta** | Telemetry summaries, error messages, structured-output regressions; `cargo insta review` workflow used to accept or reject baseline shifts. |
-| Fuzzing | **cargo-fuzz** + libFuzzer | Scenario parser, model config parser. |
+| Fuzzing (planned) | **cargo-fuzz** + libFuzzer | Intended for scenario and model-config parsers; no fuzz targets or CI lane are configured yet. |
 | Microbenchmarks | **criterion** | Kernel hot path, integrator step, sensor packet generation. |
-| Optional socket bridge wire format | **postcard** | `no_std`, compact, schema-friendly. Used only in optional HIL tooling, never in kernel. |
-| Async (tooling only) | **tokio** | Reserved for optional socket bridge or CLI tooling. **Banned in `openbmp-core`, `openbmp-sim`, model crates, controller crates.** |
+| Binary packet and I-load formats | **postcard** | Compact serialization for bridge packets and versioned I-load payloads. |
+| Async (tooling only) | No async runtime dependency | Any future async runtime belongs in host tooling. **Banned in `openbmp-core`, `openbmp-sim`, model crates, controller crates.** |
 | CLI | **clap** | Standard, derive-based, self-documenting. |
 | Logging | **tracing** | Structured logs distinct from telemetry. Telemetry is the simulation output; tracing is for diagnostic/dev logging. |
-| Error handling | **thiserror** for libraries, **anyhow** for binaries | Explicit error types in libraries, ergonomic propagation in CLI. |
+| Error handling | **thiserror** and explicit error types | Explicit library errors; the CLI uses `CliError` with process exit-code mapping. |
 
 Development and release tooling:
 
@@ -67,7 +67,7 @@ Development and release tooling:
 | Dependency policy | **cargo-deny** | License, advisory, banned-crate, duplicate, and source checks in CI. |
 | Dependency audits | **cargo-vet** | Planned ledger for third-party Rust dependency audits by trusted reviewers. |
 | SBOM | **cargo-cyclonedx** | Produces CycloneDX SBOMs for release artifacts. |
-| Build provenance | **SLSA-style attestations** | Records builder, source, inputs, and artifact hashes for releases. |
+| Build provenance | **Build manifests and artifact hashes** | The release workflow is configured to record build metadata and SHA-256 hashes; SLSA-style attestations remain planned. |
 
 **Banned patterns** in the deterministic kernel:
 - `std::time::SystemTime`, `Instant`, or any wall-clock source.
@@ -167,7 +167,7 @@ openbmp/
 │   ├── openbmp-scenario/                # L6: parser, validator, registry
 │   ├── openbmp-scenario-script/         # L1: simulator-only action data contract
 │   ├── openbmp-testkit/                 # L6: helpers (proptest strategies,
-│   │                                    #     analytic-toy fixtures, fuzzers)
+│   │                                    #     analytic-toy fixtures)
 │   ├── openbmp-mc/                      # L7: deterministic MC sampling/reducers
 │   ├── openbmp-runner/                  # L7: scenario → kernel → telemetry orchestration
 │   ├── openbmp-fmi/                     # L7: host FMI dynamic-library smoke adapter
@@ -2182,8 +2182,8 @@ require_monotonic_time = true
 - Files referenced from a scenario are resolved relative to the scenario
   file path.
 
-A separate `scenario-format.md` document maintains the formal grammar; the
-parser includes a fuzz target to ensure malformed scenarios produce
+A separate `scenario-format.md` document maintains the formal grammar.
+A parser fuzz target is planned to check that malformed scenarios produce
 diagnostics, not panics.
 
 ## Real-Data Package Format
@@ -2397,21 +2397,26 @@ own license, governance, and qualification posture.
 
 ## Testing Taxonomy
 
-| Class | Tool | Scope | Frequency |
+The cadence column distinguishes configured checks from planned dedicated lanes.
+
+| Class | Tool | Scope | Configured / planned cadence |
 |---|---|---|---|
 | Unit | `cargo test` | Math, units, frames, parsers | Every PR |
 | Property | proptest | Invariants (finite, monotonic, normalized, deterministic) | Every PR |
 | Snapshot | insta | Telemetry summaries, error messages | Every PR |
-| Golden scenario | custom diff | Byte-stable Parquet output | Every PR (small set), nightly (full) |
+| Golden scenario | custom diff | Byte-stable Parquet output | Every PR for configured cases; nightly full-corpus lane planned |
 | Analytic-toy validation | custom | Closed-form comparison | Every PR |
-| Public-benchmark validation | custom | Published academic cases | Nightly |
-| Fuzz | cargo-fuzz | Scenario parser, motor parser, aero parser | Nightly |
+| Public-benchmark validation | custom | Published academic cases | Dedicated nightly lane planned |
+| Fuzz | cargo-fuzz | Scenario parser, motor parser, aero parser | Planned; no targets or CI lane yet |
 | Doc tests | rustdoc | Examples in module docs | Every PR |
-| Microbenchmarks | criterion | Kernel hot path, integrator step | Nightly, regression-tracked |
+| Microbenchmarks | criterion | Kernel hot path, integrator step | Nightly regression tracking planned; no Criterion CI lane configured |
 
-CI determinism budget: every PR runs the full unit + property + snapshot +
-small golden + analytic-toy suites in under a fixed wall-clock budget
-(target: under 5 minutes). Nightly runs the full corpus.
+The checked-in CI workflow configures workspace tests, doc tests, and selected
+cross-run determinism checks on pushes and PRs. Its only scheduled trigger is
+weekly (`17 3 * * 0`); the additional `monte-carlo-nightly` job is configured
+for that schedule or manual dispatch. There is no nightly full-corpus,
+parser-fuzzing, or Criterion lane. The under-5-minute PR-suite budget remains
+an unmeasured design target, not an enforced wall-clock limit.
 
 Following the RocketPy validation-table convention, every public-benchmark
 validation case publishes its expected reference data alongside an
@@ -2575,7 +2580,7 @@ See [roadmap.md](roadmap.md) for the broader picture. The platform provides:
 - Toy physics, a basic environment, synthetic sensors, and telemetry
   exporters.
 - Modular models (aero deck, motor format, wind, additional sensors),
-  property + fuzz tests.
+  with property tests; parser fuzz targets remain planned.
 - A flight controller (estimator, autopilot, mission FSM, academic
   guidance, FDIR).
 - Adaptive integrators behind profile flags, public-benchmark validation,

@@ -23,18 +23,22 @@ No OpenBMP artifact uses labels such as `flight-qualified`, `certified`,
 
 ## Test Classes
 
-| Class | Tool | Purpose | Merge gate |
+The checked-in CI workflow configures workspace tests on PRs and a weekly
+scheduled trigger. Dedicated nightly public-benchmark, fuzz, and Criterion
+lanes below remain planned.
+
+| Class | Tool | Purpose | Configured / planned gate |
 |---|---|---|---|
 | Unit | `cargo test` | Small deterministic behavior | Every PR |
 | Property | `proptest` | Invariants and fail-closed behavior | Every PR |
 | Snapshot | `insta` | Structured diagnostics and summaries | Every PR |
 | Golden scenario | `openbmp diff` | Byte-stable telemetry | Every PR for small set |
 | Analytic-toy | custom | Closed-form physics checks | Every PR |
-| Public benchmark | custom | Public academic reference cases | Nightly, then PR for touched models |
-| Fuzz | `cargo-fuzz` | Parsers and config surfaces | Nightly |
+| Public benchmark | custom | Public academic reference cases | Dedicated nightly and touched-model gating planned |
+| Fuzz | `cargo-fuzz` | Parsers and config surfaces | Planned; no targets or CI lane yet |
 | Doc test | `rustdoc` | Public examples compile | Every PR |
-| Microbenchmark | `criterion` | Performance trend detection | Nightly |
-| Provenance check | `openbmp check-provenance` | Data source review | Every PR once data exists |
+| Microbenchmark | `criterion` | Performance trend detection | Planned; no Criterion CI lane configured |
+| Provenance check | `openbmp check-provenance` | Data source review | Every PR for data and scenarios |
 | Supply-chain check | `cargo deny`, `cargo audit`, `cargo machete` | Dependency policy | Every PR or dependency PR |
 
 ## Numerical and Contact Regression Checks
@@ -314,7 +318,8 @@ the project later proves byte identity there too.
 
 ## Scenario Fuzzing
 
-Fuzz targets should cover:
+Fuzz targets and their CI lane are planned but not yet configured. They should
+cover:
 
 - Scenario parser.
 - Aero deck parser.

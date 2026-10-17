@@ -46,23 +46,24 @@ Tagged release support begins with the first 0.1.x release.
 
 ## Supply Chain
 
-- Releases ship a CycloneDX SBOM, dependency-audit summary, and
-  SLSA Build Level 2 provenance per
+- The release workflow is configured to produce a CycloneDX SBOM,
+  dependency-audit report, build/scenario manifests, and SHA-256 hashes.
+  SLSA Build Level 2 provenance remains planned; see
   [`docs/supply-chain.md`](docs/supply-chain.md).
 - Yanked dependencies are blocked at CI time via `cargo deny`.
-- crates.io publishing uses **Trusted Publishing** (no long-lived API
-  tokens).
+- **Trusted Publishing** remains a planned follow-on; the release workflow
+  does not currently publish crates to crates.io.
 
 ## Hardening Recommendations for Consumers
 
 OpenBMP is academic software; nevertheless, downstream consumers
 embedding OpenBMP into a larger stack should:
 
-- Verify release artifacts against the published SBOM and SLSA
-  provenance.
+- Verify release artifacts against the published hashes and SBOM.
+  SLSA provenance verification will apply when attestations are shipped.
 - Run `cargo audit` and `cargo deny` against their integration build.
-- Keep `tokio` confined to `openbmp-bridge` (or omit `openbmp-bridge`
-  entirely from their build).
+- If adding an async runtime downstream, confine it to host bridge tooling;
+  the upstream bridge currently uses blocking transports without one.
 - Treat any hardware or deployment expansion as a downstream responsibility
   per [`docs/software-architecture.md`](docs/software-architecture.md)
   § Extensibility for Downstream Integration.

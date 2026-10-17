@@ -293,8 +293,8 @@ OpenBMP is autotest-driven. Required test classes:
   two-body Keplerian orbit, harmonic-oscillator attitude damping.
 - **Public benchmark validation** — selected published academic cases (e.g.,
   RocketPy/OpenRocket reference rockets with public parameters).
-- **Fuzz tests** (cargo-fuzz / proptest) — scenario parsing, model config
-  parsing.
+- **Fuzz tests** (planned cargo-fuzz targets) — scenario parsing and model
+  config parsing; property tests currently use proptest.
 - **Documentation tests** — every public example compiles and runs.
 - **Microbenchmarks** (criterion) — kernel hot path, integrator step,
   sensor packet generation.
