@@ -6,6 +6,7 @@ pub mod compare_telemetry;
 pub mod conform;
 pub mod dict;
 pub mod diff;
+mod digest;
 pub mod footprint_mc;
 pub mod mc;
 pub mod migrate;

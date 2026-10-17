@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use openbmp_mc::{CampaignCredibilityReport, NestedScalarAnalysisReport};
 use openbmp_runner::{self as runner, RunnerError};
 use openbmp_scenario::Scenario;
-use sha2::{Digest, Sha256};
 
+use super::digest::sha256_bytes as sha256_hex;
 use super::output::{ensure_parent_dir, open_for_write};
 use crate::commands::mc::{self, McCredibilityOptions};
 use crate::error::CliError;
@@ -245,14 +245,4 @@ fn write_pbox_csv(path: &Path, report: &NestedScalarAnalysisReport) -> Result<()
         })?;
     }
     Ok(())
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
 }

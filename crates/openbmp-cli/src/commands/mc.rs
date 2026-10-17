@@ -24,8 +24,8 @@ use openbmp_uq::{
     CredibilityLevel, CredibilityRecord, UncertaintyClass, UncertaintySource,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use super::digest::sha256_bytes;
 use super::output::ensure_parent_dir;
 use crate::CliError;
 use crate::commands::campaign;
@@ -3484,17 +3484,6 @@ fn append_acoustics_ascent_trace_overlay(base_scenario: &str, trace_toml: &str) 
 
 fn map_unit_interval(unit: f64, min: f64, max: f64) -> f64 {
     min + unit * (max - min)
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
 }
 
 fn read_design_matrix(path: &Path) -> Result<(Vec<String>, DesignMatrix), CliError> {
