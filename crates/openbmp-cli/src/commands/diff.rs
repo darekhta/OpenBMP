@@ -120,8 +120,8 @@ pub fn run(golden: &Path, actual: &Path) -> Result<DiffReport, CliError> {
                 let divergence = Divergence {
                     row,
                     column: name.clone(),
-                    golden: golden_value,
-                    actual: actual_value,
+                    golden: golden_value.to_owned(),
+                    actual: actual_value.to_owned(),
                 };
                 return Ok(DiffReport {
                     identical: false,
@@ -170,12 +170,12 @@ struct DecodedTable {
 }
 
 impl DecodedTable {
-    fn cell(&self, col: usize, row: usize) -> String {
+    fn cell(&self, col: usize, row: usize) -> &str {
         self.columns
             .get(col)
             .and_then(|column| column.get(row))
-            .cloned()
-            .unwrap_or_else(|| "<absent>".to_owned())
+            .map(String::as_str)
+            .unwrap_or("<absent>")
     }
 }
 
@@ -315,4 +315,30 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
     let stdout = String::from_utf8(output.stdout).ok()?;
     let trimmed = stdout.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use arrow::datatypes::DataType;
+
+    use super::DecodedTable;
+
+    #[test]
+    fn decoded_cell_borrows_existing_value_and_preserves_absent_fallback() {
+        let table = DecodedTable {
+            column_names: vec!["value".to_owned()],
+            column_types: vec![DataType::Utf8],
+            row_count: 1,
+            columns: vec![vec!["text:nonempty".to_owned()]],
+            metadata: BTreeMap::new(),
+        };
+
+        let value = table.cell(0, 0);
+        assert_eq!(value, "text:nonempty");
+        assert!(std::ptr::eq(value, table.columns[0][0].as_str()));
+        assert_eq!(table.cell(1, 0), "<absent>");
+        assert_eq!(table.cell(0, 1), "<absent>");
+    }
 }
