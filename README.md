@@ -57,9 +57,11 @@ HAL** — but no HAL, device driver, or bus protocol ships in this repository.
 
 ## Workspace layout
 
-OpenBMP is a layered Cargo workspace. Lower layers never depend on higher
-ones; the controller and physics layers are hardware-portable and carry no
-simulator dependency.
+OpenBMP is a layered Cargo workspace with a downward-dependency design rule.
+The [architecture document](docs/software-architecture.md#system-layers) records
+an unresolved mismatch between the current crate graph and its layer labels.
+The controller and physics layers are hardware-portable and carry no simulator
+dependency.
 
 The following diagram is a selected overview, not the complete crate inventory.
 The authoritative workspace member list is in [`Cargo.toml`](Cargo.toml).

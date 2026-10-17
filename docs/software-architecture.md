@@ -104,9 +104,19 @@ Development and release tooling:
 ```
 
 Lower layers are pure and deterministic. Upper layers handle files,
-reports, and user interaction. Cross-layer dependencies point downward only.
+reports, and user interaction. Cross-layer dependencies are required to point
+downward. The current manifests do not fully match the labels in this diagram:
+`openbmp-sim` (L1 here) declares a normal dependency on
+`openbmp-scenario-script` (L6 here). This mismatch remains unresolved; describing
+it does not change the layering requirement. Member `Cargo.toml` files record
+the current normal, optional, and development dependency edges.
 
 ## Workspace Layout
+
+This is a selected overview of crates and source modules, not an exhaustive
+filesystem listing. The current workspace member inventory is maintained in
+[`Cargo.toml`](../Cargo.toml); nested module names may represent files or
+directories beneath a crate's `src/` directory.
 
 ```text
 openbmp/
@@ -173,23 +183,22 @@ openbmp/
 │   ├── modeling-guide.md                # model-authoring process
 │   ├── real-rocket-integration.md       # downstream-user assembly cookbook
 │   └── glossary.md                      # vocabulary reference
-├── scenarios/
-│   ├── analytic-toy/                    # closed-form validation
-│   ├── public-benchmark/                # academic reference cases
-│   └── examples/                        # docs-test scenarios
+├── scenarios/                           # scenario groups
+│   └── analytic-toy/                    # closed-form validation examples
 ├── data/
 │   ├── motors/                          # synthetic motor curves
 │   ├── atmosphere/                      # public-coefficient tables
 │   └── gravity/                         # truncated harmonic coefficients
 ├── tests/
-│   ├── golden/                          # byte-stable telemetry
-│   └── validation/                      # analytic + benchmark validation
-└── benches/                             # criterion benchmarks
+│   └── fixtures/                        # shared fixtures and provenance
+├── scripts/                            # repository checks and generators
+└── web/ascent/                          # static browser demo
 ```
 
-Crates expose narrow APIs. Each has its own `tests/` directory for crate-local
-integration tests; cross-crate scenario tests live in the workspace `tests/`
-folder.
+Crates expose narrow APIs. Integration tests, including cross-crate scenario
+tests, live in member crates' `tests/` directories. The workspace-level
+`tests/fixtures/` directory holds shared fixtures and provenance. Criterion
+benchmarks currently live in `crates/openbmp-sim/benches/`.
 
 ## Core Types
 
@@ -2523,8 +2532,10 @@ Required documentation set:
 | `modeling-guide.md` | How to write a new model, document assumptions |
 | `glossary.md` | Vocabulary (frames, time systems, validation labels) |
 
-Each crate carries a `README.md` describing its public API, its dependencies,
-and its scope posture (which `safety-boundaries.md` rules it touches).
+Each crate is expected to carry a `README.md` describing its public API, its
+dependencies, and its scope posture (which `safety-boundaries.md` rules it
+touches). This documentation requirement is not yet satisfied by every
+workspace member.
 
 ### Foundational textbook references
 

@@ -94,7 +94,10 @@ linkable binary.
 
 Every physical model (environment, force, moment, mass, sensor, fault) is a
 replaceable Rust trait implementation with explicit, typed inputs and
-outputs. Cross-crate dependencies point downward only. Adding a new
+outputs. Cross-crate dependencies must follow the downward-layering rule.
+The current layer labels and Cargo graph have an unresolved mismatch, documented
+in [Software Architecture § System Layers](software-architecture.md#system-layers).
+Adding a new
 atmosphere model, a new motor type, or a new estimator must not require
 changes outside the relevant crate.
 
@@ -262,8 +265,9 @@ members in [`Cargo.toml`](../Cargo.toml) for the current inventory and
         openbmp-core                         math, units, frames, time, RNG
 ```
 
-Crates expose narrow APIs. The deterministic kernel sits below all model
-crates. The CLI is the command-line entry point for scenario runs and output
+Crates expose narrow APIs. `openbmp-sim` owns the kernel, while
+`openbmp-runner` composes scenarios, models, and telemetry. The CLI is the
+command-line entry point for scenario runs and output
 artifacts. The repository also includes the separate
 [Ascent browser demo](../web/ascent/README.md); its build and usage are
 documented alongside the demo.
