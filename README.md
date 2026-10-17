@@ -160,9 +160,10 @@ project documents by purpose and is the central navigation page.
 - [Verification](docs/verification.md) — validation labels and evidence limits.
 - [Roadmap](docs/roadmap.md) — capability status and deferred work.
 
-See the index for specialist references, data-source requirements, and the
-parity program. Keeping the complete catalog there avoids maintaining a second
-copy in this README.
+See the index for specialist references and data-source requirements, and the
+[parity program overview](docs/parity/00-overview.md) for that workstream.
+Keeping the complete catalog in the index avoids maintaining a second copy
+in this README.
 
 ## Toolchain
 
