@@ -2804,7 +2804,7 @@ contains = [
   "validate_multi_body_cfe_loop_telemetry_suffixes",
   "insert_multi_body_cfe_loop_channels",
   "last_cfe_loop_solves",
-  "multi_body.cfe_loop.<sanitized_loop_id>.lagrange_multiplier",
+  "let suffix = crate::telemetry_suffix(loop_id);",
   "multi_body.cfe_loop.<loop_id>.lagrange_multiplier",
   "articulated_gimbal_cfe_loop_emits_solve_telemetry",
   "articulated_gimbal_cfe_loop_rejects_telemetry_suffix_collision",
@@ -2953,7 +2953,7 @@ contains = [
   "welded_release_descendant_owner_aliases",
   "collect_welded_release_descendant_owner_aliases",
   "unsupported_welded_descendant_runtime_resource",
-  "transformed descendant direct torque",
+  "aliases `direct_torque` effectors mounted to welded descendants",
   "payload-owned pitch torque should rotate into departing-root roll torque after release",
   "welded_release_jettison_authority_routes_descendant_direct_torque_to_root_lane",
   "REQ-MULTIBODY-054",
@@ -3019,7 +3019,7 @@ paths = [
 contains = [
   "recovery_owner_map",
   "welded_release_jettison_authority_routes_descendant_scalar_recovery_to_root_lane",
-  "descendant scalar recovery",
+  "scalar recovery devices mounted to dry welded descendants",
   "REQ-MULTIBODY-057",
 ]
 requirements = ["REQ-MULTIBODY-057"]
@@ -3043,7 +3043,7 @@ contains = [
   "welded_release_aero_frame_transform",
   "aero_method_adapters_use_transformed_descendant_frame",
   "welded_release_jettison_authority_routes_descendant_aero_to_root_lane",
-  "transformed descendant aero",
+  "shifts aero-method moments by the welded descendant translation",
   "REQ-MULTIBODY-058",
 ]
 requirements = ["REQ-MULTIBODY-058"]
@@ -3067,7 +3067,7 @@ contains = [
   "welded_release_motor_frame_transform",
   "motor_thrust_adapter_uses_transformed_descendant_frame",
   "welded_release_jettison_authority_routes_descendant_motor_to_root_lane",
-  "transformed descendant solid motors",
+  "motor thrust into the root body frame before ECI rotation",
   "REQ-MULTIBODY-059",
 ]
 requirements = ["REQ-MULTIBODY-059"]
@@ -3087,7 +3087,8 @@ contains = [
   "propellant_tank_aliases_to_owner",
   "welded_release_jettison_authority_routes_descendant_tank_coupled_engine_to_root_lane",
   "tank-coupled mass properties",
-  "same-root propellant-binding",
+  "same-root tank-coupled descendant",
+  "engine/tank bindings, reusing welded engine/tank owner aliases and transforms",
   "REQ-MULTIBODY-060",
 ]
 requirements = ["REQ-MULTIBODY-060"]
@@ -3110,7 +3111,7 @@ contains = [
   "welded_release_landing_gear_leg_supported",
   "landing_gear_runtime_applies_owner_alias_transform",
   "welded_release_jettison_authority_routes_descendant_landing_gear_to_root_lane",
-  "transformed descendant landing gear",
+  "the departing root lane and transforms their hardpoint/strut-axis geometry",
   "REQ-MULTIBODY-061",
 ]
 requirements = ["REQ-MULTIBODY-061"]
@@ -3133,7 +3134,7 @@ contains = [
   "welded_release_recovery_frame_supported",
   "recovery_rack_applies_frame_alias_to_risers_and_sequence",
   "welded_release_jettison_authority_routes_descendant_recovery_risers_to_root_lane",
-  "transformed descendant recovery risers",
+  "the departing root lane and transforms riser anchor/canopy geometry",
   "REQ-MULTIBODY-062",
 ]
 requirements = ["REQ-MULTIBODY-062"]
@@ -8047,6 +8048,7 @@ id = "V-AERO-008"
 kind = "test"
 command = "cargo test -p openbmp-cli mc_aero_deck_draw --locked && cargo clippy -p openbmp-cli --all-targets --locked -- -D warnings"
 paths = [
+  "docs/parity/21-run-data-regression-and-visualization.md",
   "crates/openbmp-cli/src/cli.rs",
   "crates/openbmp-cli/src/commands/mc.rs",
   "crates/openbmp-cli/src/main.rs",
@@ -8145,6 +8147,7 @@ id = "V-AERO-010"
 kind = "test"
 command = "cargo test -p openbmp-aerodb correlated_deck_draw --locked && cargo test -p openbmp-runner load_aero_deck_applies_declared --locked && cargo check -p openbmp-aerodb -p openbmp-runner --locked && cargo clippy -p openbmp-aerodb --lib --locked -- -D warnings && cargo clippy -p openbmp-runner --lib --locked -- -D warnings"
 paths = [
+  "crates/openbmp-cli/tests/mc_cli.rs",
   "crates/openbmp-aerodb/src/lib.rs",
   "crates/openbmp-runner/src/aero.rs",
   "docs/parity/03-aerodynamics-database-and-cfd-coupling.md",
@@ -8168,7 +8171,7 @@ contains = [
   "correlated_deck_draw_reports_required_dimension_count",
   "mc_aero_deck_draw_campaign_preflights_six_sigma_dimension_capacity",
   "load_aero_deck_applies_declared_six_correlated_draw",
-  "dimension_id_base+3",
+  "Some(correlated_six_residuals(\n            deck.mach_grid(),\n            deck.alpha_grid_deg(),\n            deck.beta_grid_deg(),\n            settings,\n            3,\n            deck,",
   "REQ-AERO-010",
 ]
 requirements = ["REQ-AERO-010"]
@@ -12335,6 +12338,7 @@ id = "V-RUNDATA-008"
 kind = "test"
 command = "cargo test -p openbmp-rundata campaign --locked -j 1 && cargo test -p openbmp-cli campaign_plan --locked && cargo test -p openbmp-cli campaign_run --locked && cargo test -p openbmp-cli --test campaign_cli --locked && cargo test -p openbmp-cli --test cli_snapshots help_lists_all_subcommands --locked"
 paths = [
+  "crates/openbmp-cli/tests/cli_snapshots.rs",
   ".github/workflows/ci.yml",
   "crates/openbmp-rundata/Cargo.toml",
   "crates/openbmp-rundata/src/campaign.rs",
@@ -12384,7 +12388,7 @@ contains = [
   "CampaignTrendSpecDocument",
   "ExecutedCampaignRun",
   "RunDataCampaignJson",
-  "commands::campaign::plan",
+  "campaign::plan(",
   "ResolvedOverlayFile",
   "execute_campaign_runs",
   "validate_worker_count",
@@ -12803,7 +12807,7 @@ contains = [
   "figure_12",
   "figure_13",
   "figure_14",
-  "SP-8072 worked-example reproduction tolerance table",
+  "SP-8072 worked-example reference-value validation.",
 ]
 requirements = ["REQ-ACOUSTICS-033"]
 
@@ -13170,7 +13174,7 @@ contains = [
   "dsm_spectrum_tolerance_report",
   "metric,center_hz,evaluated_spl_db,reference_spl_db,residual_db,tolerance_db,within_tolerance",
   "sp8072_coarse_curve_worked_example_tolerance_table_is_deterministic",
-  "public SP-8072 worked-example reference table",
+  "SP-8072 worked-example reference-value validation.",
   "coarse SP-8072 curve tolerance-table substrate",
 ]
 requirements = ["REQ-ACOUSTICS-055"]
@@ -13795,7 +13799,8 @@ contains = [
   "acoustics.iop.source_engine_id",
   "iop_start_source",
   "source_engine_id: Option<String>",
-  "engine.limits.max_thrust_n / ramp_duration_s",
+  "source.source_strength_n / ramp_duration_s",
+  "source_strength_n: engine.limits.max_thrust_n",
   "acoustics_iop_source_engine_derives_start_transient_under_v3",
   "point_mass_acoustics_iop_source_engine_derives_start_transient",
   "max_thrust_n = 600000.0",
@@ -13837,7 +13842,7 @@ contains = [
   "point_mass_acoustics_iop_source_engine_uses_thermochemical_performance",
   "expected_mdot_cstar_n",
   "fa3ff43bc91d04317d44a141cf5ff28680e4e0b35d89ff3c91d92ee60f1a842b",
-  "calibrated/public d(mdot*c*)/dt reconstruction",
+  "calibrated/public `d(mdot*c*)/dt` reconstruction",
 ]
 requirements = ["REQ-ACOUSTICS-030"]
 
@@ -13875,7 +13880,7 @@ contains = [
   "point_mass_acoustics_iop_source_engine_reports_scripted_ignite_time",
   "rigid_body_acoustics_iop_source_engine_reports_runtime_history",
   "main_ignite",
-  "validated command-response pressure-history reconstruction",
+  "validation of\n  runtime command-response pressure history",
 ]
 requirements = ["REQ-ACOUSTICS-031"]
 
@@ -13919,7 +13924,7 @@ contains = [
   "240_000.0",
   "2_400_000.0",
   "4000.0",
-  "calibrated/public d(mdot*c*)/dt reconstruction",
+  "calibrated/public `d(mdot*c*)/dt` reconstruction",
 ]
 requirements = ["REQ-ACOUSTICS-032"]
 
@@ -14161,6 +14166,7 @@ paths = [
   "docs/parity/progress.md",
   "requirements.toml",
 ]
+# Scope non-claims remain in the requirement statement; contains lists external evidence only.
 contains = [
   "AcousticsResponseConfig",
   "AcousticsResponseSourceConfig",
@@ -14177,7 +14183,6 @@ contains = [
   "acoustics_response_block_is_v3_only_and_validates_under_v3",
   "acoustics_response_deck_file_is_resolved_and_pinned",
   "point_mass_acoustics_response_report_carries_modal_force_handoff",
-  "P95/50 environment statistics",
 ]
 requirements = ["REQ-ACOUSTICS-038"]
 
@@ -14215,7 +14220,7 @@ contains = [
   "sigma_spl_db",
   "p95_50_spl_db",
   "tolerance_factor",
-  "MC campaign sizing",
+  "campaign-size selector or qualification environment generator.",
 ]
 requirements = ["REQ-ACOUSTICS-039"]
 
@@ -14284,7 +14289,7 @@ contains = [
   "fairing P95/50 emitted",
   "fairing P95/50 CSV",
   "point_mass_acoustics_fairing_internal_report_carries_provenance",
-  "single-sample fairing reports",
+  "assert_eq!(fairing.p95_50_oaspl_db, None);",
   "response P95/50 artifacts",
 ]
 requirements = ["REQ-ACOUSTICS-041"]
@@ -14318,7 +14323,7 @@ contains = [
   "response_p95_50_artifacts",
   "response_p95_50_psd_csv",
   "point_mass_acoustics_response_p95_50_from_fairing_trace",
-  "single-sample response",
+  "assert_eq!(response.p95_50_tolerance_factor, None);",
   "p95_50_wilks_sizing_csv",
 ]
 requirements = ["REQ-ACOUSTICS-042"]
@@ -14423,7 +14428,7 @@ contains = [
   "acoustics_response_loads_handoff_csv",
   "point_mass_acoustics_response_report_carries_modal_force_handoff",
   "run_data_indexes_acoustics_p95_50_artifacts",
-  "full `02` structural consumer wiring",
+  "broader `02` structural-stack integration beyond the first bending-mode",
 ]
 requirements = ["REQ-ACOUSTICS-045"]
 
@@ -14447,6 +14452,7 @@ paths = [
   "docs/parity/progress.md",
   "requirements.toml",
 ]
+# Scope non-claims remain in the requirement statement; contains lists external evidence only.
 contains = [
   "AcousticsAscentTrace",
   "McAcousticsAscentTraceDesign",
@@ -14457,7 +14463,6 @@ contains = [
   "dynamic_pressure_pa",
   "mc_acoustics_ascent_trace_materializes_valid_toml_rows",
   "mc_acoustics_ascent_trace_rejects_single_sample",
-  "full MC campaign execution/orchestration",
 ]
 requirements = ["REQ-ACOUSTICS-046"]
 
@@ -14518,7 +14523,7 @@ contains = [
   "run_data_indexes_structural_acoustics_artifact",
   "modal_acceleration_psd_m2_s4_per_hz",
   "stage_structural_acoustics_scenario",
-  "structural-acoustics response CSV artifacts",
+  "indexes that structural acoustic response CSV with a SHA-256-pinned",
 ]
 requirements = ["REQ-ACOUSTICS-048"]
 
@@ -14548,7 +14553,7 @@ contains = [
   "line_load_recovery_csv",
   "band_equivalent_reaction_moment_mean_square_n2_m2",
   "run_data_indexes_structural_acoustics_artifact",
-  "FEM/OTM/LTM station line-load recovery",
+  "multi-mode/FEM-derived LTM/OTM recovery",
 ]
 requirements = ["REQ-ACOUSTICS-051"]
 
@@ -14604,6 +14609,7 @@ paths = [
   "docs/parity/progress.md",
   "requirements.toml",
 ]
+# Scope non-claims remain in the requirement statement; contains lists external evidence only.
 contains = [
   "checkpoint_json",
   "max_new_samples",
@@ -14613,7 +14619,6 @@ contains = [
   "run_checkpointed_acoustics_ascent_campaign",
   "evaluate_acoustics_ascent_campaign_checkpoint_sample",
   "mc_acoustics_ascent_campaign_checkpoint_resumes_to_final_outputs",
-  "generalized checkpointed/parallel MC campaign orchestration beyond ascent acoustics",
 ]
 requirements = ["REQ-ACOUSTICS-050"]
 
@@ -14636,13 +14641,13 @@ paths = [
   "docs/parity/progress.md",
   "requirements.toml",
 ]
+# Scope non-claims remain in the requirement statement; contains lists external evidence only.
 contains = [
   "fairing_internal_p95_50_oaspl_db",
   "response_p95_50_total_mean_square_acceleration_m2_s4",
   "response_p95_50_total_mean_square_force_n2",
   "mc_acoustics_ascent_campaign_reports_downstream_p95_50",
-  "downstream fairing-internal and response P95/50",
-  "separate fairing/response campaign design variables",
+  "downstream fairing-internal and\nresponse P95/50",
 ]
 requirements = ["REQ-ACOUSTICS-052"]
 
@@ -14666,6 +14671,7 @@ paths = [
   "docs/parity/progress.md",
   "requirements.toml",
 ]
+# Scope non-claims remain in the requirement statement; contains lists external evidence only.
 contains = [
   "output_artifact_dir",
   "write_acoustics_ascent_campaign_artifacts",
@@ -14680,7 +14686,6 @@ contains = [
   "response/p95_50_sample_trace.csv",
   "acoustics_response_p95_50_sample_trace_csv",
   "mc_acoustics_ascent_campaign_reports_downstream_p95_50",
-  "full run-data campaign manifest",
 ]
 requirements = ["REQ-ACOUSTICS-053"]
 
@@ -14716,7 +14721,7 @@ contains = [
   "response-focused acoustics-response campaign wrapper",
   "response_samples",
   "[[acoustics.response.samples]]",
-  "generated fairing design-variable samplers",
+  "generated fairing design-variable CLI samplers",
 ]
 requirements = ["REQ-ACOUSTICS-057"]
 
@@ -14752,7 +14757,7 @@ contains = [
   "point_mass_acoustics_response_p95_50_uses_sample_inputs",
   "acoustics_response_block_is_v3_only_and_validates_under_v3",
   "response P95/50 sample input count",
-  "generated fairing/response design-variable samplers",
+  "Generated fairing/response design-variable samplers",
 ]
 requirements = ["REQ-ACOUSTICS-058"]
 
@@ -14786,7 +14791,7 @@ contains = [
   "mode_shape_factor",
   "mc_acoustics_response_samples_materializes_valid_toml_rows",
   "mc_acoustics_response_samples_rejects_single_sample",
-  "response campaign overlay sample rows",
+  "assert!(generated.contains(\"[[acoustics.response.samples]]\"));",
 ]
 requirements = ["REQ-ACOUSTICS-059"]
 
@@ -14801,6 +14806,7 @@ id = "V-RECOVERY-001"
 kind = "test"
 command = "cargo test -p openbmp-vehicle recovery:: --locked && cargo test -p openbmp-vehicle recovery_rack --locked && cargo test -p openbmp-scenario recovery_inflation --locked && cargo test -p openbmp-scenario drogue_main_stage --locked && cargo test -p openbmp-runner --lib recovery_rack --locked && cargo test -p openbmp-runner --lib recovery_telemetry_channels_are_recorded --locked && cargo test -p openbmp-runner --lib pflanz_recovery_integrated_descent_peak --locked && cargo test -p openbmp-runner --lib rigid_recovery_apparent_mass_telemetry_channels_are_allocated --locked"
 paths = [
+  "crates/openbmp-vehicle/src/adapters.rs",
   "crates/openbmp-models/src/models.rs",
   "crates/openbmp-vehicle/src/recovery/inflation.rs",
   "crates/openbmp-vehicle/src/recovery/parachute_drag.rs",
@@ -14822,6 +14828,7 @@ paths = [
   "docs/parity/progress.md",
   "requirements.toml",
 ]
+# Scope non-claims remain in the requirement statement; contains lists external evidence only.
 contains = [
   "CanopyGrowthShape",
   "InflationProfile",
@@ -14896,9 +14903,8 @@ contains = [
   "resolves_recovery_inflation_pflanz_file_with_pin",
   "recovery_inflation_rejects_pflanz_shape_mismatch",
   "recovery_inflation_is_v3_only",
-  "production/digitized real X1 table",
-  "real-table A-sweep validation",
-  "tensor apparent mass",
+  "production or digitized real `X1` table ingestion/calibration",
+  "tensor/higher-order apparent-mass",
 ]
 requirements = ["REQ-RECOVERY-001"]
 
@@ -15052,8 +15058,8 @@ contains = [
   "recovery_riser_moment_adapter_shifts_origin_moment_to_live_cg",
   "rigid_moment_stack_consumes_recovery_riser_snapshot",
   "force-integrated endpoint advance",
-  "shared translated riser_canopy state",
-  "full two-body riser/canopy dynamics",
+  "shared translated\n  `riser_canopy` state",
+  "full two-body coupling through the multibody tree.",
 ]
 requirements = ["REQ-RECOVERY-003"]
 
@@ -15744,7 +15750,7 @@ paths = [
 ]
 contains = [
   "DatcomComponentBuildup",
-  "ComponentBuildup::datcom",
+  "pub const fn datcom(self) -> DatcomComponentBuildup",
   "AeroDynamicDerivatives",
   "AeroDynamicDerivativeTableSet",
   "with_dynamic_derivative_tables",

@@ -1,4 +1,4 @@
-"""Regression cases for malformed traceability registers."""
+"""Regression cases for traceability registers and evidence validation."""
 
 from __future__ import annotations
 
@@ -85,6 +85,64 @@ class MalformedRegisterTests(unittest.TestCase):
                     self.assertEqual(result, 1)
                     self.assertIn(f"field {field} must be a list of strings", errors)
                     self.assertIn("does not link back", errors)
+
+
+class EvidenceFileTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+
+    def write_evidence(self, path, text):
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+
+    def evidence_errors(self, paths):
+        errors = []
+        checker.validate_evidence_files(
+            self.root,
+            {"paths": paths, "contains": ["external anchor"]},
+            "V-TEST-001",
+            errors,
+        )
+        return errors
+
+    def test_register_cannot_supply_its_own_anchor(self):
+        self.write_evidence("requirements.toml", 'contains = ["external anchor"]')
+        self.write_evidence("evidence.txt", "unrelated evidence")
+        for path in ("requirements.toml", "./requirements.toml"):
+            with self.subTest(path=path):
+                self.assertEqual(self.evidence_errors([path, "evidence.txt"]), [
+                    "verification V-TEST-001 evidence does not contain required text 'external anchor'"
+                ])
+
+    def test_external_anchor_passes_with_register_listed(self):
+        self.write_evidence("requirements.toml", 'contains = ["external anchor"]')
+        self.write_evidence("evidence.txt", "external anchor")
+        self.assertEqual(self.evidence_errors(["requirements.toml", "evidence.txt"]), [])
+
+    def test_missing_register_path_still_reports_error(self):
+        self.write_evidence("evidence.txt", "external anchor")
+        self.assertEqual(self.evidence_errors(["requirements.toml", "evidence.txt"]), [
+            "verification V-TEST-001 path requirements.toml does not exist"
+        ])
+
+    def test_nested_register_name_remains_evidence(self):
+        self.write_evidence("requirements.toml", "unrelated register")
+        self.write_evidence("docs/requirements.toml", "external anchor")
+        self.assertEqual(self.evidence_errors(["docs/requirements.toml"]), [])
+
+    def test_register_symlink_cannot_supply_its_own_anchor(self):
+        self.write_evidence("requirements.toml", 'contains = ["external anchor"]')
+        alias = self.root / "register-alias.toml"
+        try:
+            alias.symlink_to(self.root / "requirements.toml")
+        except (NotImplementedError, OSError) as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        self.assertEqual(self.evidence_errors(["register-alias.toml"]), [
+            "verification V-TEST-001 evidence does not contain required text 'external anchor'"
+        ])
 
 
 if __name__ == "__main__":

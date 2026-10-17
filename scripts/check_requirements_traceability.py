@@ -171,6 +171,7 @@ def validate_evidence_files(
         errors.append(f"verification {verification_id} must list at least one evidence path")
         return
 
+    register_path = (root / "requirements.toml").resolve()
     contents: list[str] = []
     for rel_path in paths:
         if Path(rel_path).is_absolute() or ".." in Path(rel_path).parts:
@@ -180,7 +181,7 @@ def validate_evidence_files(
         if not path.exists():
             errors.append(f"verification {verification_id} path {rel_path} does not exist")
             continue
-        if path.is_file():
+        if path.is_file() and path.resolve() != register_path:
             contents.append(path.read_text(encoding="utf-8", errors="replace"))
 
     haystack = "\n".join(contents)
