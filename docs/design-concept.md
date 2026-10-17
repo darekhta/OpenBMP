@@ -95,8 +95,8 @@ linkable binary.
 Every physical model (environment, force, moment, mass, sensor, fault) is a
 replaceable Rust trait implementation with explicit, typed inputs and
 outputs. Cross-crate dependencies must follow the downward-layering rule.
-The current layer labels and Cargo graph have an unresolved mismatch, documented
-in [Software Architecture § System Layers](software-architecture.md#system-layers).
+[Software Architecture § System Layers](software-architecture.md#system-layers)
+explains the shared-data-contract boundary between the kernel and scenario parsing.
 Adding a new
 atmosphere model, a new motor type, or a new estimator must not require
 changes outside the relevant crate.

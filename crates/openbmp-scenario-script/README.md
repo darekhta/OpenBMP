@@ -1,6 +1,6 @@
 # openbmp-scenario-script
 
-L3 simulator-only scenario-script actions.
+L1 simulator-only action data contract.
 
 **Status:** Implemented. Ships `ScenarioScriptAction` carrying the
 simulator-only physics-override variants (engine command, effector
@@ -22,9 +22,10 @@ vocabulary in `openbmp-mission`.
 
 ## Inputs and Outputs
 
-Consumed by `openbmp-sim`'s scenario-script binding evaluator;
-produced by `openbmp-scenario`'s `[mission]` parser when a binding's
-action targets a sim-only physics override.
+`openbmp-scenario` parses configuration values. `openbmp-runner` converts those
+values into typed `EventBinding<ScenarioScriptAction>` values consumed by
+`openbmp-sim`. This crate defines the action enum only; it contains no parser
+or binding evaluator.
 
 ## Units and Frames
 

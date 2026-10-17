@@ -105,11 +105,14 @@ Development and release tooling:
 
 Lower layers are pure and deterministic. Upper layers handle files,
 reports, and user interaction. Cross-layer dependencies are required to point
-downward. The current manifests do not fully match the labels in this diagram:
-`openbmp-sim` (L1 here) declares a normal dependency on
-`openbmp-scenario-script` (L6 here). This mismatch remains unresolved; describing
-it does not change the layering requirement. Member `Cargo.toml` files record
-the current normal, optional, and development dependency edges.
+downward. The `openbmp-sim` → `openbmp-scenario-script` edge carries a shared
+L1 data contract: `ScenarioScriptAction` is the latter crate's sole public
+type, and its only dependency is `openbmp-core`. Configuration parsing belongs
+to `openbmp-scenario`; `openbmp-runner` constructs the typed bindings consumed
+by the kernel. The former L6 label conflated this enum-only contract with the
+parser. `openbmp-mission` remains independent of the simulator-only action
+crate. This classification correction changes no code, API, or dependency edge;
+member `Cargo.toml` files remain the source for current dependencies.
 
 ## Workspace Layout
 
@@ -162,7 +165,7 @@ openbmp/
 │   │   └── replay                       #     log-replay tooling
 │   ├── openbmp-telemetry/               # L5: channels, ring, exporters
 │   ├── openbmp-scenario/                # L6: parser, validator, registry
-│   ├── openbmp-scenario-script/         # L6: simulator-only scripted overrides
+│   ├── openbmp-scenario-script/         # L1: simulator-only action data contract
 │   ├── openbmp-testkit/                 # L6: helpers (proptest strategies,
 │   │                                    #     analytic-toy fixtures, fuzzers)
 │   ├── openbmp-mc/                      # L7: deterministic MC sampling/reducers

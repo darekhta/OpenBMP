@@ -58,8 +58,8 @@ HAL** — but no HAL, device driver, or bus protocol ships in this repository.
 ## Workspace layout
 
 OpenBMP is a layered Cargo workspace with a downward-dependency design rule.
-The [architecture document](docs/software-architecture.md#system-layers) records
-an unresolved mismatch between the current crate graph and its layer labels.
+The [architecture document](docs/software-architecture.md#system-layers) explains
+the distinction between shared data contracts and scenario parsing.
 The controller and physics layers are hardware-portable and carry no simulator
 dependency.
 
@@ -82,7 +82,7 @@ crates/
   openbmp-fc/           L4  virtual flight controller: estimators, autopilots, FDIR
   openbmp-telemetry/    L5  typed channels, ring buffer, CSV/JSON/Parquet export
   openbmp-scenario/     L6  TOML scenario parser, model registry, validator
-  openbmp-scenario-script/ L6  simulator-only scripted physics overrides
+  openbmp-scenario-script/ L1  simulator-only action data contract
   openbmp-testkit/      L6  proptest strategies, fixtures, tolerance tables
   openbmp-runner/       L7  scenario → kernel → telemetry orchestration
   openbmp-cli/          L7  the `openbmp` binary: run, diff, check, provenance
