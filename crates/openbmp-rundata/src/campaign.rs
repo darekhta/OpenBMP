@@ -2,7 +2,7 @@
 //!
 //! The campaign layer parses a declarative scenario/seed/overlay matrix and
 //! expands it into stable run specifications. It is the file/planning
-//! substrate for a future CLI executor; it does not launch simulations itself.
+//! substrate for the CLI executor; it does not launch simulations itself.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

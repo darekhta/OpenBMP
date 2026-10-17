@@ -182,30 +182,10 @@ the production solver-maintenance burden.
 
 ## 7. Recommended first PRs (cheap, isolated, high-value)
 
-Start here — each is small, unblocks others, and proves the workflow end-to-end:
-
-1. **`WP-05.1` propulsion pressure-thrust + altitude** — consume the stored
-   `exit_area`, add `F = ṁ·Vₑ + (pₑ−pₐ)·Aₑ` with `pₐ(h)` from the atmosphere
-   crate, split sea-level/vacuum Isp. Fixes a known 5–15% vacuum-thrust error;
-   one crate; immediate `validated-toy` win.
-2. **`WP-12.0`/`WP-11.0` deterministic MC crate** — replace the ad-hoc N=16
-   orbit Monte Carlo with a reusable `openbmp-mc` on `DeterministicRng` +
-   Welford statistics + Clopper-Pearson intervals. Substrate for everything in
-   Phase A.
-3. **`WP-08.1` full tesseral gravity** — Pines kernel + normalized Gottlieb
-   recursion, runtime-selectable degree/order, EGM2008 coefficients ingested
-   with provenance. Improves every trajectory; strong `research`-label benchmark
-   path (cross-check the two recursions against each other).
-4. **`WP-01.1` spatial-vector rigid tree** — `SpatialInertia`, Plücker
-   transforms, `Joint` enum, ABA forward dynamics; regress byte-for-byte against
-   the current single-body kernel for the no-joint case. The multibody substrate
-   the whole flex/coupled-control program needs.
-5. **`WP-07.1` multiple shooting + STM Jacobian** — build on the now-wired
-   `WP-07.0` differential-corrector CLI paths and move the trajectory optimizer
-   beyond single shooting without weakening the terminal-condition lock.
-
-Each of these is isolated, respects every invariant, and demonstrates the
-gate-green PR loop before the heavier physics tracks begin.
+Select an unfinished work package using the [per-dimension implementation evidence](progress.md#2-per-dimension-detail)
+and the [dependency DAG](00-overview.md#5-dependency-dag--phased-roadmap).
+Follow its declared `depends_on` order as described in [§5](#5-work-package-backlog-schema);
+the [§2 gate set](#2-the-gate-set-must-pass-before-merge) remains the merge authority.
 
 ---
 

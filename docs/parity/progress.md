@@ -1,9 +1,8 @@
 # Parity Program — Implementation Progress Ledger
 
 **Status:** `experimental` (tracking document; ships no code).
-**Snapshot:** 2026-06-28, current branch state. Verified by code inspection
-against each design doc's §9 acceptance criteria and `requirements.toml`
-traceability (356 requirement ids).
+**Snapshot:** 2026-06-28. Verified by code inspection against each design
+doc's §9 acceptance criteria and [`requirements.toml`](../../requirements.toml).
 
 **Marking criteria (the don't-overstate rule applies):**
 
@@ -21,9 +20,8 @@ same PR as any WP merge.
 
 ## 1. Roll-up
 
-Across the series: **207 work packages** (108 in `01`–`12`, 99 in `14`–`25`).
-As of this snapshot: **68 implemented · 38 partial · 2 in progress ·
-99 not started.**
+See the [per-dimension detail](#2-per-dimension-detail) for work-package
+status and evidence.
 
 **Working-tree additions (2026-06-28, uncommitted, tests green).** Two WPs moved
 from `not started` to `in progress` this session, both additive/opt-in (no
@@ -2825,11 +2823,11 @@ verifier, or capture logic.
   `LimitState` + `limit_state_no_aimpoint_compile_fail.rs` UI test landed
   alongside the rare-event machinery.
 - **Determinism toolchain hardened:** FP-environment guard (x86_64 +
-  aarch64 code paths), FMA contraction ban, provenance check in CI; the
-  aarch64 CI determinism lane is the one outstanding piece (WP-12.3-b).
-- **Traceability:** 360 requirement ids and 362 verification items in
-  `requirements.toml`, including the REQ-PROP, REQ-GNC, REQ-MC, REQ-CONTACT,
-  REQ-PLUME, and REQ-TRAJOPT families.
+  aarch64 code paths), FMA contraction ban, provenance check in CI. The
+  WP-12.3-b entry in the [per-dimension detail](#2-per-dimension-detail)
+  records the aarch64 CI lane status.
+- **Traceability:** [`requirements.toml`](../../requirements.toml) is the
+  maintained requirement and verification register.
 - **Byte-stable-by-default pattern observed** in everything that landed:
   pressure-thrust, transient grain, transports, realtime, contact, and
   fault schedules are all scenario-gated opt-ins.
@@ -2838,12 +2836,6 @@ verifier, or capture logic.
 
 ## 4. Recommended next moves (from this snapshot)
 
-1. **Close the open partials before opening new fronts:** WP-14.6 CFE
-   scenario/model/public-benchmark closure, or continue doc 05 T4 public
-   calibration/benchmark closure for WP-05.4-b/WP-05.4-c.
-2. **Advance the Phase-A gates:** finish WP-01.1 (spatial-vector tree) and
-   finish WP-08.1 (high-degree Pines/Gottlieb tesseral gravity) — they block
-   most of Phase B/C (02, 06, 07 closed-loop quality).
-3. Start WP-07.2 (Hermite-Simpson/SQP) or use the implemented WP-07.0/WP-07.1
-   corrector stack as the prerequisite for WP-19.2.
-4. WP-15.1 (plume state) is newly unblocked by 05's chamber/nozzle state.
+Select an unfinished work package from the [per-dimension detail](#2-per-dimension-detail),
+respecting the [dependency DAG](00-overview.md#5-dependency-dag--phased-roadmap)
+and the playbook's [gate set](13-agent-execution-playbook.md#2-the-gate-set-must-pass-before-merge).
