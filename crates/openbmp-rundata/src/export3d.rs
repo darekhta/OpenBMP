@@ -458,10 +458,10 @@ pub fn generate_gltf_json(scene: &SceneExport) -> Result<Vec<u8>, Export3dError>
             channels: animation_data.channels,
         }],
         extras: GltfExtras {
-            openbmp_schema_version: EXPORT3D_SCHEMA_VERSION.to_owned(),
-            epoch: scene.epoch.clone(),
-            tracks: scene.tracks.clone(),
-            events: scene.events.clone(),
+            openbmp_schema_version: EXPORT3D_SCHEMA_VERSION,
+            epoch: &scene.epoch,
+            tracks: &scene.tracks,
+            events: &scene.events,
         },
     };
     Ok(serde_json::to_vec(&document)?)
@@ -613,7 +613,7 @@ struct CzmlSitePosition {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct GltfDocument {
+struct GltfDocument<'a> {
     asset: GltfAsset,
     scene: u64,
     scenes: Vec<GltfScene>,
@@ -623,7 +623,7 @@ struct GltfDocument {
     buffer_views: Vec<GltfBufferView>,
     accessors: Vec<GltfAccessor>,
     animations: Vec<GltfAnimation>,
-    extras: GltfExtras,
+    extras: GltfExtras<'a>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -696,11 +696,11 @@ struct GltfAnimationTarget {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct GltfExtras {
-    openbmp_schema_version: String,
-    epoch: String,
-    tracks: Vec<BodyTrack>,
-    events: Vec<EventInterval>,
+struct GltfExtras<'a> {
+    openbmp_schema_version: &'static str,
+    epoch: &'a str,
+    tracks: &'a [BodyTrack],
+    events: &'a [EventInterval],
 }
 
 struct GltfAnimationData {
