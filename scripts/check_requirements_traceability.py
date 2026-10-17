@@ -43,6 +43,9 @@ def main() -> int:
     verifications_by_id = index_by_id(verifications, "verification", VERIFICATION_ID, errors)
 
     for req in requirements:
+        if not isinstance(req, dict):
+            # index_by_id already reported this malformed entry.
+            continue
         req_id = str(req.get("id", "<missing>"))
         require_non_empty_string(req, "title", f"requirement {req_id}", errors)
         require_non_empty_string(req, "statement", f"requirement {req_id}", errors)
@@ -54,16 +57,20 @@ def main() -> int:
             if verification is None:
                 errors.append(f"requirement {req_id} references unknown verification {verification_id}")
                 continue
-            if req_id not in verification.get("requirements", []):
+            backlinks = verification.get("requirements")
+            if not isinstance(backlinks, list) or req_id not in backlinks:
                 errors.append(
                     f"requirement {req_id} references {verification_id}, but "
                     f"{verification_id} does not link back"
                 )
 
     for verification in verifications:
+        if not isinstance(verification, dict):
+            # index_by_id already reported this malformed entry.
+            continue
         verification_id = str(verification.get("id", "<missing>"))
         kind = verification.get("kind")
-        if kind not in ALLOWED_KINDS:
+        if not isinstance(kind, str) or kind not in ALLOWED_KINDS:
             errors.append(
                 f"verification {verification_id} kind must be one of {sorted(ALLOWED_KINDS)}"
             )
@@ -78,7 +85,8 @@ def main() -> int:
             if req is None:
                 errors.append(f"verification {verification_id} references unknown requirement {req_id}")
                 continue
-            if verification_id not in req.get("verification", []):
+            backlinks = req.get("verification")
+            if not isinstance(backlinks, list) or verification_id not in backlinks:
                 errors.append(
                     f"verification {verification_id} references {req_id}, but "
                     f"{req_id} does not link back"
