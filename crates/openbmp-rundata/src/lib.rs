@@ -426,7 +426,11 @@ pub(crate) fn require_non_empty(
     if trimmed.is_empty() {
         return Err(RundataError::EmptyField { field });
     }
-    Ok(trimmed.to_owned())
+    if trimmed.len() == value.len() {
+        Ok(value)
+    } else {
+        Ok(trimmed.to_owned())
+    }
 }
 
 fn require_sha256(field: &'static str, value: String) -> Result<String, RundataError> {
@@ -520,6 +524,35 @@ mod tests {
         assert_eq!(base64_encode(&[0]), "AA==");
         assert_eq!(base64_encode(&[0, 0]), "AAA=");
         assert_eq!(base64_encode(&[0, 0, 0]), "AAAA");
+    }
+
+    #[test]
+    fn non_empty_string_reuses_untrimmed_storage() {
+        let value = String::from("alpha β");
+        let storage = value.as_ptr();
+        let result = require_non_empty("name", value).unwrap();
+        assert_eq!(result, "alpha β");
+        assert_eq!(result.as_ptr(), storage);
+    }
+
+    #[test]
+    fn non_empty_string_trims_boundary_whitespace_only() {
+        for value in [" \talpha β\r\n", "\u{2003}alpha β\u{00a0}"] {
+            assert_eq!(
+                require_non_empty("name", value.to_owned()).unwrap(),
+                "alpha β"
+            );
+        }
+    }
+
+    #[test]
+    fn non_empty_string_rejects_empty_and_whitespace_values() {
+        for value in ["", " \t\r\n", "\u{2003}\u{00a0}"] {
+            assert_eq!(
+                require_non_empty("name", value.to_owned()),
+                Err(RundataError::EmptyField { field: "name" })
+            );
+        }
     }
 
     fn fixture_table() -> TelemetryTable {
