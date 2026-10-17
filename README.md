@@ -61,6 +61,9 @@ OpenBMP is a layered Cargo workspace. Lower layers never depend on higher
 ones; the controller and physics layers are hardware-portable and carry no
 simulator dependency.
 
+The following diagram is a selected overview, not the complete crate inventory.
+The authoritative workspace member list is in [`Cargo.toml`](Cargo.toml).
+
 ```text
 crates/
   openbmp-core/         L0  math, units, frames, time, deterministic RNG
@@ -160,7 +163,6 @@ data provenance rules, and validation labels are documented in
 | [Mission Graph Architecture](docs/mission-graph-architecture.md) | Hierarchical mission state machine, orthogonal regions, HAL contract. |
 | [Mission States Vocabulary](docs/mission-states-vocabulary.md) | Canonical state names with citations; rejected operational vocabulary. |
 | [Hypersonic & Re-entry](docs/hypersonic-extensions.md) | High-altitude atmosphere, real-gas, hypersonic aero, aerothermal, ablation. |
-| [Scenario Format](docs/scenario-format.md) | Scenario schema, including `[aero]` deck and buildup forms. |
 | [Real-Rocket Integration](docs/real-rocket-integration.md) | How a downstream adopter assembles a vehicle on top of OpenBMP. |
 | [Roadmap](docs/roadmap.md) | Capabilities that are shipped, research-grade, or deferred. |
 | [Glossary](docs/glossary.md) | Shared vocabulary for frames, time, determinism, validation, safety. |
@@ -172,8 +174,9 @@ data provenance rules, and validation labels are documented in
 
 ## Toolchain
 
-- **Rust 1.95** stable, **Edition 2024**, MSRV `1.93` (pinned in
-  [`rust-toolchain.toml`](rust-toolchain.toml)).
+- **Rust 1.95** stable, **Edition 2024**, MSRV `1.95` (declared in
+  [`Cargo.toml`](Cargo.toml)); the development toolchain is pinned in
+  [`rust-toolchain.toml`](rust-toolchain.toml).
 - All external crates are pinned in `[workspace.dependencies]` in the root
   [`Cargo.toml`](Cargo.toml).
 
