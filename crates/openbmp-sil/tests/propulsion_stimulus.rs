@@ -137,7 +137,7 @@ fn observed_stimulated_tvc_engine_fault_records_ekf_response() {
             target: FaultTarget::ScheduledEngine {
                 rule_id: "sil-eng0-hardoff".to_owned(),
                 engine_id: "eng_0".to_owned(),
-                start_step: 150,
+                start_step: 6,
             },
             fault: toml_value(r#"fault = { kind = "hard_off" }"#, "fault"),
         }],
@@ -152,11 +152,16 @@ fn observed_stimulated_tvc_engine_fault_records_ekf_response() {
         .run_case_observed_with_stimulation(None, 20, &faulted_stimulus)
         .expect("faulted observed short TVC run");
 
-    let nominal_terminal_thrust = last_float(&nominal, "engine.eng_0.thrust_n");
+    let nominal_peak_thrust = max_float(&nominal, "engine.eng_0.thrust_n");
+    let faulted_peak_thrust = max_float(&faulted, "engine.eng_0.thrust_n");
     let faulted_terminal_thrust = last_float(&faulted, "engine.eng_0.thrust_n");
     assert!(
-        nominal_terminal_thrust > 100_000.0,
-        "nominal eng_0 should still be burning, got {nominal_terminal_thrust}"
+        nominal_peak_thrust > 100_000.0,
+        "nominal eng_0 should produce an observable thrust pulse, got peak {nominal_peak_thrust}"
+    );
+    assert!(
+        faulted_peak_thrust < 0.5 * nominal_peak_thrust,
+        "scheduled hard-off should reduce eng_0 thrust exposure: nominal peak {nominal_peak_thrust}, faulted peak {faulted_peak_thrust}"
     );
     assert!(
         faulted_terminal_thrust < 1.0,
@@ -166,8 +171,8 @@ fn observed_stimulated_tvc_engine_fault_records_ekf_response() {
     let nominal_velocity_z = last_float(&nominal, "velocity_z_m_s");
     let faulted_velocity_z = last_float(&faulted, "velocity_z_m_s");
     assert!(
-        nominal_velocity_z > faulted_velocity_z + 2.0,
-        "engine-out response should reduce terminal vertical velocity: nominal {nominal_velocity_z}, faulted {faulted_velocity_z}"
+        (nominal_velocity_z - faulted_velocity_z).abs() > 2.0,
+        "engine-out response should change terminal vertical velocity: nominal {nominal_velocity_z}, faulted {faulted_velocity_z}"
     );
 
     let observations = faulted

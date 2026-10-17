@@ -125,8 +125,10 @@ stop condition by default, landing guidance primitives exist, footprint Monte
 Carlo exists, the `openbmp-contact` substrate exists, and schema-v3 scenarios
 can now opt into a half-space `contact` force with scalar diagnostics,
 classification, and run-level energy audit; massless oleo/crush landing gear
-with per-pad `ContactPair` footpads is scenario-reachable; survival-class
-touchdown outcomes remain open.**
+with per-pad `ContactPair` footpads is scenario-reachable; a vehicle-side
+prismatic landing-gear DOF coordinate contract is scenario-reachable as opt-in
+telemetry and can bind scalar stop/backlash/latch mechanisms into the current
+massless gear load path; survival-class touchdown outcomes remain open.**
 
 ### 2.1 What already exists (the regress-against baseline)
 
@@ -214,9 +216,9 @@ touchdown outcomes remain open.**
 |---|---|---|
 | Ground contact | `GroundImpact` default; schema-v3 `[contact]` half-space point/sphere force wired through runner with scalar diagnostics and endpoint report; `[vehicle.landing_gear]` footpads use per-pad `ContactPair` geometry/friction with external oleo/crush normal loads | T1 gear/leg contact + friction + leg/survival outcome classification |
 | Stiction / rest | none | T2 anchored stiction + rest detection |
-| Joint stops / backlash / latches | `openbmp-contact` scalar primitives plus declarative `[[contact.mechanism]]` angular fixtures; not force-coupled to tree joints yet | T1/T2 scalar penalty primitives |
-| Closed kinematic loops | none (doc `01` is tree-only) | T3 CFE + Baumgarte on the tree |
-| Landing gear | T2 massless oleo + crush-core legs with per-pad `ContactPair` footpads and synthetic four-leg drop evidence | T3 gear DOFs |
+| Joint stops / backlash / latches | `openbmp-contact` scalar primitives plus declarative `[[contact.mechanism]]` angular fixtures; force-coupled to articulated gimbal shadows, with general tree-joint authority still pending | T1/T2 scalar penalty primitives |
+| Closed kinematic loops | scalar/dense Baumgarte CFE solves plus tree-facing `G^T*lambda` generalized-force projection exist in `openbmp-contact`; `PlanarFourBarLoop` materializes a concrete four-bar/side-brace distance residual, velocity residual, and two-column Jacobian row at the L2 boundary; `openbmp-multibody` assembles `G*H(q)^-1*G^T` and `G*qdd_free + Gdot*qdot`; schema-v3 `[[multi_body.cfe_loop]]`, concrete `[[multi_body.cfe_gimbal_lock]]`, and current-path `[[multi_body.cfe_planar_four_bar]]` rows are parsed, validated, consumed by the single articulated-gimbal shadow path, exposed through per-loop solve telemetry, and carried into guarded single-gimbal root authority | T3 CFE + Baumgarte on the tree |
+| Landing gear | T2 massless oleo + crush-core legs with per-pad `ContactPair` footpads and synthetic four-leg drop evidence; optional `prismatic_dof` maps stroke/rate to a bounded prismatic coordinate, publishes opt-in per-leg prismatic telemetry, and can bind scalar mechanisms as positive compressive normal-load contributions | T3 gear DOFs |
 | Engine-cutoff-height | runner-side truth-fed director (`separated_landing.rs`) | T2 FC-side cutoff FSM on sensed state |
 | Soil / terrain compliance | none | T2/T3 Bekker + slope/DEM pairing |
 | Tipover / gear-load MC | footprint MC of ballistic impact only | T4 touchdown-dispersed campaign |
@@ -438,6 +440,11 @@ pub struct OleoStage  { p0_pa: f64, v0_m3: f64, gamma: f64,
                         orifice_c: f64, stroke_max_m: f64 }
 pub struct CrushCore  { f_crush_n: f64, stroke_max_m: f64, k_elastic: f64,
                         crushed_m: f64 /* MONOTONE state: never decreases */ }
+pub struct LandingGearPrismaticDof {
+    pub axis_body_unit: Vector3<f64>,
+    pub stroke_max_m: f64,
+    pub initial_stroke_m: f64,
+}
 ```
 
 The crush core is the elasto-plastic element: elastic up to the plateau force
@@ -445,6 +452,17 @@ The crush core is the elasto-plastic element: elastic up to the plateau force
 `crushed_m` advancing monotonically (irreversible by construction — unloading
 is elastic from the crushed length). The 1-D energy identity `stroke =
 E_absorbed / F_crush` is the Layer-2 drop-test verification case (§5.2).
+`LandingGearPrismaticDof` is the T3 bridge contract: it validates the strut
+axis and stroke interval, maps compression stroke to prismatic displacement as
+`free_length_m - stroke_m`, maps compression rate to generalized velocity with
+the opposite sign, and computes the corresponding body-frame footpad center.
+Schema-v3 landing-gear legs can declare this as optional `prismatic_dof`, and
+the runner publishes the derived prismatic coordinate telemetry. Optional
+`prismatic_dof.mechanism_id` binds a declared scalar stop/backlash/latch whose
+coordinate matches the leg id; the current massless rack evaluates that
+mechanism on prismatic displacement/rate and transmits only positive
+compressive generalized force into the external-normal gear load. It is not yet
+an authoritative multibody tree joint.
 Gear-load *line loads* into the airframe are recovered through doc `02`'s
 LTM/OTM machinery, and "touchdown" joins doc `02`'s CLA flight-event forcing
 library as a load event.
@@ -859,11 +877,21 @@ sibling notation (`WP-NN.t`, doc `NN`).
   `[[contact.mechanism]]` angular stop/backlash/latch fixtures with
   kind-specific fail-closed validation and duplicate-id rejection. Schema-v3
   `[[multi_body.gimbal_joint]]` entries can now bind one mechanism by
-  `mechanism_id` when the mechanism coordinate matches the engine id, and the
-  rigid runner injects the mechanism response as primary-axis generalized
-  gimbal force during articulated shadow derivative/forecast evaluation. CFE
-  loop-constraint dynamics, multi-axis mechanism routing, and broader doc-01
-  tree-joint authority remain later mechanism slices.
+  `mechanism_id` when the mechanism coordinate matches the engine id, select
+  `mechanism_axis = "primary"` or `"secondary"` for two-axis gimbal shadows, and
+  inject the mechanism response as the selected articulated generalized force
+  during shadow derivative/forecast evaluation. Scalar/dense Baumgarte CFE
+  solves and a tree-facing `G^T*lambda` generalized-force projection helper now
+  exist in `openbmp-contact::cfe` for caller-assembled effective inverse mass
+  rows and constraint Jacobians. `openbmp-multibody` now assembles those
+  row-space terms from live ABA free acceleration and CRBA data. Schema-v3
+  `[[multi_body.cfe_loop]]` rows now feed the single articulated-gimbal shadow
+  path, where the runner solves the CFE row and injects `G^T*lambda` before
+  evaluating the non-authoritative derivative/forecast, and emits per-loop CFE
+  solve telemetry for the multiplier, stabilized acceleration, and acceleration
+  residual. In guarded `articulated_gimbal_root` mode, that constrained
+  forecast is the root handoff source. Concrete CFE loop geometry and broader
+  doc-01 tree-joint authority remain later mechanism slices.
 - **goal:** The constraint-primitive vocabulary (§3.3) every articulated
   mechanism needs — gear locks, deploy stops, clearance — defined on scalar
   coordinates now (effector/strut), wired to tree joints in WP-14.6. The latch
@@ -877,7 +905,8 @@ sibling notation (`WP-NN.t`, doc `NN`).
   flank springs; latch capture window evaluated at step boundaries, monotone
   engaged flag; aggregate evaluator sums stop/backlash generalized force and
   updates latch storage in declared order. `[[contact.mechanism]]` fixtures are
-  declarative until the doc-`01` tree/CFE integration exists.
+  force-coupled for the current articulated-gimbal shadow path; broader
+  doc-`01` tree-joint mechanism authority remains future work.
 - **acceptance:**
   - off by default; goldens byte-identical
   - backlash dead-zone width exact; stop restitution matches closed form `< 2%`
@@ -1026,6 +1055,63 @@ sibling notation (`WP-NN.t`, doc `NN`).
 ### WP-14.6 — Contact + CFE loop constraints on the doc-01 tree
 
 - **title:** Tree-integrated contact, prismatic gear DOFs, four-bar side-brace via Constraint Force Equation.
+- **status:** the first L2 CFE substrate is implemented and traced by
+  `REQ-CONTACT-008` / `V-CONTACT-008`: `openbmp-contact::cfe` exposes
+  scalar, dense, and tree-facing caller-assembled acceleration-level CFE solves.
+  The scalar path returns one Lagrange multiplier; the dense path validates
+  row-major effective inverse mass dimensions and caller-owned scratch/output
+  buffers, solves with deterministic no-pivot LDLᵀ, rejects non-positive pivots,
+  and writes multipliers, stabilized accelerations, and residuals without
+  allocation. The tree-facing path validates a row-major constraint Jacobian and
+  projects solved multipliers into caller-owned generalized constraint forces
+  with `G^T*lambda`. `openbmp-multibody` exposes `CfeLoopAssembly` and
+  `assemble_cfe_loop_terms_at_state()` to assemble `G*qdd_free + Gdot*qdot` and
+  `G*H(q)^-1*G^T` from the current ABA free-acceleration path and
+  state-dependent CRBA matrix. Closed-form tests cover scalar multiplier/sign
+  behavior, a coupled two-row solve, scalar/dense equivalence, tree-loop
+  generalized-force projection, multibody CFE term assembly, bad tree-loop
+  dimensions, and fail-closed indefinite matrices. Schema-v3
+  `[[multi_body.cfe_loop]]` declarations now provide a parsed and validated
+  row-space fixture surface with finite residuals, unique loop ids, and sparse
+  non-zero Jacobian rows. The rigid runner consumes those rows for the current
+  single articulated-gimbal shadow path by assembling row-space CFE terms,
+  solving the Baumgarte system, and injecting projected generalized forces into
+  non-authoritative shadow derivative/forecast evaluation. It also emits
+  per-loop solve telemetry for the Lagrange multiplier, stabilized
+  acceleration, and acceleration residual. In guarded `articulated_gimbal_root`
+  mode, that CFE-constrained forecast is the single-gimbal root handoff source.
+  Schema-v3 `[[multi_body.cfe_gimbal_lock]]` now adds the first concrete CFE
+  model on that path by deriving the residual, velocity residual, and unit
+  Jacobian from the live articulated gimbal q/qd state. `PlanarFourBarLoop`
+  now provides a concrete L2 four-bar/side-brace loop-closure geometry model:
+  it validates fixed pivots and link reachability, materializes distance and
+  velocity residuals plus a two-column Jacobian from live angles/rates, rejects
+  singular coincident moving endpoints, and exposes a two-branch closed-form
+  output-angle solve (`REQ-CONTACT-009` / `V-CONTACT-009`). Schema-v3
+  `[[multi_body.cfe_planar_four_bar]]` now binds that row model to distinct
+  primary/secondary axes on the current two-axis articulated-gimbal shadow and
+  feeds the same solve/projection/telemetry path (`REQ-MULTIBODY-051` /
+  `V-MULTIBODY-051`). `openbmp-vehicle` also exposes
+  `LandingGearPrismaticDof` / `LandingGearPrismaticState` as the first
+  vehicle-side prismatic gear-DOF coordinate contract: validated leg geometry,
+  bounded stroke interval, stroke-to-displacement conversion, rate sign
+  convention, footpad-center materialization, and derivation from
+  `LandingGearLeg` are traced by `REQ-CONTACT-010` / `V-CONTACT-010`.
+  Schema-v3 `[vehicle.landing_gear]` legs can now opt into `prismatic_dof`
+  declarations, and the rigid runner materializes the current
+  `LandingGearPrismaticState` from live stroke/rate while publishing
+  `.prismatic_displacement_m`, `.prismatic_displacement_rate_m_s`, and
+  `.prismatic_footpad_body_{x,y,z}_m` only for declared legs
+  (`REQ-CONTACT-011` / `V-CONTACT-011`). Those prismatic declarations can now
+  bind `mechanism_id` to a declared scalar mechanism with coordinate equal to
+  the leg id; the parser rejects missing/mismatched bindings, and the runner
+  evaluates the mechanism on live prismatic displacement/rate, owns latch
+  state, records `LandingGearPrismaticMechanismSample`, and adds only the
+  positive compressive component to the normal load (`REQ-CONTACT-012` /
+  `V-CONTACT-012`). Authoritative multibody tree propagation for those
+  prismatic gear joints, side-brace coupling on the gear tree, broader vehicle
+  tree-joint authority, and published CFE/ADAMS benchmark closure remain future
+  work.
 - **goal:** The T3 discipline core: contact pairs and stop/backlash/latch
   primitives attach to `openbmp-multibody` tree coordinates; loop closures
   (telescoping strut + side-brace, four-bar linkage) solve through the

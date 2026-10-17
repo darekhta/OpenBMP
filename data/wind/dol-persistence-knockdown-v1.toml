@@ -1,0 +1,40 @@
+openbmp.dol_persistence_knockdown_deck = 1
+
+[deck]
+schema_version = 1
+deck_hash = "sha256:openbmp-dol-persistence-knockdown-v1"
+provenance = "synthetic-openbmp-wp19.5-method-fixture"
+sigma_multiplier = 3.0
+
+[[bands]]
+min_altitude_m = 0.0
+max_altitude_m = 1000.0
+sigma_wind_0_m_s = 1.0
+sigma_wind_sqrt_lead_m_s_per_sqrt_s = 0.020
+
+[[bands]]
+min_altitude_m = 1000.0
+max_altitude_m = 3000.0
+sigma_wind_0_m_s = 1.5
+sigma_wind_sqrt_lead_m_s_per_sqrt_s = 0.025
+
+[[bands]]
+min_altitude_m = 3000.0
+max_altitude_m = 6000.0
+sigma_wind_0_m_s = 2.0
+sigma_wind_sqrt_lead_m_s_per_sqrt_s = 0.030
+
+[[synthetic_truth]]
+altitude_m = 500.0
+lead_time_s = 3600.0
+delta_wind_m_s = 3.0
+
+[[synthetic_truth]]
+altitude_m = 1500.0
+lead_time_s = 5400.0
+delta_wind_m_s = -5.0
+
+[[synthetic_truth]]
+altitude_m = 4500.0
+lead_time_s = 7200.0
+delta_wind_m_s = 8.0

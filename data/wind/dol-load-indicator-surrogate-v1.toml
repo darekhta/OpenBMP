@@ -1,0 +1,27 @@
+# Synthetic DOL load-indicator surrogate fit deck.
+#
+# This deck pins the WP-19.3 degraded q-alpha/q-beta validation thresholds and
+# synthetic upstream hash used by the deterministic in-crate fit tests. It is
+# not a certified loads-cycle surrogate or flight-derived load indicator set.
+
+[surrogate]
+schema_version = 1
+deck_hash = "sha256:openbmp-dol-load-indicator-surrogate-v1"
+features = [
+  "intercept",
+  "q_alpha_pa_rad",
+  "q_beta_pa_rad",
+  "gimbal_angle_rad",
+]
+calibration_sample_count = 9
+heldout_sample_count = 6
+
+[validation]
+min_correlation = 0.95
+max_unconservative_error_n_m = 1.0e-6
+drift_gate = "deck_hash"
+
+[upstream]
+source_class = "synthetic-openbmp-test-fixture"
+full_model_proxy = "station_moment = 1200 + 0.82*q_alpha - 0.37*q_beta + 2500*gimbal"
+parity_ceiling = "degraded q-alpha/q-beta/gimbal surrogate of synthetic in-repo loads evidence"

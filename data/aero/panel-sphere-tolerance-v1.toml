@@ -1,0 +1,17 @@
+# Synthetic closed-form tolerance fixture for the WP-03.1 local-inclination
+# panel sphere regression. See data/aero/provenance.md.
+
+[case]
+dataset_id = "openbmp.aero.panel_sphere_tolerance.v1"
+source_class = "synthetic-openbmp"
+validation_label = "checked"
+radius_m = 1.0
+latitude_segments = 64
+longitude_segments = 128
+cp_max = 2.0
+mach = 12.0
+alpha_deg = 0.0
+beta_deg = 0.0
+dynamic_pressure_pa = 1000.0
+expected_cd = 1.0
+max_relative_error = 1.0e-3

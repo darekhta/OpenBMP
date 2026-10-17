@@ -1,0 +1,21 @@
+# LGR scalar-integrator benchmark for WP-07.3 partial.
+#
+# Synthetic deterministic OCP:
+#   minimize integral_0^1 u(t)^2 dt
+#   subject to x_dot = u, x(0) = 0, x(1) = 1
+#
+# The analytic optimum is x(t) = t, u(t) = 1, cost = 1. The fixture is a
+# validated-toy benchmark for fixed-mesh LGR transcription and deterministic
+# dense-QP assembly, not a public known-optimal research benchmark.
+
+case = "lgr-scalar-integrator-min-energy"
+source = "Synthetic scalar minimum-energy integrator OCP; see scenarios/trajopt-two-body-apogee/provenance.md."
+validation = "validated-toy"
+
+segment_count = 2
+collocation_count = 4
+expected_cost = 1.0
+cost_tolerance = 1.0e-8
+max_equality_residual_norm = 1.0e-8
+max_state_error = 1.0e-8
+max_control_error = 1.0e-8

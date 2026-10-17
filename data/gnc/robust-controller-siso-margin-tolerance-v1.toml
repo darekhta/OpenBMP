@@ -1,0 +1,45 @@
+[openbmp]
+gnc_robust_controller_siso_margin_reference = 1
+
+[tolerances]
+min_gain_margin_db = 6.0
+min_phase_margin_deg = 30.0
+
+[plant]
+states = 1
+a_row_major = [0.50]
+b_row_major = [1.00]
+c_row_major = [1.00]
+d = 0.0
+
+[sweep]
+sample_values = [10000.0, 15000.0, 20000.0]
+frequency_samples = 128
+
+[robust_controller]
+controller_id = "robust_siso_margin_probe"
+source_id = "synthetic_hinf_reduced_order_margin_v1"
+source_sha256_hex = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+variable = "DynamicPressurePa"
+interp = "Linear"
+states = 1
+measurements = 1
+controls = 1
+
+[[robust_controller.node]]
+node_id = "low_q"
+schedule_value = 10000.0
+flight_condition_tag = "qbar_mach_mass"
+a_row_major = [0.20]
+b_row_major = [0.05]
+c_row_major = [0.10]
+d_row_major = [0.02]
+
+[[robust_controller.node]]
+node_id = "high_q"
+schedule_value = 20000.0
+flight_condition_tag = "qbar_mach_mass"
+a_row_major = [0.30]
+b_row_major = [0.04]
+c_row_major = [0.10]
+d_row_major = [0.015]

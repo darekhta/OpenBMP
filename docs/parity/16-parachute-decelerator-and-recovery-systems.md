@@ -127,16 +127,54 @@ source:
   (cyclable airbrake) implement the `RecoveryModel` trait
   (`recovery/mod.rs:159-196`): stable `RecoveryId`, `RecoveryPhase`, current
   `(C_D, A)` pair, typed fail-closed command application, and a `step(dt)`
-  that is **deliberately a no-op** — the trait doc reserves it "for future
-  phases that may add inflation transients or canopy-area blends"
-  (`recovery/mod.rs:153-158`). This is the exact seam Tier 1 fills.
+  seam used by opt-in inflation profiles while legacy instantaneous devices
+  remain no-op.
+  The first WP-16.1 partial slice now adds
+  `crates/openbmp-vehicle/src/recovery/inflation.rs` with deterministic
+  polynomial/exponential `C_D S(t)` growth, fail-closed
+  `InflationProfile`/`CanopyInflationState` validation, closed-form
+  infinite-mass opening-load diagnostics, an opt-in schema-v3
+  `inflation = { ... }` table for single-stage `parachute_drag` devices, and
+  independent `drogue_inflation` / `main_inflation` tables for two-stage
+  `drogue_main` devices. The runner starts the fill clock on `deploy`,
+  `deploy_drogue`, or `deploy_main` and publishes the active stage's ramped
+  effective area through `recovery.<id>.drag_area_m2` plus opt-in
+  infinite-mass opening diagnostics through `recovery.<id>.inflation_progress`,
+  `.opening_dynamic_pressure_pa`, `.opening_load_n`, and
+  `.opening_peak_load_n`. `PflanzReductionTable` now validates and
+  interpolates tabulated finite-mass reduction factors, computes the
+  ballistic parameter `A`, and preserves the exact `X1(A -> infinity) = 1`
+  infinite-mass limit; schema-v3 `inflation.pflanz`,
+  `drogue_inflation.pflanz`, or `main_inflation.pflanz` inline tables or
+  SHA-pinned `file` decks wire that reduction into active-stage runtime
+  finite-mass peak-load telemetry through
+  `.opening_ballistic_parameter_a`, `.opening_pflanz_reduction_factor_x1`,
+  and `.opening_finite_mass_peak_load_n`. `canopy_fill_time_s` and the
+  schema/runner path derive fill time from line-stretch speed when the
+  scenario provides `n`, `D0`, `v_s`, and optional `k`
+  (`REQ-RECOVERY-001`). The checked-in
+  `data/recovery/pflanz-x1-synthetic-v1.toml` deck is parser/runtime evidence
+  only. Scalar apparent mass is now opt-in through
+  `inflation.apparent_mass_coeff_k_a` or the matching staged profile field:
+  recovery snapshots publish `m_a` and `dm_a/dt`, the point-mass and rigid mass
+  paths add `m_a`, the recovery force adapter applies `-(dm_a/dt) * v_air`,
+  and telemetry records
+  `.apparent_mass_kg` / `.apparent_mass_rate_kg_s`. This is not yet full
+  WP-16.1: production or digitized real `X1` table ingestion/calibration,
+  real-table integrated/Pflanz validation, tensor/higher-order apparent-mass
+  dynamics, reefing/disreef staging, and drop-test calibration are still open.
+  Point-mass runner
+  regressions now cover synthetic integrated descent-EOM peak-load checks,
+  including an `A`-sweep tolerance fixture, against independently computed
+  fixed-step `X1` reduction ratios.
 - **Force application.** `crates/openbmp-vehicle/src/adapters.rs:2136-2169`
   (`RecoveryRackForceAdapter`) evaluates
-  `F = −½ ρ |v|² Σ(C_D·A) · v̂` per Knacke 1992 Ch. 5, applied **at the CG with
-  zero moment** ("long risers are assumed to decouple body rotation from drag
-  direction", `recovery/mod.rs:24-32`) and against **ECI velocity, ignoring
-  wind** — the module doc states the academic formulation explicitly. Both
-  assumptions are honest, documented, and are dismantled by Tiers 1/3/4.
+  `F = −½ ρ |v_air|² Σ(C_D·A) · v̂_air` per Knacke 1992 Ch. 5, applied **at the
+  CG with zero moment** ("long risers are assumed to decouple body rotation
+  from drag direction", `recovery/mod.rs:24-32`). The adapter consumes the
+  kernel `EnvironmentSample::air_relative_velocity_eci_m_s` path, so declared
+  atmosphere motion and wind affect chute drag through the same velocity
+  convention used by the aero adapter.
 - **Kernel snapshot plumbing.** `crates/openbmp-models/src/models.rs:312-400`
   (`RecoverySnapshot`, `RecoverySnapshotView`) carries
   `(deployed, phase_index, c_d, drag_area_m2)` into the kernel per base tick;
@@ -176,23 +214,28 @@ source:
   `data/aero/calisto-drag.toml`, `data/motors/rocketpy-calisto-m1670.toml`)
   for ascent validation; RocketPy's parachute descent (a `C_D S` + trigger-lag
   model) is the natural descent-phase cross-check and is not yet exercised.
-- **Wind models exist but recovery ignores them.**
+- **Wind models feed recovery drag through the shared environment sample.**
   `crates/openbmp-physics/src/wind/` ships constant/layered/HWM14/Dryden-gust
-  winds with a `WIND` RNG domain; the recovery drag adapter does not consume
-  wind-relative velocity, so descent *drift* — the first-order driver of
-  splashdown/landing dispersion — is structurally absent from the chute phase.
+  winds with a `WIND` RNG domain; the recovery drag adapter consumes the
+  runner-populated air-relative velocity. A point-mass runner regression now
+  proves a declared constant wind produces the closed-form one-dimensional
+  recovery-drift position and velocity in a synthetic horizontal case, and a
+  paired vertical descent regression proves the declared-wind case shifts the
+  ground-impact splash point downwind while the no-wind twin remains
+  horizontally fixed. Recovery-parameter dispersion and public drift-campaign
+  calibration are still absent.
 
 ### 2.2 Maturity summary
 
 | Sub-dimension | Current | Target tier |
 |---|---|---|
-| Canopy drag | constant `C_D S` per phase, instantaneous swap | T1 `C_D S(t)` inflation |
-| Opening loads | none (no load channel) | T1 infinite/finite-mass (Pflanz) |
-| Apparent mass | none | T1 scalar / T4 tensor |
-| Wind-relative descent drift | none (ECI-velocity drag) | T1 |
-| Deployment sequence / snatch | none (deploy = step change) | T2 mortar/bag-strip/line-stretch |
+| Canopy drag | constant `C_D S` per phase by default; opt-in single-stage and drogue/main staged fill-time area ramps partial | T1 `C_D S(t)` inflation |
+| Opening loads | opt-in infinite-mass and active-stage Pflanz finite-mass load telemetry with inline or SHA-pinned synthetic file-backed `X1` table ingestion | T1 infinite/finite-mass (Pflanz) |
+| Apparent mass | opt-in scalar apparent mass for single-stage and active drogue/main staged profiles; tensor/higher-order dynamics absent | T1 scalar / T4 tensor |
+| Wind-relative descent drift | recovery drag uses the environment air-relative velocity sample; constant-wind horizontal drift has a closed-form runner check; vertical descent shifts splash point under declared wind | T1 |
+| Deployment sequence / snatch | opt-in schema-v3 `sequence` snatch peak diagnostic from declared `delta_v`, effective mass, pack drag, and summed riser `EA/L0`; optional mortar pack mass/velocity applies one-tick reaction impulse; deploy still lacks bag-strip/line-stretch state | T2 mortar/bag-strip/line-stretch |
 | Reefing / disreef | none | T2 staged `C_D S` + cutters |
-| Riser / line elements | rigid zero-moment assumption | T2 slack-taut spring-damper |
+| Riser / line elements | slack-taut Kelvin-Voigt primitive, schema declaration, runner constant-velocity and opt-in force-integrated endpoint advance, aggregate telemetry, aggregate line-force consumption, live `C_D A` drag handoff with per-riser load-share moments for riser-declared devices, and rigid moment consumption partial; shared canopy body / two-body line dynamics still open | T2 slack-taut spring-damper |
 | Clusters | single equivalent device | T3 per-canopy lead-lag + asymmetry |
 | Forebody wake | none | T3 dynamic-pressure deficit |
 | Capsule-chute two-body / pendulum | none | T4 (rides `01` multibody) |
@@ -302,10 +345,11 @@ force — reusing the existing time-varying-mass machinery, never an implicit
 acceleration solve. The `dm_a/dt` term is what makes finite-mass opening loads
 and post-disreef rebound honest.
 
-**Wind-relative drag** (same WP): the recovery force adapter gains an opt-in
-airspeed mode `v_rel = v − v_wind` using the existing `WindModel` surface —
-the aero-deck convention alignment that doc `03` establishes — so descent
-drift exists at all.
+**Wind-relative drag** (same WP): the recovery force adapter consumes the
+kernel `EnvironmentSample::air_relative_velocity_eci_m_s` path, so
+`v_air = v_vehicle - v_atmosphere - v_wind` is shared with aero/heating force
+conventions. There is no recovery-specific velocity switch; declared wind feeds
+chute drag through the existing environment sample.
 
 **Surface (extend `openbmp-vehicle/src/recovery/`):**
 
@@ -377,13 +421,15 @@ Tension-only Kelvin-Voigt element between attach points `p_a` (vehicle) and
 T = max(0, (EA/L₀) · δ + c_line · δ̇)   applied as ±T·û            (3.4.1)
 ```
 
-with `T ≡ 0` when slack (δ ≤ 0) — the discontinuity is event-located at the
+with `T ≡ 0` when slack (δ < 0); at the slack-taut boundary, positive stretch
+rate can produce damping tension. The discontinuity is event-located at the
 tick boundary (deterministic, no adaptive stepping). At T2 the element acts
-between the vehicle body and the 1-DOF pack/canopy coordinate (snatch loads,
-riser load channels, attach-point moments via `r_attach × T·û` — retiring the
-zero-moment assumption for opted-in scenarios). At T4 the same element couples
-two full bodies in the `01` tree. Multiple risers per canopy and per-leg
-asymmetry come free from the per-element formulation.
+between the vehicle body and either independent endpoint states or an opt-in
+shared translated pack/canopy coordinate (snatch loads, riser load channels,
+attach-point moments via `r_attach × T·û` — retiring the zero-moment assumption
+for opted-in scenarios). At T4 the same element couples two full bodies in the
+`01` tree. Multiple risers per canopy and per-leg asymmetry come free from the
+per-element formulation.
 
 ### 3.5 Cluster modeling (T3)
 
@@ -506,8 +552,8 @@ spaceflightnow.com 2022-05-03):
 
 | Tier | Scope | Earns |
 |---|---|---|
-| **T0** (current) | instantaneous `C_D S` swap, ECI-velocity drag at CG, zero moment, ground-radius stop | `checked` |
-| **T1** | `C_D S(t)` inflation (3.2.1-3.2.2), infinite/finite-mass opening loads (3.2.3-3.2.5), scalar apparent mass (3.2.6-3.2.7), wind-relative drag option, load telemetry channels | `validated-toy` |
+| **T0** (current) | instantaneous `C_D S` swap by default, air-relative drag at CG, zero moment, ground-radius stop | `checked` |
+| **T1** | `C_D S(t)` inflation (3.2.1-3.2.2), infinite/finite-mass opening loads (3.2.3-3.2.5), scalar apparent mass (3.2.6-3.2.7), wind-relative drag through the shared environment sample, load telemetry channels | `validated-toy` |
 | **T2** | deployment-sequence chain + mortar reaction + snatch (3.3.1), slack-taut riser elements (3.4.1) + attach-point moments, reefing/disreef staging with dispersed cutters | `validated-toy` |
 | **T3** | per-canopy clusters (lead-lag, load share, efficiency, wake deficit), dispersed-parameter descent MC, drop-test-reconstruction validation case | `validated-toy` → `research` (CPAS-methodology anchor) |
 | **T4** | two-body capsule-chute on the `01` tree, apparent-mass tensor, canopy-instability pendulum, forward-only GNC damping under canopy | `validated-toy` → `research` (Orion pendulum mode-class) |
@@ -538,8 +584,10 @@ substrate plus T2 elements.
   `[recovery.ops_mc]`, `[recovery.mid_air_retrieval]`. The shipped devices
   keep their no-op `step()` and constant `(C_D, A)` unless the block is
   present; `scenarios/parachute-recovery/` and every other golden stay
-  byte-identical. The wind-relative drag mode is an explicit
-  `velocity_source = "eci" (default) | "wind_relative"` switch.
+  byte-identical. Wind-relative behavior is inherited from the shared
+  environment sample: `wind = "none"` keeps zero wind, while a declared
+  nonzero `[wind]` block affects recovery drag through the same air-relative
+  velocity convention used by aero/heating.
 - **FC hardware-portability lock.** All recovery dynamics are sim-side
   (`openbmp-vehicle`/`-physics`/`-models`/`-runner`). The only FC-side change
   (T4 under-canopy damping mode) consumes estimated rates through the existing
@@ -687,6 +735,65 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 
 ### WP-16.1 — Parametric CdS(t) inflation + opening loads
 
+- **implementation_status:** partial. `openbmp-vehicle` now exposes
+  deterministic `CanopyGrowthShape`, `InflationProfile`,
+  `CanopyInflationState`, and `CanopyInflationSample` primitives for
+  polynomial or exponential fill-time growth, effective drag-area fraction,
+  and closed-form infinite-mass opening-load diagnostics. Single-stage
+  `ParachuteDrag` can be constructed with an inflation profile; deploy starts
+  the fill clock, `step(dt_s)` advances it, and the existing
+  `current_drag_area_m2` observation ramps from zero/initial fraction to the
+  full declared area. `DrogueMainRecovery` can now carry independent optional
+  drogue and main inflation profiles; `deploy_drogue` and `deploy_main` start
+  the respective stage fill clocks, and the active stage publishes its ramped
+  area and load sample. `canopy_fill_time_s` implements the Knacke-style
+  `n * D0 / v_s^k` fill-time derivation. Schema-v3
+  `[[vehicle.assembly.recovery]]` accepts an optional `inflation = { ... }`
+  table for `kind = "parachute_drag"` and optional `drogue_inflation = { ... }`
+  / `main_inflation = { ... }` tables for `kind = "drogue_main"`, with either
+  explicit `fill_time_s` or derived `fill_constant_n`, `nominal_diameter_m`,
+  `line_stretch_speed_m_s`, and optional `fill_exponent_k`; it rejects those
+  tables under v2, rejects invalid/ambiguous fill-time modes, rejects
+  single-stage inflation for drogue/main or drag-device rows, rejects staged
+  inflation for non-drogue/main rows, and the runner converts them into the
+  vehicle profiles. Optional `*.pflanz` configuration either declares
+  inline `ballistic_parameter_a`, `exponent_j`, and row-major
+  `reduction_factors` axes or points at a resolved `file` with optional
+  `file_sha256`; the repository ships
+  `data/recovery/pflanz-x1-synthetic-v1.toml` as a synthetic parser/runtime
+  fixture. Recovery snapshots now carry default-zero inflation/load diagnostic
+  fields; the point-mass and rigid runners populate infinite-mass diagnostics
+  from the same pre-step air-relative dynamic pressure used by recovery drag,
+  compute Pflanz finite-mass peak-load diagnostics from current mass, density,
+  air-relative speed, fill time, and `X1(A, j)` when a single-stage or
+  active-stage table is declared, and telemetry allocates the extra
+  finite-mass channels only for devices with any configured Pflanz table.
+  Optional `apparent_mass_coeff_k_a` on a single-stage or staged profile now
+  enables the scalar T1
+  apparent-mass equations: `canopy_apparent_mass_kg` and
+  `canopy_apparent_mass_rate_kg_s` derive `m_a` and `dm_a/dt` from density,
+  projected canopy area, and area-rate; `RecoverySnapshot` carries those terms;
+  point-mass and rigid mass adapters add them to the vehicle mass/rate; the
+  recovery force adapter applies `-(dm_a/dt) * v_air`; and point-mass plus
+  rigid telemetry expose `.apparent_mass_kg` and
+  `.apparent_mass_rate_kg_s` when configured.
+  `PflanzReductionTable` validates monotone tabulated finite-mass reduction
+  factors, bilinearly interpolates `X1(A, j)`, computes eq. 3.2.4's ballistic
+  parameter, applies eq. 3.2.5's finite-mass peak-load reduction, and returns
+  `1.0` exactly for the positive-infinite `A` limit.
+  Focused tests prove profile arithmetic, fill-time derivation,
+  invalid-input rejection, parser gates, rack-level deploy-to-ramped-snapshot,
+  drogue/main staged ramping plus active-stage Pflanz/apparent-mass selection,
+  derived-fill, and finite-mass peak-load behavior, no extra load channel when
+  inflation is absent, point-mass deploy-to-load telemetry including optional
+  Pflanz and apparent-mass channels, synthetic point-mass integrated
+  descent-EOM peak-load regressions including an `A`-sweep tolerance fixture
+  against independently computed fixed-step `X1` reduction ratios, rigid schema
+  allocation for apparent-mass channels, mass/force adapter apparent-mass-rate
+  behavior, and the Pflanz equation/interpolation/limit checks
+  (`REQ-RECOVERY-001` / `V-RECOVERY-001`). Remaining WP-16.1 work:
+  ingest/provenance-lock real `X1` tables and exercise the real-table
+  Pflanz/integrated-EOM load surface.
 - **title:** Replace instantaneous drag-area swap with fill-time inflation and infinite/finite-mass opening loads.
 - **goal:** Give `RecoveryModel::step` its reserved purpose: advance `(C_D S)(τ)`
   per §3.2 (eqs 3.2.1-3.2.5), publish per-tick canopy load, and verify the
@@ -699,7 +806,8 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **touched:** `crates/openbmp-vehicle/src/recovery/` (inflation module +
   `InflationProfile`), `crates/openbmp-models/src/models.rs`
   (`RecoverySnapshot` load channel), `crates/openbmp-runner/src/recovery.rs`,
-  `crates/openbmp-scenario` (`[…recovery.<id>.inflation]` block),
+  `crates/openbmp-scenario` (`[…recovery.<id>.inflation]` and staged
+  inflation blocks),
   `crates/openbmp-telemetry` (load channels).
 - **approach:** §3.2; integrated-EOM peak primary, Pflanz (3.2.4-3.2.5) as the
   cross-check table; growth shape and constants scenario-declared.
@@ -715,24 +823,41 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 
 ### WP-16.2 — Apparent mass + wind-relative recovery drag
 
-- **goal:** Add the scalar apparent-mass term (3.2.6-3.2.7) via the existing
-  time-varying-mass machinery plus the `−(dm_a/dt)v` force, and give the
-  recovery force adapter an opt-in wind-relative airspeed mode so descent
-  drift exists. Together these make finite-mass opening behavior and
-  splash-point dispersion physically meaningful.
+- **implementation_status:** partial. The scalar apparent-mass term
+  (3.2.6-3.2.7) has landed through `inflation.apparent_mass_coeff_k_a`,
+  `RecoverySnapshot` apparent-mass fields, point-mass/rigid mass wiring, the
+  `-(dm_a/dt) * v_air` force term, and telemetry. The recovery force adapter
+  now uses `EnvironmentSample::air_relative_velocity_eci_m_s` for point-mass
+  and rigid contexts, an adapter-level constant-wind test proves closed-form
+  recovery drag when `wind_eci_m_s` is nonzero, and a point-mass runner test
+  proves a declared constant wind produces the closed-form one-dimensional
+  recovery-drift position and velocity in a synthetic horizontal case. A second
+  point-mass runner test descends under gravity to `GroundImpact` and proves
+  the declared-wind case shifts the synthetic splash point downwind while the
+  no-wind twin remains horizontally fixed. Tensor/high-order added-mass
+  dynamics, public drift-campaign calibration, and dispersed splash-point UQ
+  remain open.
+- **goal:** Complete the remaining recovery airspeed and apparent-mass
+  fidelity: keep the scalar apparent-mass bookkeeping verified via the existing
+  time-varying-mass machinery, keep recovery drag on the shared
+  wind-relative environment velocity, and extend validation from adapter-level
+  closed-form force checks to end-to-end declared-wind descent/splash-point
+  cases. Together these make finite-mass opening behavior and splash-point
+  dispersion physically meaningful.
 - **fidelity_tier:** T1
 - **depends_on:** [WP-16.1]
 - **new_crates:** []
 - **touched:** `crates/openbmp-vehicle/src/recovery/`,
   `crates/openbmp-vehicle/src/adapters.rs` (`RecoveryRackForceAdapter`
-  airspeed mode), kernel mass-channel wiring in `crates/openbmp-sim`,
-  scenario schema (`velocity_source`, `apparent_mass = true`).
+  shared air-relative velocity), kernel mass-channel wiring in
+  `crates/openbmp-sim`, scenario schema (`apparent_mass_coeff_k_a`; declared
+  wind continues to use the existing `[wind]` block).
 - **approach:** §3.2 (3.2.6-3.2.7); `m_a`/`dm_a/dt` published in the snapshot;
   wind sampled from the existing `WindModel` surface per the `03` convention.
 - **acceptance:**
   - both features off by default; all goldens byte-identical.
   - apparent-mass momentum bookkeeping rel `< 1e-10` under an impulsive `dm_a/dt` pulse.
-  - declared constant wind produces the closed-form steady drift velocity to rel `< 1e-9`.
+  - declared constant wind produces closed-form recovery drag at adapter level, closed-form horizontal drift through the point-mass runner, and a downwind ground-impact splash-point shift in a vertical descent runner scenario; public drift-campaign calibration remains out of scope for this slice.
   - all `13` §2 gates green.
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line.
@@ -741,6 +866,58 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 
 ### WP-16.3 — Slack-taut riser line element
 
+- **implementation_status:** partial. `openbmp-vehicle::recovery::riser` now
+  exposes a deterministic tension-only Kelvin-Voigt `RiserLineElement` with
+  validated `L0`, effective `EA`, damping, endpoint states, exact-zero slack
+  force, damping-clamped non-compressive tension, elastic-energy reporting,
+  equal/opposite endpoint forces, a constant-velocity endpoint advance helper,
+  a deterministic `slack_taut_event` locator that returns the first
+  `|p_b(t)-p_a(t)| = L0` crossing inside a fixed tick, and a
+  `riser_attach_moment_body_n_m` `r x F` helper.
+  Schema-v3 `[[vehicle.assembly.recovery]]` rows can declare
+  validated `risers = [{ ... }]` for parachute recovery kinds, with duplicate
+  riser-id rejection, finite body-frame attach points, positive `L0`/`EA`,
+  non-negative damping, optional constant `canopy_velocity_body_m_s`, optional
+  positive `canopy_mass_kg`, optional row-level `riser_canopy` shared translated
+  state with positive `mass_kg`, v2 fail-closed gating, and drag-device
+  rejection. The runner now converts declared risers into rack runtime elements,
+  advances declared canopy endpoints while the recovery device is deployed with
+  prescribed constant velocity, opt-in per-riser line-force integration from
+  `canopy_mass_kg`, or summed-force integration through one shared translated
+  `riser_canopy` state, and publishes aggregate riser tension sum/max, aggregate
+  body-frame anchor force, aggregate body-frame attach moment, and elastic energy through
+  `RecoverySnapshot` and point-mass telemetry; rigid channel allocation uses
+  the same schema. `RecoveryRiserForceAdapter` consumes
+  the aggregate body-frame force as a named `recovery_riser_force` force
+  component, treating body and ECI frames as aligned for point-mass scenarios
+  and rotating through the live attitude for rigid-body scenarios.
+  Context-aware recovery snapshots add the live aerodynamic `C_D A` drag load
+  into the declared riser force/moment totals, distribute the handed-off load
+  across per-riser attach points by declared-line tension (equal split if all
+  are slack), and set `riser_force_path_active`, causing
+  `RecoveryRackForceAdapter` to skip the same scalar drag term for that device
+  while leaving apparent-mass-rate force in the existing recovery force path.
+  `RecoveryRiserMomentAdapter` consumes those aggregate force/moment
+  diagnostics in the rigid-body moment stack, shifts origin-referenced moments
+  to the live CG, and contributes a named `recovery_riser` moment component for
+  opted-in scenarios.
+  Focused tests prove invalid-parameter rejection, exact-zero slack force,
+  Kelvin-Voigt tension, damping clamp, constant-velocity endpoint advancement,
+  slack-to-taut crossing / no-crossing / initially-taut event timing,
+  attach-point moment, parser acceptance including endpoint mass and shared
+  canopy state, schema-version gating, invalid/deprecated-kind rejection,
+  rack-level aggregate riser diagnostics, runner-level constant-velocity canopy
+  endpoint advance, runner-level force-integrated endpoint advance after
+  slack-taut engagement, runner-level shared-canopy force integration from
+  summed line loads, analytic undamped free-bounce energy conservation, point-mass riser telemetry and
+  force-breakdown recording, rigid riser-channel allocation, rack-level drag
+  handoff into riser force/moment totals, tension-weighted per-riser drag
+  moment distribution, equal-share fallback when all declared risers are slack,
+  recovery-drag skip behavior, adapter-level aggregate force consumption,
+  adapter-level live-CG moment consumption, and rigid force/moment-stack
+  consumption
+  (`REQ-RECOVERY-003` / `V-RECOVERY-003`). Remaining WP-16.3 work:
+  full two-body coupling through the multibody tree.
 - **goal:** A tension-only Kelvin-Voigt line element (3.4.1) with attach-point
   geometry, producing riser tension channels and attach-point moments —
   retiring the zero-moment assumption for opted-in scenarios and providing the
@@ -765,6 +942,26 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 
 ### WP-16.4 — Deployment sequence, snatch loads, reefing/disreef staging
 
+- **implementation_status:** partial. Schema-v3 parachute recovery rows with
+  declared risers can now opt into
+  `sequence = { snatch_delta_v_m_s, snatch_effective_mass_kg, pack_drag_load_n }`.
+  The runner derives equivalent parallel line stiffness from declared risers as
+  `sum(EA/L0)`, evaluates the §3.3.1-style diagnostic
+  `F_snatch = delta_v * sqrt(k_line * m_e) + F_drag,pack`, carries the terms
+  through default-zero `RecoverySnapshot` fields only after deployment, and
+  allocates point-mass/rigid telemetry channels
+  `recovery.<id>.snatch_delta_v_m_s`,
+  `.snatch_stiffness_n_m`, `.snatch_effective_mass_kg`,
+  `.snatch_pack_drag_load_n`, and `.snatch_peak_load_n`
+  (`REQ-RECOVERY-004` / `V-RECOVERY-004`). When
+  `mortar_pack_mass_kg` and `mortar_pack_velocity_body_m_s` are declared, the
+  runner latches the equal-and-opposite vehicle reaction impulse
+  `-m_pack * v_pack_body` on accepted deploy commands, applies it as a constant
+  body-frame force over exactly the next kernel tick through
+  `recovery_sequence_force`, and records body-frame mortar impulse/force
+  telemetry. Remaining WP-16.4 work: bag-strip and line-stretch state,
+  force-applied snatch transient, reefed/disreef staged `C_D S(t)`,
+  cutter-time dispersion, and the canonical staged-load timeline.
 - **goal:** The §3.3 event chain inside the device: mortar reaction impulse,
   1-DOF bag-strip/line-stretch kinematics, snatch transient through the
   WP-16.3 element (anchored by 3.3.1), and reefed stages with independently

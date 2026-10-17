@@ -1,0 +1,76 @@
+[openbmp]
+gnc_gain_schedule_lqg_reference = 1
+
+[tolerances]
+absolute_gain = 1.0e-12
+absolute_state = 1.0e-12
+absolute_observer_gain = 1.0e-10
+absolute_observer_covariance = 1.0e-10
+residual_norm = 1.0e-10
+minimum_row_sum_margin = 0.299999999999
+
+[schedule]
+variable = "Mach"
+interp = "Linear"
+states = 2
+controls = 1
+measurements = 1
+query = 0.5
+expected_gain_row_major = [3.0, 2.0]
+expected_observer_gain_row_major = [0.6, 0.7]
+
+[[schedule.node]]
+node_id = "mach0"
+schedule_value = 0.0
+flight_condition_tag = "mach"
+gain_row_major = [2.0, 1.0]
+observer_gain_row_major = [0.1, 0.2]
+
+[[schedule.node]]
+node_id = "mach1"
+schedule_value = 1.0
+flight_condition_tag = "mach"
+gain_row_major = [4.0, 3.0]
+observer_gain_row_major = [1.1, 1.2]
+
+[bumpless]
+states = 2
+controls = 1
+old_gain_row_major = [2.0, 1.0]
+new_gain_row_major = [4.0, 2.0]
+state = [0.5, 0.25]
+integral_indices = [1]
+expected_adjusted_state = [0.5, -0.375]
+expected_command = [-1.25]
+
+[closed_loop_sweep]
+a_row_major = [0.8, 0.0, 0.0, 0.7]
+b_row_major = [0.1, 0.0]
+sample_values = [0.0, 0.5, 1.0]
+expected_min_row_sum_margin = 0.3
+
+[siso_margin]
+a_row_major = [0.8, 0.0, 0.0, 0.7]
+b_row_major = [0.1, 0.0]
+sample_values = [0.0, 0.5, 1.0]
+frequency_samples = 128
+min_gain_margin_db = 6.0
+min_phase_margin_deg = 30.0
+
+[lqg_observer]
+states = 2
+measurements = 1
+a_row_major = [1.0, 0.1, 0.0, 0.98]
+c_row_major = [1.0, 0.0]
+w_row_major = [0.01, 0.0, 0.0, 0.02]
+v_row_major = [0.05]
+expected_p = [
+  0.03671376224335216,
+  0.03471626263447651,
+  0.03471626263447651,
+  0.16796904485288897,
+]
+expected_l = [
+  0.4634257292864788,
+  0.39234761013261465,
+]

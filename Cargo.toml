@@ -11,12 +11,18 @@ members = [
     "crates/openbmp-hal",
     "crates/openbmp-sim",
     "crates/openbmp-vehicle",
+    "crates/openbmp-modelio",
+    "crates/openbmp-structdyn",
     "crates/openbmp-multibody",
     "crates/openbmp-aero",
+    "crates/openbmp-aerodb",
     "crates/openbmp-aerothermal",
     "crates/openbmp-afts",
     "crates/openbmp-contact",
     "crates/openbmp-comm",
+    "crates/openbmp-convex",
+    "crates/openbmp-ground",
+    "crates/openbmp-acoustics",
     "crates/openbmp-thermochem",
     "crates/openbmp-feedsystem",
     "crates/openbmp-propulsion",
@@ -33,6 +39,8 @@ members = [
     "crates/openbmp-pil",
     "crates/openbmp-testkit",
     "crates/openbmp-mc",
+    "crates/openbmp-rundata",
+    "crates/openbmp-sysid",
     "crates/openbmp-rt",
     "crates/openbmp-runner",
     "crates/openbmp-cli",
@@ -100,8 +108,8 @@ clap               = { version = "4.6.1", features = ["derive", "env", "wrap_hel
 miette             = { version = "7.6.0", features = ["fancy"] }
 thiserror          = { version = "2.0.18" }
 anyhow             = { version = "1.0.102" }
-pyo3               = { version = "0.28.3" }
-pyo3-build-config  = { version = "0.28.3" }
+pyo3               = { version = "0.29.0" }
+pyo3-build-config  = { version = "0.29.0" }
 libloading         = { version = "0.9.0" }
 flate2             = { version = "1.1.5", default-features = false, features = ["rust_backend"] }
 tracing            = { version = "0.1.44", default-features = false, features = ["std"] }
@@ -154,12 +162,17 @@ openbmp-msgs       = { version = "0.0.1", path = "crates/openbmp-msgs", default-
 openbmp-hal        = { version = "0.0.1", path = "crates/openbmp-hal" }
 openbmp-sim        = { version = "0.0.1", path = "crates/openbmp-sim" }
 openbmp-vehicle    = { version = "0.0.1", path = "crates/openbmp-vehicle" }
+openbmp-modelio    = { version = "0.0.1", path = "crates/openbmp-modelio" }
+openbmp-structdyn  = { version = "0.0.1", path = "crates/openbmp-structdyn" }
 openbmp-multibody  = { version = "0.0.1", path = "crates/openbmp-multibody" }
 openbmp-aero       = { version = "0.0.1", path = "crates/openbmp-aero" }
+openbmp-aerodb     = { version = "0.0.1", path = "crates/openbmp-aerodb" }
+openbmp-acoustics  = { version = "0.0.1", path = "crates/openbmp-acoustics" }
 openbmp-aerothermal = { version = "0.0.1", path = "crates/openbmp-aerothermal" }
 openbmp-afts       = { version = "0.0.1", path = "crates/openbmp-afts" }
 openbmp-contact    = { version = "0.0.1", path = "crates/openbmp-contact" }
 openbmp-comm       = { version = "0.0.1", path = "crates/openbmp-comm" }
+openbmp-convex     = { version = "0.0.1", path = "crates/openbmp-convex" }
 openbmp-thermochem = { version = "0.0.1", path = "crates/openbmp-thermochem" }
 openbmp-feedsystem = { version = "0.0.1", path = "crates/openbmp-feedsystem" }
 openbmp-propulsion = { version = "0.0.1", path = "crates/openbmp-propulsion" }
@@ -174,6 +187,9 @@ openbmp-sil        = { version = "0.0.1", path = "crates/openbmp-sil" }
 openbmp-pil        = { version = "0.0.1", path = "crates/openbmp-pil" }
 openbmp-testkit    = { version = "0.0.1", path = "crates/openbmp-testkit" }
 openbmp-mc         = { version = "0.0.1", path = "crates/openbmp-mc" }
+openbmp-rundata    = { version = "0.0.1", path = "crates/openbmp-rundata" }
+openbmp-sysid      = { version = "0.0.1", path = "crates/openbmp-sysid" }
+openbmp-ground     = { version = "0.0.1", path = "crates/openbmp-ground" }
 openbmp-rt         = { version = "0.0.1", path = "crates/openbmp-rt" }
 openbmp-bridge     = { version = "0.0.1", path = "crates/openbmp-bridge" }
 openbmp-runner     = { version = "0.0.1", path = "crates/openbmp-runner" }

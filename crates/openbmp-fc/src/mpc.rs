@@ -21,11 +21,12 @@ use thiserror::Error;
 
 use clarabel::{
     algebra::CscMatrix,
-    solver::{DefaultSettings, DefaultSolver, IPSolver, NonnegativeConeT, SolverStatus},
+    solver::{DefaultSolver, IPSolver, NonnegativeConeT, SolverStatus},
 };
+use openbmp_convex::deterministic_clarabel_settings;
 
 /// Clarabel settings type used by the FC MPC path.
-pub type ClarabelSettings = DefaultSettings<f64>;
+pub type ClarabelSettings = openbmp_convex::ClarabelSettings;
 
 /// Small attitude-control QP used by the receding-horizon controller.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -51,18 +52,7 @@ pub struct AttitudeMpcCommand {
 /// solver-backed jobs.
 #[must_use]
 pub fn deterministic_settings() -> ClarabelSettings {
-    DefaultSettings::<f64> {
-        verbose: false,
-        max_iter: 100,
-        time_limit: f64::INFINITY,
-        tol_gap_abs: 1.0e-9,
-        tol_gap_rel: 1.0e-9,
-        tol_feas: 1.0e-9,
-        tol_infeas_abs: 1.0e-9,
-        tol_infeas_rel: 1.0e-9,
-        tol_ktratio: 1.0e-9,
-        ..DefaultSettings::<f64>::default()
-    }
+    deterministic_clarabel_settings()
 }
 
 /// Solves the single-step attitude box-constrained QP:

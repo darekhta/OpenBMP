@@ -23,6 +23,7 @@ use openbmp_mission::{
 
 use crate::bus::Bus;
 use crate::error::{CommanderError, ControllerError};
+use crate::fdir::FDIR_BIT_ALLOCATION_INFEASIBLE;
 use crate::nav_metrics;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
@@ -46,6 +47,12 @@ pub struct CommanderParams {
     /// Minimum vertical velocity (m/s) before transitioning into the
     /// in-flight state.
     pub liftoff_velocity_m_s: f64,
+    /// Consecutive commander ticks with allocation-infeasible-only
+    /// FDIR before entering the canonical `health.degraded` region.
+    pub fdir_degraded_confirm_ticks: u32,
+    /// Consecutive commander ticks with non-allocation or mixed FDIR
+    /// before requesting the SAFE ladder.
+    pub fdir_safe_confirm_ticks: u32,
 }
 
 impl Default for CommanderParams {
@@ -54,12 +61,21 @@ impl Default for CommanderParams {
             failsafe_blocks_arming: true,
             liftoff_altitude_m: 1.0,
             liftoff_velocity_m_s: 1.0,
+            fdir_degraded_confirm_ticks: 1,
+            fdir_safe_confirm_ticks: 1,
         }
     }
 }
 
 impl ParamSection for CommanderParams {
     const NAME: &'static str = "commander";
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum FdirHealthRequest {
+    None,
+    Degraded,
+    Safe,
 }
 
 /// Commander job. Reads bus topics, evaluates the
@@ -77,6 +93,8 @@ pub struct Commander {
     in_flight: bool,
     fired_once: BTreeSet<u64>,
     previous_scalars: Option<EventScalars>,
+    fdir_degraded_burst: u32,
+    fdir_safe_burst: u32,
 }
 
 impl Commander {
@@ -124,6 +142,8 @@ impl Commander {
             in_flight: false,
             fired_once: BTreeSet::new(),
             previous_scalars: None,
+            fdir_degraded_burst: 0,
+            fdir_safe_burst: 0,
         };
         commander.sync_mission_region();
         Ok(commander)
@@ -235,25 +255,35 @@ impl Commander {
         if let Ok(Some((fdir, _))) = bus.latest::<FdirStatus>()
             && fdir.triggered
         {
-            // FDIR trip blocks arming. The commander records that a
-            // safe-state transition has been requested so a
-            // scenario can declare a safe-state phase to fall through
-            // into.
-            self.request_safe_state();
+            // FDIR trip blocks arming. Allocation infeasibility maps
+            // to DEGRADED; other FDIR faults request the SAFE ladder.
+            match self.confirm_fdir_health_request(fdir) {
+                FdirHealthRequest::Degraded => self.request_degraded_state(),
+                FdirHealthRequest::Safe => self.request_safe_state(),
+                FdirHealthRequest::None => {}
+            }
             return;
         }
+        self.reset_fdir_health_confirmation();
         self.armed = true;
     }
 
-    fn evaluate_fdir_safe_state(&mut self, bus: &Bus) {
-        // While armed, if FDIR trips, request a safe state. The
-        // scenario decides what phase that maps to via an
-        // `EventTrigger::SafeStateRequested` binding.
+    fn evaluate_fdir_health_region(&mut self, bus: &Bus) {
+        // While armed, allocation infeasibility enters DEGRADED;
+        // other FDIR trips request SAFE. The scenario decides what
+        // SAFE maps to via an `EventTrigger::SafeStateRequested`
+        // binding.
         if self.armed
             && let Ok(Some((fdir, _))) = bus.latest::<FdirStatus>()
             && fdir.triggered
         {
-            self.request_safe_state();
+            match self.confirm_fdir_health_request(fdir) {
+                FdirHealthRequest::Degraded => self.request_degraded_state(),
+                FdirHealthRequest::Safe => self.request_safe_state(),
+                FdirHealthRequest::None => {}
+            }
+        } else if self.armed {
+            self.reset_fdir_health_confirmation();
         }
     }
 
@@ -309,6 +339,16 @@ impl Commander {
         );
     }
 
+    fn request_degraded_state(&mut self) {
+        if self.safe_state_requested() {
+            return;
+        }
+        let _ = self.regions.set_current_state(
+            CanonicalRegions::health(),
+            CanonicalRegionStates::health_degraded(),
+        );
+    }
+
     fn safe_state_requested(&self) -> bool {
         matches!(
             self.regions.current_state(CanonicalRegions::health()),
@@ -316,6 +356,41 @@ impl Commander {
                 if state == CanonicalRegionStates::health_abort_requested()
                     || state == CanonicalRegionStates::health_safed_on_fault()
         )
+    }
+
+    fn fdir_has_only_allocation_infeasible(fdir: FdirStatus) -> bool {
+        fdir.tripped_mask != 0
+            && (fdir.tripped_mask & FDIR_BIT_ALLOCATION_INFEASIBLE) != 0
+            && (fdir.tripped_mask & !FDIR_BIT_ALLOCATION_INFEASIBLE) == 0
+    }
+
+    fn confirm_fdir_health_request(&mut self, fdir: FdirStatus) -> FdirHealthRequest {
+        if !fdir.triggered || fdir.tripped_mask == 0 {
+            self.reset_fdir_health_confirmation();
+            return FdirHealthRequest::None;
+        }
+        if Self::fdir_has_only_allocation_infeasible(fdir) {
+            self.fdir_degraded_burst = self.fdir_degraded_burst.saturating_add(1);
+            self.fdir_safe_burst = 0;
+            if self.fdir_degraded_burst >= self.params.fdir_degraded_confirm_ticks.max(1) {
+                FdirHealthRequest::Degraded
+            } else {
+                FdirHealthRequest::None
+            }
+        } else {
+            self.fdir_safe_burst = self.fdir_safe_burst.saturating_add(1);
+            self.fdir_degraded_burst = 0;
+            if self.fdir_safe_burst >= self.params.fdir_safe_confirm_ticks.max(1) {
+                FdirHealthRequest::Safe
+            } else {
+                FdirHealthRequest::None
+            }
+        }
+    }
+
+    fn reset_fdir_health_confirmation(&mut self) {
+        self.fdir_degraded_burst = 0;
+        self.fdir_safe_burst = 0;
     }
 
     fn sync_mission_region(&mut self) {
@@ -530,7 +605,7 @@ impl Job for Commander {
         }
 
         self.try_arm(ctx.bus);
-        self.evaluate_fdir_safe_state(ctx.bus);
+        self.evaluate_fdir_health_region(ctx.bus);
         self.evaluate_liftoff(ctx.bus);
 
         let status = VehicleStatus {
@@ -676,6 +751,12 @@ mod tests {
                         allowed_engines: Vec::new(),
                     },
                     Phase {
+                        id: CanonicalRegionStates::health_degraded(),
+                        label: "degraded".into(),
+                        allowed_effectors: Vec::new(),
+                        allowed_engines: Vec::new(),
+                    },
+                    Phase {
                         id: CanonicalRegionStates::health_abort_requested(),
                         label: "abort_requested".into(),
                         allowed_effectors: Vec::new(),
@@ -694,17 +775,18 @@ mod tests {
         bindings: Vec<EventBinding<MissionAction>>,
         start: PhaseId,
     ) -> Commander {
+        commander_from_graph_with_params(graph, bindings, start, CommanderParams::default())
+    }
+
+    fn commander_from_graph_with_params(
+        graph: MissionPhaseGraph,
+        bindings: Vec<EventBinding<MissionAction>>,
+        start: PhaseId,
+        params: CommanderParams,
+    ) -> Commander {
         let hsm = hsm_from_graph(&graph);
         let regions = regions_from_graph(&graph);
-        Commander::new(
-            graph,
-            hsm,
-            regions,
-            bindings,
-            start,
-            CommanderParams::default(),
-        )
-        .unwrap()
+        Commander::new(graph, hsm, regions, bindings, start, params).unwrap()
     }
 
     fn fresh_bus() -> Bus {
@@ -773,6 +855,348 @@ mod tests {
             Some(CanonicalRegionStates::health_abort_requested()),
             "safe-state request should be represented by the health region"
         );
+    }
+
+    #[test]
+    fn allocation_infeasible_fdir_enters_degraded_without_safe_state_request() {
+        let (graph, bindings, pad) = build_graph();
+        let mut commander = commander_from_graph(graph, bindings, pad);
+
+        let bus = fresh_bus();
+        let clock = SimulatedClock::new();
+        publish_initialized_estimator(&bus);
+
+        clock.set(SimTime::ZERO, StepIndex::ZERO);
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (armed_status, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
+        assert!(
+            armed_status.armed,
+            "vehicle should arm before the FDIR trip"
+        );
+
+        bus.publish(FdirStatus {
+            triggered: true,
+            tripped_mask: FDIR_BIT_ALLOCATION_INFEASIBLE,
+            ticks_since_trip: 1,
+        })
+        .unwrap();
+        clock.set(SimTime::from_seconds(0.001), StepIndex::new(1));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (status, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
+        assert!(
+            !status.safe_state_requested,
+            "allocation infeasibility alone should request DEGRADED, not SAFE"
+        );
+        assert_eq!(
+            commander.region_state(CanonicalRegions::health()),
+            Some(CanonicalRegionStates::health_degraded())
+        );
+        let (health, _) = bus.latest::<HealthRegionStatePublish>().unwrap().unwrap();
+        assert_eq!(
+            health.state_id,
+            CanonicalRegionStates::health_degraded().value()
+        );
+        let (aggregate, _) = bus.latest::<MissionStatePublish>().unwrap().unwrap();
+        assert_eq!(
+            aggregate.health_state_id,
+            CanonicalRegionStates::health_degraded().value()
+        );
+        assert!(!aggregate.safe_state_requested);
+    }
+
+    #[test]
+    fn allocation_infeasible_degraded_state_waits_for_confirmation_ticks() {
+        let (graph, bindings, pad) = build_graph();
+        let mut commander = commander_from_graph_with_params(
+            graph,
+            bindings,
+            pad,
+            CommanderParams {
+                fdir_degraded_confirm_ticks: 2,
+                ..CommanderParams::default()
+            },
+        );
+
+        let bus = fresh_bus();
+        let clock = SimulatedClock::new();
+        publish_initialized_estimator(&bus);
+        clock.set(SimTime::ZERO, StepIndex::ZERO);
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        bus.publish(FdirStatus {
+            triggered: true,
+            tripped_mask: FDIR_BIT_ALLOCATION_INFEASIBLE,
+            ticks_since_trip: 1,
+        })
+        .unwrap();
+        clock.set(SimTime::from_seconds(0.001), StepIndex::new(1));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        assert_eq!(
+            commander.region_state(CanonicalRegions::health()),
+            Some(CanonicalRegionStates::health_nominal()),
+            "first allocation-infeasible tick should not yet enter DEGRADED"
+        );
+
+        clock.set(SimTime::from_seconds(0.002), StepIndex::new(2));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        assert_eq!(
+            commander.region_state(CanonicalRegions::health()),
+            Some(CanonicalRegionStates::health_degraded())
+        );
+    }
+
+    #[test]
+    fn non_allocation_fdir_safe_request_waits_for_confirmation_ticks() {
+        let (graph, bindings, pad) = build_graph();
+        let mut commander = commander_from_graph_with_params(
+            graph,
+            bindings,
+            pad,
+            CommanderParams {
+                fdir_safe_confirm_ticks: 2,
+                ..CommanderParams::default()
+            },
+        );
+
+        let bus = fresh_bus();
+        let clock = SimulatedClock::new();
+        publish_initialized_estimator(&bus);
+        clock.set(SimTime::ZERO, StepIndex::ZERO);
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        bus.publish(FdirStatus {
+            triggered: true,
+            tripped_mask: 0b1,
+            ticks_since_trip: 1,
+        })
+        .unwrap();
+        clock.set(SimTime::from_seconds(0.001), StepIndex::new(1));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (first, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
+        assert!(
+            !first.safe_state_requested,
+            "first non-allocation FDIR tick should not yet request SAFE"
+        );
+
+        clock.set(SimTime::from_seconds(0.002), StepIndex::new(2));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (second, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
+        assert!(second.safe_state_requested);
+        assert_eq!(
+            commander.region_state(CanonicalRegions::health()),
+            Some(CanonicalRegionStates::health_abort_requested())
+        );
+    }
+
+    #[test]
+    fn non_allocation_fdir_trip_drives_safe_hold_shutdown_and_safing_pipeline() {
+        use std::collections::BTreeMap;
+
+        use nalgebra::{UnitQuaternion, Vector3};
+        use openbmp_core::EngineId;
+
+        use crate::autopilot::{GainSchedule, PidGains, ThreeLoopAutopilot, ThreeLoopGains};
+        use crate::mixer::{Mixer, PhaseAuthority, PhaseAuthorityTable};
+        use crate::topics::{
+            ActuatorCommand, AttitudeEstimate, AutopilotStatus, EffectorAvailability,
+            EngineCommandSet, EngineDemand, PropellantSafingCommand, ReferenceState, WindEstimate,
+        };
+
+        fn q_xyzw(q: UnitQuaternion<f64>) -> [f64; 4] {
+            let q = q.into_inner();
+            [q.i, q.j, q.k, q.w]
+        }
+
+        let ascent = PhaseId::from_path("mission.phases.ascent");
+        let graph = MissionPhaseGraph::new(
+            vec![Phase {
+                id: ascent,
+                label: "ascent".to_string(),
+                allowed_effectors: vec!["vehicle.assembly.effectors.roll".to_string()],
+                allowed_engines: vec!["main".to_string()],
+            }],
+            Vec::new(),
+            ascent,
+            &[],
+        )
+        .unwrap();
+        let mut commander = commander_from_graph(graph, Vec::new(), ascent);
+        let mut autopilot = ThreeLoopAutopilot::with_schedule(GainSchedule {
+            by_phase: BTreeMap::new(),
+            default: ThreeLoopGains {
+                rate: [PidGains {
+                    kp: 1.0,
+                    ki: 0.0,
+                    kd: 0.0,
+                }; 3],
+                attitude: [PidGains {
+                    kp: 1.0,
+                    ki: 0.0,
+                    kd: 0.0,
+                }; 3],
+                trajectory: [PidGains::default(); 3],
+                elevator_limit_rad: 1.0,
+                aileron_limit_rad: 1.0,
+                rudder_limit_rad: 1.0,
+                throttle_baseline: 1.0,
+            },
+        });
+        let engine = EngineId::from_path("vehicle.assembly.engines.main");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            ascent.value(),
+            PhaseAuthority {
+                effectors: Vec::new(),
+                engines: vec![engine],
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        let mut mixer = Mixer::new().with_authority(PhaseAuthorityTable {
+            allowed,
+            default: PhaseAuthority::default(),
+        });
+        let bus = fresh_bus();
+        bus.register::<AttitudeEstimate>().unwrap();
+        bus.register::<ReferenceState>().unwrap();
+        bus.register::<WindEstimate>().unwrap();
+        bus.register::<AutopilotStatus>().unwrap();
+        bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<EffectorAvailability>().unwrap();
+        bus.register::<EngineDemand>().unwrap();
+        bus.register::<EngineCommandSet>().unwrap();
+        bus.register::<PropellantSafingCommand>().unwrap();
+        let clock = SimulatedClock::new();
+        publish_initialized_estimator(&bus);
+        bus.publish(ReferenceState {
+            q_body_to_eci_xyzw: q_xyzw(UnitQuaternion::from_euler_angles(0.0, 0.5, 0.0)),
+            ..ReferenceState::default()
+        })
+        .unwrap();
+        bus.publish(AttitudeEstimate {
+            time: SimTime::from_seconds(0.001),
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            omega_body_rad_s: Vector3::zeros(),
+            gyro_bias_body_rad_s: Vector3::zeros(),
+        })
+        .unwrap();
+
+        clock.set(SimTime::from_seconds(0.001), StepIndex::new(1));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (armed, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
+        assert!(armed.armed);
+        assert!(armed.in_flight);
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        bus.publish(FdirStatus {
+            triggered: true,
+            tripped_mask: 0b1,
+            ticks_since_trip: 1,
+        })
+        .unwrap();
+        clock.set(SimTime::from_seconds(0.002), StepIndex::new(2));
+        commander
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (safe_status, _) = bus.latest::<VehicleStatus>().unwrap().unwrap();
+        assert!(safe_status.safe_state_requested);
+        assert_eq!(
+            commander.region_state(CanonicalRegions::health()),
+            Some(CanonicalRegionStates::health_abort_requested())
+        );
+
+        bus.publish(AttitudeEstimate {
+            time: SimTime::from_seconds(0.002),
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            omega_body_rad_s: Vector3::zeros(),
+            gyro_bias_body_rad_s: Vector3::zeros(),
+        })
+        .unwrap();
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (autopilot_status, _) = bus.latest::<AutopilotStatus>().unwrap().unwrap();
+        assert!(autopilot_status.safe_attitude_hold_active);
+        let (engine_demand, _) = bus.latest::<EngineDemand>().unwrap().unwrap();
+        assert_eq!(engine_demand.throttle_unit.to_bits(), 0.0_f64.to_bits());
+        assert!(engine_demand.shutdown);
+        let (safing, _) = bus.latest::<PropellantSafingCommand>().unwrap().unwrap();
+        assert!(safing.safed);
+        assert!(safing.isolate_feeds);
+        assert!(safing.close_engine_valves);
+        assert!(safing.dump_enabled);
+        let (engine_commands, _) = bus.latest::<EngineCommandSet>().unwrap().unwrap();
+        assert_eq!(engine_commands.count, 1);
+        assert_eq!(engine_commands.commands[0].engine_id, engine.value());
+        assert_eq!(
+            engine_commands.commands[0].throttle_unit.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert!(engine_commands.commands[0].shutdown);
     }
 
     #[test]

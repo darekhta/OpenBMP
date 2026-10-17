@@ -1,0 +1,38 @@
+# Synthetic DATCOM fin/body carryover validation fixture.
+#
+# This fixture pins OpenBMP's bounded fin-on-body and body-on-fin carryover
+# factor branch over small, moderate, and clamped body-radius/span ratios. It is
+# method/equation-shape evidence only, not digitized Missile-DATCOM data.
+
+openbmp.datcom_fin_body_carryover_validation = 1
+
+[provenance]
+dataset_id = "openbmp.aero.datcom_fin_body_carryover.v1"
+source_class = "synthetic-openbmp-public-methodology"
+validation_label = "checked"
+source_title = "DATCOM fin/body carryover factor equation-shape fixture"
+
+[tolerances]
+max_abs_error = 1.0e-12
+max_relative_error = 1.0e-12
+
+[[samples]]
+id = "radius-span-0p2"
+body_diameter_m = 0.4
+fin_span_m = 1.0
+expected_fin_on_body = 1.1666666666666667
+expected_body_on_fin = 1.0166666666666666
+
+[[samples]]
+id = "radius-span-1"
+body_diameter_m = 1.0
+fin_span_m = 0.5
+expected_fin_on_body = 1.5
+expected_body_on_fin = 1.25
+
+[[samples]]
+id = "radius-span-clamped"
+body_diameter_m = 2.0
+fin_span_m = 0.25
+expected_fin_on_body = 1.6666666666666665
+expected_body_on_fin = 1.6666666666666665

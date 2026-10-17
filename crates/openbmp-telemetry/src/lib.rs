@@ -29,6 +29,8 @@
 pub mod channel;
 mod csv_writer;
 pub mod error;
+#[cfg(feature = "interop-export")]
+pub mod export;
 mod json_writer;
 mod parquet_writer;
 pub mod row;
@@ -39,6 +41,11 @@ pub mod value;
 
 pub use channel::{ChannelMetadata, TelemetryChannel};
 pub use error::TelemetryError;
+#[cfg(feature = "interop-export")]
+pub use export::{
+    CCSDS_SHAPED_FRAME_SYNC, FRAME_STREAM_LABEL, FRAME_STREAM_MAGIC, TELEMETRY_DICTIONARY_LABEL,
+    read_ccsds_shaped_frame_stream,
+};
 pub use row::TelemetryRow;
 pub use sample::{TelemetryRingBuffer, TelemetrySample, TelemetrySink};
 pub use schema::TelemetrySchema;

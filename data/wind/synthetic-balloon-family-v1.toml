@@ -1,0 +1,27 @@
+# Synthetic day-of-launch balloon-family generator deck.
+#
+# This is not a measured or public meteorological record. It is a pinned
+# deterministic generator configuration used by WP-19.1 tests and examples.
+
+[synthetic_family]
+seed = 0x5151_1919_0001
+member_count = 16
+released_at_s = -18_000.0
+altitude_min_m = 0.0
+altitude_max_m = 20_000.0
+altitude_step_m = 500.0
+base_wind_ned_m_s = [4.0, -2.0, 0.0]
+shear_ned_per_s = [0.0012, 0.0004, 0.0]
+amplitude_ned_m_s = [6.0, 3.0, 0.4]
+
+[qc]
+min_altitude_m = 0.0
+max_altitude_m = 20_000.0
+max_gap_m = 1_000.0
+max_shear_per_s = 0.03
+max_speed_m_s = 120.0
+min_quality_unit = 0.95
+max_staleness_s = 18_000.0
+
+[filter]
+cutoff_wavelength_m = 2_000.0

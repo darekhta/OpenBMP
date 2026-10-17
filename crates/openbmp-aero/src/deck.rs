@@ -8,7 +8,15 @@
 //! representation to an **N-axis** deck: the same three
 //! base axes plus 1–3 optional control-effector axes. Schema-1 decks
 //! parse to an N=3 instance with no effector axes — the lookup at
-//! N=3 is bit-identical to the original trilinear path.
+//! N=3 is bit-identical to the original trilinear path. Both schemas
+//! may carry optional explicit body-axis six-coefficient tables for
+//! `(CX, CY, CZ, Cl, Cm, Cn)`, optional dynamic stability derivative
+//! tables mapping `(p_hat, q_hat, r_hat)` into `(Cl, Cm, Cn)`, plus
+//! optional per-node one-sigma tables for both reduced and
+//! six-coefficient channels. When absent,
+//! [`AeroDeck::lookup_six`], [`AeroDeck::lookup_dynamic_derivatives`],
+//! [`AeroDeck::lookup_sigma`], and [`AeroDeck::lookup_six_sigma`] return
+//! `Ok(None)` and nominal reduced coefficient lookup is unchanged.
 //!
 //! `axis_order[0..3]` is always `["mach", "alpha", "beta"]`;
 //! `axis_order[3..]` (when present) names the effector axes (e.g.
@@ -22,8 +30,6 @@
 //! * `CD` — drag coefficient (opposes relative wind).
 //! * `CM` — pitching-moment coefficient about the body lateral axis;
 //!   roll moment is identically zero by axisymmetry.
-//!
-//! Six-coefficient `CX/CY/CZ/Cl/Cm/Cn` decks are deferred past 3.5.
 //!
 //! # Storage layout
 //!
@@ -79,6 +85,8 @@ use alloc::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::AeroError;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 // ---------------------------------------------------------------------
 // AeroCoefficients
@@ -94,6 +102,208 @@ pub struct AeroCoefficients {
     pub cd: f64,
     /// Pitching-moment coefficient (dimensionless).
     pub cm: f64,
+}
+
+/// The six explicit body-axis force and moment coefficients returned by
+/// an optional aerodynamic deck lookup.
+///
+/// Force coefficients map directly to body-frame force as
+/// `F_body = q * S * (CX, CY, CZ)`. Moment coefficients map directly to
+/// `M_body = q * S * L * (Cl, Cm, Cn)`.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct AeroSixCoefficients {
+    /// Body-x force coefficient.
+    pub cx: f64,
+    /// Body-y force coefficient.
+    pub cy: f64,
+    /// Body-z force coefficient.
+    pub cz: f64,
+    /// Roll-moment coefficient about body x.
+    pub cl: f64,
+    /// Pitch-moment coefficient about body y.
+    pub cm: f64,
+    /// Yaw-moment coefficient about body z.
+    pub cn: f64,
+}
+
+/// Dynamic stability derivatives carried by an optional deck lookup.
+///
+/// These coefficients use the common DATCOM-style non-dimensional rate
+/// convention: pitch rate `q_hat = q L / (2V)`, yaw rate
+/// `r_hat = r L / (2V)`, and roll rate `p_hat = p L / (2V)`.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct AeroDynamicDerivatives {
+    /// Roll damping derivative with respect to non-dimensional roll rate.
+    pub cl_p: f64,
+    /// Roll-moment derivative with respect to non-dimensional pitch rate.
+    pub cl_q: f64,
+    /// Roll-moment derivative with respect to non-dimensional yaw rate.
+    pub cl_r: f64,
+    /// Pitch-moment derivative with respect to non-dimensional roll rate.
+    pub cm_p: f64,
+    /// Pitch damping derivative with respect to non-dimensional pitch rate.
+    pub cm_q: f64,
+    /// Pitch-moment derivative with respect to non-dimensional yaw rate.
+    pub cm_r: f64,
+    /// Yaw-moment derivative with respect to non-dimensional roll rate.
+    pub cn_p: f64,
+    /// Yaw-moment derivative with respect to non-dimensional pitch rate.
+    pub cn_q: f64,
+    /// Yaw damping derivative with respect to non-dimensional yaw rate.
+    pub cn_r: f64,
+}
+
+/// Row-major dynamic stability derivative tables aligned to an [`AeroDeck`].
+///
+/// Each vector has one value per deck node. Coefficients map
+/// `(p_hat, q_hat, r_hat)` into body-axis moment coefficients
+/// `(Cl, Cm, Cn)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AeroDynamicDerivativeTableSet {
+    /// `Cl_p` table.
+    pub cl_p: Vec<f64>,
+    /// `Cl_q` table.
+    pub cl_q: Vec<f64>,
+    /// `Cl_r` table.
+    pub cl_r: Vec<f64>,
+    /// `Cm_p` table.
+    pub cm_p: Vec<f64>,
+    /// `Cm_q` table.
+    pub cm_q: Vec<f64>,
+    /// `Cm_r` table.
+    pub cm_r: Vec<f64>,
+    /// `Cn_p` table.
+    pub cn_p: Vec<f64>,
+    /// `Cn_q` table.
+    pub cn_q: Vec<f64>,
+    /// `Cn_r` table.
+    pub cn_r: Vec<f64>,
+}
+
+/// The three reduced one-sigma coefficient uncertainties returned by an
+/// optional aerodynamic deck uncertainty lookup.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct AeroCoefficientSigmas {
+    /// Normal-force coefficient one-sigma uncertainty (dimensionless).
+    pub cn: f64,
+    /// Drag coefficient one-sigma uncertainty (dimensionless).
+    pub cd: f64,
+    /// Pitching-moment coefficient one-sigma uncertainty (dimensionless).
+    pub cm: f64,
+}
+
+/// The six explicit body-axis one-sigma coefficient uncertainties returned
+/// by an optional aerodynamic deck uncertainty lookup.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct AeroSixCoefficientSigmas {
+    /// Body-x force coefficient one-sigma uncertainty.
+    pub cx: f64,
+    /// Body-y force coefficient one-sigma uncertainty.
+    pub cy: f64,
+    /// Body-z force coefficient one-sigma uncertainty.
+    pub cz: f64,
+    /// Roll-moment coefficient one-sigma uncertainty.
+    pub cl: f64,
+    /// Pitch-moment coefficient one-sigma uncertainty.
+    pub cm: f64,
+    /// Yaw-moment coefficient one-sigma uncertainty.
+    pub cn: f64,
+}
+
+/// Deck-level metadata describing how per-node uncertainty should be
+/// correlated when a higher-layer campaign draws coefficient samples.
+///
+/// This is metadata only in `openbmp-aero`; sampling helpers live in
+/// higher-layer crates so the runtime deck remains a pure lookup object.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct AeroUncertaintyCorrelation {
+    mach_length: f64,
+    coefficient: Option<[[f64; 3]; 3]>,
+    six_coefficient: Option<[[f64; 6]; 6]>,
+}
+
+impl AeroUncertaintyCorrelation {
+    /// Construct exponential Mach-axis correlation metadata.
+    ///
+    /// `mach_length` is measured in Mach units and must be finite and positive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::NonFinite`] for `NaN` / `Inf` and
+    /// [`AeroError::InvalidParameter`] for non-positive values.
+    pub fn exponential_mach(mach_length: f64) -> Result<Self, AeroError> {
+        if !mach_length.is_finite() {
+            return Err(AeroError::NonFinite {
+                reason: "uncertainty correlation Mach length",
+            });
+        }
+        if mach_length <= 0.0 {
+            return Err(AeroError::InvalidParameter {
+                reason: "uncertainty correlation Mach length",
+            });
+        }
+        Ok(Self {
+            mach_length,
+            coefficient: None,
+            six_coefficient: None,
+        })
+    }
+
+    /// Attach a reduced `(CN, CD, CM)` coefficient-correlation matrix.
+    ///
+    /// The matrix must be finite, symmetric, have unit diagonal entries, keep
+    /// all off-diagonal values inside `[-1, 1]`, and be positive definite.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::NonFinite`] for `NaN` / `Inf` and
+    /// [`AeroError::InvalidParameter`] for malformed correlation matrices.
+    pub fn with_coefficient_correlation(
+        mut self,
+        coefficient: [[f64; 3]; 3],
+    ) -> Result<Self, AeroError> {
+        validate_coefficient_correlation_matrix(coefficient)?;
+        self.coefficient = Some(coefficient);
+        Ok(self)
+    }
+
+    /// Attach a six-channel `(CX, CY, CZ, Cl, Cm, Cn)` coefficient-correlation
+    /// matrix.
+    ///
+    /// The matrix must be finite, symmetric, have unit diagonal entries, keep
+    /// all off-diagonal values inside `[-1, 1]`, and be positive definite.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::NonFinite`] for `NaN` / `Inf` and
+    /// [`AeroError::InvalidParameter`] for malformed correlation matrices.
+    pub fn with_six_coefficient_correlation(
+        mut self,
+        coefficient: [[f64; 6]; 6],
+    ) -> Result<Self, AeroError> {
+        validate_correlation_matrix::<6>(coefficient, "six coefficient correlation matrix")?;
+        self.six_coefficient = Some(coefficient);
+        Ok(self)
+    }
+
+    /// Exponential Mach-axis correlation length, in Mach units.
+    #[must_use]
+    pub const fn mach_length(self) -> f64 {
+        self.mach_length
+    }
+
+    /// Optional reduced `(CN, CD, CM)` coefficient-correlation matrix.
+    #[must_use]
+    pub const fn coefficient_correlation(self) -> Option<[[f64; 3]; 3]> {
+        self.coefficient
+    }
+
+    /// Optional six-channel `(CX, CY, CZ, Cl, Cm, Cn)` coefficient-correlation
+    /// matrix.
+    #[must_use]
+    pub const fn six_coefficient_correlation(self) -> Option<[[f64; 6]; 6]> {
+        self.six_coefficient
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -139,9 +349,39 @@ pub struct AeroDeck {
     cn: Vec<f64>,
     cd: Vec<f64>,
     cm: Vec<f64>,
+    /// Optional explicit six-coefficient body-axis tables. When absent,
+    /// runtime body-force composition falls back to the reduced mapping.
+    six: Option<AeroSixTables>,
+    /// Optional dynamic stability derivative tables.
+    dynamic_derivatives: Option<AeroDynamicDerivativeTableSet>,
+    /// Optional per-node one-sigma tables aligned to the coefficient
+    /// tables. Absence means no deck-native uncertainty was supplied.
+    sigma: Option<AeroSigmaTables>,
+    /// Optional per-node one-sigma tables aligned to the six-coefficient
+    /// tables. Only valid when nominal six-coefficient tables are present.
+    six_sigma: Option<AeroSixTables>,
+    /// Optional deck-level correlation metadata for uncertainty draws.
+    uncertainty_correlation: Option<AeroUncertaintyCorrelation>,
     reference_area_m2: f64,
     reference_length_m: f64,
     extrapolation: ExtrapolationPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct AeroSigmaTables {
+    cn: Vec<f64>,
+    cd: Vec<f64>,
+    cm: Vec<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct AeroSixTables {
+    cx: Vec<f64>,
+    cy: Vec<f64>,
+    cz: Vec<f64>,
+    cl: Vec<f64>,
+    cm: Vec<f64>,
+    cn: Vec<f64>,
 }
 
 impl AeroDeck {
@@ -232,6 +472,11 @@ impl AeroDeck {
             cn,
             cd,
             cm,
+            six: None,
+            dynamic_derivatives: None,
+            sigma: None,
+            six_sigma: None,
+            uncertainty_correlation: None,
             reference_area_m2,
             reference_length_m,
             extrapolation: ExtrapolationPolicy::FailClosed,
@@ -249,6 +494,229 @@ impl AeroDeck {
     #[must_use]
     pub const fn extrapolation_policy(&self) -> ExtrapolationPolicy {
         self.extrapolation
+    }
+
+    /// Attach per-node one-sigma coefficient uncertainty tables.
+    ///
+    /// Each table is row-major over `axis_order`, has the same length
+    /// as the nominal coefficient tables, and must contain only finite
+    /// non-negative values. This is a builder-style method because
+    /// uncertainty is optional in all deck schemas.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::MalformedDeck`] when a sigma table length
+    /// differs from the deck node count, [`AeroError::NonFinite`] for
+    /// `NaN` / `Inf`, and [`AeroError::InvalidParameter`] for negative
+    /// sigma values.
+    pub fn with_sigma_tables(
+        mut self,
+        cn_sigma: Vec<f64>,
+        cd_sigma: Vec<f64>,
+        cm_sigma: Vec<f64>,
+    ) -> Result<Self, AeroError> {
+        let expected = self.cn.len();
+        validate_sigma_table(&cn_sigma, expected, "CN sigma table")?;
+        validate_sigma_table(&cd_sigma, expected, "CD sigma table")?;
+        validate_sigma_table(&cm_sigma, expected, "CM sigma table")?;
+        self.sigma = Some(AeroSigmaTables {
+            cn: cn_sigma,
+            cd: cd_sigma,
+            cm: cm_sigma,
+        });
+        Ok(self)
+    }
+
+    /// Attach dynamic stability derivative tables.
+    ///
+    /// This compatibility helper attaches only the principal damping terms
+    /// (`Cm_q`, `Cn_r`, `Cl_p`) and fills all cross-coupling terms with zero.
+    /// Use [`Self::with_dynamic_derivative_table_set`] for the complete
+    /// 3-by-3 moment-rate derivative matrix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::MalformedDeck`] when a table length differs from
+    /// the deck node count and [`AeroError::NonFinite`] for `NaN` / `Inf`.
+    pub fn with_dynamic_derivative_tables(
+        self,
+        cm_q: Vec<f64>,
+        cn_r: Vec<f64>,
+        cl_p: Vec<f64>,
+    ) -> Result<Self, AeroError> {
+        let zeros = vec![0.0; self.cn.len()];
+        self.with_dynamic_derivative_table_set(AeroDynamicDerivativeTableSet {
+            cl_p,
+            cl_q: zeros.clone(),
+            cl_r: zeros.clone(),
+            cm_p: zeros.clone(),
+            cm_q,
+            cm_r: zeros.clone(),
+            cn_p: zeros.clone(),
+            cn_q: zeros,
+            cn_r,
+        })
+    }
+
+    /// Attach the full body-axis dynamic stability derivative table set.
+    ///
+    /// Each table is row-major over `axis_order`, has the same length as the
+    /// reduced coefficient tables, and must contain only finite values. The
+    /// matrix maps non-dimensional rates `(pL/2V, qL/2V, rL/2V)` into moment
+    /// coefficients `(Cl, Cm, Cn)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::MalformedDeck`] when a table length differs from
+    /// the deck node count and [`AeroError::NonFinite`] for `NaN` / `Inf`.
+    pub fn with_dynamic_derivative_table_set(
+        mut self,
+        tables: AeroDynamicDerivativeTableSet,
+    ) -> Result<Self, AeroError> {
+        let expected = self.cn.len();
+        validate_table(&tables.cl_p, expected, "Cl_p dynamic derivative table")?;
+        validate_table(&tables.cl_q, expected, "Cl_q dynamic derivative table")?;
+        validate_table(&tables.cl_r, expected, "Cl_r dynamic derivative table")?;
+        validate_table(&tables.cm_p, expected, "Cm_p dynamic derivative table")?;
+        validate_table(&tables.cm_q, expected, "Cm_q dynamic derivative table")?;
+        validate_table(&tables.cm_r, expected, "Cm_r dynamic derivative table")?;
+        validate_table(&tables.cn_p, expected, "Cn_p dynamic derivative table")?;
+        validate_table(&tables.cn_q, expected, "Cn_q dynamic derivative table")?;
+        validate_table(&tables.cn_r, expected, "Cn_r dynamic derivative table")?;
+        self.dynamic_derivatives = Some(tables);
+        Ok(self)
+    }
+
+    /// Attach explicit body-axis six-coefficient tables.
+    ///
+    /// Each table is row-major over `axis_order`, has the same length as the
+    /// reduced coefficient tables, and must contain only finite values. When
+    /// present, [`crate::method::DeckLookup`] uses these tables directly for
+    /// body-frame force and moment composition while reduced `(CN, CD, CM)`
+    /// lookup remains available for compatibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::MalformedDeck`] when a table length differs from
+    /// the deck node count and [`AeroError::NonFinite`] for `NaN` / `Inf`.
+    #[allow(clippy::too_many_arguments)] // mirrors the six-channel aerodynamic coefficient shape.
+    pub fn with_six_coefficient_tables(
+        mut self,
+        cx: Vec<f64>,
+        cy: Vec<f64>,
+        cz: Vec<f64>,
+        cl: Vec<f64>,
+        cm: Vec<f64>,
+        cn: Vec<f64>,
+    ) -> Result<Self, AeroError> {
+        let expected = self.cn.len();
+        validate_table(&cx, expected, "CX table")?;
+        validate_table(&cy, expected, "CY table")?;
+        validate_table(&cz, expected, "CZ table")?;
+        validate_table(&cl, expected, "Cl table")?;
+        validate_table(&cm, expected, "Cm table")?;
+        validate_table(&cn, expected, "Cn table")?;
+        self.six = Some(AeroSixTables {
+            cx,
+            cy,
+            cz,
+            cl,
+            cm,
+            cn,
+        });
+        Ok(self)
+    }
+
+    /// Attach explicit body-axis six-coefficient one-sigma tables.
+    ///
+    /// Nominal six-coefficient tables must already be present so consumers do
+    /// not mistake a six-channel uncertainty block for a six-channel nominal
+    /// deck.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::MalformedDeck`] when nominal six-coefficient tables
+    /// are absent or a sigma table length differs from the deck node count,
+    /// [`AeroError::NonFinite`] for `NaN` / `Inf`, and
+    /// [`AeroError::InvalidParameter`] for negative sigma values.
+    #[allow(clippy::too_many_arguments)] // mirrors the six-channel aerodynamic coefficient shape.
+    pub fn with_six_sigma_tables(
+        mut self,
+        cx_sigma: Vec<f64>,
+        cy_sigma: Vec<f64>,
+        cz_sigma: Vec<f64>,
+        cl_sigma: Vec<f64>,
+        cm_sigma: Vec<f64>,
+        cn_sigma: Vec<f64>,
+    ) -> Result<Self, AeroError> {
+        if self.six.is_none() {
+            return Err(AeroError::MalformedDeck {
+                reason: "six sigma tables require nominal six coefficient tables",
+            });
+        }
+        let expected = self.cn.len();
+        validate_sigma_table(&cx_sigma, expected, "CX sigma table")?;
+        validate_sigma_table(&cy_sigma, expected, "CY sigma table")?;
+        validate_sigma_table(&cz_sigma, expected, "CZ sigma table")?;
+        validate_sigma_table(&cl_sigma, expected, "Cl sigma table")?;
+        validate_sigma_table(&cm_sigma, expected, "Cm sigma table")?;
+        validate_sigma_table(&cn_sigma, expected, "Cn sigma table")?;
+        self.six_sigma = Some(AeroSixTables {
+            cx: cx_sigma,
+            cy: cy_sigma,
+            cz: cz_sigma,
+            cl: cl_sigma,
+            cm: cm_sigma,
+            cn: cn_sigma,
+        });
+        Ok(self)
+    }
+
+    /// Attach deck-level uncertainty-correlation metadata.
+    ///
+    /// This does not change coefficient lookup or sigma interpolation. The
+    /// metadata is consumed by higher-layer campaign/sampling code.
+    #[must_use]
+    pub fn with_uncertainty_correlation(mut self, correlation: AeroUncertaintyCorrelation) -> Self {
+        self.uncertainty_correlation = Some(correlation);
+        self
+    }
+
+    /// Optional deck-level uncertainty-correlation metadata.
+    #[must_use]
+    pub const fn uncertainty_correlation(&self) -> Option<AeroUncertaintyCorrelation> {
+        self.uncertainty_correlation
+    }
+
+    /// Whether this deck carries per-node one-sigma uncertainty tables.
+    #[must_use]
+    pub fn has_sigma_tables(&self) -> bool {
+        self.sigma.is_some()
+    }
+
+    /// Whether this deck carries explicit body-axis six-coefficient tables.
+    #[must_use]
+    pub fn has_six_coefficient_tables(&self) -> bool {
+        self.six.is_some()
+    }
+
+    /// Whether this deck carries dynamic stability derivative tables.
+    #[must_use]
+    pub fn has_dynamic_derivative_tables(&self) -> bool {
+        self.dynamic_derivatives.is_some()
+    }
+
+    /// Number of grid nodes in each aligned coefficient or derivative table.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.cn.len()
+    }
+
+    /// Whether this deck carries explicit body-axis six-coefficient one-sigma
+    /// uncertainty tables.
+    #[must_use]
+    pub fn has_six_sigma_tables(&self) -> bool {
+        self.six_sigma.is_some()
     }
 
     /// Reference aerodynamic area (m²).
@@ -320,6 +788,153 @@ impl AeroDeck {
         beta_deg: f64,
         deflections: &BTreeMap<&str, f64>,
     ) -> Result<AeroCoefficients, AeroError> {
+        let (corners, fractions) = self.lookup_stencil(mach, alpha_deg, beta_deg, deflections)?;
+
+        Ok(AeroCoefficients {
+            cn: multilinear_reduce(&self.cn, &corners, &fractions),
+            cd: multilinear_reduce(&self.cd, &corners, &fractions),
+            cm: multilinear_reduce(&self.cm, &corners, &fractions),
+        })
+    }
+
+    /// Look up optional per-node one-sigma coefficient uncertainties at
+    /// `(mach, alpha_deg, beta_deg, deflections)` using the same
+    /// locked-order multilinear interpolation as [`Self::lookup`].
+    ///
+    /// Returns `Ok(None)` when the deck carries no uncertainty tables.
+    /// When uncertainty is present, query validation and out-of-envelope
+    /// behavior match nominal coefficient lookup exactly.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same query errors as [`Self::lookup`] when sigma
+    /// tables are present.
+    pub fn lookup_sigma(
+        &self,
+        mach: f64,
+        alpha_deg: f64,
+        beta_deg: f64,
+        deflections: &BTreeMap<&str, f64>,
+    ) -> Result<Option<AeroCoefficientSigmas>, AeroError> {
+        let Some(sigma) = &self.sigma else {
+            return Ok(None);
+        };
+        let (corners, fractions) = self.lookup_stencil(mach, alpha_deg, beta_deg, deflections)?;
+
+        Ok(Some(AeroCoefficientSigmas {
+            cn: multilinear_reduce(&sigma.cn, &corners, &fractions),
+            cd: multilinear_reduce(&sigma.cd, &corners, &fractions),
+            cm: multilinear_reduce(&sigma.cm, &corners, &fractions),
+        }))
+    }
+
+    /// Look up optional explicit body-axis six coefficients at
+    /// `(mach, alpha_deg, beta_deg, deflections)` using the same
+    /// locked-order multilinear interpolation as [`Self::lookup`].
+    ///
+    /// Returns `Ok(None)` when the deck carries no six-coefficient tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same query errors as [`Self::lookup`] when six-coefficient
+    /// tables are present.
+    pub fn lookup_six(
+        &self,
+        mach: f64,
+        alpha_deg: f64,
+        beta_deg: f64,
+        deflections: &BTreeMap<&str, f64>,
+    ) -> Result<Option<AeroSixCoefficients>, AeroError> {
+        let Some(six) = &self.six else {
+            return Ok(None);
+        };
+        let (corners, fractions) = self.lookup_stencil(mach, alpha_deg, beta_deg, deflections)?;
+
+        Ok(Some(AeroSixCoefficients {
+            cx: multilinear_reduce(&six.cx, &corners, &fractions),
+            cy: multilinear_reduce(&six.cy, &corners, &fractions),
+            cz: multilinear_reduce(&six.cz, &corners, &fractions),
+            cl: multilinear_reduce(&six.cl, &corners, &fractions),
+            cm: multilinear_reduce(&six.cm, &corners, &fractions),
+            cn: multilinear_reduce(&six.cn, &corners, &fractions),
+        }))
+    }
+
+    /// Look up optional dynamic stability derivatives at
+    /// `(mach, alpha_deg, beta_deg, deflections)` using the same locked-order
+    /// multilinear interpolation as [`Self::lookup`].
+    ///
+    /// Returns `Ok(None)` when the deck carries no dynamic derivative tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same query errors as [`Self::lookup`] when derivative
+    /// tables are present.
+    pub fn lookup_dynamic_derivatives(
+        &self,
+        mach: f64,
+        alpha_deg: f64,
+        beta_deg: f64,
+        deflections: &BTreeMap<&str, f64>,
+    ) -> Result<Option<AeroDynamicDerivatives>, AeroError> {
+        let Some(dynamic) = &self.dynamic_derivatives else {
+            return Ok(None);
+        };
+        let (corners, fractions) = self.lookup_stencil(mach, alpha_deg, beta_deg, deflections)?;
+
+        Ok(Some(AeroDynamicDerivatives {
+            cl_p: multilinear_reduce(&dynamic.cl_p, &corners, &fractions),
+            cl_q: multilinear_reduce(&dynamic.cl_q, &corners, &fractions),
+            cl_r: multilinear_reduce(&dynamic.cl_r, &corners, &fractions),
+            cm_p: multilinear_reduce(&dynamic.cm_p, &corners, &fractions),
+            cm_q: multilinear_reduce(&dynamic.cm_q, &corners, &fractions),
+            cm_r: multilinear_reduce(&dynamic.cm_r, &corners, &fractions),
+            cn_p: multilinear_reduce(&dynamic.cn_p, &corners, &fractions),
+            cn_q: multilinear_reduce(&dynamic.cn_q, &corners, &fractions),
+            cn_r: multilinear_reduce(&dynamic.cn_r, &corners, &fractions),
+        }))
+    }
+
+    /// Look up optional explicit body-axis six-coefficient one-sigma
+    /// uncertainties using the same locked-order multilinear interpolation as
+    /// [`Self::lookup_six`].
+    ///
+    /// Returns `Ok(None)` when the deck carries no six-coefficient sigma
+    /// tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same query errors as [`Self::lookup`] when six-coefficient
+    /// sigma tables are present.
+    pub fn lookup_six_sigma(
+        &self,
+        mach: f64,
+        alpha_deg: f64,
+        beta_deg: f64,
+        deflections: &BTreeMap<&str, f64>,
+    ) -> Result<Option<AeroSixCoefficientSigmas>, AeroError> {
+        let Some(sigma) = &self.six_sigma else {
+            return Ok(None);
+        };
+        let (corners, fractions) = self.lookup_stencil(mach, alpha_deg, beta_deg, deflections)?;
+
+        Ok(Some(AeroSixCoefficientSigmas {
+            cx: multilinear_reduce(&sigma.cx, &corners, &fractions),
+            cy: multilinear_reduce(&sigma.cy, &corners, &fractions),
+            cz: multilinear_reduce(&sigma.cz, &corners, &fractions),
+            cl: multilinear_reduce(&sigma.cl, &corners, &fractions),
+            cm: multilinear_reduce(&sigma.cm, &corners, &fractions),
+            cn: multilinear_reduce(&sigma.cn, &corners, &fractions),
+        }))
+    }
+
+    fn lookup_stencil(
+        &self,
+        mach: f64,
+        alpha_deg: f64,
+        beta_deg: f64,
+        deflections: &BTreeMap<&str, f64>,
+    ) -> Result<(Vec<usize>, Vec<f64>), AeroError> {
         let n = self.axis_order.len();
         // Per-axis (i_lo, fraction) pairs in axis_order.
         let mut indices: Vec<(usize, f64)> = Vec::with_capacity(n);
@@ -361,12 +976,7 @@ impl AeroDeck {
         let strides = compute_strides(&self.axes);
         let corners = collect_corner_indices(&self.axes, &indices, &strides);
         let fractions: Vec<f64> = indices.iter().map(|(_, f)| *f).collect();
-
-        Ok(AeroCoefficients {
-            cn: multilinear_reduce(&self.cn, &corners, &fractions),
-            cd: multilinear_reduce(&self.cd, &corners, &fractions),
-            cm: multilinear_reduce(&self.cm, &corners, &fractions),
-        })
+        Ok((corners, fractions))
     }
 }
 
@@ -529,12 +1139,84 @@ fn validate_table(
     Ok(())
 }
 
+fn validate_sigma_table(
+    table: &[f64],
+    expected_len: usize,
+    label: &'static str,
+) -> Result<(), AeroError> {
+    if table.len() != expected_len {
+        return Err(AeroError::MalformedDeck { reason: label });
+    }
+    for &v in table {
+        if !v.is_finite() {
+            return Err(AeroError::NonFinite { reason: label });
+        }
+        if v < 0.0 {
+            return Err(AeroError::InvalidParameter { reason: label });
+        }
+    }
+    Ok(())
+}
+
 fn validate_reference(value: f64, label: &'static str) -> Result<(), AeroError> {
     if !value.is_finite() {
         return Err(AeroError::NonFinite { reason: label });
     }
     if value <= 0.0 {
         return Err(AeroError::InvalidParameter { reason: label });
+    }
+    Ok(())
+}
+
+fn validate_coefficient_correlation_matrix(matrix: [[f64; 3]; 3]) -> Result<(), AeroError> {
+    validate_correlation_matrix::<3>(matrix, "coefficient correlation matrix")
+}
+
+#[allow(clippy::needless_range_loop)] // Fixed-size Cholesky/math reads clearest with explicit indices.
+fn validate_correlation_matrix<const N: usize>(
+    matrix: [[f64; N]; N],
+    label: &'static str,
+) -> Result<(), AeroError> {
+    for i in 0..N {
+        for j in 0..N {
+            let value = matrix[i][j];
+            if !value.is_finite() {
+                return Err(AeroError::NonFinite { reason: label });
+            }
+            if !(-1.0..=1.0).contains(&value) {
+                return Err(AeroError::InvalidParameter { reason: label });
+            }
+        }
+        if (matrix[i][i] - 1.0).abs() > 1.0e-12 {
+            return Err(AeroError::InvalidParameter { reason: label });
+        }
+    }
+    for i in 0..N {
+        for j in 0..i {
+            if (matrix[i][j] - matrix[j][i]).abs() > 1.0e-12 {
+                return Err(AeroError::InvalidParameter { reason: label });
+            }
+        }
+    }
+
+    // Positive-definite Cholesky check. Keep this local to the deck metadata
+    // validator so higher-layer draw code never sees an invalid matrix.
+    let mut lower = [[0.0; N]; N];
+    for i in 0..N {
+        for j in 0..=i {
+            let mut sum = matrix[i][j];
+            for k in 0..j {
+                sum -= lower[i][k] * lower[j][k];
+            }
+            if i == j {
+                if !(sum.is_finite() && sum > 0.0) {
+                    return Err(AeroError::InvalidParameter { reason: label });
+                }
+                lower[i][j] = sum.sqrt();
+            } else {
+                lower[i][j] = sum / lower[j][j];
+            }
+        }
     }
     Ok(())
 }
@@ -729,6 +1411,255 @@ mod tests {
         assert_abs_diff_eq!(r.cn, 1.0); // 1 + 0
         assert_abs_diff_eq!(r.cd, 0.0); // 1 * 0
         assert_abs_diff_eq!(r.cm, 1.0); // 1 - 0
+    }
+
+    #[test]
+    fn sigma_absent_returns_none_without_changing_nominal_lookup() {
+        let deck = cube_deck();
+        assert!(!deck.has_sigma_tables());
+
+        let nominal = deck.lookup(0.5, 0.5, 0.5, &nd()).unwrap();
+        let sigma = deck.lookup_sigma(f64::NAN, 0.5, 0.5, &nd()).unwrap();
+
+        assert_eq!(nominal.cn.to_bits(), 3.5_f64.to_bits());
+        assert_eq!(sigma, None);
+    }
+
+    #[test]
+    fn sigma_lookup_uses_the_same_multilinear_stencil() {
+        let deck = cube_deck()
+            .with_sigma_tables(
+                (0..8).map(f64::from).collect(),
+                (10..18).map(f64::from).collect(),
+                (20..28).map(f64::from).collect(),
+            )
+            .unwrap();
+        assert!(deck.has_sigma_tables());
+
+        let sigma = deck.lookup_sigma(0.5, 0.5, 0.5, &nd()).unwrap().unwrap();
+
+        assert_eq!(sigma.cn.to_bits(), 3.5_f64.to_bits());
+        assert_eq!(sigma.cd.to_bits(), 13.5_f64.to_bits());
+        assert_eq!(sigma.cm.to_bits(), 23.5_f64.to_bits());
+    }
+
+    #[test]
+    fn six_lookup_is_optional_and_uses_the_same_multilinear_stencil() {
+        let deck = cube_deck();
+        assert!(!deck.has_six_coefficient_tables());
+        assert_eq!(deck.lookup_six(f64::NAN, 0.5, 0.5, &nd()).unwrap(), None);
+
+        let deck = deck
+            .with_six_coefficient_tables(
+                (0..8).map(f64::from).collect(),
+                (10..18).map(f64::from).collect(),
+                (20..28).map(f64::from).collect(),
+                (30..38).map(f64::from).collect(),
+                (40..48).map(f64::from).collect(),
+                (50..58).map(f64::from).collect(),
+            )
+            .unwrap();
+        assert!(deck.has_six_coefficient_tables());
+
+        let six = deck.lookup_six(0.5, 0.5, 0.5, &nd()).unwrap().unwrap();
+        assert_eq!(six.cx.to_bits(), 3.5_f64.to_bits());
+        assert_eq!(six.cy.to_bits(), 13.5_f64.to_bits());
+        assert_eq!(six.cz.to_bits(), 23.5_f64.to_bits());
+        assert_eq!(six.cl.to_bits(), 33.5_f64.to_bits());
+        assert_eq!(six.cm.to_bits(), 43.5_f64.to_bits());
+        assert_eq!(six.cn.to_bits(), 53.5_f64.to_bits());
+    }
+
+    #[test]
+    fn dynamic_derivative_lookup_is_optional_and_uses_the_same_multilinear_stencil() {
+        let deck = cube_deck();
+        assert!(!deck.has_dynamic_derivative_tables());
+        assert_eq!(
+            deck.lookup_dynamic_derivatives(f64::NAN, 0.5, 0.5, &nd())
+                .unwrap(),
+            None
+        );
+
+        let err = cube_deck()
+            .with_dynamic_derivative_tables(vec![0.0; 7], vec![0.0; 8], vec![0.0; 8])
+            .unwrap_err();
+        assert!(matches!(err, AeroError::MalformedDeck { .. }));
+
+        let err = cube_deck()
+            .with_dynamic_derivative_tables(vec![0.0; 8], vec![f64::NAN; 8], vec![0.0; 8])
+            .unwrap_err();
+        assert!(matches!(err, AeroError::NonFinite { .. }));
+
+        let deck = cube_deck()
+            .with_dynamic_derivative_tables(
+                (0..8).map(f64::from).collect(),
+                (10..18).map(f64::from).collect(),
+                (20..28).map(f64::from).collect(),
+            )
+            .unwrap();
+        assert!(deck.has_dynamic_derivative_tables());
+
+        let derivatives = deck
+            .lookup_dynamic_derivatives(0.5, 0.5, 0.5, &nd())
+            .unwrap()
+            .unwrap();
+        assert_eq!(derivatives.cm_q.to_bits(), 3.5_f64.to_bits());
+        assert_eq!(derivatives.cn_r.to_bits(), 13.5_f64.to_bits());
+        assert_eq!(derivatives.cl_p.to_bits(), 23.5_f64.to_bits());
+        assert_eq!(derivatives.cl_q.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(derivatives.cm_p.to_bits(), 0.0_f64.to_bits());
+
+        let deck = cube_deck()
+            .with_dynamic_derivative_table_set(AeroDynamicDerivativeTableSet {
+                cl_p: (0..8).map(f64::from).collect(),
+                cl_q: (10..18).map(f64::from).collect(),
+                cl_r: (20..28).map(f64::from).collect(),
+                cm_p: (30..38).map(f64::from).collect(),
+                cm_q: (40..48).map(f64::from).collect(),
+                cm_r: (50..58).map(f64::from).collect(),
+                cn_p: (60..68).map(f64::from).collect(),
+                cn_q: (70..78).map(f64::from).collect(),
+                cn_r: (80..88).map(f64::from).collect(),
+            })
+            .unwrap();
+        let derivatives = deck
+            .lookup_dynamic_derivatives(0.5, 0.5, 0.5, &nd())
+            .unwrap()
+            .unwrap();
+        assert_eq!(derivatives.cl_p.to_bits(), 3.5_f64.to_bits());
+        assert_eq!(derivatives.cl_q.to_bits(), 13.5_f64.to_bits());
+        assert_eq!(derivatives.cl_r.to_bits(), 23.5_f64.to_bits());
+        assert_eq!(derivatives.cm_p.to_bits(), 33.5_f64.to_bits());
+        assert_eq!(derivatives.cm_q.to_bits(), 43.5_f64.to_bits());
+        assert_eq!(derivatives.cm_r.to_bits(), 53.5_f64.to_bits());
+        assert_eq!(derivatives.cn_p.to_bits(), 63.5_f64.to_bits());
+        assert_eq!(derivatives.cn_q.to_bits(), 73.5_f64.to_bits());
+        assert_eq!(derivatives.cn_r.to_bits(), 83.5_f64.to_bits());
+    }
+
+    #[test]
+    fn six_sigma_lookup_requires_nominal_six_tables_and_validates_values() {
+        let err = cube_deck()
+            .with_six_sigma_tables(
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+            )
+            .unwrap_err();
+        assert!(matches!(err, AeroError::MalformedDeck { .. }));
+
+        let err = cube_deck()
+            .with_six_coefficient_tables(
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+            )
+            .unwrap()
+            .with_six_sigma_tables(
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![-1.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+            )
+            .unwrap_err();
+        assert!(matches!(err, AeroError::InvalidParameter { .. }));
+
+        let deck = cube_deck()
+            .with_six_coefficient_tables(
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+                vec![0.0; 8],
+            )
+            .unwrap()
+            .with_six_sigma_tables(
+                (0..8).map(f64::from).collect(),
+                (10..18).map(f64::from).collect(),
+                (20..28).map(f64::from).collect(),
+                (30..38).map(f64::from).collect(),
+                (40..48).map(f64::from).collect(),
+                (50..58).map(f64::from).collect(),
+            )
+            .unwrap();
+        assert!(deck.has_six_sigma_tables());
+
+        let sigma = deck
+            .lookup_six_sigma(0.5, 0.5, 0.5, &nd())
+            .unwrap()
+            .unwrap();
+        assert_eq!(sigma.cx.to_bits(), 3.5_f64.to_bits());
+        assert_eq!(sigma.cy.to_bits(), 13.5_f64.to_bits());
+        assert_eq!(sigma.cz.to_bits(), 23.5_f64.to_bits());
+        assert_eq!(sigma.cl.to_bits(), 33.5_f64.to_bits());
+        assert_eq!(sigma.cm.to_bits(), 43.5_f64.to_bits());
+        assert_eq!(sigma.cn.to_bits(), 53.5_f64.to_bits());
+    }
+
+    #[test]
+    fn uncertainty_correlation_metadata_round_trips_and_validates() {
+        let coefficient = [[1.0, 0.25, 0.0], [0.25, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let six_coefficient = [
+            [1.0, 0.25, 0.0, 0.0, 0.0, 0.0],
+            [0.25, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 1.0, -0.2],
+            [0.0, 0.0, 0.0, 0.0, -0.2, 1.0],
+        ];
+        let correlation = AeroUncertaintyCorrelation::exponential_mach(1.5)
+            .unwrap()
+            .with_coefficient_correlation(coefficient)
+            .unwrap()
+            .with_six_coefficient_correlation(six_coefficient)
+            .unwrap();
+        assert_eq!(correlation.mach_length().to_bits(), 1.5_f64.to_bits());
+        assert_eq!(correlation.coefficient_correlation(), Some(coefficient));
+        assert_eq!(
+            correlation.six_coefficient_correlation(),
+            Some(six_coefficient)
+        );
+
+        let deck = cube_deck().with_uncertainty_correlation(correlation);
+        assert_eq!(deck.uncertainty_correlation(), Some(correlation));
+
+        let err = AeroUncertaintyCorrelation::exponential_mach(f64::NAN).unwrap_err();
+        assert!(matches!(err, AeroError::NonFinite { .. }));
+
+        let err = AeroUncertaintyCorrelation::exponential_mach(0.0).unwrap_err();
+        assert!(matches!(err, AeroError::InvalidParameter { .. }));
+
+        let err = AeroUncertaintyCorrelation::exponential_mach(1.5)
+            .unwrap()
+            .with_coefficient_correlation([[1.0, 0.25, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+            .unwrap_err();
+        assert!(matches!(err, AeroError::InvalidParameter { .. }));
+
+        let err = AeroUncertaintyCorrelation::exponential_mach(1.5)
+            .unwrap()
+            .with_coefficient_correlation([[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+            .unwrap_err();
+        assert!(matches!(err, AeroError::InvalidParameter { .. }));
+
+        let mut asymmetric_six = [[0.0; 6]; 6];
+        for (index, row) in asymmetric_six.iter_mut().enumerate() {
+            row[index] = 1.0;
+        }
+        asymmetric_six[1][0] = 0.25;
+        let err = AeroUncertaintyCorrelation::exponential_mach(1.5)
+            .unwrap()
+            .with_six_coefficient_correlation(asymmetric_six)
+            .unwrap_err();
+        assert!(matches!(err, AeroError::InvalidParameter { .. }));
     }
 
     // -----------------------------------------------------------------
@@ -995,6 +1926,27 @@ mod tests {
             -1.0,
         )
         .unwrap_err();
+        assert!(matches!(err, AeroError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn sigma_tables_reject_bad_lengths_non_finite_and_negative_values() {
+        let deck = cube_deck();
+        let err = deck
+            .clone()
+            .with_sigma_tables(vec![0.0], vec![0.0; 8], vec![0.0; 8])
+            .unwrap_err();
+        assert!(matches!(err, AeroError::MalformedDeck { .. }));
+
+        let err = deck
+            .clone()
+            .with_sigma_tables(vec![f64::NAN; 8], vec![0.0; 8], vec![0.0; 8])
+            .unwrap_err();
+        assert!(matches!(err, AeroError::NonFinite { .. }));
+
+        let err = deck
+            .with_sigma_tables(vec![-1.0; 8], vec![0.0; 8], vec![0.0; 8])
+            .unwrap_err();
         assert!(matches!(err, AeroError::InvalidParameter { .. }));
     }
 

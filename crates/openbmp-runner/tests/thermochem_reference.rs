@@ -30,6 +30,8 @@ struct ReferenceSchema {
 struct ReferenceMeta {
     source_title: String,
     mechanism: String,
+    species_subset: Option<Vec<String>>,
+    reactants: Option<Vec<String>>,
     validation: String,
 }
 
@@ -82,6 +84,9 @@ fn cantera_reference_tables_match_thermochem_and_liquid_performance() {
         "lox-lch4-cantera-gri30-tolerance-v1.toml",
         "lox-lh2-cantera-gri30-tolerance-v1.toml",
         "lox-rp1-ndodecane-cantera-reitz-tolerance-v1.toml",
+        "n2o4-n2h4-cantera-nasa-gas-tolerance-v1.toml",
+        "nto-mmh-nasa-cea-rocket-tolerance-v1.toml",
+        "lox-rp1-nasa-cea-rocket-tolerance-v1.toml",
     ] {
         check_reference_table(&data_dir, reference_file);
     }
@@ -95,14 +100,15 @@ fn check_reference_table(data_dir: &Path, reference_file: &str) {
         toml::from_str(&reference_text).expect("reference tolerance table parses");
     assert_eq!(reference.openbmp.thermochem_reference, 1);
     assert!(
-        reference.meta.source_title.contains("Cantera 3.2.0"),
-        "reference source title should pin Cantera version: {}",
+        reference.meta.source_title.contains("Cantera 3.2.0")
+            || reference.meta.source_title.contains("NASA CEA 3.2.1"),
+        "reference source title should pin generator version: {}",
         reference.meta.source_title
     );
     assert!(
         matches!(
             reference.meta.mechanism.as_str(),
-            "gri30.yaml" | "nDodecane_Reitz.yaml"
+            "gri30.yaml" | "nDodecane_Reitz.yaml" | "nasa_gas.yaml" | "thermo.lib"
         ),
         "unsupported mechanism in {reference_file}: {}",
         reference.meta.mechanism,
@@ -116,6 +122,54 @@ fn check_reference_table(data_dir: &Path, reference_file: &str) {
         reference.meta.mechanism,
         reference.meta.source_title,
     );
+    if reference.meta.mechanism == "nasa_gas.yaml" {
+        let species_subset = reference
+            .meta
+            .species_subset
+            .as_ref()
+            .expect("nasa_gas reference should declare its species subset");
+        assert!(
+            species_subset.iter().any(|species| species == "N2O4")
+                && species_subset.iter().any(|species| species == "N2H4"),
+            "nasa_gas reference should anchor N2O4/N2H4 species: {species_subset:?}",
+        );
+        assert!(
+            reference.meta.source_title.contains("species-subset")
+                && reference.meta.source_title.contains("N2O4/N2H4"),
+            "nasa_gas reference title should describe the hypergolic subset: {}",
+            reference.meta.source_title,
+        );
+    } else {
+        assert!(
+            reference.meta.species_subset.is_none(),
+            "{} should not declare a species subset",
+            reference.meta.mechanism,
+        );
+    }
+    if reference.meta.mechanism == "thermo.lib" {
+        let reactants = reference
+            .meta
+            .reactants
+            .as_ref()
+            .expect("NASA CEA reference should declare reactants");
+        assert!(
+            reference.meta.source_title.contains("NASA CEA 3.2.1")
+                && reference.meta.source_title.contains("rocket-equilibrium"),
+            "CEA reference title should describe NASA CEA rocket equilibrium: {}",
+            reference.meta.source_title,
+        );
+        assert!(
+            reactants.iter().any(|reactant| reactant == "CH6N2(L)")
+                || reactants.iter().any(|reactant| reactant == "RP-1"),
+            "CEA reference should anchor either MMH or RP-1 reactants: {reactants:?}",
+        );
+    } else {
+        assert!(
+            reference.meta.reactants.is_none(),
+            "{} should not declare CEA reactants",
+            reference.meta.mechanism,
+        );
+    }
     assert_eq!(reference.meta.validation, "research");
     assert!(!reference.case.is_empty());
 

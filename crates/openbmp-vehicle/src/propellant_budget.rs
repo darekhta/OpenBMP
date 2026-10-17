@@ -156,6 +156,9 @@ pub struct EnginePropellantUtilization {
 pub struct PropellantBudgetReport {
     /// Tank drain rates to apply on the next tank step.
     pub tank_drain_rates_kg_per_s: BTreeMap<TankId, f64>,
+    /// Whether the simplified propellant-budget pressurization source
+    /// remains enabled for this budget tick.
+    pub pressurization_enabled: bool,
     /// Engines that must be shutdown because a bound tank is at or
     /// below reserve.
     pub shutdown_engines: BTreeSet<EngineId>,
@@ -271,6 +274,7 @@ impl PropellantBudget {
         }
         Ok(PropellantBudgetReport {
             tank_drain_rates_kg_per_s: drains,
+            pressurization_enabled: true,
             shutdown_engines: shutdown,
             feed_pressure_scales: feed_scales,
             utilization,
@@ -384,6 +388,14 @@ mod tests {
             thrust_body: Vector3::new(0.0, 0.0, 1000.0),
             mass_flow_kg_per_s: mdot,
             consumed_kg: 0.0,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            gimbal_pitch_rate_rad_s: 0.0,
+            gimbal_yaw_rate_rad_s: 0.0,
+            tvc_pitch_load_torque_n_m: 0.0,
+            tvc_yaw_load_torque_n_m: 0.0,
+            tvc_pitch_inertial_reaction_torque_n_m: 0.0,
+            tvc_yaw_inertial_reaction_torque_n_m: 0.0,
             state: EngineState::Burning,
         }
     }

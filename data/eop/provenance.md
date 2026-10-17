@@ -6,7 +6,7 @@ deterministic frame and time-scale validation; they are not flight inputs.
 
 ## openbmp.eop.finals2000a.2017-001-004.v1
 
-- File: `finals2000a-2017-001-004-openbmp-eop-v1.toml`
+- File: `data/eop/finals2000a-2017-001-004-openbmp-eop-v1.toml`
 - Fixture SHA-256:
   `b26049e519db72a585118186ca2edb74e6441a86a632a5816ad4b7ab6ce8110f`
 - Raw clipped source file: `finals2000a-2017-001-004.raw`

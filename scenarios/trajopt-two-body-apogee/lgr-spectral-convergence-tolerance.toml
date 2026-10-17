@@ -1,0 +1,16 @@
+# LGR spectral-convergence tolerance table for WP-07.3 partial.
+#
+# The case interpolates the analytic smooth scalar arc x(t) = exp(t) on
+# t in [0, 1] from left-LGR support nodes and checks maximum dense-sample
+# interpolation error as the collocation degree increases. The table is a
+# checked validated-toy convergence fixture, not a solved OCP benchmark.
+
+case = "lgr-exp-spectral-convergence"
+source = "Synthetic smooth scalar manufactured arc; see scenarios/trajopt-two-body-apogee/provenance.md."
+validation = "validated-toy"
+
+collocation_counts = [3, 5, 7, 9]
+dense_sample_count = 257
+baseline_order = 4.0
+minimum_error_ratio = 20.0
+max_finest_interpolation_error = 1.0e-11

@@ -60,11 +60,13 @@
 //!
 //! [`safety-boundaries`]: ../../../../../docs/safety-boundaries.md
 
+pub mod abramson_multi_mass;
 pub mod baffled_pendulum;
 pub mod equivalent_pendulum;
 pub mod equivalent_spring_mass;
 pub mod rigid_liquid;
 
+pub use abramson_multi_mass::AbramsonMultiMass;
 pub use baffled_pendulum::BaffledPendulum;
 pub use equivalent_pendulum::EquivalentPendulum;
 pub use equivalent_spring_mass::EquivalentSpringMass;
@@ -529,6 +531,14 @@ pub enum TankError {
     InvalidFillFraction {
         /// Offending value.
         value: f64,
+    },
+    /// Slosh mode count is outside the supported built-in range.
+    #[error("tank slosh mode count must be in 1..={max}, got {value}")]
+    InvalidSloshModeCount {
+        /// Offending value.
+        value: usize,
+        /// Maximum supported mode count.
+        max: usize,
     },
     /// Mount-point coordinates are not all finite.
     #[error("tank mount point coordinates must all be finite")]

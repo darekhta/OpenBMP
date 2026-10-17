@@ -1,6 +1,6 @@
 # Ground Segment, Countdown & Launch-Release Operations
 
-**Status:** `experimental` (design intent; no code shipped by this document).
+**Status:** `experimental` (design intent plus WP-18.1 countdown substrate and scenario front door).
 **Audience:** the engineer or LLM agent implementing the parity work packages.
 **Prerequisite reading:** `00-overview.md`, `13-agent-execution-playbook.md`,
 `docs/mission-graph-architecture.md` (the mission state machine this document
@@ -94,6 +94,20 @@ sequences ground events against vehicle state.
 
 ## 2. Current state in source
 
+- `crates/openbmp-ground/src/lib.rs` — the first WP-18.1 L7 ground crate
+  substrate. It exposes a deterministic countdown DAG/count-clock evaluator
+  with step anchors, windows, step/external prerequisites, hold-or-abort
+  failure actions, criterion timelines, ordered event emission, fail-closed
+  validation, built-in hold re-entry, and byte-stable CSV report rendering.
+- `crates/openbmp-scenario/src/document.rs` — schema-v3 `[countdown]` parsing
+  accepts T-clock initial/terminal anchors, per-step anchors/windows,
+  prerequisite ids, hold-or-abort failure actions, and emitted event ids with
+  fail-closed DAG validation. Runner event injection is still open.
+- `crates/openbmp-runner/src/ground.rs` — materializes parsed `[countdown]`
+  blocks into `openbmp-ground` plans, emits a `RunOutcome.countdown` report
+  plus byte-stable CSV, and publishes gated `ground.countdown.*` summary
+  telemetry for scenarios that declare `[countdown]`. Countdown events are not
+  yet injected into mission/ground models.
 - `crates/openbmp-mission/src/hsm.rs`, `regions.rs`, `events.rs` — the
   hardware-portable hierarchical mission state machine with pad-side states
   and event bindings; runs FC-side. It is the *vehicle's* view of the
@@ -309,6 +323,36 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 
 ### WP-18.1 — `openbmp-ground` skeleton + countdown autosequencer
 
+- **implementation_status:** partial and traced by `REQ-GROUND-001` /
+  `V-GROUND-001`, `REQ-GROUND-002` / `V-GROUND-002`, `REQ-GROUND-003` /
+  `V-GROUND-003`, and `REQ-GROUND-004` / `V-GROUND-004`. The workspace now
+  registers the L7 `openbmp-ground` crate without adding FC, runner,
+  simulator, scenario, telemetry, CLI, or hardware dependency edges. The crate
+  exposes `GROUND_COUNTDOWN_SCHEMA_VERSION`,
+  `CountdownPlan`, `CountdownStep`, `CountdownCriterionTimeline`,
+  `CountdownEvaluationInput`, `CountdownReport`, `evaluate_countdown`, and
+  `countdown_report_csv`. The validator fails closed on unsupported schema
+  versions, empty ids/plans, non-finite count anchors, terminal counts before
+  initial counts, negative windows, duplicate or nonmonotonic steps, bad hold
+  ids, same-or-later step dependencies, malformed criterion timelines, and
+  unknown external criteria during evaluation. The evaluator advances steps in
+  declared order, treats known step prerequisites as completed-step
+  dependencies, evaluates external criterion timelines deterministically,
+  latches abort verdicts, enters built-in holds, freezes count-clock time while
+  simulation time advances, releases holds when prerequisites become green,
+  emits ordered step/hold/abort events, records emitted event ids, and renders
+  byte-stable CSV. Tests cover deterministic event streams, hold re-entry,
+  abort latching, fail-closed dependency/criterion handling, and canonical CSV
+  bytes. Schema-v3 `[countdown]` now also validates the scenario front door:
+  optional countdown id, T-clock initial/terminal anchors, `max_hold_s`,
+  ordered `[[countdown.step]]` entries, nonempty ids, duplicate-step rejection,
+  nonmonotonic/out-of-range anchor rejection, same-or-later step dependency
+  rejection, and `"abort"` / `"hold:<id>"` failure-action parsing. This is not
+  full WP-18.1 closure: `openbmp-runner` now materializes `[countdown]` into
+  `openbmp-ground` plans, stores a `RunOutcome.countdown` report plus CSV, and
+  emits gated `ground.countdown.*` summary telemetry carrying verdict,
+  final-time, event-count, emitted-event-count, and binding-step values, but
+  countdown event injection into mission/ground models remains open.
 - **title:** L7 ground crate with the declarative countdown DAG: steps, anchors, windows, prerequisites, built-in holds, deterministic count clock.
 - **goal:** A countdown becomes a first-class simulated artifact: declared
   steps evaluated against sim state on a deterministic cadence, with hold
@@ -332,6 +376,9 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **dual_use_note:** far from line — scheduling + veto logic only.
 - **est_effort:** 2–3 weeks
 - **parity_ceiling:** synthetic procedures; no site-certified countdown.
+- **requirements:** [REQ-GROUND-001], [REQ-GROUND-002], [REQ-GROUND-003],
+  [REQ-GROUND-004] (partial countdown substrate + scenario front door + runner
+  report/summary telemetry only)
 
 ### WP-18.2 — Launch-commit-criteria engine
 

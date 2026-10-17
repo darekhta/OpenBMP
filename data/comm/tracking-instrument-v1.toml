@@ -1,0 +1,28 @@
+openbmp.comm_tracking_instrument = 1
+
+[meta]
+dataset_id = "openbmp.comm.tracking_instrument.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic ground tracking instrument noise model"
+provenance = "OpenBMP synthetic analytic fixture for deterministic vehicle-bound tracking observable noise regression."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[tolerances]
+range_m = 1.0e-12
+range_rate_m_s = 1.0e-12
+angle_rad = 1.0e-12
+
+[tracking_instrument]
+range_noise_stddev_m = 0.5
+range_rate_noise_stddev_m_s = 0.02
+azimuth_noise_stddev_deg = 0.001
+elevation_noise_stddev_deg = 0.0015
+range_gauss_markov_stddev_m = 2.0
+range_gauss_markov_tau_s = 10.0
+range_rate_gauss_markov_stddev_m_s = 0.2
+range_rate_gauss_markov_tau_s = 20.0
+azimuth_gauss_markov_stddev_deg = 0.002
+azimuth_gauss_markov_tau_s = 30.0
+elevation_gauss_markov_stddev_deg = 0.003
+elevation_gauss_markov_tau_s = 40.0

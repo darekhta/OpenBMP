@@ -1,0 +1,23 @@
+# Synthetic trend fixture for the WP-03.2 local-inclination panel skin-friction
+# correction. See data/aero/provenance.md.
+
+[case]
+dataset_id = "openbmp.aero.panel_sharp_cone_skin_friction_trend.v1"
+source_class = "synthetic-openbmp"
+validation_label = "validated-toy"
+base_radius_m = 1.0
+half_angle_deg = 15.0
+longitude_segments = 2048
+mach = 8.0
+gamma = 1.4
+dynamic_pressure_pa = 1000.0
+wall_to_edge_temperature_ratio = 1.0
+transition_reynolds = 5.0e5
+roughness_over_length = 0.0
+low_reynolds_length = 2.0e5
+high_reynolds_length = 1.0e8
+expected_inviscid_ca = 0.12240952052447783
+expected_low_re_viscous_delta_ca = 0.04427945876333989
+expected_high_re_viscous_delta_ca = 0.0026703693312684546
+max_relative_error = 1.0e-4
+max_high_re_delta_fraction_of_inviscid = 0.05

@@ -692,7 +692,9 @@ fn monte_carlo_report(
 fn footprint_upstream_uq_budget(scenario: &Scenario) -> Result<CorrelatedErrorBudget, RunnerError> {
     let document = &scenario.document;
     let resolved_files = scenario.resolved_files()?;
-    let mut upstream_uq = crate::structural::StructuralRack::build(document)?.upstream_uq_budget();
+    let mut upstream_uq =
+        crate::structural::StructuralRack::build_with_resolved_files(document, &resolved_files)?
+            .upstream_uq_budget();
     upstream_uq
         .sources
         .extend(crate::aero::upstream_uq_budget(document)?.sources);

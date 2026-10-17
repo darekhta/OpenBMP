@@ -12,18 +12,19 @@
 //! sophisticated allocation matrices.
 
 use std::collections::BTreeMap;
-use std::string::String;
+use std::string::{String, ToString};
 use std::vec::Vec;
 
 use openbmp_core::{EffectorId, EngineId};
 
-use crate::allocation::ControlAllocator;
+use crate::allocation::{AllocatorError, ControlAllocator};
 use crate::error::ControllerError;
 use crate::scheduler::{Job, JobContext};
 use crate::tables::Table;
 use crate::topics::{
-    ActuatorCommand, EffectorCommand, EffectorCommandSet, EngineCommand, EngineCommandSet,
-    EngineDemand, MAX_EFFECTOR_COMMANDS, MAX_ENGINE_COMMANDS, VehicleStatus,
+    ActuatorCommand, EffectorAvailability, EffectorCommand, EffectorCommandSet, EngineCommand,
+    EngineCommandSet, EngineDemand, MAX_EFFECTOR_COMMANDS, MAX_ENGINE_COMMANDS,
+    PropellantSafingCommand, PseudoControlCommand, VehicleStatus,
 };
 
 /// Mapping from semantic FC actuator channels to scenario-declared
@@ -114,6 +115,80 @@ impl Table for PhaseAuthorityTable {
     }
 }
 
+/// Per-survivor gimbal trim to apply when a named engine is unavailable.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct EngineOutTrimCommand {
+    /// Surviving engine that receives the bias.
+    pub engine: EngineId,
+    /// Additive pitch-gimbal bias, rad.
+    pub gimbal_pitch_bias_rad: f64,
+    /// Additive yaw-gimbal bias, rad.
+    pub gimbal_yaw_bias_rad: f64,
+}
+
+/// Optional flight-calibrated engine-out trim table.
+///
+/// This is a deterministic substrate for off-CG retrim in the scalar
+/// `EngineDemand` fan-out path. It does not infer vehicle geometry; the
+/// runner or scenario provides calibrated per-survivor gimbal biases keyed by
+/// the failed engine id.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EngineOutTrimTable {
+    /// Trim rows keyed by unavailable engine id.
+    pub by_failed_engine: BTreeMap<EngineId, Vec<EngineOutTrimCommand>>,
+}
+
+impl EngineOutTrimTable {
+    fn bias_for(&self, engine: EngineId, unavailable_engines: &[EngineId]) -> (f64, f64) {
+        let mut pitch = 0.0;
+        let mut yaw = 0.0;
+        for failed_engine in unavailable_engines {
+            let Some(commands) = self.by_failed_engine.get(failed_engine) else {
+                continue;
+            };
+            for command in commands {
+                if command.engine == engine {
+                    pitch += command.gimbal_pitch_bias_rad;
+                    yaw += command.gimbal_yaw_bias_rad;
+                }
+            }
+        }
+        (pitch, yaw)
+    }
+}
+
+impl Table for EngineOutTrimTable {
+    const NAME: &'static str = "mixer.engine_out_trim";
+
+    fn validate(&self) -> Result<(), String> {
+        for (failed_engine, commands) in &self.by_failed_engine {
+            if commands.is_empty() {
+                return Err("engine-out trim row must contain at least one command".to_string());
+            }
+            let mut seen = Vec::new();
+            for command in commands {
+                if command.engine == *failed_engine {
+                    return Err(
+                        "engine-out trim command cannot target the failed engine".to_string()
+                    );
+                }
+                if seen.contains(&command.engine) {
+                    return Err(
+                        "engine-out trim row has duplicate survivor engine commands".to_string()
+                    );
+                }
+                if !command.gimbal_pitch_bias_rad.is_finite()
+                    || !command.gimbal_yaw_bias_rad.is_finite()
+                {
+                    return Err("engine-out trim gimbal biases must be finite".to_string());
+                }
+                seen.push(command.engine);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Mixer job — runs after the autopilot, applies phase-gating, and
 /// republishes gated actuator + engine commands on the same topics.
 ///
@@ -142,6 +217,7 @@ pub struct Mixer {
     last_seen_engine: u64,
     last_commanded_engines: Vec<EngineId>,
     authority: PhaseAuthorityTable,
+    engine_out_trim: EngineOutTrimTable,
     channel_map: ActuatorChannelMap,
     allocator: Option<ControlAllocator>,
 }
@@ -158,6 +234,7 @@ impl Mixer {
             last_seen_engine: 0,
             last_commanded_engines: Vec::new(),
             authority: PhaseAuthorityTable::default(),
+            engine_out_trim: EngineOutTrimTable::default(),
             channel_map: ActuatorChannelMap::default(),
             allocator: None,
         }
@@ -167,6 +244,13 @@ impl Mixer {
     #[must_use]
     pub fn with_authority(mut self, authority: PhaseAuthorityTable) -> Self {
         self.authority = authority;
+        self
+    }
+
+    /// Replaces the optional engine-out trim table.
+    #[must_use]
+    pub fn with_engine_out_trim(mut self, trim: EngineOutTrimTable) -> Self {
+        self.engine_out_trim = trim;
         self
     }
 
@@ -243,16 +327,17 @@ impl Mixer {
     }
 
     fn effector_command_set(
-        &self,
+        &mut self,
         cmd: ActuatorCommand,
+        pseudo_control: Option<PseudoControlCommand>,
         authority: &PhaseAuthority,
-    ) -> EffectorCommandSet {
+    ) -> Result<EffectorCommandSet, ControllerError> {
         let mut set = EffectorCommandSet {
             time: cmd.time,
             saturated: cmd.saturated,
             ..EffectorCommandSet::default()
         };
-        if let Some(allocator) = self.allocator.as_ref() {
+        if let Some(allocator) = self.allocator.as_mut() {
             // Allocator-driven dispatch. The autopilot's
             // semantic channels carry per-axis torque demand:
             //   aileron_rad  → roll
@@ -265,10 +350,31 @@ impl Mixer {
             // each axis. Phase authority is applied before the
             // capacity calculation so disallowed effectors do not
             // dilute or inflate the split.
-            let allocation = allocator.allocate_with_allowed_effectors(
-                [cmd.aileron_rad, cmd.elevator_rad, cmd.rudder_rad],
-                &authority.effectors,
-            );
+            let allocation = if allocator.uses_pseudo_control() {
+                let pseudo_control = pseudo_control.ok_or_else(|| {
+                    ControllerError::from(AllocatorError::DenseDimensionMismatch {
+                        reason: "dense_inca allocator requires autopilot.pseudo_control_cmd",
+                    })
+                })?;
+                allocator.allocate_pseudo_control_with_allowed_effectors(
+                    [
+                        pseudo_control.omega_dot_des_rad_s2.x,
+                        pseudo_control.omega_dot_des_rad_s2.y,
+                        pseudo_control.omega_dot_des_rad_s2.z,
+                    ],
+                    [
+                        pseudo_control.omega_dot_meas_rad_s2.x,
+                        pseudo_control.omega_dot_meas_rad_s2.y,
+                        pseudo_control.omega_dot_meas_rad_s2.z,
+                    ],
+                    &authority.effectors,
+                )?
+            } else {
+                allocator.allocate_with_allowed_effectors(
+                    [cmd.aileron_rad, cmd.elevator_rad, cmd.rudder_rad],
+                    &authority.effectors,
+                )?
+            };
             let mut any_saturated = cmd.saturated;
             for sat in allocation.saturated_axes {
                 any_saturated |= sat;
@@ -276,7 +382,10 @@ impl Mixer {
             for (effector_id, command) in allocation.commands {
                 let index = usize::from(set.count);
                 if index >= MAX_EFFECTOR_COMMANDS {
-                    break;
+                    return Err(AllocatorError::DenseDimensionMismatch {
+                        reason: "effector command output exceeds MAX_EFFECTOR_COMMANDS",
+                    }
+                    .into());
                 }
                 set.commands[index] = EffectorCommand {
                     effector_id: effector_id.value(),
@@ -286,7 +395,7 @@ impl Mixer {
                 set.count = set.count.saturating_add(1);
             }
             set.saturated = any_saturated;
-            return set;
+            return Ok(set);
         }
         let channels = [
             (self.channel_map.aileron, cmd.aileron_rad),
@@ -298,7 +407,10 @@ impl Mixer {
             let Some(id) = id else { continue };
             let index = usize::from(set.count);
             if index >= MAX_EFFECTOR_COMMANDS {
-                break;
+                return Err(AllocatorError::DenseDimensionMismatch {
+                    reason: "semantic effector command output exceeds MAX_EFFECTOR_COMMANDS",
+                }
+                .into());
             }
             set.commands[index] = EffectorCommand {
                 effector_id: id.value(),
@@ -307,7 +419,7 @@ impl Mixer {
             };
             set.count = set.count.saturating_add(1);
         }
-        set
+        Ok(set)
     }
 
     fn engine_command_set(
@@ -315,6 +427,7 @@ impl Mixer {
         cmd: EngineDemand,
         authority: &PhaseAuthority,
         engine_allowed: bool,
+        unavailable_engines: &[EngineId],
     ) -> EngineCommandSet {
         let mut set = EngineCommandSet {
             time: cmd.time,
@@ -328,30 +441,51 @@ impl Mixer {
             shutdown: true,
             ..EngineCommand::default()
         };
+        let authorized_count = authority.engines.len();
+        let active_count = authority
+            .engines
+            .iter()
+            .filter(|id| !unavailable_engines.contains(id))
+            .count();
+        let throttle_unit = if engine_allowed
+            && !cmd.shutdown
+            && active_count > 0
+            && active_count < authorized_count
+        {
+            (cmd.throttle_unit * authorized_count as f64 / active_count as f64).clamp(0.0, 1.0)
+        } else {
+            cmd.throttle_unit
+        };
         for id in &authority.engines {
             let index = usize::from(set.count);
             if index >= MAX_ENGINE_COMMANDS {
                 break;
             }
+            let engine_available = engine_allowed && !unavailable_engines.contains(id);
+            let (trim_pitch_rad, trim_yaw_rad) = if engine_available && !cmd.shutdown {
+                self.engine_out_trim.bias_for(*id, unavailable_engines)
+            } else {
+                (0.0, 0.0)
+            };
             set.commands[index] = EngineCommand {
                 engine_id: id.value(),
-                throttle_unit: if engine_allowed {
-                    cmd.throttle_unit
+                throttle_unit: if engine_available {
+                    throttle_unit
                 } else {
                     zero.throttle_unit
                 },
-                gimbal_pitch_rad: if engine_allowed {
-                    cmd.gimbal_pitch_rad
+                gimbal_pitch_rad: if engine_available {
+                    cmd.gimbal_pitch_rad + trim_pitch_rad
                 } else {
                     zero.gimbal_pitch_rad
                 },
-                gimbal_yaw_rad: if engine_allowed {
-                    cmd.gimbal_yaw_rad
+                gimbal_yaw_rad: if engine_available {
+                    cmd.gimbal_yaw_rad + trim_yaw_rad
                 } else {
                     zero.gimbal_yaw_rad
                 },
-                ignite: engine_allowed && cmd.ignite,
-                shutdown: if engine_allowed {
+                ignite: engine_available && cmd.ignite,
+                shutdown: if engine_available {
                     cmd.shutdown
                 } else {
                     zero.shutdown
@@ -398,7 +532,23 @@ impl Job for Mixer {
         let status = ctx.bus.latest::<VehicleStatus>()?.map(|(s, _)| s);
         let armed_in_flight = matches!(status, Some(s) if s.armed && s.in_flight);
         let phase_id = status.as_ref().map_or(0, |s| s.phase_id);
-        let authority = self.authority.lookup(phase_id).clone();
+        let mut authority = self.authority.lookup(phase_id).clone();
+        let mut unavailable_engines = Vec::new();
+        if let Some((availability, _)) = ctx.bus.latest::<EffectorAvailability>()? {
+            authority
+                .effectors
+                .retain(|id| !availability.is_unavailable(id.value()));
+            unavailable_engines.extend(
+                authority
+                    .engines
+                    .iter()
+                    .copied()
+                    .filter(|id| availability.is_engine_unavailable(id.value())),
+            );
+        }
+        let safe_state_requested = status
+            .as_ref()
+            .is_some_and(|status| status.safe_state_requested);
         let actuator_allowed = armed_in_flight && authority.autopilot_allowed;
         let engine_allowed = armed_in_flight && authority.engines_allowed;
 
@@ -420,13 +570,48 @@ impl Job for Mixer {
                 } else {
                     gated
                 };
-                let _ = ctx
-                    .bus
-                    .publish(self.effector_command_set(effector_source, &authority));
+                let pseudo_control = if self
+                    .allocator
+                    .as_ref()
+                    .is_some_and(ControlAllocator::uses_pseudo_control)
+                {
+                    ctx.bus
+                        .latest::<PseudoControlCommand>()?
+                        .map(|(pseudo_control, _)| pseudo_control)
+                } else {
+                    None
+                };
+                let effector_set =
+                    self.effector_command_set(effector_source, pseudo_control, &authority)?;
+                let _ = ctx.bus.publish(effector_set);
             }
         }
 
-        if let Ok(Some((cmd, seq))) = ctx.bus.latest::<EngineDemand>()
+        if safe_state_requested {
+            let _ = ctx.bus.publish(PropellantSafingCommand {
+                time: ctx.clock.now(),
+                safed: true,
+                isolate_feeds: true,
+                close_engine_valves: true,
+                pressurization_enabled: false,
+                drain_enabled: false,
+                dump_enabled: true,
+            });
+            let shutdown = EngineDemand {
+                time: ctx.clock.now(),
+                throttle_unit: 0.0,
+                gimbal_pitch_rad: 0.0,
+                gimbal_yaw_rad: 0.0,
+                ignite: false,
+                shutdown: true,
+            };
+            if let Ok(new_seq) = ctx.bus.publish(shutdown) {
+                self.last_seen_engine = new_seq.value();
+            }
+            let engine_set =
+                self.engine_command_set(shutdown, &authority, false, &unavailable_engines);
+            let _ = ctx.bus.publish(engine_set);
+        } else if let Ok(Some((cmd, seq))) = ctx.bus.latest::<EngineDemand>()
             && seq.value() > self.last_seen_engine
         {
             self.last_seen_engine = seq.value();
@@ -445,7 +630,8 @@ impl Job for Mixer {
             if let Ok(new_seq) = ctx.bus.publish(gated) {
                 self.last_seen_engine = new_seq.value();
             }
-            let engine_set = self.engine_command_set(gated, &authority, engine_allowed);
+            let engine_set =
+                self.engine_command_set(gated, &authority, engine_allowed, &unavailable_engines);
             let _ = ctx.bus.publish(engine_set);
         }
 
@@ -456,7 +642,8 @@ impl Job for Mixer {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
-    use openbmp_core::SimTime;
+    use approx::assert_abs_diff_eq;
+    use openbmp_core::{SimTime, StepIndex};
 
     use super::*;
     use crate::bus::Bus;
@@ -465,19 +652,32 @@ mod tests {
     fn build_bus() -> Bus {
         let bus = Bus::new();
         bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<PseudoControlCommand>().unwrap();
+        bus.register::<EffectorAvailability>().unwrap();
         bus.register::<EffectorCommandSet>().unwrap();
         bus.register::<EngineDemand>().unwrap();
         bus.register::<EngineCommandSet>().unwrap();
+        bus.register::<PropellantSafingCommand>().unwrap();
         bus.register::<VehicleStatus>().unwrap();
         bus
     }
 
     fn publish_status(bus: &Bus, armed: bool, in_flight: bool, phase_id: u64) {
+        publish_status_with_safe(bus, armed, in_flight, phase_id, false);
+    }
+
+    fn publish_status_with_safe(
+        bus: &Bus,
+        armed: bool,
+        in_flight: bool,
+        phase_id: u64,
+        safe_state_requested: bool,
+    ) {
         bus.publish(VehicleStatus {
             armed,
             in_flight,
             phase_id,
-            safe_state_requested: false,
+            safe_state_requested,
         })
         .unwrap();
     }
@@ -649,6 +849,283 @@ mod tests {
     }
 
     #[test]
+    fn safe_state_request_publishes_engine_shutdown_commands_without_fresh_demand() {
+        let bus = build_bus();
+        let clock = SimulatedClock::new();
+        let left_engine = EngineId::from_path("vehicle.assembly.engines.left");
+        let right_engine = EngineId::from_path("vehicle.assembly.engines.right");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            7,
+            PhaseAuthority {
+                effectors: Vec::new(),
+                engines: vec![left_engine, right_engine],
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        let mut mixer = Mixer::new().with_authority(PhaseAuthorityTable {
+            allowed,
+            default: PhaseAuthority::default(),
+        });
+
+        publish_status(&bus, true, true, 7);
+        bus.publish(EngineDemand {
+            time: SimTime::ZERO,
+            throttle_unit: 1.0,
+            gimbal_pitch_rad: 0.1,
+            gimbal_yaw_rad: -0.1,
+            ignite: true,
+            shutdown: false,
+        })
+        .unwrap();
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (burning, _) = bus.latest::<EngineCommandSet>().unwrap().unwrap();
+        assert_eq!(burning.count, 2);
+        assert_eq!(burning.commands[0].throttle_unit, 1.0);
+        assert!(burning.commands[0].ignite);
+        assert!(!burning.commands[0].shutdown);
+
+        clock.set(SimTime::from_seconds(0.25), StepIndex::new(25));
+        publish_status_with_safe(&bus, true, true, 7, true);
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (gated, _) = bus.latest::<EngineDemand>().unwrap().unwrap();
+        assert_eq!(gated.time, SimTime::from_seconds(0.25));
+        assert_eq!(gated.throttle_unit, 0.0);
+        assert_eq!(gated.gimbal_pitch_rad, 0.0);
+        assert_eq!(gated.gimbal_yaw_rad, 0.0);
+        assert!(!gated.ignite);
+        assert!(gated.shutdown);
+
+        let (safing, _) = bus.latest::<PropellantSafingCommand>().unwrap().unwrap();
+        assert_eq!(safing.time, SimTime::from_seconds(0.25));
+        assert!(safing.safed);
+        assert!(safing.isolate_feeds);
+        assert!(safing.close_engine_valves);
+        assert!(!safing.pressurization_enabled);
+        assert!(!safing.drain_enabled);
+        assert!(safing.dump_enabled);
+
+        let (shutdown, _) = bus.latest::<EngineCommandSet>().unwrap().unwrap();
+        assert_eq!(shutdown.count, 2);
+        assert_eq!(shutdown.time, SimTime::from_seconds(0.25));
+        let mut by_id = BTreeMap::new();
+        for command in shutdown.commands.iter().take(usize::from(shutdown.count)) {
+            by_id.insert(command.engine_id, *command);
+        }
+        for engine in [left_engine, right_engine] {
+            let command = by_id[&engine.value()];
+            assert_eq!(command.throttle_unit, 0.0);
+            assert_eq!(command.gimbal_pitch_rad, 0.0);
+            assert_eq!(command.gimbal_yaw_rad, 0.0);
+            assert!(!command.ignite);
+            assert!(command.shutdown);
+        }
+    }
+
+    #[test]
+    fn engine_availability_retrims_throttle_and_shutdowns_failed_engine() {
+        let bus = build_bus();
+        let clock = SimulatedClock::new();
+        let left_engine = EngineId::from_path("vehicle.assembly.engines.left");
+        let center_engine = EngineId::from_path("vehicle.assembly.engines.center");
+        let right_engine = EngineId::from_path("vehicle.assembly.engines.right");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            7,
+            PhaseAuthority {
+                effectors: Vec::new(),
+                engines: vec![left_engine, center_engine, right_engine],
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        let mut mixer = Mixer::new().with_authority(PhaseAuthorityTable {
+            allowed,
+            default: PhaseAuthority::default(),
+        });
+
+        let mut unavailable_engines = [0; MAX_ENGINE_COMMANDS];
+        unavailable_engines[0] = center_engine.value();
+        bus.publish(EffectorAvailability {
+            time: SimTime::ZERO,
+            unavailable_engine_count: 1,
+            unavailable_engines,
+            ..EffectorAvailability::default()
+        })
+        .unwrap();
+        publish_status(&bus, true, true, 7);
+        bus.publish(EngineDemand {
+            time: SimTime::ZERO,
+            throttle_unit: 0.6,
+            gimbal_pitch_rad: 0.1,
+            gimbal_yaw_rad: -0.1,
+            ignite: true,
+            shutdown: false,
+        })
+        .unwrap();
+
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (commands, _) = bus.latest::<EngineCommandSet>().unwrap().unwrap();
+        assert_eq!(commands.count, 3);
+        let mut by_id = BTreeMap::new();
+        for command in commands.commands.iter().take(usize::from(commands.count)) {
+            by_id.insert(command.engine_id, *command);
+        }
+
+        let failed = by_id[&center_engine.value()];
+        assert_eq!(failed.throttle_unit, 0.0);
+        assert_eq!(failed.gimbal_pitch_rad, 0.0);
+        assert_eq!(failed.gimbal_yaw_rad, 0.0);
+        assert!(!failed.ignite);
+        assert!(failed.shutdown);
+
+        for engine in [left_engine, right_engine] {
+            let command = by_id[&engine.value()];
+            assert_abs_diff_eq!(command.throttle_unit, 0.9, epsilon = 1.0e-12);
+            assert_abs_diff_eq!(command.gimbal_pitch_rad, 0.1, epsilon = 1.0e-12);
+            assert_abs_diff_eq!(command.gimbal_yaw_rad, -0.1, epsilon = 1.0e-12);
+            assert!(command.ignite);
+            assert!(!command.shutdown);
+        }
+
+        bus.publish(EngineDemand {
+            time: SimTime::from_seconds(0.1),
+            throttle_unit: 0.8,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            ignite: true,
+            shutdown: false,
+        })
+        .unwrap();
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (commands, _) = bus.latest::<EngineCommandSet>().unwrap().unwrap();
+        let mut by_id = BTreeMap::new();
+        for command in commands.commands.iter().take(usize::from(commands.count)) {
+            by_id.insert(command.engine_id, *command);
+        }
+        assert_eq!(by_id[&center_engine.value()].throttle_unit, 0.0);
+        for engine in [left_engine, right_engine] {
+            assert_abs_diff_eq!(by_id[&engine.value()].throttle_unit, 1.0, epsilon = 1.0e-12);
+        }
+    }
+
+    #[test]
+    fn engine_out_trim_table_adds_survivor_gimbal_biases_after_retrim() {
+        let bus = build_bus();
+        let clock = SimulatedClock::new();
+        let left_engine = EngineId::from_path("vehicle.assembly.engines.left");
+        let center_engine = EngineId::from_path("vehicle.assembly.engines.center");
+        let right_engine = EngineId::from_path("vehicle.assembly.engines.right");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            7,
+            PhaseAuthority {
+                effectors: Vec::new(),
+                engines: vec![left_engine, center_engine, right_engine],
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        let mut trim_rows = BTreeMap::new();
+        trim_rows.insert(
+            center_engine,
+            vec![
+                EngineOutTrimCommand {
+                    engine: left_engine,
+                    gimbal_pitch_bias_rad: 0.005,
+                    gimbal_yaw_bias_rad: -0.010,
+                },
+                EngineOutTrimCommand {
+                    engine: right_engine,
+                    gimbal_pitch_bias_rad: -0.010,
+                    gimbal_yaw_bias_rad: 0.015,
+                },
+            ],
+        );
+        let mut mixer = Mixer::new()
+            .with_authority(PhaseAuthorityTable {
+                allowed,
+                default: PhaseAuthority::default(),
+            })
+            .with_engine_out_trim(EngineOutTrimTable {
+                by_failed_engine: trim_rows,
+            });
+
+        let mut unavailable_engines = [0; MAX_ENGINE_COMMANDS];
+        unavailable_engines[0] = center_engine.value();
+        bus.publish(EffectorAvailability {
+            time: SimTime::ZERO,
+            unavailable_engine_count: 1,
+            unavailable_engines,
+            ..EffectorAvailability::default()
+        })
+        .unwrap();
+        publish_status(&bus, true, true, 7);
+        bus.publish(EngineDemand {
+            time: SimTime::ZERO,
+            throttle_unit: 0.6,
+            gimbal_pitch_rad: 0.020,
+            gimbal_yaw_rad: -0.030,
+            ignite: true,
+            shutdown: false,
+        })
+        .unwrap();
+
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (commands, _) = bus.latest::<EngineCommandSet>().unwrap().unwrap();
+        let mut by_id = BTreeMap::new();
+        for command in commands.commands.iter().take(usize::from(commands.count)) {
+            by_id.insert(command.engine_id, *command);
+        }
+
+        assert_eq!(by_id[&center_engine.value()].throttle_unit, 0.0);
+        assert_eq!(by_id[&center_engine.value()].gimbal_pitch_rad, 0.0);
+        assert_eq!(by_id[&center_engine.value()].gimbal_yaw_rad, 0.0);
+        assert!(by_id[&center_engine.value()].shutdown);
+
+        let left = by_id[&left_engine.value()];
+        assert_abs_diff_eq!(left.throttle_unit, 0.9, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(left.gimbal_pitch_rad, 0.025, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(left.gimbal_yaw_rad, -0.040, epsilon = 1.0e-12);
+
+        let right = by_id[&right_engine.value()];
+        assert_abs_diff_eq!(right.throttle_unit, 0.9, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(right.gimbal_pitch_rad, 0.010, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(right.gimbal_yaw_rad, -0.015, epsilon = 1.0e-12);
+    }
+
+    #[test]
     fn channel_map_publishes_effector_id_commands() {
         let bus = build_bus();
         let clock = SimulatedClock::new();
@@ -802,5 +1279,362 @@ mod tests {
             mapped.saturated,
             "allowed roll capacity is 0.2, so a 0.3 demand must saturate"
         );
+    }
+
+    #[test]
+    fn dense_wls_allocator_publishes_effector_command_set() {
+        let bus = build_bus();
+        let clock = SimulatedClock::new();
+        let roll = EffectorId::from_path("vehicle.assembly.effectors.roll");
+        let pitch = EffectorId::from_path("vehicle.assembly.effectors.pitch");
+        let yaw = EffectorId::from_path("vehicle.assembly.effectors.yaw");
+        let matrix = crate::allocation::EffectivenessMatrix::new(
+            3,
+            vec![roll, pitch, yaw],
+            vec![
+                1.0, 0.0, 0.0, //
+                0.0, 1.0, 0.0, //
+                0.0, 0.0, 1.0,
+            ],
+        )
+        .expect("dense matrix builds");
+        let wls = crate::allocation::WlsActiveSetAllocator::new(
+            matrix,
+            vec![1.0, 1.0, 1.0],
+            vec![1.0, 1.0, 1.0],
+            1.0e9,
+            vec![0.0, 0.0, 0.0],
+        )
+        .expect("dense wls builds");
+        let allocator = crate::allocation::DenseWlsControlAllocator::new(
+            wls,
+            crate::allocation::EffectorBounds {
+                u_min_pos: vec![-1.0, -1.0, -1.0],
+                u_max_pos: vec![1.0, 1.0, 1.0],
+                rate_limit: vec![10.0, 10.0, 10.0],
+            },
+            vec![0.0, 0.0, 0.0],
+            0.1,
+        )
+        .expect("dense control allocator builds");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            7,
+            PhaseAuthority {
+                effectors: vec![roll, pitch, yaw],
+                engines: Vec::new(),
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        let mut mixer = Mixer::new()
+            .with_authority(PhaseAuthorityTable {
+                allowed,
+                default: PhaseAuthority::default(),
+            })
+            .with_allocator(allocator);
+
+        publish_status(&bus, true, true, 7);
+        bus.publish(ActuatorCommand {
+            time: SimTime::ZERO,
+            elevator_rad: 0.2,
+            aileron_rad: 0.4,
+            rudder_rad: -0.1,
+            body_flap_rad: 0.0,
+            saturated: false,
+        })
+        .unwrap();
+
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (mapped, _) = bus.latest::<EffectorCommandSet>().unwrap().unwrap();
+        let mut by_id = BTreeMap::new();
+        for command in mapped.commands.iter().take(usize::from(mapped.count)) {
+            by_id.insert(command.effector_id, command.command);
+        }
+        assert_abs_diff_eq!(by_id[&roll.value()], 0.4, epsilon = 1.0e-8);
+        assert_abs_diff_eq!(by_id[&pitch.value()], 0.2, epsilon = 1.0e-8);
+        assert_abs_diff_eq!(by_id[&yaw.value()], -0.1, epsilon = 1.0e-8);
+        assert!(!mapped.saturated);
+    }
+
+    #[test]
+    fn effector_availability_removes_dense_column_before_allocation() {
+        let bus = build_bus();
+        let clock = SimulatedClock::new();
+        let roll_a = EffectorId::from_path("vehicle.assembly.effectors.roll-a");
+        let roll_b = EffectorId::from_path("vehicle.assembly.effectors.roll-b");
+        let pitch = EffectorId::from_path("vehicle.assembly.effectors.pitch");
+        let yaw = EffectorId::from_path("vehicle.assembly.effectors.yaw");
+        let matrix = crate::allocation::EffectivenessMatrix::new(
+            3,
+            vec![roll_a, roll_b, pitch, yaw],
+            vec![
+                1.0, 1.0, 0.0, 0.0, //
+                0.0, 0.0, 1.0, 0.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ],
+        )
+        .expect("dense matrix builds");
+        let wls = crate::allocation::WlsActiveSetAllocator::new(
+            matrix,
+            vec![1.0, 1.0, 1.0],
+            vec![1.0, 1.0, 1.0, 1.0],
+            1.0e9,
+            vec![0.0, 0.0, 0.0, 0.0],
+        )
+        .expect("dense wls builds");
+        let allocator = crate::allocation::DenseWlsControlAllocator::new(
+            wls,
+            crate::allocation::EffectorBounds {
+                u_min_pos: vec![-1.0, -1.0, -1.0, -1.0],
+                u_max_pos: vec![1.0, 1.0, 1.0, 1.0],
+                rate_limit: vec![10.0, 10.0, 10.0, 10.0],
+            },
+            vec![0.0, 0.0, 0.0, 0.0],
+            0.1,
+        )
+        .expect("dense control allocator builds");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            7,
+            PhaseAuthority {
+                effectors: vec![roll_a, roll_b, pitch, yaw],
+                engines: Vec::new(),
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        let mut mixer = Mixer::new()
+            .with_authority(PhaseAuthorityTable {
+                allowed,
+                default: PhaseAuthority::default(),
+            })
+            .with_allocator(allocator);
+
+        let mut unavailable_effectors = [0; MAX_EFFECTOR_COMMANDS];
+        unavailable_effectors[0] = roll_b.value();
+        bus.publish(EffectorAvailability {
+            time: SimTime::ZERO,
+            unavailable_count: 1,
+            unavailable_effectors,
+            ..EffectorAvailability::default()
+        })
+        .unwrap();
+        publish_status(&bus, true, true, 7);
+        bus.publish(ActuatorCommand {
+            time: SimTime::ZERO,
+            elevator_rad: 0.0,
+            aileron_rad: 0.6,
+            rudder_rad: 0.0,
+            body_flap_rad: 0.0,
+            saturated: false,
+        })
+        .unwrap();
+
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (mapped, _) = bus.latest::<EffectorCommandSet>().unwrap().unwrap();
+        let mut by_id = BTreeMap::new();
+        for command in mapped.commands.iter().take(usize::from(mapped.count)) {
+            by_id.insert(command.effector_id, command.command);
+        }
+        assert_abs_diff_eq!(by_id[&roll_a.value()], 0.6, epsilon = 1.0e-8);
+        assert_eq!(by_id[&roll_b.value()].to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn effector_availability_reports_saturation_when_remaining_dense_authority_is_insufficient() {
+        let bus = build_bus();
+        let clock = SimulatedClock::new();
+        let roll_a = EffectorId::from_path("vehicle.assembly.effectors.roll-a");
+        let roll_b = EffectorId::from_path("vehicle.assembly.effectors.roll-b");
+        let pitch = EffectorId::from_path("vehicle.assembly.effectors.pitch");
+        let yaw = EffectorId::from_path("vehicle.assembly.effectors.yaw");
+        let matrix = crate::allocation::EffectivenessMatrix::new(
+            3,
+            vec![roll_a, roll_b, pitch, yaw],
+            vec![
+                1.0, 1.0, 0.0, 0.0, //
+                0.0, 0.0, 1.0, 0.0, //
+                0.0, 0.0, 0.0, 1.0,
+            ],
+        )
+        .expect("dense matrix builds");
+        let wls = crate::allocation::WlsActiveSetAllocator::new(
+            matrix,
+            vec![1.0, 1.0, 1.0],
+            vec![1.0, 1.0, 1.0, 1.0],
+            1.0e9,
+            vec![0.0, 0.0, 0.0, 0.0],
+        )
+        .expect("dense wls builds");
+        let allocator = crate::allocation::DenseWlsControlAllocator::new(
+            wls,
+            crate::allocation::EffectorBounds {
+                u_min_pos: vec![-0.5, -1.0, -1.0, -1.0],
+                u_max_pos: vec![0.5, 1.0, 1.0, 1.0],
+                rate_limit: vec![10.0, 10.0, 10.0, 10.0],
+            },
+            vec![0.0, 0.0, 0.0, 0.0],
+            0.1,
+        )
+        .expect("dense control allocator builds");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            7,
+            PhaseAuthority {
+                effectors: vec![roll_a, roll_b, pitch, yaw],
+                engines: Vec::new(),
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        let mut mixer = Mixer::new()
+            .with_authority(PhaseAuthorityTable {
+                allowed,
+                default: PhaseAuthority::default(),
+            })
+            .with_allocator(allocator);
+
+        let mut unavailable_effectors = [0; MAX_EFFECTOR_COMMANDS];
+        unavailable_effectors[0] = roll_b.value();
+        bus.publish(EffectorAvailability {
+            time: SimTime::ZERO,
+            unavailable_count: 1,
+            unavailable_effectors,
+            ..EffectorAvailability::default()
+        })
+        .unwrap();
+        publish_status(&bus, true, true, 7);
+        bus.publish(ActuatorCommand {
+            time: SimTime::ZERO,
+            elevator_rad: 0.0,
+            aileron_rad: 0.8,
+            rudder_rad: 0.0,
+            body_flap_rad: 0.0,
+            saturated: false,
+        })
+        .unwrap();
+
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (mapped, _) = bus.latest::<EffectorCommandSet>().unwrap().unwrap();
+        let mut by_id = BTreeMap::new();
+        for command in mapped.commands.iter().take(usize::from(mapped.count)) {
+            by_id.insert(command.effector_id, command.command);
+        }
+        assert_abs_diff_eq!(by_id[&roll_a.value()], 0.5, epsilon = 1.0e-8);
+        assert_eq!(by_id[&roll_b.value()].to_bits(), 0.0_f64.to_bits());
+        assert!(
+            mapped.saturated,
+            "remaining roll authority cannot attain the 0.8 demand after roll_b is unavailable"
+        );
+    }
+
+    #[cfg(feature = "indi")]
+    #[test]
+    fn dense_inca_allocator_consumes_pseudo_control_topic() {
+        use nalgebra::Vector3;
+
+        let bus = build_bus();
+        let clock = SimulatedClock::new();
+        let roll = EffectorId::from_path("vehicle.assembly.effectors.roll");
+        let pitch = EffectorId::from_path("vehicle.assembly.effectors.pitch");
+        let yaw = EffectorId::from_path("vehicle.assembly.effectors.yaw");
+        let matrix = crate::allocation::EffectivenessMatrix::new(
+            3,
+            vec![roll, pitch, yaw],
+            vec![
+                1.0, 0.0, 0.0, //
+                0.0, 1.0, 0.0, //
+                0.0, 0.0, 1.0,
+            ],
+        )
+        .expect("dense matrix builds");
+        let wls = crate::allocation::WlsActiveSetAllocator::new(
+            matrix,
+            vec![1.0, 1.0, 1.0],
+            vec![1.0, 1.0, 1.0],
+            1.0e9,
+            vec![0.0, 0.0, 0.0],
+        )
+        .expect("dense wls builds");
+        let allocator = crate::allocation::DenseIncaControlAllocator::new(
+            wls,
+            crate::allocation::EffectorBounds {
+                u_min_pos: vec![-1.0, -1.0, -1.0],
+                u_max_pos: vec![1.0, 1.0, 1.0],
+                rate_limit: vec![10.0, 10.0, 10.0],
+            },
+            vec![0.0, 0.0, 0.0],
+            0.1,
+        )
+        .expect("dense INCA allocator builds");
+        let mut allowed = BTreeMap::new();
+        allowed.insert(
+            7,
+            PhaseAuthority {
+                effectors: vec![roll, pitch, yaw],
+                engines: Vec::new(),
+                autopilot_allowed: true,
+                engines_allowed: true,
+            },
+        );
+        let mut mixer = Mixer::new()
+            .with_authority(PhaseAuthorityTable {
+                allowed,
+                default: PhaseAuthority::default(),
+            })
+            .with_allocator(allocator);
+
+        publish_status(&bus, true, true, 7);
+        bus.publish(PseudoControlCommand {
+            time: SimTime::ZERO,
+            omega_dot_des_rad_s2: Vector3::new(0.4, 0.2, -0.1),
+            omega_dot_meas_rad_s2: Vector3::zeros(),
+        })
+        .unwrap();
+        bus.publish(ActuatorCommand {
+            time: SimTime::ZERO,
+            elevator_rad: 0.0,
+            aileron_rad: 0.0,
+            rudder_rad: 0.0,
+            body_flap_rad: 0.0,
+            saturated: false,
+        })
+        .unwrap();
+
+        mixer
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+
+        let (mapped, _) = bus.latest::<EffectorCommandSet>().unwrap().unwrap();
+        let mut by_id = BTreeMap::new();
+        for command in mapped.commands.iter().take(usize::from(mapped.count)) {
+            by_id.insert(command.effector_id, command.command);
+        }
+        assert_abs_diff_eq!(by_id[&roll.value()], 0.4, epsilon = 1.0e-8);
+        assert_abs_diff_eq!(by_id[&pitch.value()], 0.2, epsilon = 1.0e-8);
+        assert_abs_diff_eq!(by_id[&yaw.value()], -0.1, epsilon = 1.0e-8);
+        assert!(!mapped.saturated);
     }
 }

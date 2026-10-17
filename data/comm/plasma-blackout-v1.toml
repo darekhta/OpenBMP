@@ -1,0 +1,30 @@
+openbmp.comm_plasma_blackout = 1
+
+[meta]
+dataset_id = "openbmp.comm.plasma_blackout.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic plasma blackout electron-density profile"
+provenance = "OpenBMP synthetic analytic fixture for deterministic plasma-frequency attenuation and blackout threshold regression."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[tolerances]
+frequency_hz = 1.0e-6
+attenuation_db = 1.0e-12
+
+[plasma_blackout]
+samples = [
+  { time_s = 0.0, electron_number_density_m3 = 0.0 },
+  { time_s = 10.0, electron_number_density_m3 = 4.476664302260405e16 },
+  { time_s = 20.0, electron_number_density_m3 = 4.960292855690200e16 },
+  { time_s = 30.0, electron_number_density_m3 = 5.468722873398446e16 },
+]
+
+[[blackout_case]]
+name = "two_ghz_threshold"
+frequency_hz = 2.0e9
+electron_number_density_m3 = 4.960292855690200e16
+expected_plasma_frequency_hz = 2.0e9
+expected_blackout = true
+expected_attenuation_db = 40.0
+

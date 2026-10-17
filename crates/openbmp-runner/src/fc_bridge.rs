@@ -7,7 +7,7 @@
 //! per kernel tick, then pushes gated FC commands back into the
 //! runner-side effector / engine racks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::TcpStream;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -26,11 +26,15 @@ use openbmp_bridge::{
     validate_command_for_sensor, validate_protocol_version,
 };
 use openbmp_comm::{LinkPacketDisposition, LinkPacketEffect};
-use openbmp_core::{DeterministicRng, Position3, SensorId, StepIndex, Velocity3};
+use openbmp_core::{
+    DeterministicRng, EffectorId, EngineId, Position3, SensorId, StepIndex, Velocity3,
+};
+use openbmp_fc::filters::NotchConfig;
 use openbmp_fc::topics::{
-    AirDataSample, BarometerSample, EffectorCommand, EffectorCommandSet, EngineCommand,
-    EngineCommandSet, EnvironmentEstimate, GnssSample, ImuIncrementWindow, ImuInertialIncrement,
-    ImuSample, MagnetometerSample, PropellantState, StarTrackerSample,
+    AirDataSample, BarometerSample, EffectorAvailability, EffectorCommand, EffectorCommandSet,
+    EngineCommand, EngineCommandSet, EnvironmentEstimate, GnssSample, ImuIncrementWindow,
+    ImuInertialIncrement, ImuSample, MAX_EFFECTOR_COMMANDS, MAX_ENGINE_COMMANDS,
+    MagnetometerSample, PropellantSafingCommand, PropellantState, StarTrackerSample, WindEstimate,
 };
 pub(crate) use openbmp_fc::topics::{GuidanceCutoff, ReferenceState};
 use openbmp_mission::{FiredEvent, MissionAction};
@@ -38,10 +42,11 @@ use openbmp_physics::atmosphere::{AtmosphereModel, ExoatmosphericPolicy, UsStand
 use openbmp_physics::magnetic::{EarthDipoleField, MagneticFieldEci, Wmm2025};
 use openbmp_physics::{FrameContext, stationary_rotating_frame_imu_truth_eci};
 use openbmp_scenario::{
-    FcConfig, FcEstimatorKind, FcMagFieldKind, FcSilFaultKind, FcTransportFaultSignalConfig,
-    FcTransportFaultTransformConfig, FcTransportModeConfig, FcTransportPacketDirectionConfig,
-    FcTransportPacketTransformConfig, FcTransportQuaternionAxisConfig, FcTransportVectorAxisConfig,
-    ResolvedFile, Scenario, ScenarioDocument, SensorConfig, SpecificForceSourceConfig,
+    FcConfig, FcEstimatorKind, FcMagFieldKind, FcOptimizedReferenceSampleConfig, FcSilFaultKind,
+    FcTransportFaultSignalConfig, FcTransportFaultTransformConfig, FcTransportModeConfig,
+    FcTransportPacketDirectionConfig, FcTransportPacketTransformConfig,
+    FcTransportQuaternionAxisConfig, FcTransportVectorAxisConfig, ResolvedFile, Scenario,
+    ScenarioDocument, SensorConfig, SpecificForceSourceConfig,
 };
 use openbmp_sensors::{
     AirDataNoiseBudget, GnssNoiseBudget, HighRateImuConfig, IdealStateSensor, ImuNoiseBudget,
@@ -51,6 +56,7 @@ use openbmp_sensors::{
     SyntheticStarTracker,
 };
 use openbmp_state::{PointMassState, RigidBodyState};
+use openbmp_trajopt::decode_iload_payload;
 
 use crate::atmosphere::{
     RuntimeAtmosphere, atmosphere_altitude_m_with_surface_radius,
@@ -62,6 +68,7 @@ use crate::fc::{EstimatorSeed, FcAutopilotLqrContext, FcRunner, FcRunnerMission}
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
 const DEFAULT_FC_TRANSPORT_MAX_PAYLOAD_LEN: u32 = 4096;
+const FC_OPTIMIZED_REFERENCE_ILOAD_FILE_KEY: &str = "fc.optimized_reference.iload_file";
 #[cfg(unix)]
 static UNIX_LOOPBACK_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -507,10 +514,28 @@ impl FcBridge {
     pub fn maybe_new(
         scenario: &Scenario,
         resolved_files: &BTreeMap<String, ResolvedFile>,
+        csi_gyro_notch: Option<[NotchConfig; 3]>,
     ) -> Result<Option<Self>, RunnerError> {
         let Some(fc_config) = &scenario.document.fc else {
             return Ok(None);
         };
+        let scenario_fc_config = fc_config;
+        let mut effective_fc_config = None;
+        if let Some(gyro_notch) = csi_gyro_notch {
+            effective_fc_config = Some(fc_config_with_csi_gyro_notch(
+                scenario_fc_config,
+                gyro_notch,
+            )?);
+        }
+        if fc_config_uses_optimized_reference_iload(
+            effective_fc_config.as_ref().unwrap_or(scenario_fc_config),
+        ) {
+            effective_fc_config = Some(fc_config_with_optimized_reference_iload(
+                effective_fc_config.as_ref().unwrap_or(scenario_fc_config),
+                resolved_files,
+            )?);
+        }
+        let fc_config = effective_fc_config.as_ref().unwrap_or(scenario_fc_config);
         require_bridge_frame(&scenario.document)?;
         if scenario.document.mission.is_none() {
             return Err(RunnerError::UnsupportedScenario {
@@ -558,13 +583,15 @@ impl FcBridge {
                 },
             ),
         };
-        let runner = FcRunner::new(
+        let runner = FcRunner::new_with_resolved_files(
             fc_config,
+            &scenario.document.vehicle.assembly.engines,
             fc_mission,
             lqr_ctx,
             scenario.document.time.dt_s,
             allocator,
             estimator_seed,
+            resolved_files,
         )
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("flight-controller construction failed: {err}"),
@@ -672,6 +699,12 @@ impl FcBridge {
         self.runner.latest_guidance_cutoff()
     }
 
+    /// Returns the most recent propellant-system safing command published by the FC.
+    #[must_use]
+    pub fn latest_propellant_safing_command(&self) -> Option<PropellantSafingCommand> {
+        self.runner.latest_propellant_safing_command()
+    }
+
     /// Run one point-mass bridge tick and push FC commands into the
     /// runner-side racks.
     ///
@@ -683,6 +716,7 @@ impl FcBridge {
         &mut self,
         state: &PointMassState,
         step: StepIndex,
+        environment: &openbmp_sim::EnvironmentSample,
         gravity_eci_m_s2: Vector3<f64>,
         specific_force_truth: Option<SpecificForceTruth>,
         propellant_state: Option<PropellantState>,
@@ -691,7 +725,15 @@ impl FcBridge {
         monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
     ) -> Result<(), RunnerError> {
         let truth = self.point_mass_truth(state, gravity_eci_m_s2, specific_force_truth)?;
-        self.step_from_truth(truth, step, propellant_state, effectors, engines, monitor)
+        self.step_from_truth(
+            truth,
+            step,
+            environment,
+            propellant_state,
+            effectors,
+            engines,
+            monitor,
+        )
     }
 
     /// Run one rigid-body bridge tick and push FC commands into the
@@ -705,12 +747,14 @@ impl FcBridge {
         &mut self,
         state: &RigidBodyState,
         step: StepIndex,
+        environment: &openbmp_sim::EnvironmentSample,
         gravity_eci_m_s2: Vector3<f64>,
         specific_force_truth: Option<SpecificForceTruth>,
         propellant_state: Option<PropellantState>,
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
         gyro_pickup_rad_s: Vector3<f64>,
+        accel_pickup_m_s2: Vector3<f64>,
         monitor: Option<&mut (dyn crate::sil::SilMonitor + '_)>,
     ) -> Result<(), RunnerError> {
         let truth = self.rigid_body_truth(
@@ -718,8 +762,17 @@ impl FcBridge {
             gravity_eci_m_s2,
             specific_force_truth,
             gyro_pickup_rad_s,
+            accel_pickup_m_s2,
         )?;
-        self.step_from_truth(truth, step, propellant_state, effectors, engines, monitor)
+        self.step_from_truth(
+            truth,
+            step,
+            environment,
+            propellant_state,
+            effectors,
+            engines,
+            monitor,
+        )
     }
 
     /// Arm a sensor outage window at run time, addressing a bridge
@@ -796,6 +849,7 @@ impl FcBridge {
         &mut self,
         truth: SensorTruth,
         step: StepIndex,
+        environment: &openbmp_sim::EnvironmentSample,
         propellant_state: Option<PropellantState>,
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
@@ -877,6 +931,10 @@ impl FcBridge {
                 .sample_atmosphere(truth.altitude_geometric_m, truth.time)
                 .density_kg_m3,
         });
+        self.runner.publish_wind(WindEstimate {
+            time: truth.time,
+            wind_eci_m_s: environment.wind_eci_m_s,
+        });
         if let Some(state) = propellant_state {
             self.runner.publish_propellant_state(state);
         }
@@ -890,6 +948,11 @@ impl FcBridge {
             }
             self.step_controller_via_transport(bridge_packet)?
         } else {
+            self.runner
+                .publish_effector_availability(engine_gimbal_availability_from_snapshot(
+                    truth.time,
+                    &engines.snapshot_map(),
+                )?);
             self.step_controller_direct(truth.time, step)?;
             None
         };
@@ -915,15 +978,33 @@ impl FcBridge {
         if let Some(command) = transport_command {
             self.apply_transport_command(&command, effectors, engines)?;
         } else if !use_transport {
-            if let Some(commands) = self.runner.latest_effector_command_set()
-                && !effectors.is_empty()
-            {
-                effectors.apply_fc_commands(&commands)?;
+            let mut engine_gimbal_aliases = Vec::new();
+            if let Some(commands) = self.runner.latest_effector_command_set() {
+                let (effector_commands, aliases) =
+                    split_engine_gimbal_alias_commands(&commands, engines.engine_ids())?;
+                engine_gimbal_aliases = aliases;
+                if effector_commands.count > 0 && !effectors.is_empty() {
+                    effectors.apply_fc_commands(&effector_commands)?;
+                }
             }
-            if let Some(commands) = self.runner.latest_engine_command_set()
-                && !engines.is_empty()
-            {
-                engines.apply_fc_commands(&commands)?;
+            if !engines.is_empty() {
+                let engine_commands = self.runner.latest_engine_command_set();
+                if !engine_gimbal_aliases.is_empty() {
+                    let Some(engine_commands) = engine_commands else {
+                        return Err(RunnerError::UnsupportedScenario {
+                            what: "dense allocator produced engine-gimbal aliases before the FC \
+                                   published a gated engine command set"
+                                .to_owned(),
+                        });
+                    };
+                    let commands = merge_engine_gimbal_alias_commands(
+                        engine_commands,
+                        &engine_gimbal_aliases,
+                    )?;
+                    engines.apply_fc_commands(&commands)?;
+                } else if let Some(commands) = engine_commands {
+                    engines.apply_fc_commands(&commands)?;
+                }
             }
         }
         Ok(())
@@ -1164,15 +1245,35 @@ impl FcBridge {
         effectors: &mut crate::effectors::EffectorRack,
         engines: &mut crate::engines::EngineRack,
     ) -> Result<(), RunnerError> {
-        if !command.effector_commands.is_empty() && !effectors.is_empty() {
+        let mut engine_gimbal_aliases = Vec::new();
+        if !command.effector_commands.is_empty() {
             let commands = effector_command_set_from_packet(command)?;
-            effectors.apply_fc_commands(&commands)?;
+            let (effector_commands, aliases) =
+                split_engine_gimbal_alias_commands(&commands, engines.engine_ids())?;
+            engine_gimbal_aliases = aliases;
+            if effector_commands.count > 0 && !effectors.is_empty() {
+                effectors.apply_fc_commands(&effector_commands)?;
+            }
         }
-        if (!command.engine_commands.is_empty() || !command.engine_throttles.is_empty())
-            && !engines.is_empty()
-        {
-            let commands = engine_command_set_from_packet(command)?;
-            engines.apply_fc_commands(&commands)?;
+        if !engines.is_empty() {
+            let has_engine_command =
+                !command.engine_commands.is_empty() || !command.engine_throttles.is_empty();
+            if !engine_gimbal_aliases.is_empty() {
+                if !has_engine_command {
+                    return Err(RunnerError::UnsupportedScenario {
+                        what: "fc.transport command carries engine-gimbal aliases without a base \
+                               engine command set"
+                            .to_owned(),
+                    });
+                }
+                let commands = engine_command_set_from_packet(command)?;
+                let commands =
+                    merge_engine_gimbal_alias_commands(commands, &engine_gimbal_aliases)?;
+                engines.apply_fc_commands(&commands)?;
+            } else if has_engine_command {
+                let commands = engine_command_set_from_packet(command)?;
+                engines.apply_fc_commands(&commands)?;
+            }
         }
         Ok(())
     }
@@ -1319,11 +1420,13 @@ impl FcBridge {
         gravity_eci_m_s2: Vector3<f64>,
         force_truth: Option<SpecificForceTruth>,
         gyro_pickup_rad_s: Vector3<f64>,
+        accel_pickup_m_s2: Vector3<f64>,
     ) -> Result<SensorTruth, RunnerError> {
         let attitude_body_to_eci = state.orientation.q;
         // The rate gyro senses the rigid-body rate PLUS the local structural
         // bending slope rate (zero for a rigid vehicle). This is what lets the
-        // autopilot — and its gyro notch — interact with the flex mode.
+        // autopilot — and its gyro notch — interact with the flex mode. The
+        // accelerometer likewise senses local modal acceleration at its station.
         let (angular_velocity_body_rad_s, angular_acceleration_body_rad_s2, specific_force_body) =
             match self.specific_force_source {
                 SpecificForceSourceConfig::FiniteDifference => {
@@ -1341,7 +1444,7 @@ impl FcBridge {
                     (
                         angular_velocity_body_rad_s,
                         angular_acceleration_body_rad_s2,
-                        attitude_body_to_eci.inverse() * specific_force_eci,
+                        attitude_body_to_eci.inverse() * specific_force_eci + accel_pickup_m_s2,
                     )
                 }
                 SpecificForceSourceConfig::ForceAccumulator => {
@@ -1352,7 +1455,7 @@ impl FcBridge {
                     (
                         truth.omega_body_rad_s + gyro_pickup_rad_s,
                         truth.alpha_body_rad_s2,
-                        truth.f_cg_body_m_s2,
+                        truth.f_cg_body_m_s2 + accel_pickup_m_s2,
                     )
                 }
                 SpecificForceSourceConfig::StationaryRotatingFrame => {
@@ -1370,7 +1473,8 @@ impl FcBridge {
                         attitude_body_to_eci.inverse() * truth.angular_velocity_eci_rad_s
                             + gyro_pickup_rad_s,
                         Vector3::zeros(),
-                        attitude_body_to_eci.inverse() * truth.specific_force_eci_m_s2,
+                        attitude_body_to_eci.inverse() * truth.specific_force_eci_m_s2
+                            + accel_pickup_m_s2,
                     )
                 }
             };
@@ -1474,6 +1578,88 @@ impl FcBridge {
         self.previous_angular_time_s = Some(time_s);
         angular_accel
     }
+}
+
+fn fc_config_with_csi_gyro_notch(
+    fc_config: &FcConfig,
+    gyro_notch: [NotchConfig; 3],
+) -> Result<FcConfig, RunnerError> {
+    let mut fc_config = fc_config.clone();
+    let mut autopilot_params = fc_config.autopilot_params.unwrap_or_default();
+    if autopilot_params.gyro_notch.is_some() {
+        return Err(RunnerError::UnsupportedScenario {
+            what: "[csi.filter_insertion] cannot be combined with \
+                   [fc.autopilot_params.gyro_notch]"
+                .to_owned(),
+        });
+    }
+    autopilot_params.gyro_notch =
+        Some(
+            gyro_notch.map(|notch| openbmp_scenario::document::FcGyroNotchConfig {
+                center_hz: notch.center_hz,
+                bandwidth_hz: notch.bandwidth_hz,
+                depth_db: notch.depth_db,
+            }),
+        );
+    fc_config.autopilot_params = Some(autopilot_params);
+    Ok(fc_config)
+}
+
+fn fc_config_uses_optimized_reference_iload(fc_config: &FcConfig) -> bool {
+    fc_config
+        .optimized_reference
+        .as_ref()
+        .is_some_and(|cfg| cfg.iload_file.is_some())
+}
+
+fn fc_config_with_optimized_reference_iload(
+    fc_config: &FcConfig,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<FcConfig, RunnerError> {
+    let Some(optimized_reference) = fc_config.optimized_reference.as_ref() else {
+        return Ok(fc_config.clone());
+    };
+    if optimized_reference.iload_file.is_none() {
+        return Ok(fc_config.clone());
+    }
+    let resolved = resolved_files
+        .get(FC_OPTIMIZED_REFERENCE_ILOAD_FILE_KEY)
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!(
+                "optimized reference I-load `{FC_OPTIMIZED_REFERENCE_ILOAD_FILE_KEY}` was not \
+                 resolved"
+            ),
+        })?;
+    let payload =
+        decode_iload_payload(&resolved.bytes).map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!(
+                "optimized reference I-load `{}` failed to decode: {err}",
+                resolved.path.display()
+            ),
+        })?;
+
+    let mut fc_config = fc_config.clone();
+    let optimized_reference =
+        fc_config
+            .optimized_reference
+            .as_mut()
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: "optimized reference I-load source requires [fc.optimized_reference]"
+                    .to_owned(),
+            })?;
+    optimized_reference.samples = payload
+        .reference_profile
+        .iter()
+        .map(|sample| FcOptimizedReferenceSampleConfig {
+            time_s: sample.time_s,
+            radius_m: sample.radius_m,
+            speed_m_s: sample.speed_m_s,
+            flight_path_angle_rad: sample.flight_path_angle_rad,
+        })
+        .collect();
+    optimized_reference.iload_file = None;
+    optimized_reference.iload_file_sha256 = None;
+    Ok(fc_config)
 }
 
 fn apply_comm_link_packet_effect(
@@ -1932,6 +2118,167 @@ fn append_bridge_imu_increment_window(packet: &mut SensorPacket, window: &ImuInc
             seq: increment.seq,
         })
         .collect();
+}
+
+/// Synthetic dense-allocation column target for one physical engine-gimbal axis.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum EngineGimbalAxis {
+    /// Engine pitch-gimbal command.
+    Pitch,
+    /// Engine yaw-gimbal command.
+    Yaw,
+}
+
+impl EngineGimbalAxis {
+    const fn suffix(self) -> &'static str {
+        match self {
+            Self::Pitch => "gimbal_pitch",
+            Self::Yaw => "gimbal_yaw",
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct EngineGimbalAliasCommand {
+    engine_id: EngineId,
+    axis: EngineGimbalAxis,
+    command_rad: f64,
+}
+
+/// Deterministic synthetic effector id used when the FC dense allocator routes
+/// a column to a physical engine gimbal instead of a
+/// `vehicle.assembly.effectors` row.
+pub(crate) fn engine_gimbal_alias_effector_id(
+    engine_id: EngineId,
+    axis: EngineGimbalAxis,
+) -> EffectorId {
+    EffectorId::from_path(&format!(
+        "vehicle.assembly.engines.{}.{}",
+        engine_id.value(),
+        axis.suffix()
+    ))
+}
+
+fn split_engine_gimbal_alias_commands(
+    commands: &EffectorCommandSet,
+    engine_ids: &[EngineId],
+) -> Result<(EffectorCommandSet, Vec<EngineGimbalAliasCommand>), RunnerError> {
+    let mut aliases_by_effector_id = BTreeMap::new();
+    for engine_id in engine_ids {
+        for axis in [EngineGimbalAxis::Pitch, EngineGimbalAxis::Yaw] {
+            aliases_by_effector_id.insert(
+                engine_gimbal_alias_effector_id(*engine_id, axis).value(),
+                (*engine_id, axis),
+            );
+        }
+    }
+
+    let mut ordinary = EffectorCommandSet {
+        time: commands.time,
+        saturated: commands.saturated,
+        ..EffectorCommandSet::default()
+    };
+    let mut aliases = Vec::new();
+    let mut seen_aliases = BTreeSet::new();
+    for command in commands.commands.iter().take(usize::from(commands.count)) {
+        if let Some((engine_id, axis)) = aliases_by_effector_id.get(&command.effector_id) {
+            if !seen_aliases.insert((*engine_id, *axis)) {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "dense allocator produced multiple engine-gimbal alias commands for \
+                         engine 0x{:016x} {} in one tick",
+                        engine_id.value(),
+                        axis.suffix()
+                    ),
+                });
+            }
+            aliases.push(EngineGimbalAliasCommand {
+                engine_id: *engine_id,
+                axis: *axis,
+                command_rad: command.command,
+            });
+            continue;
+        }
+
+        let index = usize::from(ordinary.count);
+        if index >= ordinary.commands.len() {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "internal effector command split exceeded fixed command capacity".to_owned(),
+            });
+        }
+        ordinary.commands[index] = *command;
+        ordinary.count = ordinary.count.saturating_add(1);
+    }
+    Ok((ordinary, aliases))
+}
+
+fn merge_engine_gimbal_alias_commands(
+    mut base: EngineCommandSet,
+    aliases: &[EngineGimbalAliasCommand],
+) -> Result<EngineCommandSet, RunnerError> {
+    for alias in aliases {
+        let Some(command) = base
+            .commands
+            .iter_mut()
+            .take(usize::from(base.count))
+            .find(|command| command.engine_id == alias.engine_id.value())
+        else {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "dense allocator produced an engine-gimbal command for engine 0x{:016x}, \
+                     but the gated engine command set did not include that engine in this phase",
+                    alias.engine_id.value()
+                ),
+            });
+        };
+        match alias.axis {
+            EngineGimbalAxis::Pitch => command.gimbal_pitch_rad = alias.command_rad,
+            EngineGimbalAxis::Yaw => command.gimbal_yaw_rad = alias.command_rad,
+        }
+    }
+    Ok(base)
+}
+
+fn engine_gimbal_availability_from_snapshot(
+    time: openbmp_core::SimTime,
+    engine_snapshot: &BTreeMap<EngineId, openbmp_sim::EngineSnapshot>,
+) -> Result<EffectorAvailability, RunnerError> {
+    let mut availability = EffectorAvailability {
+        time,
+        ..EffectorAvailability::default()
+    };
+    for (engine_id, snapshot) in engine_snapshot {
+        if snapshot.lifecycle_state_index != 4 {
+            continue;
+        }
+        let engine_index = usize::from(availability.unavailable_engine_count);
+        if engine_index >= MAX_ENGINE_COMMANDS {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "engine availability for failed engines exceeds \
+                     MAX_ENGINE_COMMANDS = {MAX_ENGINE_COMMANDS}"
+                ),
+            });
+        }
+        availability.unavailable_engines[engine_index] = engine_id.value();
+        availability.unavailable_engine_count =
+            availability.unavailable_engine_count.saturating_add(1);
+        for axis in [EngineGimbalAxis::Pitch, EngineGimbalAxis::Yaw] {
+            let index = usize::from(availability.unavailable_count);
+            if index >= MAX_EFFECTOR_COMMANDS {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "engine-gimbal availability for failed engines exceeds \
+                         MAX_EFFECTOR_COMMANDS = {MAX_EFFECTOR_COMMANDS}"
+                    ),
+                });
+            }
+            availability.unavailable_effectors[index] =
+                engine_gimbal_alias_effector_id(*engine_id, axis).value();
+            availability.unavailable_count = availability.unavailable_count.saturating_add(1);
+        }
+    }
+    Ok(availability)
 }
 
 fn effector_command_set_from_packet(
@@ -2635,24 +2982,48 @@ fn build_autopilot_lqr_context(
     Ok(None)
 }
 
-/// Helper to derive a control allocator
-/// from `[fc.autopilot_allocation]` plus the
-/// `[[vehicle.assembly.effectors]]` declarations.
+fn dense_engine_gimbal_axis(id: &str) -> Option<(&str, EngineGimbalAxis)> {
+    id.strip_suffix(".gimbal_pitch")
+        .map(|engine_id| (engine_id, EngineGimbalAxis::Pitch))
+        .or_else(|| {
+            id.strip_suffix(".gimbal_yaw")
+                .map(|engine_id| (engine_id, EngineGimbalAxis::Yaw))
+        })
+}
+
+fn dense_finite_rate_limit(rate_limit: f64) -> f64 {
+    if rate_limit.is_finite() {
+        rate_limit
+    } else {
+        1.0e12
+    }
+}
+
+/// Helper to derive a control allocator from `[fc.autopilot_allocation]`,
+/// `[[vehicle.assembly.effectors]]`, and physical engine-gimbal aliases.
 ///
 /// Returns `Ok(None)` when the FC config has no allocation block, or
-/// when the scenario has no `[fc]` block. Walks every
-/// `direct_torque` effector in the assembly and groups them by axis.
-/// For `prioritised_redistributed`, the optional scenario
-/// `axis_priority` is honoured in priority order; absent → the
-/// documented default `[roll, yaw, pitch]`. For `pseudo_inverse`, the
-/// current direct-axis surface is allocated by a bounded weighted
-/// pseudo-inverse.
+/// when the scenario has no `[fc]` block. Walks every `direct_torque`
+/// effector in the assembly and groups them by axis for the legacy
+/// allocators. For `dense_wls` and `dense_inca`, consumes explicit dense
+/// columns from the allocation block in fixed `[roll, pitch, yaw]` row order.
+/// Dense column ids may name declared `vehicle.assembly.effectors` rows or
+/// physical engine aliases of the form `<engine_id>.gimbal_pitch` /
+/// `<engine_id>.gimbal_yaw`. For `prioritised_redistributed`, the optional
+/// scenario `axis_priority` is honoured in priority order; absent → the
+/// documented default `[roll, yaw, pitch]`. For `pseudo_inverse`, the current
+/// direct-axis surface is allocated by a bounded weighted pseudo-inverse. For
+/// `dense_wls`, the runner builds an FC-portable stateful bounded-WLS
+/// allocator with per-effector position and rate bounds; for `dense_inca`, the
+/// same dense columns feed a feature-gated INCA allocator driven by INDI
+/// pseudo-control.
 fn build_autopilot_allocator(
     scenario: &Scenario,
 ) -> Result<Option<openbmp_fc::allocation::ControlAllocator>, RunnerError> {
     use openbmp_fc::allocation::{
-        BodyAxis, ControlAllocator, EffectorAxisAssignment, PrioritisedRedistributedAllocator,
-        WeightedPseudoInverseAllocator,
+        BodyAxis, ControlAllocator, DenseWlsControlAllocator, EffectivenessMatrix,
+        EffectorAxisAssignment, EffectorBounds, PrioritisedRedistributedAllocator,
+        WeightedPseudoInverseAllocator, WlsActiveSetAllocator,
     };
     let Some(fc_config) = &scenario.document.fc else {
         return Ok(None);
@@ -2666,7 +3037,160 @@ fn build_autopilot_allocator(
             "prioritised_redistributed"
         }
         openbmp_scenario::FcAutopilotAllocationKind::PseudoInverse => "pseudo_inverse",
+        openbmp_scenario::FcAutopilotAllocationKind::DenseWls => "dense_wls",
+        openbmp_scenario::FcAutopilotAllocationKind::DenseInca => "dense_inca",
     };
+    if matches!(
+        allocation_kind,
+        openbmp_scenario::FcAutopilotAllocationKind::DenseWls
+            | openbmp_scenario::FcAutopilotAllocationKind::DenseInca
+    ) {
+        let Some(dense_effectors) = alloc_cfg.dense_effectors.as_ref() else {
+            return Err(RunnerError::UnsupportedScenario {
+                what: format!(
+                    "fc.autopilot_allocation.kind = \"{kind_label}\" requires dense_effectors"
+                ),
+            });
+        };
+        let mut effectors_by_id = BTreeMap::new();
+        for effector in &scenario.document.vehicle.assembly.effectors {
+            effectors_by_id.insert(effector.id.as_str(), effector);
+        }
+        let mut engines_by_id = BTreeMap::new();
+        for engine in &scenario.document.vehicle.assembly.engines {
+            engines_by_id.insert(engine.id.as_str(), engine);
+        }
+
+        let mut effector_ids = Vec::new();
+        let mut u_min_pos = Vec::new();
+        let mut u_max_pos = Vec::new();
+        let mut rate_limit = Vec::new();
+        let mut effort_weights = Vec::new();
+        let mut u_pref = Vec::new();
+        let mut initial_u = Vec::new();
+        for dense_effector in dense_effectors {
+            if let Some(effector) = effectors_by_id.get(dense_effector.id.as_str()) {
+                let min = dense_effector.min.unwrap_or(effector.limits.min);
+                let max = dense_effector.max.unwrap_or(effector.limits.max);
+                let rate = dense_effector
+                    .rate_limit
+                    .unwrap_or(effector.limits.max_rate_per_s);
+                effector_ids.push(openbmp_core::EffectorId::from_path(&format!(
+                    "vehicle.assembly.effectors.{}",
+                    effector.id
+                )));
+                u_min_pos.push(min);
+                u_max_pos.push(max);
+                rate_limit.push(rate);
+                initial_u.push(effector.initial_position.unwrap_or(0.0));
+            } else if let Some((engine_id, axis)) =
+                dense_engine_gimbal_axis(dense_effector.id.as_str())
+            {
+                let Some(engine) = engines_by_id.get(engine_id) else {
+                    return Err(RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "fc.autopilot_allocation.kind = \"{kind_label}\" references unknown \
+                             engine-gimbal dense column \"{}\"",
+                            dense_effector.id
+                        ),
+                    });
+                };
+                let limit = engine.limits.max_gimbal_rad;
+                let min = dense_effector.min.unwrap_or(-limit);
+                let max = dense_effector.max.unwrap_or(limit);
+                let rate = dense_effector.rate_limit.unwrap_or_else(|| {
+                    dense_finite_rate_limit(engine.limits.gimbal_slew_rad_per_s)
+                });
+                let engine_id =
+                    EngineId::from_path(&format!("vehicle.assembly.engines.{}", engine.id));
+                effector_ids.push(engine_gimbal_alias_effector_id(engine_id, axis));
+                u_min_pos.push(min);
+                u_max_pos.push(max);
+                rate_limit.push(rate);
+                initial_u.push(0.0);
+            } else {
+                return Err(RunnerError::UnsupportedScenario {
+                    what: format!(
+                        "fc.autopilot_allocation.kind = \"{kind_label}\" references unknown \
+                         dense effector or engine-gimbal alias \"{}\"",
+                        dense_effector.id
+                    ),
+                });
+            };
+            effort_weights.push(dense_effector.effort_weight.unwrap_or(1.0));
+            u_pref.push(dense_effector.preferred.unwrap_or(0.0));
+        }
+
+        let mut row_major = Vec::with_capacity(3 * dense_effectors.len());
+        for row in 0..3 {
+            for dense_effector in dense_effectors {
+                row_major.push(dense_effector.effectiveness[row]);
+            }
+        }
+        let matrix = EffectivenessMatrix::new(3, effector_ids, row_major).map_err(|err| {
+            RunnerError::UnsupportedScenario {
+                what: format!("dense control allocator matrix construction failed: {err}"),
+            }
+        })?;
+        let virtual_weights = alloc_cfg
+            .virtual_weights
+            .clone()
+            .unwrap_or_else(|| vec![1.0, 1.0, 1.0]);
+        let gamma = alloc_cfg.gamma.unwrap_or(1.0e6);
+        let dense =
+            WlsActiveSetAllocator::new(matrix, virtual_weights, effort_weights, gamma, u_pref)
+                .map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!("dense control allocator construction failed: {err}"),
+                })?;
+        let bounds = EffectorBounds {
+            u_min_pos,
+            u_max_pos,
+            rate_limit,
+        };
+        return match allocation_kind {
+            openbmp_scenario::FcAutopilotAllocationKind::DenseWls => {
+                let allocator = DenseWlsControlAllocator::new(
+                    dense,
+                    bounds,
+                    initial_u,
+                    scenario.document.time.dt_s,
+                )
+                .map_err(|err| RunnerError::UnsupportedScenario {
+                    what: format!("dense control allocator runtime construction failed: {err}"),
+                })?;
+                Ok(Some(ControlAllocator::from(allocator)))
+            }
+            openbmp_scenario::FcAutopilotAllocationKind::DenseInca => {
+                #[cfg(feature = "indi")]
+                {
+                    let allocator = openbmp_fc::allocation::DenseIncaControlAllocator::new(
+                        dense,
+                        bounds,
+                        initial_u,
+                        scenario.document.time.dt_s,
+                    )
+                    .map_err(|err| RunnerError::UnsupportedScenario {
+                        what: format!(
+                            "dense INCA control allocator runtime construction failed: {err}"
+                        ),
+                    })?;
+                    Ok(Some(ControlAllocator::from(allocator)))
+                }
+                #[cfg(not(feature = "indi"))]
+                {
+                    let _ = (dense, bounds, initial_u);
+                    Err(RunnerError::UnsupportedScenario {
+                        what: "fc.autopilot_allocation.kind = \"dense_inca\" requires the \
+                               openbmp-runner `indi` Cargo feature; rebuild with --features indi"
+                            .to_owned(),
+                    })
+                }
+            }
+            _ => Err(RunnerError::UnsupportedScenario {
+                what: "internal error: dense allocation branch received non-dense kind".to_owned(),
+            }),
+        };
+    }
     // Walk effectors and pull out direct_torque assignments.
     let mut assignments: Vec<EffectorAxisAssignment> = Vec::new();
     for effector in &scenario.document.vehicle.assembly.effectors {
@@ -2758,6 +3282,20 @@ fn build_autopilot_allocator(
                     what: format!("control allocator construction failed: {err}"),
                 },
             )?)
+        }
+        openbmp_scenario::FcAutopilotAllocationKind::DenseWls => {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "internal error: dense_wls allocator should be constructed before \
+                       legacy direct_torque assignment grouping"
+                    .to_owned(),
+            });
+        }
+        openbmp_scenario::FcAutopilotAllocationKind::DenseInca => {
+            return Err(RunnerError::UnsupportedScenario {
+                what: "internal error: dense_inca allocator should be constructed before \
+                       legacy direct_torque assignment grouping"
+                    .to_owned(),
+            });
         }
     };
     Ok(Some(allocator))
@@ -3278,6 +3816,144 @@ mod tests {
     }
 
     #[test]
+    fn engine_gimbal_alias_commands_split_and_merge_into_base_engine_commands() {
+        let engine = EngineId::from_path("vehicle.assembly.engines.main");
+        let spare = EngineId::from_path("vehicle.assembly.engines.spare");
+        let ordinary_effector = EffectorId::from_path("vehicle.assembly.effectors.roll");
+        let mut effector_set = EffectorCommandSet {
+            time: openbmp_core::SimTime::from_seconds(1.25),
+            saturated: true,
+            ..EffectorCommandSet::default()
+        };
+        effector_set.count = 3;
+        effector_set.commands[0] = EffectorCommand {
+            effector_id: engine_gimbal_alias_effector_id(engine, EngineGimbalAxis::Pitch).value(),
+            command: 0.025,
+            saturated: true,
+        };
+        effector_set.commands[1] = EffectorCommand {
+            effector_id: ordinary_effector.value(),
+            command: -0.4,
+            saturated: true,
+        };
+        effector_set.commands[2] = EffectorCommand {
+            effector_id: engine_gimbal_alias_effector_id(engine, EngineGimbalAxis::Yaw).value(),
+            command: -0.015,
+            saturated: true,
+        };
+
+        let (ordinary, aliases) =
+            split_engine_gimbal_alias_commands(&effector_set, &[engine, spare])
+                .expect("alias split succeeds");
+        assert_eq!(ordinary.count, 1);
+        assert_eq!(ordinary.commands[0].effector_id, ordinary_effector.value());
+        assert_eq!(ordinary.commands[0].command.to_bits(), (-0.4_f64).to_bits());
+        assert_eq!(aliases.len(), 2);
+
+        let mut engine_set = EngineCommandSet {
+            time: effector_set.time,
+            count: 1,
+            ..EngineCommandSet::default()
+        };
+        engine_set.commands[0] = EngineCommand {
+            engine_id: engine.value(),
+            throttle_unit: 0.7,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            ignite: true,
+            shutdown: false,
+        };
+
+        let merged = merge_engine_gimbal_alias_commands(engine_set, &aliases)
+            .expect("aliases merge into base engine command");
+        assert_eq!(merged.count, 1);
+        let command = merged.commands[0];
+        assert_eq!(command.engine_id, engine.value());
+        assert_eq!(command.throttle_unit.to_bits(), 0.7_f64.to_bits());
+        assert_eq!(command.gimbal_pitch_rad.to_bits(), 0.025_f64.to_bits());
+        assert_eq!(command.gimbal_yaw_rad.to_bits(), (-0.015_f64).to_bits());
+        assert!(command.ignite);
+        assert!(!command.shutdown);
+    }
+
+    #[test]
+    fn duplicate_engine_gimbal_alias_commands_fail_closed() {
+        let engine = EngineId::from_path("vehicle.assembly.engines.main");
+        let alias_id = engine_gimbal_alias_effector_id(engine, EngineGimbalAxis::Pitch).value();
+        let mut effector_set = EffectorCommandSet {
+            count: 2,
+            ..EffectorCommandSet::default()
+        };
+        effector_set.commands[0] = EffectorCommand {
+            effector_id: alias_id,
+            command: 0.01,
+            saturated: false,
+        };
+        effector_set.commands[1] = EffectorCommand {
+            effector_id: alias_id,
+            command: 0.02,
+            saturated: false,
+        };
+
+        let err = split_engine_gimbal_alias_commands(&effector_set, &[engine])
+            .expect_err("duplicate alias rejected");
+        assert!(
+            matches!(
+                err,
+                RunnerError::UnsupportedScenario { ref what }
+                    if what.contains("multiple engine-gimbal alias commands")
+            ),
+            "expected duplicate alias UnsupportedScenario, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn failed_engine_snapshot_marks_pitch_and_yaw_gimbal_aliases_unavailable() {
+        let failed = EngineId::from_path("vehicle.assembly.engines.failed");
+        let healthy = EngineId::from_path("vehicle.assembly.engines.healthy");
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(
+            failed,
+            openbmp_sim::EngineSnapshot {
+                lifecycle_state_index: 4,
+                ..openbmp_sim::EngineSnapshot::idle()
+            },
+        );
+        snapshots.insert(
+            healthy,
+            openbmp_sim::EngineSnapshot {
+                thrust_body: Vector3::new(0.0, 0.0, 1000.0),
+                lifecycle_state_index: 2,
+                ..openbmp_sim::EngineSnapshot::idle()
+            },
+        );
+
+        let availability = engine_gimbal_availability_from_snapshot(
+            openbmp_core::SimTime::from_seconds(2.0),
+            &snapshots,
+        )
+        .expect("availability builds");
+
+        assert_eq!(availability.unavailable_count, 2);
+        assert_eq!(availability.unavailable_engine_count, 1);
+        assert_eq!(availability.unavailable_engines[0], failed.value());
+        assert!(availability.is_engine_unavailable(failed.value()));
+        assert!(!availability.is_engine_unavailable(healthy.value()));
+        assert!(availability.is_unavailable(
+            engine_gimbal_alias_effector_id(failed, EngineGimbalAxis::Pitch).value()
+        ));
+        assert!(availability.is_unavailable(
+            engine_gimbal_alias_effector_id(failed, EngineGimbalAxis::Yaw).value()
+        ));
+        assert!(!availability.is_unavailable(
+            engine_gimbal_alias_effector_id(healthy, EngineGimbalAxis::Pitch).value()
+        ));
+        assert!(!availability.is_unavailable(
+            engine_gimbal_alias_effector_id(healthy, EngineGimbalAxis::Yaw).value()
+        ));
+    }
+
+    #[test]
     fn allocator_builder_rejects_even_tiny_asymmetric_limits() {
         let toml = ALLOCATOR_SCENARIO.replacen(
             "limits           = { min = -0.2, max = 0.2",
@@ -3309,6 +3985,166 @@ mod tests {
     }
 
     #[test]
+    fn allocator_builder_consumes_dense_wls_kind() {
+        let dense_block = r#"[fc.autopilot_allocation]
+kind = "dense_wls"
+gamma = 1000000.0
+virtual_weights = [1.0, 1.0, 1.0]
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "roll-torque-a"
+effectiveness = [1.0, 0.0, 0.0]
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "roll-torque-b"
+effectiveness = [1.0, 0.0, 0.0]
+effort_weight = 2.0
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "pitch-torque"
+effectiveness = [0.0, 1.0, 0.0]
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "yaw-torque"
+effectiveness = [0.0, 0.0, 1.0]
+"#;
+        let toml = ALLOCATOR_SCENARIO.replace(
+            r#"[fc.autopilot_allocation]
+kind          = "prioritised_redistributed"
+axis_priority = ["roll", "pitch", "yaw"]"#,
+            dense_block,
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let allocator = build_autopilot_allocator(&scenario)
+            .expect("dense allocator builds")
+            .expect("allocator present");
+        assert!(matches!(
+            allocator,
+            openbmp_fc::allocation::ControlAllocator::DenseWls(_)
+        ));
+    }
+
+    #[cfg(feature = "indi")]
+    #[test]
+    fn allocator_builder_consumes_dense_inca_kind() {
+        let dense_block = r#"[fc.autopilot_allocation]
+kind = "dense_inca"
+gamma = 1000000.0
+virtual_weights = [1.0, 1.0, 1.0]
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "roll-torque-a"
+effectiveness = [1.0, 0.0, 0.0]
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "roll-torque-b"
+effectiveness = [1.0, 0.0, 0.0]
+effort_weight = 2.0
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "pitch-torque"
+effectiveness = [0.0, 1.0, 0.0]
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "yaw-torque"
+effectiveness = [0.0, 0.0, 1.0]
+"#;
+        let toml = ALLOCATOR_SCENARIO.replace(
+            r#"[fc.autopilot_allocation]
+kind          = "prioritised_redistributed"
+axis_priority = ["roll", "pitch", "yaw"]"#,
+            dense_block,
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let allocator = build_autopilot_allocator(&scenario)
+            .expect("dense INCA allocator builds")
+            .expect("allocator present");
+        assert!(matches!(
+            allocator,
+            openbmp_fc::allocation::ControlAllocator::DenseInca(_)
+        ));
+    }
+
+    #[cfg(feature = "indi")]
+    #[test]
+    fn allocator_builder_consumes_dense_inca_engine_gimbal_aliases() {
+        let engine_block = r#"[[vehicle.assembly.engines]]
+id = "main"
+mounted_to = "main"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, -1.0]
+limits = { max_thrust_n = 1000.0, isp_s = 250.0, ignition_transient_s = 0.0, shutdown_transient_s = 0.0, max_gimbal_rad = 0.1, gimbal_slew_rad_per_s = 2.0 }
+
+"#;
+        let dense_block = r#"[fc.autopilot_allocation]
+kind = "dense_inca"
+gamma = 1000000.0
+virtual_weights = [1.0, 1.0, 1.0]
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "main.gimbal_yaw"
+effectiveness = [1.0, 0.0, 0.0]
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "main.gimbal_pitch"
+effectiveness = [0.0, 1.0, 0.0]
+"#;
+        let toml = ALLOCATOR_SCENARIO
+            .replace(
+                "# Two roll-torque effectors with",
+                &format!("{engine_block}# Two roll-torque effectors with"),
+            )
+            .replace(
+                r#"models = ["gravity"]"#,
+                r#"models = ["gravity", "thrust"]"#,
+            )
+            .replace(
+                r#"[fc.autopilot_allocation]
+kind          = "prioritised_redistributed"
+axis_priority = ["roll", "pitch", "yaw"]"#,
+                dense_block,
+            );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let allocator = build_autopilot_allocator(&scenario)
+            .expect("dense INCA physical gimbal allocator builds")
+            .expect("allocator present");
+        assert!(matches!(
+            allocator,
+            openbmp_fc::allocation::ControlAllocator::DenseInca(_)
+        ));
+    }
+
+    #[test]
+    fn allocator_builder_rejects_dense_unknown_effector() {
+        let dense_block = r#"[fc.autopilot_allocation]
+kind = "dense_wls"
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "missing-effector"
+effectiveness = [1.0, 0.0, 0.0]
+"#;
+        let toml = ALLOCATOR_SCENARIO.replace(
+            r#"[fc.autopilot_allocation]
+kind          = "prioritised_redistributed"
+axis_priority = ["roll", "pitch", "yaw"]"#,
+            dense_block,
+        );
+        let scenario = Scenario::from_toml_str(&toml).expect("scenario parses");
+        let err = build_autopilot_allocator(&scenario).expect_err("unknown dense effector");
+        assert!(
+            matches!(
+                err,
+                RunnerError::UnsupportedScenario { ref what }
+                    if what.contains(
+                        "references unknown dense effector or engine-gimbal alias \
+                         \"missing-effector\""
+                    )
+            ),
+            "expected dense unknown-effector UnsupportedScenario, got {err:?}"
+        );
+    }
+
+    #[test]
     fn magnetic_field_settings_follow_first_estimator_lane() {
         let lanes = r#"
 [fc.estimator_lanes]
@@ -3329,6 +4165,124 @@ estimator = "ekf"
         let (kind, epoch) = magnetic_field_settings(fc);
         assert_eq!(kind, FcMagFieldKind::Wmm2025);
         assert_eq!(epoch.to_bits(), 2025.0f64.to_bits());
+    }
+
+    #[test]
+    fn csi_gyro_notch_override_populates_autopilot_params() {
+        let scenario = Scenario::from_toml_str(FC_SCENARIO).expect("fc scenario validates");
+        let fc = scenario.document.fc.as_ref().expect("fc block present");
+        let notch = NotchConfig {
+            center_hz: 1.0,
+            bandwidth_hz: 0.4,
+            depth_db: 20.0,
+        };
+
+        let effective =
+            fc_config_with_csi_gyro_notch(fc, [notch; 3]).expect("CSI notch override applies");
+        let notches = effective
+            .autopilot_params
+            .as_ref()
+            .and_then(|params| params.gyro_notch)
+            .expect("autopilot gyro notch is populated");
+        for axis_notch in notches {
+            assert_eq!(axis_notch.center_hz.to_bits(), 1.0_f64.to_bits());
+            assert_eq!(axis_notch.bandwidth_hz.to_bits(), 0.4_f64.to_bits());
+            assert_eq!(axis_notch.depth_db.to_bits(), 20.0_f64.to_bits());
+        }
+
+        let conflicting = effective;
+        assert!(matches!(
+            fc_config_with_csi_gyro_notch(&conflicting, [notch; 3]),
+            Err(RunnerError::UnsupportedScenario { .. })
+        ));
+    }
+
+    #[test]
+    fn optimized_reference_iload_file_materializes_fc_samples() {
+        let optimized_reference_block = r#"
+[fc.optimized_reference]
+iload_file = "optimized-reference.iload"
+active_phase_paths = ["mission.phases.powered_ascent"]
+radial_direction_eci = [0.0, 1.0, 0.0]
+tangential_direction_eci = [0.0, 0.0, 1.0]
+"#;
+        let toml = format!(
+            "{}\n{optimized_reference_block}",
+            FC_SCENARIO
+                .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+                .replace(
+                    "guidance         = \"attitude_hold\"",
+                    "guidance         = \"optimized_reference\""
+                )
+        );
+        let scenario = Scenario::from_toml_str(&toml)
+            .expect("optimized reference file-source scenario validates");
+        let fc = scenario.document.fc.as_ref().expect("fc block present");
+        let terminal = openbmp_trajopt::TerminalCondition::ApogeeRadius { radius_m: 120.0 };
+        let payload = openbmp_trajopt::ILoadPayload {
+            header: openbmp_trajopt::ILoadHeader::new_with_objective(
+                &terminal,
+                openbmp_trajopt::ILoadObjectiveClass::OptimizedReference,
+                7,
+                "openbmp-runner-test".to_owned(),
+            ),
+            metadata: openbmp_trajopt::SynthesisMetadata {
+                scenario_digest: "sha256:test-runner-iload".to_owned(),
+                source_revision: "test".to_owned(),
+                method: "fixed-mesh-test".to_owned(),
+            },
+            event_bindings_postcard: Vec::new(),
+            gain_tables: Vec::new(),
+            reference_profile: vec![
+                openbmp_trajopt::ReferenceProfileSample {
+                    time_s: 0.0,
+                    radius_m: 100.0,
+                    speed_m_s: 10.0,
+                    flight_path_angle_rad: 0.0,
+                },
+                openbmp_trajopt::ReferenceProfileSample {
+                    time_s: 2.0,
+                    radius_m: 120.0,
+                    speed_m_s: 20.0,
+                    flight_path_angle_rad: 0.2,
+                },
+            ],
+            optimality_certificate: None,
+        };
+        let encoded =
+            openbmp_trajopt::encode_iload_payload(&payload).expect("I-load payload encodes");
+        let resolved = BTreeMap::from([(
+            FC_OPTIMIZED_REFERENCE_ILOAD_FILE_KEY.to_owned(),
+            ResolvedFile::from_bytes("optimized-reference.iload", encoded),
+        )]);
+
+        let effective = fc_config_with_optimized_reference_iload(fc, &resolved)
+            .expect("I-load source materializes");
+        let optimized_reference = effective
+            .optimized_reference
+            .as_ref()
+            .expect("optimized reference config present");
+        assert_eq!(optimized_reference.samples.len(), 2);
+        assert_eq!(
+            optimized_reference.samples[1].time_s.to_bits(),
+            2.0_f64.to_bits()
+        );
+        assert_eq!(
+            optimized_reference.samples[1].radius_m.to_bits(),
+            120.0_f64.to_bits()
+        );
+        assert!(optimized_reference.iload_file.is_none());
+
+        let malformed = BTreeMap::from([(
+            FC_OPTIMIZED_REFERENCE_ILOAD_FILE_KEY.to_owned(),
+            ResolvedFile::from_bytes("optimized-reference.iload", vec![0xff, 0x00]),
+        )]);
+        let err = fc_config_with_optimized_reference_iload(fc, &malformed)
+            .expect_err("malformed I-load rejects");
+        assert!(
+            matches!(err, RunnerError::UnsupportedScenario { ref what } if what.contains("failed to decode")),
+            "expected malformed I-load decode error, got {err:?}"
+        );
     }
 
     #[test]

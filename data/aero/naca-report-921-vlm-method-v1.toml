@@ -1,0 +1,28 @@
+# Public NACA Report 921 method-convention fixture for the first VLM substrate.
+#
+# This fixture pins the quarter-chord bound-vortex and three-quarter-chord
+# control-point convention on a straight-quarter-chord rectangular lifting
+# surface. It is not AVL, wind-tunnel, or flight validation data.
+
+[case]
+dataset_id = "openbmp.aero.naca_report_921_vlm_method.v1"
+source_class = "public-domain"
+validation_label = "checked"
+report_id = "NACA-TR-921"
+root_chord_m = 1.0
+tip_chord_m = 1.0
+span_m = 2.0
+sweep_deg = 0.0
+root_le_x_m = 0.0
+moment_reference_x_m = 0.25
+reference_area_m2 = 2.0
+reference_length_m = 1.0
+hinge_chord_fraction = 0.75
+chordwise_panels = 1
+spanwise_panels = 4
+wake_length_m = 20.0
+expected_panel_count = 4
+expected_bound_chord_fraction = 0.25
+expected_control_chord_fraction = 0.75
+expected_normal_z = 1.0
+max_absolute_error = 1.0e-12

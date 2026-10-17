@@ -1,0 +1,58 @@
+# Public NACA Report 1048 body-II incremental-foredrag equation fixture.
+#
+# Uses equation (15) from the report for body II with the body geometry from
+# Figure 6. The expected values use the report's body planform term and
+# low-crossflow-Mach finite-length drag coefficient; the runtime comparison
+# checks CD(alpha) - CD(0) and allows the stated report-equation tolerance.
+
+openbmp.naca_1048_incremental_foredrag_validation = 1
+
+[provenance]
+dataset_id = "openbmp.aero.naca_report_1048_body_ii_incremental_foredrag.v1"
+source_class = "public-domain-naca"
+validation_label = "research"
+source_title = "NACA Report 1048, A Study of Effects of Viscosity on Flow Over Slender Inclined Bodies of Revolution"
+source_url = "https://ntrs.nasa.gov/citations/19930090962"
+
+[geometry]
+body_diameter_m = 1.0
+body_length_m = 13.1
+surface_roughness_m = 0.0
+reference_area_m2 = 0.7853981633974483
+reference_length_m = 1.0
+
+[geometry.nose]
+kind = "ogive"
+fineness = 5.752
+
+[tolerances]
+max_abs_error = 2.0e-2
+max_relative_error = 7.0e-2
+
+[[samples]]
+id = "body-ii-mach198-alpha4"
+mach = 1.98
+alpha_deg = 4.0
+reynolds_length = 1.0e6
+expected_delta_cd_foredrag = 0.008921244203091244
+
+[[samples]]
+id = "body-ii-mach198-alpha8"
+mach = 1.98
+alpha_deg = 8.0
+reynolds_length = 1.0e6
+expected_delta_cd_foredrag = 0.05205147343923307
+
+[[samples]]
+id = "body-ii-mach198-alpha12"
+mach = 1.98
+alpha_deg = 12.0
+reynolds_length = 1.0e6
+expected_delta_cd_foredrag = 0.15433292458710487
+
+[[samples]]
+id = "body-ii-mach198-alpha16"
+mach = 1.98
+alpha_deg = 16.0
+reynolds_length = 1.0e6
+expected_delta_cd_foredrag = 0.34121394926753756

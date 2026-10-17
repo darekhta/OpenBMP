@@ -1,0 +1,21 @@
+schema = "openbmp.aerothermal.stagnation_dkr.v1"
+dataset_id = "detra-kemp-riddell-synthetic-conversion-v1"
+validation_label = "checked"
+provenance = "Synthetic WP-04.1-b unit-conversion fixture for the classic DKR imperial-reference stagnation heating form; not a flight or wind-tunnel benchmark."
+
+reference_heat_flux_btu_ft2_s = 17600.0
+reference_velocity_ft_s = 26000.0
+velocity_exponent = 3.15
+sea_level_density_kg_m3 = 1.225
+reference_wall_temperature_k = 300.0
+
+synthetic_density_kg_m3 = 0.0001
+synthetic_velocity_m_s = 8000.0
+synthetic_nose_radius_m = 1.0
+synthetic_wall_temperature_k = 300.0
+synthetic_cold_reference_heat_flux_btu_ft2_s = 90.4424639224453
+synthetic_cold_reference_heat_flux_w_m2 = 1027112.2547416006
+
+synthetic_hot_wall_temperature_k = 3000.0
+synthetic_hot_wall_correction = 0.9150069304510967
+synthetic_hot_wall_heat_flux_w_m2 = 939814.8314398169

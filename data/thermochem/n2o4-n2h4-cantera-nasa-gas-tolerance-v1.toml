@@ -1,0 +1,366 @@
+openbmp.thermochem_reference = 1
+
+[meta]
+dataset_id = "openbmp.thermochem.n2o4_n2h4_cantera_nasa_gas.v1"
+source_class = "public-open-source-tool"
+source_title = "Cantera 3.2.0 nasa_gas.yaml species-subset N2O4/N2H4 hydrazine hypergolic reference HP-equilibrium thermochemistry tolerance table"
+source_url = "https://cantera.org/"
+mechanism = "nasa_gas.yaml"
+species_subset = ["N2O4", "N2H4", "NO2", "NO", "N2O3", "N2O", "N2", "O2", "O", "H2O", "H2", "OH", "H", "NH3", "NH2", "NH", "N", "HNO"]
+license_or_terms = "Cantera BSD-3-Clause; NASA polynomial species data terms documented by Cantera distribution"
+validation = "research"
+
+[deck]
+file = "n2o4-n2h4-cantera-nasa-gas-schema-1.toml"
+
+[nozzle]
+throat_area_m2 = 0.02
+exit_area_m2 = 0.24
+ambient_pressure_pa = 101325.0
+separation = "off"
+
+[tolerances]
+relative = 1.0e-10
+absolute_temperature_k = 1.0e-8
+absolute_gamma = 1.0e-12
+absolute_molecular_weight_kg_per_mol = 1.0e-14
+absolute_c_star_m_s = 1.0e-8
+absolute_mass_flow_kg_per_s = 1.0e-10
+absolute_isp_s = 1.0e-8
+absolute_thrust_n = 1.0e-7
+
+[[case]]
+name = "pc1mpa_mr1"
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 1.0
+expected_chamber_temperature_k = 3127.4150861930057
+expected_gamma = 1.2325581890133293
+expected_molecular_weight_kg_per_mol = 0.018503632770924903
+expected_c_star_m_s = 1810.4519166002378
+expected_nominal_mass_flow_kg_per_s = 11.272413853238174
+expected_mass_flow_min_kg_per_s = 11.04696557617341
+expected_mass_flow_max_kg_per_s = 11.50725580851397
+expected_thrust_n = 10559.252106771106
+expected_isp_s = 95.52027374423209
+
+[[case]]
+name = "pc1mpa_mr1p2"
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 1.2
+expected_chamber_temperature_k = 3195.0615121550572
+expected_gamma = 1.2284160965634343
+expected_molecular_weight_kg_per_mol = 0.01956274442197274
+expected_c_star_m_s = 1781.843129939677
+expected_nominal_mass_flow_kg_per_s = 11.453400651491147
+expected_mass_flow_min_kg_per_s = 11.224332638461325
+expected_mass_flow_max_kg_per_s = 11.69201316506388
+expected_thrust_n = 10610.008786205148
+expected_isp_s = 94.46275659380763
+
+[[case]]
+name = "pc1mpa_mr1p4"
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 1.4
+expected_chamber_temperature_k = 3208.2430828642327
+expected_gamma = 1.226402879384488
+expected_molecular_weight_kg_per_mol = 0.020459300517653344
+expected_c_star_m_s = 1746.9782674987844
+expected_nominal_mass_flow_kg_per_s = 11.681978903220857
+expected_mass_flow_min_kg_per_s = 11.44833932515644
+expected_mass_flow_max_kg_per_s = 11.925353463704624
+expected_thrust_n = 10634.861994114719
+expected_isp_s = 92.83137119167023
+
+[[case]]
+name = "pc1mpa_mr1p6"
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 1.6
+expected_chamber_temperature_k = 3188.937577451621
+expected_gamma = 1.2257194578095099
+expected_molecular_weight_kg_per_mol = 0.021220284878648753
+expected_c_star_m_s = 1710.5397937380292
+expected_nominal_mass_flow_kg_per_s = 11.930832208649367
+expected_mass_flow_min_kg_per_s = 11.69221556447638
+expected_mass_flow_max_kg_per_s = 12.17939121299623
+expected_thrust_n = 10643.326302921338
+expected_isp_s = 90.96743799007763
+
+[[case]]
+name = "pc1mpa_mr1p8"
+chamber_pressure_pa = 1000000.0
+mixture_ratio = 1.8
+expected_chamber_temperature_k = 3152.3761955695168
+expected_gamma = 1.2258270130654143
+expected_molecular_weight_kg_per_mol = 0.02187392541636295
+expected_c_star_m_s = 1675.050150068012
+expected_nominal_mass_flow_kg_per_s = 12.183613287326049
+expected_mass_flow_min_kg_per_s = 11.939941021579527
+expected_mass_flow_max_kg_per_s = 12.43743856414534
+expected_thrust_n = 10641.993285379118
+expected_isp_s = 89.06892262242013
+
+[[case]]
+name = "pc4mpa_mr1"
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 1.0
+expected_chamber_temperature_k = 3243.918298472115
+expected_gamma = 1.2284358419084591
+expected_molecular_weight_kg_per_mol = 0.01869308658073227
+expected_c_star_m_s = 1836.6935335301332
+expected_nominal_mass_flow_kg_per_s = 44.44544044554138
+expected_mass_flow_min_kg_per_s = 43.55653163663055
+expected_mass_flow_max_kg_per_s = 45.37138712149016
+expected_thrust_n = 115393.06250434066
+expected_isp_s = 264.7474645797007
+
+[[case]]
+name = "pc4mpa_mr1p2"
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 1.2
+expected_chamber_temperature_k = 3338.413382621807
+expected_gamma = 1.2234935882485534
+expected_molecular_weight_kg_per_mol = 0.01981283615665414
+expected_c_star_m_s = 1812.4444870790608
+expected_nominal_mass_flow_kg_per_s = 45.04008461676188
+expected_mass_flow_min_kg_per_s = 44.139282924426645
+expected_mass_flow_max_kg_per_s = 45.97841971294442
+expected_thrust_n = 115637.96408958606
+expected_isp_s = 261.8065836715295
+
+[[case]]
+name = "pc4mpa_mr1p4"
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 1.4
+expected_chamber_temperature_k = 3359.730457094594
+expected_gamma = 1.221225234298493
+expected_molecular_weight_kg_per_mol = 0.020741155346727665
+expected_c_star_m_s = 1778.2465625825957
+expected_nominal_mass_flow_kg_per_s = 45.90626225795548
+expected_mass_flow_min_kg_per_s = 44.98813701279637
+expected_mass_flow_max_kg_per_s = 46.86264272166289
+expected_thrust_n = 115751.34802242342
+expected_isp_s = 257.1185726018476
+
+[[case]]
+name = "pc4mpa_mr1p6"
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 1.6
+expected_chamber_temperature_k = 3334.3059031823877
+expected_gamma = 1.2207100378717004
+expected_molecular_weight_kg_per_mol = 0.02150475102070756
+expected_c_star_m_s = 1740.0322786554582
+expected_nominal_mass_flow_kg_per_s = 46.91444754364151
+expected_mass_flow_min_kg_per_s = 45.97615859276868
+expected_mass_flow_max_kg_per_s = 47.891831867467374
+expected_thrust_n = 115777.18678287626
+expected_isp_s = 251.6492906490038
+
+[[case]]
+name = "pc4mpa_mr1p8"
+chamber_pressure_pa = 4000000.0
+mixture_ratio = 1.8
+expected_chamber_temperature_k = 3285.3693626599343
+expected_gamma = 1.221184354985227
+expected_molecular_weight_kg_per_mol = 0.022143606737807943
+expected_c_star_m_s = 1701.8816439458856
+expected_nominal_mass_flow_kg_per_s = 47.96611641685945
+expected_mass_flow_min_kg_per_s = 47.00679408852226
+expected_mass_flow_max_kg_per_s = 48.96541050887736
+expected_thrust_n = 115753.39707827079
+expected_isp_s = 246.08124343895545
+
+[[case]]
+name = "pc10mpa_mr1"
+chamber_pressure_pa = 10000000.0
+mixture_ratio = 1.0
+expected_chamber_temperature_k = 3310.0081839693053
+expected_gamma = 1.2261585899683773
+expected_molecular_weight_kg_per_mol = 0.018801503007931597
+expected_c_star_m_s = 1851.1790572658626
+expected_nominal_mass_flow_kg_per_s = 110.24413432727779
+expected_mass_flow_min_kg_per_s = 108.03925164073223
+expected_mass_flow_max_kg_per_s = 112.54088712576275
+expected_thrust_n = 325240.85964601464
+expected_isp_s = 300.83539566772095
+
+[[case]]
+name = "pc10mpa_mr1p2"
+chamber_pressure_pa = 10000000.0
+mixture_ratio = 1.2
+expected_chamber_temperature_k = 3426.757330237474
+expected_gamma = 1.22056551813268
+expected_molecular_weight_kg_per_mol = 0.019968172876524765
+expected_c_star_m_s = 1830.6811168751103
+expected_nominal_mass_flow_kg_per_s = 111.47852609165453
+expected_mass_flow_min_kg_per_s = 109.24895556982143
+expected_mass_flow_max_kg_per_s = 113.80099538523066
+expected_thrust_n = 325938.1017156996
+expected_isp_s = 298.1420533614584
+
+[[case]]
+name = "pc10mpa_mr1p4"
+chamber_pressure_pa = 10000000.0
+mixture_ratio = 1.4
+expected_chamber_temperature_k = 3456.1521859752183
+expected_gamma = 1.2180503294622869
+expected_molecular_weight_kg_per_mol = 0.02092245378884607
+expected_c_star_m_s = 1797.425618930252
+expected_nominal_mass_flow_kg_per_s = 113.54107257830316
+expected_mass_flow_min_kg_per_s = 111.2702511267371
+expected_mass_flow_max_kg_per_s = 115.90651159035114
+expected_thrust_n = 326254.7304315013
+expected_isp_s = 293.0104768495197
+
+[[case]]
+name = "pc10mpa_mr1p6"
+chamber_pressure_pa = 10000000.0
+mixture_ratio = 1.6
+expected_chamber_temperature_k = 3425.6290309958117
+expected_gamma = 1.2176706059632225
+expected_molecular_weight_kg_per_mol = 0.021685637479070315
+expected_c_star_m_s = 1757.8967040193843
+expected_nominal_mass_flow_kg_per_s = 116.09421201281849
+expected_mass_flow_min_kg_per_s = 113.77232777256212
+expected_mass_flow_max_kg_per_s = 118.51284142975221
+expected_thrust_n = 326302.69987811905
+expected_isp_s = 286.60873581488295
+
+[[case]]
+name = "pc10mpa_mr1p8"
+chamber_pressure_pa = 10000000.0
+mixture_ratio = 1.8
+expected_chamber_temperature_k = 3366.4752809280058
+expected_gamma = 1.2184405624775105
+expected_molecular_weight_kg_per_mol = 0.022309859130121238
+expected_c_star_m_s = 1717.7118438178572
+expected_nominal_mass_flow_kg_per_s = 118.81016794962592
+expected_mass_flow_min_kg_per_s = 116.4339645906334
+expected_mass_flow_max_kg_per_s = 121.2853797819098
+expected_thrust_n = 326205.4791662878
+expected_isp_s = 279.9735255059412
+
+[[case]]
+name = "pc30mpa_mr1"
+chamber_pressure_pa = 30000000.0
+mixture_ratio = 1.0
+expected_chamber_temperature_k = 3375.1586728818033
+expected_gamma = 1.2239463154298054
+expected_molecular_weight_kg_per_mol = 0.018909512896719945
+expected_c_star_m_s = 1865.1658599769546
+expected_nominal_mass_flow_kg_per_s = 328.2522541811635
+expected_mass_flow_min_kg_per_s = 321.68720909754023
+expected_mass_flow_max_kg_per_s = 335.0908428099378
+expected_thrust_n = 1025182.5649099515
+expected_isp_s = 318.4731466075532
+
+[[case]]
+name = "pc30mpa_mr1p2"
+chamber_pressure_pa = 30000000.0
+mixture_ratio = 1.2
+expected_chamber_temperature_k = 3522.2601417387004
+expected_gamma = 1.2174832907299513
+expected_molecular_weight_kg_per_mol = 0.02013703870127287
+expected_c_star_m_s = 1849.8908955052789
+expected_nominal_mass_flow_kg_per_s = 330.9627067449052
+expected_mass_flow_min_kg_per_s = 324.3434526100071
+expected_mass_flow_max_kg_per_s = 337.8577631354241
+expected_thrust_n = 1027615.1373550935
+expected_isp_s = 316.614468913622
+
+[[case]]
+name = "pc30mpa_mr1p4"
+chamber_pressure_pa = 30000000.0
+mixture_ratio = 1.4
+expected_chamber_temperature_k = 3565.1369869757214
+expected_gamma = 1.21456732766707
+expected_molecular_weight_kg_per_mol = 0.02112891243909122
+expected_c_star_m_s = 1818.4681559890298
+expected_nominal_mass_flow_kg_per_s = 336.68167129723287
+expected_mass_flow_min_kg_per_s = 329.9480378712882
+expected_mass_flow_max_kg_per_s = 343.6958727825919
+expected_thrust_n = 1028725.1480171811
+expected_isp_s = 311.5725629166022
+
+[[case]]
+name = "pc30mpa_mr1p6"
+chamber_pressure_pa = 30000000.0
+mixture_ratio = 1.6
+expected_chamber_temperature_k = 3527.1753788974174
+expected_gamma = 1.214380563421374
+expected_molecular_weight_kg_per_mol = 0.021888659582073224
+expected_c_star_m_s = 1777.190693469928
+expected_nominal_mass_flow_kg_per_s = 344.5015215355355
+expected_mass_flow_min_kg_per_s = 337.6114911048248
+expected_mass_flow_max_kg_per_s = 351.6786365675258
+expected_thrust_n = 1028796.5099246094
+expected_isp_s = 304.52129103790304
+
+[[case]]
+name = "pc30mpa_mr1p8"
+chamber_pressure_pa = 30000000.0
+mixture_ratio = 1.8
+expected_chamber_temperature_k = 3453.658080894431
+expected_gamma = 1.215558329615346
+expected_molecular_weight_kg_per_mol = 0.02248999370146386
+expected_c_star_m_s = 1734.3002522473837
+expected_nominal_mass_flow_kg_per_s = 353.0212817335461
+expected_mass_flow_min_kg_per_s = 345.9608560988752
+expected_mass_flow_max_kg_per_s = 360.3758917696617
+expected_thrust_n = 1028347.0285242666
+expected_isp_s = 297.04218748640517
+
+[[case]]
+name = "pc1p5mpa_mr1p1_interpolated"
+chamber_pressure_pa = 1500000.0
+mixture_ratio = 1.1
+expected_chamber_temperature_k = 3199.2396689310617
+expected_gamma = 1.229164417477132
+expected_molecular_weight_kg_per_mol = 0.019097468011670067
+expected_c_star_m_s = 1804.4602753349557
+expected_nominal_mass_flow_kg_per_s = 16.964765207855155
+expected_mass_flow_min_kg_per_s = 16.62546990369805
+expected_mass_flow_max_kg_per_s = 17.318197816352136
+expected_thrust_n = 28060.202161982732
+expected_isp_s = 168.6639498598147
+
+[[case]]
+name = "pc2mpa_mr1p4_log_pressure_interpolated"
+chamber_pressure_pa = 2000000.0
+mixture_ratio = 1.4
+expected_chamber_temperature_k = 3283.986769979413
+expected_gamma = 1.2238140568414906
+expected_molecular_weight_kg_per_mol = 0.020600227932190504
+expected_c_star_m_s = 1762.61241504069
+expected_nominal_mass_flow_kg_per_s = 23.15672247756748
+expected_mass_flow_min_kg_per_s = 22.69358802801613
+expected_mass_flow_max_kg_per_s = 23.639154195850136
+expected_thrust_n = 45651.99769827572
+expected_isp_s = 201.030531211224
+
+[[case]]
+name = "pc6mpa_mr1p5_interpolated"
+chamber_pressure_pa = 6000000.0
+mixture_ratio = 1.5
+expected_chamber_temperature_k = 3388.5573914216293
+expected_gamma = 1.2195926921768188
+expected_molecular_weight_kg_per_mol = 0.021203087869533087
+expected_c_star_m_s = 1767.335421513944
+expected_nominal_mass_flow_kg_per_s = 69.28451617121092
+expected_mass_flow_min_kg_per_s = 67.89882584778671
+expected_mass_flow_max_kg_per_s = 70.72794359144449
+expected_thrust_n = 185909.0037209642
+expected_isp_s = 273.6173039938368
+
+[[case]]
+name = "pc18mpa_mr1p7_interpolated"
+chamber_pressure_pa = 18000000.0
+mixture_ratio = 1.7
+expected_chamber_temperature_k = 3446.5397017227783
+expected_gamma = 1.216404418831082
+expected_molecular_weight_kg_per_mol = 0.022100247787840036
+expected_c_star_m_s = 1747.403290421607
+expected_nominal_mass_flow_kg_per_s = 210.2244746757219
+expected_mass_flow_min_kg_per_s = 206.01998518220745
+expected_mass_flow_max_kg_per_s = 214.6041512314661
+expected_thrust_n = 607087.7500963453
+expected_isp_s = 294.4743814574645

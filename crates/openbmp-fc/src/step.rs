@@ -10,9 +10,9 @@ use openbmp_core::{SimTime, StepIndex};
 
 use crate::bus::Topic;
 use crate::topics::{
-    ActuatorCommand, AirDataSample, BarometerSample, EffectorCommandSet, EngineCommandSet,
-    EngineDemand, FailsafeFlags, FdirStatus, GnssSample, ImuIncrementWindow, ImuSample,
-    MagnetometerSample, StarTrackerSample, VehicleStatus,
+    ActuatorCommand, AirDataSample, BarometerSample, EffectorAvailability, EffectorCommandSet,
+    EngineCommandSet, EngineDemand, FailsafeFlags, FdirStatus, GnssSample, ImuIncrementWindow,
+    ImuSample, MagnetometerSample, PropellantSafingCommand, StarTrackerSample, VehicleStatus,
 };
 use crate::{ControllerError, DispatchSummary, FlightController, JobTimingObserver};
 
@@ -37,6 +37,8 @@ pub struct FcStepInput {
     pub magnetometer: Option<MagnetometerSample>,
     /// Optional star-tracker sample to publish before dispatch.
     pub star_tracker: Option<StarTrackerSample>,
+    /// Optional effector availability mask to publish before dispatch.
+    pub effector_availability: Option<EffectorAvailability>,
 }
 
 impl FcStepInput {
@@ -53,6 +55,7 @@ impl FcStepInput {
             gnss: None,
             magnetometer: None,
             star_tracker: None,
+            effector_availability: None,
         }
     }
 
@@ -104,6 +107,13 @@ impl FcStepInput {
         self.star_tracker = Some(sample);
         self
     }
+
+    /// Attach an effector availability mask.
+    #[must_use]
+    pub const fn with_effector_availability(mut self, sample: EffectorAvailability) -> Self {
+        self.effector_availability = Some(sample);
+        self
+    }
 }
 
 impl Default for FcStepInput {
@@ -125,6 +135,8 @@ pub struct FcStepOutput {
     pub engine_demand: Option<EngineDemand>,
     /// Latest phase-gated engine command set, if published.
     pub engine_commands: Option<EngineCommandSet>,
+    /// Latest propellant-system safing command, if published.
+    pub propellant_safing_command: Option<PropellantSafingCommand>,
     /// Latest FDIR status, if published.
     pub fdir_status: Option<FdirStatus>,
     /// Latest health/failsafe flags, if published.
@@ -185,6 +197,7 @@ fn capture_outputs(
         effector_commands: latest::<EffectorCommandSet>(controller)?,
         engine_demand: latest::<EngineDemand>(controller)?,
         engine_commands: latest::<EngineCommandSet>(controller)?,
+        propellant_safing_command: latest::<PropellantSafingCommand>(controller)?,
         fdir_status: latest::<FdirStatus>(controller)?,
         failsafe_flags: latest::<FailsafeFlags>(controller)?,
         vehicle_status: latest::<VehicleStatus>(controller)?,
@@ -214,6 +227,9 @@ fn publish_inputs(
         controller.bus().publish(sample)?;
     }
     if let Some(sample) = input.star_tracker {
+        controller.bus().publish(sample)?;
+    }
+    if let Some(sample) = input.effector_availability {
         controller.bus().publish(sample)?;
     }
     Ok(())
@@ -331,6 +347,7 @@ mod tests {
         fc.bus().register::<GnssSample>().unwrap();
         fc.bus().register::<MagnetometerSample>().unwrap();
         fc.bus().register::<StarTrackerSample>().unwrap();
+        fc.bus().register::<EffectorAvailability>().unwrap();
     }
 
     fn register_output_topics(fc: &FlightController) {
@@ -338,6 +355,7 @@ mod tests {
         fc.bus().register::<EffectorCommandSet>().unwrap();
         fc.bus().register::<EngineDemand>().unwrap();
         fc.bus().register::<EngineCommandSet>().unwrap();
+        fc.bus().register::<PropellantSafingCommand>().unwrap();
         fc.bus().register::<FdirStatus>().unwrap();
         fc.bus().register::<FailsafeFlags>().unwrap();
         fc.bus().register::<VehicleStatus>().unwrap();

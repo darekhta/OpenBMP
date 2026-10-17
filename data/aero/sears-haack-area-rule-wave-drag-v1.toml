@@ -1,0 +1,53 @@
+# Synthetic Sears-Haack/area-rule wave-drag validation fixture.
+#
+# This fixture pins OpenBMP's bounded area-rule wave-drag branch for a simple
+# fineness-6 Von Karman forebody. It is a method/equation-shape fixture, not a
+# digitized wind-tunnel or public benchmark dataset.
+
+openbmp.sears_haack_wave_drag_validation = 1
+
+[provenance]
+dataset_id = "openbmp.aero.sears_haack_area_rule_wave_drag.v1"
+source_class = "synthetic-openbmp-public-methodology"
+validation_label = "checked"
+source_title = "Sears-Haack / area-rule wave-drag equation-shape fixture"
+
+[geometry]
+body_diameter_m = 1.0
+body_length_m = 6.1
+reference_area_m2 = 0.7853981633974483
+reference_length_m = 1.0
+surface_roughness_m = 0.0
+
+[geometry.nose]
+kind = "von_karman"
+fineness = 6.0
+
+[tolerances]
+max_abs_error = 1.0e-12
+max_relative_error = 1.0e-12
+
+[[samples]]
+id = "subsonic-zero"
+mach = 0.5
+expected_cd_wave = 0.0
+
+[[samples]]
+id = "transonic-midblend"
+mach = 1.0
+expected_cd_wave = 0.006281486345370073
+
+[[samples]]
+id = "blend-anchor"
+mach = 1.2
+expected_cd_wave = 0.012562972690740151
+
+[[samples]]
+id = "supersonic-m2"
+mach = 2.0
+expected_cd_wave = 0.004811252243246881
+
+[[samples]]
+id = "supersonic-m35"
+mach = 3.5
+expected_cd_wave = 0.0024845199749997664

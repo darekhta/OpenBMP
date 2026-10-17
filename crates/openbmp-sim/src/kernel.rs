@@ -621,6 +621,7 @@ where
                 active_body: None,
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                recovery_snapshot: RecoverySnapshotView::new(recovery_snapshot),
             })?;
             // Locked order: (force / mass) gives acceleration. We
             // tolerate a non-positive intermediate mass producing
@@ -1592,12 +1593,14 @@ where
                 effector_actuals: EffectorActualsView::new(effector_actuals),
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                recovery_snapshot: RecoverySnapshotView::new(recovery_snapshot),
             })?;
             let rate = mass_model.mass_properties_rate_at(MassContext {
                 time: t,
                 active_body: primary_body,
                 engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                 tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                recovery_snapshot: RecoverySnapshotView::new(recovery_snapshot),
             })?;
 
             // Quaternion kinematics: q_dot = 0.5 · q ⊗ [0, ω_body].
@@ -1701,12 +1704,14 @@ where
                         effector_actuals: EffectorActualsView::new(effector_actuals),
                         engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                         tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                        recovery_snapshot: RecoverySnapshotView::new(recovery_snapshot),
                     })?;
                 let rate = mass_model.mass_properties_rate_at(MassContext {
                     time: t,
                     active_body: separated_body,
                     engine_snapshot: EngineSnapshotView::new(engine_snapshot),
                     tank_snapshot: TankSnapshotView::new(tank_snapshot),
+                    recovery_snapshot: RecoverySnapshotView::new(recovery_snapshot),
                 })?;
 
                 let q = s.orientation.q.into_inner();

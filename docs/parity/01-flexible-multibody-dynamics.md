@@ -234,16 +234,21 @@ over one powered step and over two consecutive powered ticks in the same
 synthetic ascent. The vehicle-scale Phalcon-9 TVC probe now validates the
 primary-shadow forecast over both a clipped 150-tick ascent and the full 40 s
 run. The substrate also carries checked double-pendulum energy/momentum
-evidence and an articulated gimbal regression that proves a revolute inertial
-engine couples into the free-flyer root inertia and reaction acceleration. The
+evidence plus 10,000 s free-root double-pendulum RK4 energy-drift evidence below
+the declared `1e-6` relative tolerance, and an articulated gimbal regression
+that proves a revolute inertial engine couples into the free-flyer root inertia
+and reaction acceleration. The
 scenario parser and rigid runner now also accept `[[multi_body.gimbal_joint]]`
 entries, validate engine/body ownership plus declared engine mass properties,
 materialize a root free-flyer plus revolute engine tree during session
 preparation, and refresh a non-authoritative per-tick articulated shadow that
 applies live engine thrust at the declared child-frame application point through
-ABA. The shadow now derives the one-axis child-from-parent revolute coordinate
-and finite-difference rate from the live thrust direction and the declared
-neutral thrust axis, and accepts an optional right-handed
+ABA. A two-engine runner regression now proves the default non-authoritative
+mode refreshes separate primary-body gimbal shadows from simultaneous live
+engine commands in the same tick while leaving authoritative root handoff unset.
+The shadow now derives the one-axis child-from-parent revolute coordinate and
+finite-difference rate from the live thrust direction and the declared neutral
+thrust axis, and accepts an optional right-handed
 `secondary_axis_body` to materialize a massless two-axis gimbal frame whose
 live pitch/yaw thrust direction drives secondary and primary joint coordinates.
 The articulated gimbal shadow now also records a non-authoritative one-step RK4
@@ -253,8 +258,18 @@ future propagation handoff checks. The multibody crate now ingests a
 provenance-bearing Spatial_v2-compatible ABA oracle fixture for the sample tree
 and compares checked static generalized accelerations against the current ABA
 path; the fixture is explicitly marked self-consistency, not an independent
-Featherstone Spatial_v2 run. The scenario schema and rigid runner now also
-expose guarded `propagation_authority = "primary_root_free_flyer"` mode, which
+Featherstone Spatial_v2 run. It also ingests a second generator-backed oracle
+matrix produced by `scripts/generate_spatial_v2_independent_aba_oracle.py`, a
+NumPy RBDA/Spatial_v2-convention ABA implementation outside the Rust runtime;
+the committed self-describing fixture covers a free-flyer/revolute/prismatic
+chain, a branched free-flyer tree, a free-flyer/spherical/welded/revolute chain,
+and four seeded randomized small-tree cases spanning revolute, prismatic,
+spherical, welded, chain, and branched layouts, with byte-for-byte fixture
+regeneration in the verification path (`REQ-MULTIBODY-067`). This is
+independent-generator evidence, not a MATLAB/Octave Featherstone Spatial_v2
+executable run. The scenario schema and
+rigid runner now also expose guarded
+`propagation_authority = "primary_root_free_flyer"` mode, which
 is limited to primary root-free-flyer handoff, rejects separated/articulated
 combinations, and replaces the primary rigid state with the recorded
 root-free-flyer multibody forecast after each fixed-step RK4 tick. The same
@@ -263,13 +278,30 @@ authority selector now also supports
 root-free-flyer lanes, replacing initially separated lanes and jettison-created
 lanes once a pre-step forecast exists while keeping articulated gimbal joints
 out of that authority mode. The selector now also supports
-`propagation_authority = "articulated_gimbal_root"` for one declared one-axis
-or two-axis gimbal on the primary body, replacing the primary rigid state with
-the projected articulated root forecast after each fixed-step RK4 tick and
-recording the applied handoff. After the first authoritative root handoff, the
+`propagation_authority = "articulated_gimbal_root"` for primary-body one-axis
+or two-axis gimbals, replacing the primary rigid state with the projected
+articulated root forecast after each fixed-step RK4 tick and recording the
+applied handoff. Single-gimbal authority still uses the existing articulated
+shadow path, while multiple primary-body gimbals without CFE constraints now
+use one coupled root free-flyer tree containing all declared gimbal children
+and apply all live engine thrust snapshots into that coupled forecast before
+handoff (`REQ-MULTIBODY-041`). After the first authoritative root handoff, the
 next pre-step articulated seed now carries the prior forecast's internal joint
-coordinates/rates forward while refreshing the root slots from the
-authoritative rigid state. The simulation kernel now also exposes an explicit
+coordinates/rates forward when live-inferred gimbal deflection is unchanged,
+while a newly delivered live deflection refreshes the articulated joint slots
+from delivered TVC gimbal angle/rate snapshots for standard axes, from live
+thrust direction for powered nonstandard axes, or from a snapshot-derived unit
+thrust direction for zero-thrust nonstandard axes before the next forecast
+(`REQ-MULTIBODY-042`).
+Single-gimbal root authority now also carries scenario-bound scalar contact
+mechanism effects: a stop mechanism contributes its generalized force to the
+authoritative forecast, an already-engaged monotone latch state remains carried
+with the internal articulated state, and a latch centered on a newly delivered
+live deflection engages after root-authority coordinate refresh
+(`REQ-CONTACT-003`). A repeated-step two-axis regression now extends that
+guarded single-gimbal authority over four powered ticks, proving the carried
+internal coordinates/rates stay finite and keep advancing (`REQ-MULTIBODY-064`).
+The simulation kernel now also exposes an explicit
 post-separation state installation seam for future welded-release runners:
 `RigidBodySeparationStates` plus `jettison_rigid_body_with_states()` validate
 same-time externally computed continuing-stack and departing-lane states,
@@ -284,16 +316,42 @@ single `jettison_stage` and batch `jettison_bodies` events through
 `jettison_rigid_body_with_states()`. It applies the existing scenario
 separation delta-v, angular-rate tip-off, departing attitude-offset, dry
 descendant mass-property aggregation, and mass-property COM-offset semantics
-after the welded release. This mode rejects initial lanes and gimbal joints.
+after the welded release. The same path audits the pre-projection handoff by
+checking selected-subtree spatial momentum against the released free-flyer tree
+before configured impulses are applied (`REQ-MULTIBODY-053`). This mode rejects
+initial lanes and gimbal joints. It now permits narrow resource-owning cases
+where a welded descendant owns a `direct_torque` effector, self-contained
+engine, standalone tank, scalar recovery device, aero resource, solid motor, or
+same-root tank-coupled engine/tank binding, massless landing-gear legs, or
+scalar aero-deck effectors, plus direct-torque RCS bank/coupled-bank
+pulse/feed-tank mass-rate routing: the runner aliases supported resources to the
+departing root lane and transforms the declared child frame through the welded
+chain where needed (`REQ-MULTIBODY-054` through `REQ-MULTIBODY-066`). It also
+supports transformed same-root recovery risers/sequence by rewriting
+recovery-frame geometry and mortar velocity into the departing root frame, and
+supports descendant scalar actuator snapshot binding for schema-2 aero deck
+axes, plus descendant bank and coupled-bank RCS feed-tank state drain and
+departed-lane mass-rate routing through the existing tank/mass racks.
+Unsupported tank-coupled bindings and remaining unsupported descendant effector
+mechanisms stay fail-closed.
 Default authoritative propagation is still the rigid kernel.
 Replacing the rigid propagation path beyond that guarded primary-root handoff,
 broader variable-mass multibody propagation beyond the one-body root and
 separated root-free-flyer paths, broader authoritative articulated thrust
-propagation beyond the single-gimbal root/internal-state handoff including
-multi-gimbal authoritative two-axis propagation, dynamic/resource-owning subtree
-release, full orbital-ascent gimballed validation, and the
-independent Spatial_v2 oracle matrix across at least three small random trees
-remain open.
+propagation beyond the single-gimbal root/internal-state handoff, current
+multi-step two-axis carry path, and no-CFE coupled multi-gimbal root handoff,
+including custom propulsion gimbal-frame conventions and validated full
+tail-wags-dog benchmark/coupled-acceleration closure, broader dynamic/resource-owning subtree release beyond
+direct-torque, self-contained-engine, standalone-tank, scalar-recovery, transformed-aero,
+transformed-solid-motor, and same-root tank-coupled engine/tank plus transformed
+landing-gear, recovery-riser/sequence, scalar-aero-effector aliasing, and
+direct-torque RCS bank/coupled-bank feed-tank mass-rate routing, full
+orbital-ascent gimballed validation, and the
+true MATLAB/Octave Featherstone Spatial_v2 executable oracle run across
+randomized small trees remain open. The in-repo independent Python
+RBDA/Spatial_v2-convention oracle matrix now covers three deterministic
+topologies plus four seeded randomized small-tree cases, but it is intentionally
+not claimed as an executable Spatial_v2 run.
 
 ---
 
@@ -796,13 +854,21 @@ justification first, reviewed before the implementation lands.
   The energy/momentum substrate now exposes
   `generalized_momentum_at_state()` and `kinetic_energy_at_state()`; a checked
   TOML fixture backs a planar point-mass double-pendulum regression against
-  analytic total kinetic energy and revolute generalized momenta.
+  analytic total kinetic energy and revolute generalized momenta, and the same
+  fixture now declares a 10,000 s RK4 free-root double-pendulum case that keeps
+  relative kinetic-energy drift below the declared `1e-6` tolerance through the
+  ABA derivative bridge.
   The welded-release substrate now exposes
   `release_welded_subtree_as_free_flyer()`, which converts an unreleased
   non-root welded subtree into a new deterministic free-flyer tree while
   preserving the released body's parent-frame pose, body-frame spatial velocity,
   and descendant joint coordinates/velocities; tests cover the handoff and
-  fail-closed root/non-welded rejection.
+  fail-closed root/non-welded rejection. The same crate now exposes
+  `system_spatial_momentum_at_state()` and
+  `subtree_spatial_momentum_at_state()`, accumulating body spatial momentum
+  through the power-dual Pluecker transforms into the virtual root-parent
+  frame, and proves the welded-subtree release preserves the selected subtree's
+  spatial momentum when re-seeded as a free-flyer root (`REQ-MULTIBODY-052`).
   The state-integration substrate now exposes `MultibodyDerivative`,
   `advance_state_by()`, `project_state()`, `scalar_state_size()`, and
   `weighted_error_norm()`; tests prove derivative arithmetic, locked-order
@@ -905,8 +971,11 @@ justification first, reviewed before the implementation lands.
   shadow for each declared gimbal, refreshes it from current parent-body mass
   properties before each rigid tick, maps the live engine thrust snapshot into
   the revolute child frame, applies it at `thrust_application_body_m`, and
-  records the ABA derivative with powered root and gimbal-axis acceleration
-  (`REQ-MULTIBODY-033`). The same shadow now derives the one-axis
+  records the ABA derivative with powered root and gimbal-axis acceleration;
+  the same coverage now includes a two-engine default-authority case that
+  records separate non-authoritative shadows for multiple primary-body gimbal
+  declarations in one tick (`REQ-MULTIBODY-033`). The same shadow now derives
+  the one-axis
   child-from-parent revolute coordinate and finite-difference rate from the
   live thrust direction plus `neutral_thrust_body`, proving a scenario-scripted
   engine gimbal command updates the articulated joint state before the ABA
@@ -926,7 +995,13 @@ justification first, reviewed before the implementation lands.
   provenance-bearing Spatial_v2-compatible ABA oracle fixture matrix for three
   deterministic sample-tree cases and compares ABA output against checked
   static acceleration vectors while labeling the source as self-consistency
-  (`REQ-MULTIBODY-038`). The
+  (`REQ-MULTIBODY-038`). It also ingests a generator-backed independent Python
+  RBDA/Spatial_v2-convention ABA oracle matrix for a chain, a branched tree,
+  a spherical/welded/revolute chain, and four seeded randomized small-tree
+  cases, building each Rust tree from the fixture-declared body metadata and
+  verifying that the committed fixture is reproducible from
+  `scripts/generate_spatial_v2_independent_aba_oracle.py`
+  (`REQ-MULTIBODY-067`). The
   schema and runner now also expose guarded
   `propagation_authority = "primary_root_free_flyer"` mode, reject
   separated/articulated combinations for that mode, and record the applied
@@ -936,15 +1011,32 @@ justification first, reviewed before the implementation lands.
   combinations for that mode, and records handoffs for both initially separated
   lanes and jettison-created lanes after a pre-step forecast exists
   (`REQ-MULTIBODY-040`). It now also exposes
-  `propagation_authority = "articulated_gimbal_root"` for one primary-body
-  one-axis or two-axis gimbal, rejects separated-lane and multi-gimbal shapes,
-  and records the post-step projected-root handoff (`REQ-MULTIBODY-041`). After
+  `propagation_authority = "articulated_gimbal_root"` for primary-body
+  one-axis or two-axis gimbals, rejects separated-lane and non-primary gimbal
+  shapes, records the single-gimbal post-step projected-root handoff, and now
+  records a coupled two-engine multi-gimbal projected-root handoff from one
+  combined free-flyer/gimbal tree (`REQ-MULTIBODY-041`). After
   the first authoritative handoff, subsequent pre-step mirrors carry the prior
   articulated forecast's joint coordinates and rates into the next
-  authoritative seed while refreshing root slots from the rigid state
-  (`REQ-MULTIBODY-042`). The sim kernel now also exposes
-  `RigidBodySeparationStates` and `jettison_rigid_body_with_states()` as the
-  explicit-state installation seam for externally computed welded-release
+  authoritative seed while refreshing root slots from the rigid state when the
+  live-inferred gimbal deflection is unchanged; when a later delivered live
+  deflection changes, the joint slots are refreshed from delivered TVC gimbal
+  angle/rate snapshots for standard axes, from live thrust direction for powered
+  nonstandard axes, or from a snapshot-derived unit thrust direction for
+  zero-thrust nonstandard axes before the next forecast (`REQ-MULTIBODY-042`).
+  The single-gimbal authority path now
+  also carries scalar contact mechanism force/state through the authoritative
+  forecast: a bound stop changes the authoritative gimbal acceleration, an
+  already engaged monotone latch remains engaged across root-authority carry,
+  and a latch centered on a newly delivered live deflection engages after
+  root-authority coordinate refresh (`REQ-CONTACT-003`). A focused
+  repeated-step two-axis authority regression
+  now runs four powered ticks, proving the projected root handoff matches the
+  post-step rigid state each tick while the carried two-axis coordinates/rates
+  remain finite and keep changing (`REQ-MULTIBODY-064`). The sim kernel now
+  also exposes `RigidBodySeparationStates` and
+  `jettison_rigid_body_with_states()` as the explicit-state installation seam
+  for externally computed welded-release
   handoffs, with fail-closed current-time validation and exact state
   installation (`REQ-MULTIBODY-043`). The rigid runner now exposes
   `propagation_authority = "welded_release_jettison"` for guarded configured
@@ -955,15 +1047,91 @@ justification first, reviewed before the implementation lands.
   configured welded translation/orientation, dry descendant mass aggregation,
   separation delta-v, angular-rate tip-off, departing attitude offsets, and
   mass-property COM offsets, and rejects initial lanes and gimbal joints
-  (`REQ-MULTIBODY-044`).
+  (`REQ-MULTIBODY-044`). That runner path now audits the pre-projection
+  welded-release handoff by comparing the selected subtree spatial momentum
+  against the released free-flyer tree's system spatial momentum and failing
+  closed on non-finite or out-of-tolerance residuals (`REQ-MULTIBODY-053`).
+  It also aliases `direct_torque` effectors mounted to welded descendants onto
+  the departing root lane and transforms their declared torque axes through the
+  full welded-orientation chain into the root body frame
+  (`REQ-MULTIBODY-054`). It now also aliases self-contained liquid engines
+  mounted to dry welded descendants onto the departing root lane, transforms
+  child-frame thrust and mount points through the welded translation/orientation
+  chain, while same-root tank-coupled bindings are handled separately by
+  `REQ-MULTIBODY-060` and transformed recovery-frame risers/sequence are
+  handled separately by `REQ-MULTIBODY-062`
+  (`REQ-MULTIBODY-055`). It also aliases standalone tanks mounted to dry welded
+  descendants onto the departing root lane, transforms child-frame tank
+  reaction force/moment through the welded translation/orientation chain, and
+  transforms tank CG/inertia contributions into the departing root body frame
+  while keeping unsupported descendant resources fail-closed
+  (`REQ-MULTIBODY-056`). It also aliases
+  scalar recovery devices mounted to dry welded descendants onto the departing
+  root lane for recovery drag ownership and apparent-mass routing, with
+  frame-dependent riser/sequence routing handled separately by
+  `REQ-MULTIBODY-062`
+  (`REQ-MULTIBODY-057`). It also aliases child-owned aero decks and
+  `AeroMethod` resources mounted to dry welded descendants onto the departing
+  root lane, transforms root-body air-relative velocity into the aero
+  mounted-body frame, rotates aero force back into the root body frame, and
+  shifts aero-method moments by the welded descendant translation crossed with
+  transformed force (`REQ-MULTIBODY-058`). It also aliases child-owned solid
+  motors mounted to dry welded descendants onto the departing root lane for
+  thrust and scalar motor mass/mass-rate routing, and transforms child-body +Z
+  motor thrust into the root body frame before ECI rotation
+  (`REQ-MULTIBODY-059`). It also permits same-root tank-coupled descendant
+  engine/tank bindings, reusing welded engine/tank owner aliases and transforms
+  while treating tanks as the absolute propellant-mass owner so engine
+  `consumed_kg` is not subtracted twice (`REQ-MULTIBODY-060`).
+  It also aliases massless landing-gear legs mounted to welded descendants onto
+  the departing root lane and transforms their hardpoint/strut-axis geometry
+  into that root body frame before the landing-gear runtime evaluates contact
+  force and moment (`REQ-MULTIBODY-061`).
+  It also aliases descendant recovery devices with declared risers/sequence to
+  the departing root lane and transforms riser anchor/canopy geometry,
+  velocities, shared-canopy state, and sequence mortar velocity into that root
+  body frame before recovery-riser and sequence force snapshots are evaluated
+  (`REQ-MULTIBODY-062`).
+  It also permits descendant-mounted `linear_actuator` and
+  `second_order_servo` scalar effectors under a welded-release alias and
+  preserves the existing schema-2 aero-deck axis snapshot binding so
+  already-routed descendant aero can consume those deflections
+  (`REQ-MULTIBODY-063`).
+  It also permits descendant direct-torque RCS bank effectors with same-root
+  feed tanks, proving the rotated direct-torque output reaches the departing
+  root lane, the payload-mounted tank state drains under RCS pulse demand, and
+  the departed root mass decreases with the routed tank mass rate
+  (`REQ-MULTIBODY-065`).
+  It also permits descendant direct-torque RCS coupled-bank groups with roll,
+  pitch, and yaw members on the same welded descendant, proving all three
+  coupled-bank actuals remain observable, route through the welded-frame
+  direct-torque aliases into all three departed-root angular-rate axes, drain
+  the payload-mounted feed tank, and decrease departed-root mass with the
+  routed tank mass rate (`REQ-MULTIBODY-066`).
+  `openbmp-multibody` also exposes
+  `CfeLoopAssembly` and `assemble_cfe_loop_terms_at_state()`, consuming the
+  current ABA free-acceleration path and state-dependent CRBA matrix to assemble
+  `G*qdd_free + Gdot*qdot` and `G*H(q)^-1*G^T` row-space terms for the contact
+  CFE solver boundary (`REQ-MULTIBODY-045`). It also exposes root-frame
+  system/subtree spatial-momentum helpers and a welded-release conservation
+  regression for the selected subtree (`REQ-MULTIBODY-052`).
   Remaining WP-01.1 work: replacing the rigid-kernel propagation path beyond
-  the guarded primary-root, separated-lane, and single-gimbal root/internal-state handoffs, broader
-  variable-mass multibody propagation beyond the root-free-flyer paths,
-  dynamic/resource-owning subtree release,
-  the independent Spatial_v2 oracle matrix across at least three small random
-  trees, full orbital-ascent gimballed validation, and broader multi-gimbal
-  authoritative articulated thrust propagation including authoritative two-axis
-  propagation with actuator-coupled internal coordinate authority.
+  the guarded primary-root, separated-lane, single-gimbal root/internal-state,
+  and no-CFE coupled multi-gimbal root handoffs, broader variable-mass
+  multibody propagation
+  beyond the root-free-flyer paths,
+  broader dynamic/resource-owning subtree release beyond transformed
+  direct-torque, self-contained engine, standalone-tank, scalar-recovery, and
+  transformed-aero, transformed-solid-motor, and same-root tank-coupled
+  engine/tank plus transformed landing-gear and recovery-riser/sequence
+  plus scalar-aero-effector aliasing and direct-torque RCS bank/coupled-bank
+  feed-tank mass-rate routing,
+  a true MATLAB/Octave Featherstone Spatial_v2 executable oracle run across
+  randomized small trees, full orbital-ascent gimballed validation, and broader
+  authoritative articulated thrust propagation beyond the current single-gimbal
+  multi-step two-axis and no-CFE coupled multi-gimbal carry paths, including
+  custom propulsion gimbal-frame conventions and validated full tail-wags-dog
+  benchmark/coupled-acceleration closure.
 - **goal:** Stand up `openbmp-multibody` with `SpatialInertia`, Plücker
   transforms, the `Joint` enum (free-flyer/revolute/prismatic/welded), the
   `MultibodyTree` topology, `MultibodyState: SimState`, and ABA forward dynamics

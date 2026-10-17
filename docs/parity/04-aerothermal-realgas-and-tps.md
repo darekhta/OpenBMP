@@ -106,8 +106,8 @@ all existing behavior must remain byte-identical until a scenario opts in).
 
 | File | What ships today | Maturity |
 |---|---|---|
-| `src/stagnation.rs` | `SuttonGraves` (`q = K·√(ρ/R_n)·V³`, `K_earth = 1.7415e-4`, hot-wall correction `max(0,1−h_w/h_aw)`); `allen_eggers_heating` closed-form peak/load over an exponential atmosphere; `FayRiddell` with a `HeatTransferModel` cold-gas trait path (perfect-gas γ=1.4 Rankine-Hugoniot post-shock edge, Sutherland μ) **and** a `stagnation_from_edge_state(&FayRiddellEdgeState, WallCatalysis)` real-gas coupling seam; `with_neutral_composition_enthalpy` h_D helper; `TauberSuttonRadiative` that **refuses** (`OutOfEnvelope`, "deferred pending published coefficients"). | `SuttonGraves` validated vs Stardust (table 20) — `validated-toy`. Fay-Riddell trait path is a cold-gas **scaffold**; the edge-state seam is real-gas-ready but unfed. Tauber-Sutton is a typed-reserved stub. |
-| `src/boundary_layer.rs` | `BoundaryLayer` trait + `BoundaryLayerState{Laminar,Transitional,Turbulent}`; transition models `EmpiricalTransition` (Re_x_crit), `ReThetaTransition` (Re_θ/M_e), `EnTransition` (e^N placeholder → falls back to empirical); `ReferenceEnthalpyHeating` with Eckert h* and laminar `Cf=0.664/√Re`, turbulent `Cf=0.0592·Re^−0.2`, Reynolds-analogy St. | `experimental`. Cold-gas h* (`c_p·T`), **no** Van Driest II implicit transform, **no** Mangler cone correction, transition constants are defaults without provenance, no flat-plate/cone benchmark. |
+| `src/stagnation.rs` / runner `[aerothermal.radiative]` | `SuttonGraves` (`q = K·√(ρ/R_n)·V³`, legacy `K_earth_air = 1.7415e-4`, hot-wall correction `max(0,1−h_w/h_aw)`); `SuttonGravesGas` TR R-376 base-gas/Earth-air coefficient presets normalized to the legacy SI Earth-air constant (`REQ-AEROTHERMAL-001`); `DetraKempRiddell` classic DKR imperial-reference stagnation-heating cross-check with explicit SI conversion and hot-wall correction (`REQ-AEROTHERMAL-003`); `allen_eggers_heating` closed-form peak/load over an exponential atmosphere; `FayRiddell` with a `HeatTransferModel` cold-gas trait path (perfect-gas γ=1.4 Rankine-Hugoniot post-shock edge, Sutherland μ) **and** a `stagnation_from_edge_state(&FayRiddellEdgeState, WallCatalysis)` real-gas coupling seam; `with_neutral_composition_enthalpy` h_D helper; opt-in `TauberSuttonRadiative::earth_air()` with provenance-pinned table interpolation, `TotalStagnationHeating` composition, and scenario/runtime `q_rad` telemetry when `[aerothermal.radiative] kind = "tauber_sutton_earth_air"` is declared (`REQ-AEROTHERMAL-004`). | `SuttonGraves` validated vs Stardust (table 20) — `validated-toy`; gas presets and DKR unit-conversion fixture are `checked` and preserve default Earth-air output. Fay-Riddell trait path is a cold-gas **scaffold**; the edge-state seam is real-gas-ready but unfed. Tauber-Sutton table/interpolation/unit conversion and off-default runner wiring are `checked`, but Apollo-4/FIRE-II code-to-code validation remains open. |
+| `src/boundary_layer.rs` | `BoundaryLayer` trait + `BoundaryLayerState{Laminar,Transitional,Turbulent}`; transition models `EmpiricalTransition` (Re_x_crit), `ReThetaTransition` (smooth-wall Re_θ/M_e onset + deterministic 1.25× linear intermittency ramp; `REQ-AEROTHERMAL-002`), `PantRedaRoughnessTransition` (PANT/Reda rough-wall `Re_θ(T_e/T_w)(k/θ)` selector with provenance-pinned checked thresholds), `EnTransition` (e^N placeholder → falls back to empirical); `ReferenceEnthalpyHeating` with Eckert h* and laminar `Cf=0.664/√Re`, turbulent `Cf=0.0592·Re^−0.2`, Reynolds-analogy St. | `experimental`. Smooth-wall and rough-wall threshold/ramp logic is checked by onset/midpoint/completion/continuity tests, but cold-gas h* (`c_p·T`), **no** Van Driest II implicit transform, **no** Mangler cone correction, no e^N stability model, and no flat-plate/cone benchmark. |
 | `src/ablation.rs` | `ToyAblator` (graphite-toy, generic-charring-1 — generic textbook only); `BlowingCorrelation{FixedLambda,Lees,SpaldingChi}` (constant λ); `SteadyStateAblator` (SEB with re-radiation, no conduction, `ṁ=net/h_v`); `CharringAblator` (constant-progress proxy → delegates to steady-state); `DepthResolvedCharringAblator` — **energy-limited sharp-front toy**: `v_f = q_net/(ρ_v·h_pyro)`, projected onto fixed depth nodes. | `experimental`. The sharp-front toy is **not** a conservation-law solver: no in-depth conduction, no Arrhenius decomposition kinetics, no Darcy gas momentum, no B′-table SEB coupling. This is the largest gap vs. production TPS sizing. |
 | `src/thermal_toy.rs` | `OneDThermalToy` — explicit-FTCS 1-D conduction with `ToyMaterial`, `BackwallCondition{Adiabatic,PrescribedTemperature,Convective}`, `max_stable_dt_s` CFL guard. | `validated-toy` (explicit-FD; the low-fidelity rung for the sizing loop). |
 | `Cargo.toml` | Depends only on `openbmp-physics` + `thiserror`. L2 placement, no up-layer edges. | Clean. |
@@ -147,12 +147,11 @@ declared envelope + UQ story). This doc's V&V plan (§5) instantiates that ladde
 
 ### 3.1 Crate map & placement
 
-No new crate is strictly required for the heating decks: the work lands in the
-existing L2 `openbmp-aerothermal` (heating, BL, material response) and L2
-`openbmp-physics::realgas` (equilibrium-air fits, Park 2T). One **new crate is
-proposed** to keep the equilibrium-air + thermochemistry curve-fit machinery and
-its CEA/Cantera-ingested tables from bloating `openbmp-physics`, matching the
-`00` §4 plan:
+No new crate is required beyond the shared L2 `openbmp-thermochem` scaffold that
+has now landed: the heating work stays in L2 `openbmp-aerothermal` (heating, BL,
+material response), while real-gas/TPS curve-fit tables can share the
+thermochemistry deck machinery instead of bloating `openbmp-physics`, matching
+the `00` §4 plan:
 
 ```text
 openbmp-thermochem   L2   equilibrium-air curve fits (Srinivasan-Tannehill) +
@@ -161,16 +160,15 @@ openbmp-thermochem   L2   equilibrium-air curve fits (Srinivasan-Tannehill) +
 ```
 
 - **Placement justification.** `openbmp-thermochem` sits at L2 alongside
-  `openbmp-physics`/`openbmp-aero`/`openbmp-propulsion`. It depends **down** on
-  `openbmp-core` (RNG/units) and `openbmp-physics` (`EquilibriumAir` trait,
-  `AirComposition`, `external_reference`). `openbmp-aerothermal` depends on it.
-  It introduces **no** up-layer edge and is forbidden from any edge to
-  `openbmp-fc` (the FC portability lock already forbids `openbmp-aerothermal`;
-  `openbmp-thermochem` inherits that posture — heating/thermochem never enters
-  the flight-software boundary). If the agent finds the curve-fit module is
-  small enough, it may instead land it as `openbmp-physics::realgas::tannehill`
-  fully realized; the crate-vs-module boundary is decided in `WP-04.2-a` before
-  implementation.
+  `openbmp-physics`/`openbmp-aero`/`openbmp-propulsion`. The landed skeleton
+  depends **down** on `openbmp-core` plus parser/error primitives and has no edge
+  to `openbmp-sim`, `openbmp-runner`, or `openbmp-fc`; future
+  equilibrium-air-fit work may add an `openbmp-physics` edge only if shared
+  traits require it. `openbmp-aerothermal` may depend on it when real-gas/TPS
+  tables are wired. It introduces **no** up-layer edge and is forbidden from any
+  edge to `openbmp-fc` (the FC portability lock already forbids
+  `openbmp-aerothermal`; `openbmp-thermochem` inherits that posture —
+  heating/thermochem never enters the flight-software boundary).
 
 Touched existing crates: `openbmp-aerothermal` (all four source files),
 `openbmp-physics::realgas` (Tannehill fits, Park 2T backward rates),
@@ -315,7 +313,7 @@ impl DistributedHeatingDeck {
 /// PANT/Reda, with provenance-pinned threshold constants.
 pub struct TransitionSelector {
     pub smooth: ReThetaTransition,                 // existing
-    pub roughness: Option<PantRedaRoughness>,      // new, provenance-pinned
+    pub roughness: Option<PantRedaRoughnessTransition>, // new, provenance-pinned
 }
 ```
 
@@ -561,8 +559,8 @@ Concretely for this dimension (every WP keeps all of `00` §3):
   heating/thermochem/material-response code ever enters `openbmp-fc`. Heating and
   TPS state reach any GNC/sequencer logic only as **telemetry / sensor channels**
   through the existing FC-bridge boundary, never by importing the simulator. The
-  `fc_dependency_tripwire.rs` test stays green; `WP-04.2-a` adds
-  `openbmp-thermochem` to the forbidden-edge set in the same PR that creates it.
+  `fc_dependency_tripwire.rs` test stays green; `WP-04.2-a` now includes
+  `openbmp-thermochem` in the forbidden-edge set.
 
 - **Four-pillar provenance.** Every ingested coefficient set — Tauber-Sutton
   `C/a/b/f(V)`, Srinivasan-Tannehill polynomial coefficients, Park backward-rate
@@ -715,12 +713,22 @@ each shipping at a declared tier and earning a declared label. Backlog schema pe
   emitting `q_rad = C·R_n^a·ρ_∞^b·f(V)` from a published, hash-pinned Earth-air
   coefficient set + tabulated `f(V)`, enabling total `q = q_conv + q_rad` above
   ~9 km/s. Closes the single largest "honest refusal" in stagnation heating.
+- **implementation_status:** partial. `REQ-AEROTHERMAL-004` now replaces the
+  default-only refusing surface with an off-by-default, opt-in
+  `TauberSuttonRadiative::earth_air()` package using
+  `data/aerothermal/radiative/tauber-sutton-earth-v1.toml`, a SHA-256 payload
+  pin, monotone `f(V)` interpolation, fail-closed velocity envelope checks,
+  W/cm²-to-W/m² conversion, `TotalStagnationHeating` summation, and
+  scenario/runtime `q_rad` telemetry when `[aerothermal.radiative] kind =
+  "tauber_sutton_earth_air"` is declared. The missing closure evidence is
+  Apollo-4/FIRE-II or equivalent radiative code-to-code validation; do not mark
+  this WP implemented until that evidence lands.
 - **fidelity_tier:** T1
 - **depends_on:** []
 - **new_crates:** none.
 - **touched:** `crates/openbmp-aerothermal/src/stagnation.rs`;
-  `data/aerothermal/tauber_sutton_earth/` + `provenance.md`;
-  `inline_data_tripwire.rs` allow-list.
+  `crates/openbmp-scenario/src/document.rs`; `crates/openbmp-runner/src/aerothermal.rs`;
+  `data/aerothermal/radiative/` + `provenance.md`.
 - **approach:** §3.2.1, §M3. Tabulated `f(V)` with monotone-clamped interp;
   preserve `a = a(V, ρ)`; refuse outside the velocity envelope. Reuse
   `ExternalReferencePackage`/`ProvenanceBlock` (SHA-256). No power-law fit.
@@ -743,6 +751,20 @@ each shipping at a declared tier and earning a declared label. Backlog schema pe
 - **goal:** Make the distributed model switch laminar→transitional→turbulent
   from a credible, cited criterion (largest TPS-sizing uncertainty), and add a
   Detra-Kemp-Riddell Sutton-Graves cross-check + per-gas K.
+- **implementation_status:** implemented across `REQ-AEROTHERMAL-001`,
+  `REQ-AEROTHERMAL-002`, and `REQ-AEROTHERMAL-003`. `REQ-AEROTHERMAL-001`
+  covers TR R-376 Sutton-Graves
+  gas coefficient presets normalized to the legacy SI Earth-air constant.
+  `REQ-AEROTHERMAL-002` now covers the smooth-wall Re_θ/M_e transition onset,
+  PANT/Reda rough-wall `Re_θ(T_e/T_w)(k/θ)` transition onset, provenance-pinned
+  checked thresholds, 1.25× deterministic intermittency ramps, endpoint
+  heat-flux continuity tests, fail-closed input validation, and
+  `data/aerothermal/transition/sharp-cone-transition-v1.toml` analytic
+  sharp-cone transition/completion station tolerance evidence.
+  `REQ-AEROTHERMAL-003` now covers the DKR stagnation-heating cross-check with
+  explicit imperial-to-SI conversion and hot-wall correction fixture. This closes
+  the WP-04.1-b engineering-correlation path without claiming e^N stability or
+  wind-tunnel/flight sharp-cone transition validation.
 - **fidelity_tier:** T1
 - **depends_on:** []
 - **new_crates:** none.
@@ -762,21 +784,27 @@ each shipping at a declared tier and earning a declared label. Backlog schema pe
 
 **WP-04.2-a — Propose & skeleton `openbmp-thermochem` (L2)**
 - **title:** Create the equilibrium-air / thermochemistry crate skeleton.
+- **implementation_status:** implemented — skeleton/layering only. The landed
+  `openbmp-thermochem` crate provides documented Schema-1 thermochemistry deck
+  parsing and lookup shared with doc 05, and the FC tripwire forbids any
+  `openbmp-fc` dependency on it. No Srinivasan-Tannehill, production
+  CEA/Cantera, B′-table, or real-gas Fay-Riddell physics is claimed here.
 - **goal:** Establish the L2 home for the Srinivasan-Tannehill fits + CEA/Cantera
   ingestion + B′ tables (shared with doc 05), with a reviewed dependency boundary.
 - **fidelity_tier:** T2
 - **depends_on:** []
-- **new_crates:** `openbmp-thermochem` L2 (depends down on `openbmp-core`,
-  `openbmp-physics`; forbidden edge to `openbmp-fc`).
-- **touched:** new crate skeleton; workspace `Cargo.toml`;
+- **new_crates:** `openbmp-thermochem` L2 (landed; depends down on
+  `openbmp-core` plus parser/error primitives; forbidden from `openbmp-fc` by
+  tripwire).
+- **touched:** landed crate skeleton; workspace `Cargo.toml`;
   `fc_dependency_tripwire.rs` forbidden-edge set.
-- **approach:** §3.1. First commit is the skeleton + placement justification
-  (layer, edges, why it does not break the DAG or FC lock). May instead fully
-  realize `openbmp-physics::realgas::tannehill` if the reviewer prefers a module
-  over a crate — decide here.
+- **approach:** §3.1. The skeleton + placement justification records the layer,
+  allowed edges, and why it does not break the DAG or FC lock. Later
+  WP-04.2-b/04.3 work may extend the crate with real-gas and B′ table physics
+  without changing the FC boundary.
 - **acceptance:**
   - DAG acyclic; FC tripwire green with the new crate on the forbidden list.
-  - empty crate builds, lints clean, documented.
+  - crate builds, lints clean, documented.
   - all gates green.
 - **validation_label:** `experimental` (skeleton).
 - **dual_use_note:** far from line.

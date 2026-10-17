@@ -1,0 +1,15 @@
+schema = "openbmp.aerothermal.transition_thresholds.v1"
+dataset_id = "pant-reda-roughness-transition-synthetic-v1"
+validation_label = "checked"
+provenance = "Synthetic WP-04.1-b engineering-threshold fixture. It pins OpenBMP's default smooth-wall Re_theta/M_e onset, PANT/Reda roughness indicator onset, and deterministic ramp completion ratio; it is not a flight or wind-tunnel benchmark."
+
+smooth_re_theta_crit = 200.0
+pant_reda_roughness_critical_indicator = 215.0
+completion_ratio = 1.25
+
+synthetic_onset_re_theta = 1000.0
+synthetic_edge_mach = 5.0
+synthetic_momentum_thickness_m = 0.001
+synthetic_roughness_height_m = 0.0001
+synthetic_edge_temperature_k = 2150.0
+synthetic_wall_temperature_k = 1000.0

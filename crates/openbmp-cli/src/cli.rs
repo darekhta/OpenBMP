@@ -38,6 +38,24 @@ pub enum Command {
         /// Override the scenario's declared Parquet output path.
         #[arg(long = "output-parquet")]
         output_parquet: Option<PathBuf>,
+        /// Append a deterministic run record to this JSONL index.
+        #[arg(long = "run-index-jsonl")]
+        run_index_jsonl: Option<PathBuf>,
+        /// Write a deterministic Parquet mirror of the run index.
+        #[arg(long = "run-index-parquet")]
+        run_index_parquet: Option<PathBuf>,
+        /// Stable code/config id recorded in run-data records.
+        #[arg(long = "run-code-id", default_value = "openbmp-cli")]
+        run_code_id: String,
+        /// Evaluate a deterministic TOML verdict-rule document after the run.
+        #[arg(long = "run-verdict-rules")]
+        run_verdict_rules: Option<PathBuf>,
+        /// Write the deterministic verdict report JSON here.
+        #[arg(long = "run-verdict-json")]
+        run_verdict_json: Option<PathBuf>,
+        /// Optional JSONL run index whose last record is used as baseline.
+        #[arg(long = "run-verdict-baseline-jsonl")]
+        run_verdict_baseline_jsonl: Option<PathBuf>,
     },
     /// Compare two telemetry archives byte-for-byte.
     Diff {
@@ -77,6 +95,12 @@ pub enum Command {
         /// Reconstruction command to run.
         #[command(subcommand)]
         command: ReconstructCommand,
+    },
+    /// Run offline system-identification and model-correlation commands.
+    Sysid {
+        /// System-identification command to run.
+        #[command(subcommand)]
+        command: SysidCommand,
     },
     /// Run offline trajectory optimization and I-load synthesis commands.
     Trajopt {
@@ -148,6 +172,12 @@ pub enum Command {
         /// Package command to run.
         #[command(subcommand)]
         command: PackageCommand,
+    },
+    /// Plan deterministic run-data campaigns.
+    Campaign {
+        /// Campaign command to run.
+        #[command(subcommand)]
+        command: CampaignCommand,
     },
     /// Run a mission package test case through the native SIL path.
     RunPackage {
@@ -357,6 +387,235 @@ pub enum TrajoptCommand {
         #[arg(long = "output-iload")]
         output_iload: PathBuf,
     },
+    /// Recenter first-stage I-load pitch/yaw bias tables through spliced DOL wind.
+    DolRedesign {
+        /// Scenario TOML file containing `[day_of_launch.wind] kind = "spliced"`.
+        scenario: PathBuf,
+        /// Target apogee radius from the central body, in m.
+        #[arg(long = "target-apogee-radius-m")]
+        target_apogee_radius_m: f64,
+        /// Load-window lower altitude, m.
+        #[arg(long = "load-window-min-altitude-m")]
+        load_window_min_altitude_m: f64,
+        /// Load-window upper altitude, m.
+        #[arg(long = "load-window-max-altitude-m")]
+        load_window_max_altitude_m: f64,
+        /// Reference design airspeed through the load window, m/s.
+        #[arg(long = "airspeed-m-s")]
+        airspeed_m_s: f64,
+        /// Desired mean angle of attack, rad.
+        #[arg(
+            long = "alpha-reference-rad",
+            default_value_t = 0.0,
+            allow_hyphen_values = true
+        )]
+        alpha_reference_rad: f64,
+        /// Desired mean sideslip, rad.
+        #[arg(
+            long = "beta-reference-rad",
+            default_value_t = 0.0,
+            allow_hyphen_values = true
+        )]
+        beta_reference_rad: f64,
+        /// Existing pitch steering bias, rad.
+        #[arg(
+            long = "stale-pitch-bias-rad",
+            default_value_t = 0.0,
+            allow_hyphen_values = true
+        )]
+        stale_pitch_bias_rad: f64,
+        /// Existing yaw steering bias, rad.
+        #[arg(
+            long = "stale-yaw-bias-rad",
+            default_value_t = 0.0,
+            allow_hyphen_values = true
+        )]
+        stale_yaw_bias_rad: f64,
+        /// Scalar load-angle limit for the toy q-alpha/q-beta surrogate, rad.
+        #[arg(long = "load-limit-angle-rad")]
+        load_limit_angle_rad: f64,
+        /// Terminal/insertion residual norm supplied by the design pass, m.
+        #[arg(long = "insertion-residual-norm-m", default_value_t = 0.0)]
+        insertion_residual_norm_m: f64,
+        /// Accepted terminal/insertion residual limit, m.
+        #[arg(long = "insertion-residual-limit-m")]
+        insertion_residual_limit_m: f64,
+        /// Deterministic synthesis seed recorded in the I-load header.
+        #[arg(long = "synthesis-seed", default_value_t = 0)]
+        synthesis_seed: u64,
+        /// Opaque scenario digest recorded in the I-load metadata.
+        ///
+        /// Omit to record the SHA-256 digest of the scenario file.
+        #[arg(long = "scenario-digest")]
+        scenario_digest: Option<String>,
+        /// Design-profile digest recorded in the DOL update artifact.
+        ///
+        /// Omit to record the SHA-256 digest of the scenario file.
+        #[arg(long = "design-profile-digest")]
+        design_profile_digest: Option<String>,
+        /// Source revision recorded in the I-load metadata.
+        #[arg(long = "source-revision", default_value = "working-tree")]
+        source_revision: String,
+        /// Producer name recorded in the I-load header.
+        #[arg(long = "producer", default_value = "openbmp-trajopt-cli")]
+        producer: String,
+        /// Solver provenance recorded in the DOL update artifact.
+        #[arg(
+            long = "solver-provenance",
+            default_value = "dol_spliced_wind_recenter"
+        )]
+        solver_provenance: String,
+        /// Postcard I-load output path.
+        #[arg(long = "output-iload")]
+        output_iload: PathBuf,
+        /// Optional deterministic JSON DOL update report output path.
+        #[arg(long = "report-json")]
+        report_json: Option<PathBuf>,
+    },
+    /// Build a DOL go/no-go report card from verifier indicator CSV.
+    DolReportCard {
+        /// DOL update artifact JSON produced by `trajopt dol-redesign`.
+        update_report_json: PathBuf,
+        /// Runner/SIL verification indicator CSV.
+        indicators_csv: PathBuf,
+        /// Stable report identifier.
+        #[arg(long = "report-id", default_value = "dol-report-card")]
+        report_id: String,
+        /// Verification provenance label recorded in the report card.
+        #[arg(
+            long = "verification-provenance",
+            default_value = "file_fed_runner_indicators"
+        )]
+        verification_provenance: String,
+        /// Minimum accepted redesigned load margin, rad.
+        #[arg(long = "min-required-margin-rad", allow_hyphen_values = true)]
+        min_required_margin_rad: f64,
+        /// Minimum accepted redesigned not-worse sample fraction.
+        #[arg(long = "min-not-worse-fraction")]
+        min_not_worse_fraction: f64,
+        /// Deterministic CSV report-card output path.
+        #[arg(long = "output-csv")]
+        output_csv: PathBuf,
+        /// Optional deterministic JSON report-card output path.
+        #[arg(long = "report-json")]
+        report_json: Option<PathBuf>,
+    },
+    /// Latch DOL report-card, persistence, and COLA artifacts into commit readiness.
+    DolCommitReadiness {
+        /// DOL report-card JSON produced by `trajopt dol-report-card` or verifier commands.
+        report_card_json: PathBuf,
+        /// DOL persistence knockdown report JSON.
+        persistence_json: PathBuf,
+        /// DOL launch-COLA screening report JSON.
+        cola_json: PathBuf,
+        /// Stable readiness identifier.
+        #[arg(long = "readiness-id", default_value = "dol-commit-readiness")]
+        readiness_id: String,
+        /// Deterministic CSV commit-readiness output path.
+        #[arg(long = "output-csv")]
+        output_csv: PathBuf,
+        /// Optional deterministic JSON commit-readiness output path.
+        #[arg(long = "report-json")]
+        report_json: Option<PathBuf>,
+    },
+    /// Materialize DOL report-card indicators from runner/SIL telemetry CSV.
+    DolMaterializeIndicators {
+        /// Native runner or SIL telemetry CSV.
+        telemetry_csv: PathBuf,
+        /// Indicator spec CSV with name, design_value, telemetry_column, reducer, and allowed_abs_error.
+        spec_csv: PathBuf,
+        /// Deterministic indicator CSV output path for `trajopt dol-report-card`.
+        #[arg(long = "output-csv")]
+        output_csv: PathBuf,
+    },
+    /// Run a verifier scenario and build a DOL go/no-go report card.
+    DolVerifyRun {
+        /// Verification scenario run through the native runner.
+        scenario: PathBuf,
+        /// DOL update artifact JSON produced by `trajopt dol-redesign`.
+        update_report_json: PathBuf,
+        /// Updated I-load payload produced by `trajopt dol-redesign`.
+        updated_iload: PathBuf,
+        /// Indicator spec CSV with name, design_value, telemetry_column, reducer, and allowed_abs_error.
+        indicator_spec_csv: PathBuf,
+        /// Verifier design-profile digest; omit to use the scenario file SHA-256.
+        #[arg(long = "verifier-design-profile-digest")]
+        verifier_design_profile_digest: Option<String>,
+        /// Stable report identifier.
+        #[arg(long = "report-id", default_value = "dol-verify-run")]
+        report_id: String,
+        /// Verification provenance label recorded in the report card.
+        #[arg(
+            long = "verification-provenance",
+            default_value = "native_runner_telemetry"
+        )]
+        verification_provenance: String,
+        /// Minimum accepted redesigned load margin, rad.
+        #[arg(long = "min-required-margin-rad", allow_hyphen_values = true)]
+        min_required_margin_rad: f64,
+        /// Minimum accepted redesigned not-worse sample fraction.
+        #[arg(long = "min-not-worse-fraction")]
+        min_not_worse_fraction: f64,
+        /// Deterministic verifier telemetry CSV output path.
+        #[arg(long = "output-telemetry-csv")]
+        output_telemetry_csv: PathBuf,
+        /// Deterministic materialized indicator CSV output path.
+        #[arg(long = "output-indicators-csv")]
+        output_indicators_csv: PathBuf,
+        /// Deterministic report-card CSV output path.
+        #[arg(long = "output-report-csv")]
+        output_report_csv: PathBuf,
+        /// Optional deterministic JSON report-card output path.
+        #[arg(long = "report-json")]
+        report_json: Option<PathBuf>,
+    },
+    /// Run a SIL verifier package and build a DOL go/no-go report card.
+    DolVerifySil {
+        /// SIL mission package manifest run through the native SIL testbench.
+        package: PathBuf,
+        /// Optional SIL package case id.
+        #[arg(long = "case")]
+        case: Option<String>,
+        /// DOL update artifact JSON produced by `trajopt dol-redesign`.
+        update_report_json: PathBuf,
+        /// Updated I-load payload produced by `trajopt dol-redesign`.
+        updated_iload: PathBuf,
+        /// Indicator spec CSV with name, design_value, telemetry_column, reducer, and allowed_abs_error.
+        indicator_spec_csv: PathBuf,
+        /// Verifier design-profile digest; omit to use the package manifest SHA-256.
+        #[arg(long = "verifier-design-profile-digest")]
+        verifier_design_profile_digest: Option<String>,
+        /// Stable report identifier.
+        #[arg(long = "report-id", default_value = "dol-verify-sil")]
+        report_id: String,
+        /// Verification provenance label recorded in the report card.
+        #[arg(
+            long = "verification-provenance",
+            default_value = "native_sil_stimulated_telemetry"
+        )]
+        verification_provenance: String,
+        /// Minimum accepted redesigned load margin, rad.
+        #[arg(long = "min-required-margin-rad", allow_hyphen_values = true)]
+        min_required_margin_rad: f64,
+        /// Minimum accepted redesigned not-worse sample fraction.
+        #[arg(long = "min-not-worse-fraction")]
+        min_not_worse_fraction: f64,
+        /// Deterministic SIL telemetry CSV output path.
+        #[arg(long = "output-telemetry-csv")]
+        output_telemetry_csv: PathBuf,
+        /// Deterministic materialized indicator CSV output path.
+        #[arg(long = "output-indicators-csv")]
+        output_indicators_csv: PathBuf,
+        /// Deterministic report-card CSV output path.
+        #[arg(long = "output-report-csv")]
+        output_report_csv: PathBuf,
+        /// Deterministic SIL evidence bundle directory.
+        #[arg(long = "output-evidence-dir")]
+        output_evidence_dir: PathBuf,
+        /// Optional deterministic JSON report-card output path.
+        #[arg(long = "report-json")]
+        report_json: Option<PathBuf>,
+    },
 }
 
 /// Built-in trajectory code-to-code comparison tolerance packs.
@@ -380,6 +639,48 @@ pub enum PackageCommand {
     MaterializeSidecars {
         /// Mission package manifest.
         package: PathBuf,
+    },
+}
+
+/// Run-data campaign subcommands.
+#[derive(Debug, Subcommand)]
+pub enum CampaignCommand {
+    /// Expand a campaign manifest into a deterministic plan JSON.
+    Plan {
+        /// Campaign manifest TOML file.
+        manifest: PathBuf,
+        /// Deterministic campaign plan JSON output path.
+        #[arg(long = "output-plan-json")]
+        output_plan_json: PathBuf,
+        /// Optional deterministic worker-shard JSON output path.
+        #[arg(long = "output-shards-json")]
+        output_shards_json: Option<PathBuf>,
+        /// Worker count used when writing shard JSON.
+        #[arg(long = "workers", default_value_t = 1)]
+        workers: u64,
+    },
+    /// Execute a campaign manifest through the native runner.
+    Run {
+        /// Campaign manifest TOML file.
+        manifest: PathBuf,
+        /// Output directory for plan, telemetry, verdict, index, and summary artifacts.
+        #[arg(long = "output-dir")]
+        output_dir: PathBuf,
+        /// Stable code/config id recorded in run-data records.
+        #[arg(long = "run-code-id", default_value = "openbmp-campaign-cli")]
+        run_code_id: String,
+        /// Code ordinal label recorded for trend-store consumers.
+        #[arg(long = "code-ordinal", default_value_t = 0)]
+        code_ordinal: u64,
+        /// Also write a deterministic Parquet mirror of the campaign run index.
+        #[arg(long = "write-index-parquet", default_value_t = false)]
+        write_index_parquet: bool,
+        /// Maximum worker threads used for campaign run execution.
+        #[arg(long = "workers", default_value_t = 1)]
+        workers: u64,
+        /// Return a non-zero exit after writing artifacts when verdict or trend gates fail.
+        #[arg(long = "fail-on-ci-gates", default_value_t = false)]
+        fail_on_ci_gates: bool,
     },
 }
 
@@ -492,6 +793,314 @@ pub enum McCommand {
         #[arg(long = "output-csv")]
         output_csv: PathBuf,
     },
+    /// Generate campaign overlay files for deterministic aero deck draws.
+    AeroDeckDrawOverlays {
+        /// Number of deck-draw overlays to materialize.
+        #[arg(long = "samples")]
+        samples: u64,
+        /// Campaign seed bound into each deterministic deck draw.
+        #[arg(long = "campaign-seed")]
+        campaign_seed: u64,
+        /// First sample index to materialize.
+        #[arg(long = "first-sample-index", default_value_t = 0)]
+        first_sample_index: u64,
+        /// First RNG dimension id used by CN, CD, and CM draw streams.
+        #[arg(long = "dimension-id-base")]
+        dimension_id_base: u32,
+        /// Exponential Mach correlation length in Mach units. When omitted,
+        /// deck-declared uncertainty correlation metadata is used at runtime.
+        #[arg(long = "mach-correlation-length")]
+        mach_correlation_length: Option<f64>,
+        /// Optional exponential angle-of-attack correlation length in degrees.
+        #[arg(long = "alpha-correlation-length-deg")]
+        alpha_correlation_length_deg: Option<f64>,
+        /// Optional exponential sideslip correlation length in degrees.
+        #[arg(long = "beta-correlation-length-deg")]
+        beta_correlation_length_deg: Option<f64>,
+        /// Prefix for deterministic campaign overlay ids and filenames.
+        #[arg(long = "overlay-prefix", default_value = "aero-deck-draw")]
+        overlay_prefix: String,
+        /// Directory receiving one overlay TOML file per sample.
+        #[arg(long = "output-dir")]
+        output_dir: PathBuf,
+        /// Campaign-manifest TOML fragment listing generated overlays.
+        #[arg(long = "manifest-toml")]
+        manifest_toml: PathBuf,
+    },
+    /// Generate and execute an aero deck-draw campaign through the native runner.
+    AeroDeckDrawCampaign {
+        /// Base scenario TOML file.
+        scenario: PathBuf,
+        /// Number of deck-draw samples to execute.
+        #[arg(long = "samples")]
+        samples: u64,
+        /// Campaign seed bound into each deterministic deck draw.
+        #[arg(long = "campaign-seed")]
+        campaign_seed: u64,
+        /// First sample index to execute.
+        #[arg(long = "first-sample-index", default_value_t = 0)]
+        first_sample_index: u64,
+        /// First RNG dimension id used by CN, CD, and CM draw streams.
+        #[arg(long = "dimension-id-base")]
+        dimension_id_base: u32,
+        /// Exponential Mach correlation length in Mach units. When omitted,
+        /// deck-declared uncertainty correlation metadata is used at runtime.
+        #[arg(long = "mach-correlation-length")]
+        mach_correlation_length: Option<f64>,
+        /// Optional exponential angle-of-attack correlation length in degrees.
+        #[arg(long = "alpha-correlation-length-deg")]
+        alpha_correlation_length_deg: Option<f64>,
+        /// Optional exponential sideslip correlation length in degrees.
+        #[arg(long = "beta-correlation-length-deg")]
+        beta_correlation_length_deg: Option<f64>,
+        /// Prefix for deterministic campaign overlay ids and filenames.
+        #[arg(long = "overlay-prefix", default_value = "aero-deck-draw")]
+        overlay_prefix: String,
+        /// Stable generated campaign id.
+        #[arg(long = "campaign-id", default_value = "aero-deck-draw")]
+        campaign_id: String,
+        /// Stable generated scenario id.
+        #[arg(long = "scenario-id", default_value = "base")]
+        scenario_id: String,
+        /// Scenario seed used for each generated campaign run.
+        #[arg(long = "run-seed", default_value_t = 0)]
+        run_seed: u64,
+        /// Output root for generated overlays, manifest, and campaign artifacts.
+        #[arg(long = "output-dir")]
+        output_dir: PathBuf,
+        /// Stable code/config id recorded in run-data records.
+        #[arg(
+            long = "run-code-id",
+            default_value = "openbmp-cli-aero-deck-draw-campaign-v1"
+        )]
+        run_code_id: String,
+        /// Code ordinal label recorded for trend-store consumers.
+        #[arg(long = "code-ordinal", default_value_t = 0)]
+        code_ordinal: u64,
+        /// Also write a deterministic Parquet mirror of the campaign run index.
+        #[arg(long = "write-index-parquet", default_value_t = false)]
+        write_index_parquet: bool,
+        /// Maximum worker threads used for generated campaign execution.
+        #[arg(long = "workers", default_value_t = 1)]
+        workers: u64,
+        /// Optional UQ budget TOML to attach to this generated campaign.
+        #[arg(long = "uq-toml")]
+        uq_toml: Option<PathBuf>,
+        /// Required binding credibility floor for the UQ budget.
+        #[arg(long = "credibility-floor", default_value = "l0")]
+        credibility_floor: String,
+        /// Optional Markdown output path for the UQ credibility report.
+        #[arg(long = "credibility-report-md")]
+        credibility_report_md: Option<PathBuf>,
+    },
+    /// Generate schema-v3 ascent acoustic trace samples from an MC design.
+    AcousticsAscentTrace {
+        /// Number of trace samples to materialize.
+        #[arg(long = "samples")]
+        samples: u64,
+        /// Campaign seed for LHS or Owen-scrambled Sobol designs.
+        #[arg(long = "campaign-seed")]
+        campaign_seed: u64,
+        /// Unit-cube design family.
+        #[arg(long = "design", value_enum, default_value_t = McAcousticsAscentTraceDesign::LatinHypercube)]
+        design: McAcousticsAscentTraceDesign,
+        /// Lower dynamic pressure bound, Pa.
+        #[arg(long = "dynamic-pressure-min-pa")]
+        dynamic_pressure_min_pa: f64,
+        /// Upper dynamic pressure bound, Pa.
+        #[arg(long = "dynamic-pressure-max-pa")]
+        dynamic_pressure_max_pa: f64,
+        /// Lower Mach bound.
+        #[arg(long = "mach-min")]
+        mach_min: f64,
+        /// Upper Mach bound.
+        #[arg(long = "mach-max")]
+        mach_max: f64,
+        /// Prefix for deterministic sample ids.
+        #[arg(long = "sample-prefix", default_value = "mc")]
+        sample_prefix: String,
+        /// Optional per-row ascent class override.
+        #[arg(long = "class-id")]
+        class_id: Option<String>,
+        /// Output TOML snippet containing [[acoustics.ascent.samples]] rows.
+        #[arg(long = "output-toml")]
+        output_toml: PathBuf,
+    },
+    /// Generate schema-v3 vibroacoustic response samples from an MC design.
+    AcousticsResponseSamples {
+        /// Number of response samples to materialize.
+        #[arg(long = "samples")]
+        samples: u64,
+        /// Campaign seed for LHS or Owen-scrambled Sobol designs.
+        #[arg(long = "campaign-seed")]
+        campaign_seed: u64,
+        /// Unit-cube design family.
+        #[arg(long = "design", value_enum, default_value_t = McAcousticsAscentTraceDesign::LatinHypercube)]
+        design: McAcousticsAscentTraceDesign,
+        /// Lower panel surface mass bound, kg/m^2.
+        #[arg(long = "surface-mass-min-kg-m2")]
+        surface_mass_min_kg_m2: f64,
+        /// Upper panel surface mass bound, kg/m^2.
+        #[arg(long = "surface-mass-max-kg-m2")]
+        surface_mass_max_kg_m2: f64,
+        /// Lower responding area bound, m^2.
+        #[arg(long = "area-min-m2")]
+        area_min_m2: f64,
+        /// Upper responding area bound, m^2.
+        #[arg(long = "area-max-m2")]
+        area_max_m2: f64,
+        /// Lower modal shape participation factor bound.
+        #[arg(long = "mode-shape-min")]
+        mode_shape_min: f64,
+        /// Upper modal shape participation factor bound.
+        #[arg(long = "mode-shape-max")]
+        mode_shape_max: f64,
+        /// Prefix for deterministic sample ids.
+        #[arg(long = "sample-prefix", default_value = "response-mc")]
+        sample_prefix: String,
+        /// Optional per-row response class override.
+        #[arg(long = "class-id")]
+        class_id: Option<String>,
+        /// Output TOML snippet containing [[acoustics.response.samples]] rows.
+        #[arg(long = "output-toml")]
+        output_toml: PathBuf,
+    },
+    /// Generate and run an MC-designed ascent acoustic trace campaign.
+    AcousticsAscentCampaign {
+        /// Base scenario TOML file with an [acoustics.ascent] block.
+        scenario: PathBuf,
+        /// Number of trace samples to evaluate.
+        #[arg(long = "samples")]
+        samples: u64,
+        /// Campaign seed for LHS or Owen-scrambled Sobol designs.
+        #[arg(long = "campaign-seed")]
+        campaign_seed: u64,
+        /// Unit-cube design family.
+        #[arg(long = "design", value_enum, default_value_t = McAcousticsAscentTraceDesign::LatinHypercube)]
+        design: McAcousticsAscentTraceDesign,
+        /// Lower dynamic pressure bound, Pa.
+        #[arg(long = "dynamic-pressure-min-pa")]
+        dynamic_pressure_min_pa: f64,
+        /// Upper dynamic pressure bound, Pa.
+        #[arg(long = "dynamic-pressure-max-pa")]
+        dynamic_pressure_max_pa: f64,
+        /// Lower Mach bound.
+        #[arg(long = "mach-min")]
+        mach_min: f64,
+        /// Upper Mach bound.
+        #[arg(long = "mach-max")]
+        mach_max: f64,
+        /// Prefix for deterministic sample ids.
+        #[arg(long = "sample-prefix", default_value = "mc")]
+        sample_prefix: String,
+        /// Optional per-row ascent class override.
+        #[arg(long = "class-id")]
+        class_id: Option<String>,
+        /// Output CSV path for evaluated trace samples.
+        #[arg(long = "output-csv")]
+        output_csv: PathBuf,
+        /// Optional directory for evaluated campaign CSV artifacts.
+        #[arg(long = "output-artifact-dir")]
+        output_artifact_dir: Option<PathBuf>,
+        /// Optional generated full scenario TOML path.
+        #[arg(long = "output-scenario-toml")]
+        output_scenario_toml: Option<PathBuf>,
+        /// Optional checkpoint JSON for resumable per-sample campaign evaluation.
+        #[arg(long = "checkpoint-json")]
+        checkpoint_json: Option<PathBuf>,
+        /// Maximum missing samples to evaluate into the checkpoint this invocation.
+        #[arg(long = "max-new-samples")]
+        max_new_samples: Option<u64>,
+        /// Worker threads for checkpointed sample evaluation.
+        #[arg(long = "workers", default_value_t = 1)]
+        workers: usize,
+        /// Toolchain / determinism profile bound into checkpoint metadata.
+        #[arg(
+            long = "toolchain-profile",
+            default_value = "openbmp-cli-acoustics-ascent-campaign-v1"
+        )]
+        toolchain_profile: String,
+    },
+    /// Generate and run an MC-designed vibroacoustic response campaign.
+    AcousticsResponseCampaign {
+        /// Base scenario TOML file with [acoustics.ascent] and [acoustics.response].
+        scenario: PathBuf,
+        /// Number of trace samples to evaluate.
+        #[arg(long = "samples")]
+        samples: u64,
+        /// Campaign seed for LHS or Owen-scrambled Sobol designs.
+        #[arg(long = "campaign-seed")]
+        campaign_seed: u64,
+        /// Unit-cube design family.
+        #[arg(long = "design", value_enum, default_value_t = McAcousticsAscentTraceDesign::LatinHypercube)]
+        design: McAcousticsAscentTraceDesign,
+        /// Lower dynamic pressure bound, Pa.
+        #[arg(long = "dynamic-pressure-min-pa")]
+        dynamic_pressure_min_pa: f64,
+        /// Upper dynamic pressure bound, Pa.
+        #[arg(long = "dynamic-pressure-max-pa")]
+        dynamic_pressure_max_pa: f64,
+        /// Lower Mach bound.
+        #[arg(long = "mach-min")]
+        mach_min: f64,
+        /// Upper Mach bound.
+        #[arg(long = "mach-max")]
+        mach_max: f64,
+        /// Prefix for deterministic sample ids.
+        #[arg(long = "sample-prefix", default_value = "mc")]
+        sample_prefix: String,
+        /// Optional per-row ascent class override.
+        #[arg(long = "class-id")]
+        class_id: Option<String>,
+        /// Optional lower response panel surface mass bound, kg/m^2.
+        #[arg(long = "response-surface-mass-min-kg-m2")]
+        response_surface_mass_min_kg_m2: Option<f64>,
+        /// Optional upper response panel surface mass bound, kg/m^2.
+        #[arg(long = "response-surface-mass-max-kg-m2")]
+        response_surface_mass_max_kg_m2: Option<f64>,
+        /// Optional lower response area bound, m^2.
+        #[arg(long = "response-area-min-m2")]
+        response_area_min_m2: Option<f64>,
+        /// Optional upper response area bound, m^2.
+        #[arg(long = "response-area-max-m2")]
+        response_area_max_m2: Option<f64>,
+        /// Optional lower response modal shape participation factor bound.
+        #[arg(long = "response-mode-shape-min")]
+        response_mode_shape_min: Option<f64>,
+        /// Optional upper response modal shape participation factor bound.
+        #[arg(long = "response-mode-shape-max")]
+        response_mode_shape_max: Option<f64>,
+        /// Prefix for deterministic response sample ids when generated.
+        #[arg(long = "response-sample-prefix", default_value = "response-mc")]
+        response_sample_prefix: String,
+        /// Optional per-row response class override when generated.
+        #[arg(long = "response-class-id")]
+        response_class_id: Option<String>,
+        /// Output CSV path for evaluated ascent trace samples.
+        #[arg(long = "output-csv")]
+        output_csv: PathBuf,
+        /// Optional directory for evaluated campaign CSV artifacts.
+        #[arg(long = "output-artifact-dir")]
+        output_artifact_dir: Option<PathBuf>,
+        /// Optional generated full scenario TOML path.
+        #[arg(long = "output-scenario-toml")]
+        output_scenario_toml: Option<PathBuf>,
+        /// Optional checkpoint JSON for resumable per-sample campaign evaluation.
+        #[arg(long = "checkpoint-json")]
+        checkpoint_json: Option<PathBuf>,
+        /// Maximum missing samples to evaluate into the checkpoint this invocation.
+        #[arg(long = "max-new-samples")]
+        max_new_samples: Option<u64>,
+        /// Worker threads for checkpointed sample evaluation.
+        #[arg(long = "workers", default_value_t = 1)]
+        workers: usize,
+        /// Toolchain / determinism profile bound into checkpoint metadata.
+        #[arg(
+            long = "toolchain-profile",
+            default_value = "openbmp-cli-acoustics-response-campaign-v1"
+        )]
+        toolchain_profile: String,
+    },
     /// Run sampled scheduled propulsion faults through scenario execution.
     PropulsionFaults {
         /// Base scenario TOML file.
@@ -580,6 +1189,17 @@ pub enum McWilksSide {
     OneSided,
     /// Two-sided min/max tolerance interval.
     TwoSided,
+}
+
+/// Design family for acoustics ascent trace materialization.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum McAcousticsAscentTraceDesign {
+    /// Latin hypercube design keyed by campaign seed.
+    LatinHypercube,
+    /// Unscrambled Sobol base design.
+    Sobol,
+    /// Owen-scrambled Sobol design keyed by campaign seed.
+    OwenSobol,
 }
 
 /// Native SIL testbench subcommands.
@@ -693,6 +1313,26 @@ pub enum SilCommand {
     Verdict {
         /// Evidence `manifest.json` path.
         evidence: PathBuf,
+    },
+}
+
+/// System-identification and model-correlation subcommands.
+#[derive(Debug, Subcommand)]
+pub enum SysidCommand {
+    /// Compare declared scalar channels from two local CSV time series.
+    Residuals {
+        /// Reference or truth CSV.
+        #[arg(long = "reference")]
+        reference_csv: PathBuf,
+        /// Actual or candidate CSV.
+        #[arg(long = "actual")]
+        actual_csv: PathBuf,
+        /// TOML mapping declaring columns, units, frames, tolerances, and phases.
+        #[arg(long = "mapping")]
+        mapping: PathBuf,
+        /// Deterministic JSON residual report path.
+        #[arg(long = "report-json")]
+        report_json: PathBuf,
     },
 }
 

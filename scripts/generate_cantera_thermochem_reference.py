@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import sys
+from typing import Optional
 
 
 UNIVERSAL_GAS_CONSTANT_J_PER_MOL_K = 8.314_462_618_153_24
@@ -36,6 +37,7 @@ class PairConfig:
     pressure_axis_pa: list[float]
     mixture_ratio_axis: list[float]
     interpolation_cases: list[tuple[str, float, float]]
+    species_subset: Optional[list[str]] = None
 
     @property
     def deck_file(self) -> str:
@@ -48,6 +50,40 @@ class PairConfig:
     @property
     def dataset_id(self) -> str:
         return f"openbmp.thermochem.{self.dataset_slug}.v1"
+
+    @property
+    def source_description(self) -> str:
+        if self.species_subset is None:
+            return self.mechanism
+        return f"{self.mechanism} species-subset"
+
+    @property
+    def source_url(self) -> str:
+        return "https://cantera.org/"
+
+    @property
+    def tool_version(self) -> str:
+        return "Cantera 3.2.0"
+
+    @property
+    def provenance_equilibrium_description(self) -> str:
+        return "gas-phase HP equilibrium"
+
+    @property
+    def reference_equilibrium_description(self) -> str:
+        return "HP-equilibrium"
+
+    @property
+    def license_or_terms(self) -> str:
+        if self.species_subset is None:
+            return (
+                "Cantera BSD-3-Clause; GRI-Mech 3.0 mechanism terms documented by "
+                "Cantera distribution"
+            )
+        return (
+            "Cantera BSD-3-Clause; NASA polynomial species data terms documented by "
+            "Cantera distribution"
+        )
 
 
 PRESSURE_AXIS_PA = [1_000_000.0, 4_000_000.0, 10_000_000.0, 30_000_000.0]
@@ -101,6 +137,43 @@ PAIR_CONFIGS = {
             ("pc2mpa_mr2p6_log_pressure_interpolated", 2_000_000.0, 2.6),
             ("pc6mpa_mr2p7_interpolated", 6_000_000.0, 2.7),
             ("pc18mpa_mr2p9_interpolated", 18_000_000.0, 2.9),
+        ],
+    ),
+    "n2o4-n2h4": PairConfig(
+        slug="n2o4-n2h4",
+        propellant_pair="N2O4/N2H4 hydrazine hypergolic reference",
+        mechanism="nasa_gas.yaml",
+        file_stem="n2o4-n2h4-cantera-nasa-gas",
+        dataset_slug="n2o4_n2h4_cantera_nasa_gas",
+        fuel_species="N2H4",
+        oxidizer_species="N2O4",
+        pressure_axis_pa=PRESSURE_AXIS_PA,
+        mixture_ratio_axis=[1.0, 1.2, 1.4, 1.6, 1.8],
+        interpolation_cases=[
+            ("pc1p5mpa_mr1p1_interpolated", 1_500_000.0, 1.1),
+            ("pc2mpa_mr1p4_log_pressure_interpolated", 2_000_000.0, 1.4),
+            ("pc6mpa_mr1p5_interpolated", 6_000_000.0, 1.5),
+            ("pc18mpa_mr1p7_interpolated", 18_000_000.0, 1.7),
+        ],
+        species_subset=[
+            "N2O4",
+            "N2H4",
+            "NO2",
+            "NO",
+            "N2O3",
+            "N2O",
+            "N2",
+            "O2",
+            "O",
+            "H2O",
+            "H2",
+            "OH",
+            "H",
+            "NH3",
+            "NH2",
+            "NH",
+            "N",
+            "HNO",
         ],
     ),
 }
@@ -259,7 +332,7 @@ def print_deck(
     print("[meta]")
     print(f'propellant_pair = "{config.propellant_pair}"')
     print(
-        f'provenance = "Generated with Cantera 3.2.0 {config.mechanism} gas-phase HP equilibrium; see data/thermochem/provenance.md"'
+        f'provenance = "Generated with {config.tool_version} {config.source_description} {config.provenance_equilibrium_description}; see data/thermochem/provenance.md"'
     )
     print('validation = "research"')
     print()
@@ -297,13 +370,18 @@ def print_reference_header(config: PairConfig) -> None:
     print(f'dataset_id = "{config.dataset_id}"')
     print('source_class = "public-open-source-tool"')
     print(
-        f'source_title = "Cantera 3.2.0 {config.mechanism} {config.propellant_pair} HP-equilibrium thermochemistry tolerance table"'
+        f'source_title = "{config.tool_version} {config.source_description} {config.propellant_pair} {config.reference_equilibrium_description} thermochemistry tolerance table"'
     )
-    print('source_url = "https://cantera.org/"')
+    print(f'source_url = "{config.source_url}"')
     print(f'mechanism = "{config.mechanism}"')
-    print(
-        'license_or_terms = "Cantera BSD-3-Clause; GRI-Mech 3.0 mechanism terms documented by Cantera distribution"'
-    )
+    if config.species_subset is not None:
+        species_subset = ", ".join(f'"{name}"' for name in config.species_subset)
+        print(f"species_subset = [{species_subset}]")
+    reactants = getattr(config, "reactants", None)
+    if reactants is not None:
+        reactant_list = ", ".join(f'"{name}"' for name in reactants)
+        print(f"reactants = [{reactant_list}]")
+    print(f'license_or_terms = "{config.license_or_terms}"')
     print('validation = "research"')
     print()
     print("[deck]")
@@ -374,14 +452,31 @@ def cantera_states(config: PairConfig):
         ) from exc
 
 
-    gas = ct.Solution(config.mechanism)
+    if config.species_subset is None:
+        gas = ct.Solution(config.mechanism)
+    else:
+        source_species = {
+            species.name: species for species in ct.Species.list_from_file(config.mechanism)
+        }
+        missing_species = [
+            species for species in config.species_subset if species not in source_species
+        ]
+        if missing_species:
+            raise SystemExit(
+                f"{config.mechanism} is missing species {missing_species}"
+            )
+        gas = ct.Solution(
+            thermo="ideal-gas",
+            kinetics=None,
+            species=[source_species[species] for species in config.species_subset],
+        )
     fuel_mw = gas.molecular_weights[gas.species_index(config.fuel_species)]
     oxidizer_mw = gas.molecular_weights[gas.species_index(config.oxidizer_species)]
     states: dict[tuple[float, float], tuple[float, float, float, float]] = {}
 
     if ct.__version__ != "3.2.0":
         raise SystemExit(f"expected Cantera 3.2.0, got {ct.__version__}")
-    if gas.source != config.mechanism:
+    if config.species_subset is None and gas.source != config.mechanism:
         raise SystemExit(f"expected {config.mechanism}, got {gas.source}")
 
     for chamber_pressure_pa in config.pressure_axis_pa:
@@ -443,7 +538,7 @@ def main() -> None:
     if len(sys.argv) not in {2, 3} or sys.argv[1] not in {"deck", "reference"}:
         raise SystemExit(
             "usage: generate_cantera_thermochem_reference.py "
-            "{deck|reference} [lox-lch4|lox-lh2|lox-rp1-ndodecane]"
+            "{deck|reference} [lox-lch4|lox-lh2|lox-rp1-ndodecane|n2o4-n2h4]"
         )
     pair = sys.argv[2] if len(sys.argv) == 3 else DEFAULT_PAIR
     if pair not in PAIR_CONFIGS:

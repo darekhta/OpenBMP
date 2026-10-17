@@ -34,7 +34,17 @@
 //!   `thrust`, `aero`, `aerothermal_diagnostics`).
 //! - **Recovery state** when `[[vehicle.assembly.recovery]]` is
 //!   declared: `recovery.<id>.deployed`, `.phase_index`, and
-//!   `.drag_area_m2`.
+//!   `.drag_area_m2`. Recovery devices with an active `inflation`,
+//!   `drogue_inflation`, or `main_inflation` table additionally publish `.inflation_progress`,
+//!   `.inflation_complete`, `.opening_dynamic_pressure_pa`,
+//!   `.opening_load_n`, and `.opening_peak_load_n`; configured Pflanz
+//!   tables additionally publish `.opening_ballistic_parameter_a`,
+//!   `.opening_pflanz_reduction_factor_x1`, and
+//!   `.opening_finite_mass_peak_load_n`.
+//!   Devices with declared `risers` additionally publish aggregate
+//!   `.riser_tension_sum_n`, `.riser_tension_max_n`, body-frame
+//!   riser force components, body-frame riser moment components,
+//!   and `.riser_elastic_energy_j`.
 //!
 //! The schema also carries the resolved-file SHA-256 digests as
 //! Arrow schema metadata under `openbmp.scenario_files.<field>` keys.
@@ -46,7 +56,7 @@ use openbmp_aero::AeroDeck;
 use openbmp_core::{ChannelId, Duration, ModelId, Position3, RecoveryId, SimTime, Velocity3};
 use openbmp_physics::{AtmosphereModel, J2Gravity, PointMassGravity, WGS84_J2};
 use openbmp_propulsion::{Motor, SolidMotor};
-use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
+use openbmp_scenario::{RecoveryConfig, ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sensors::SpecificForceTruth;
 use openbmp_sim::{
     AnyStop, ConstantGravityForce, ConstantMass, EffectorActualsView, EndTime, EngineSnapshotView,
@@ -58,7 +68,8 @@ use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema, Telemet
 use openbmp_vehicle::{
     AeroMethodForceAdapter, BoxedMassModel, DeckDragForceAdapter, EngineClusterForceAdapter,
     EngineClusterMassAdapter, GravityForceAdapter, KernelVehicle, MotorMassAdapter,
-    MotorThrustForceAdapter, NamedForceModel, RecoveryRackForceAdapter, TankRackForceAdapter,
+    MotorThrustForceAdapter, NamedForceModel, RecoveryRackForceAdapter, RecoveryRackMassAdapter,
+    RecoveryRiserForceAdapter, RecoverySequenceForceAdapter, TankRackForceAdapter,
     TankRackMassAdapter, Vehicle,
 };
 use uom::si::f64::Mass;
@@ -101,6 +112,9 @@ const RIGID_BODY_ENGINE_CLUSTER_MASS_MODEL_ID: ModelId = ModelId::new(121);
 const RIGID_BODY_TANK_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(330);
 const RIGID_BODY_TANK_RACK_MASS_MODEL_ID: ModelId = ModelId::new(331);
 const RIGID_BODY_RECOVERY_RACK_FORCE_MODEL_ID: ModelId = ModelId::new(370);
+const POINT_MASS_RECOVERY_RACK_MASS_MODEL_ID: ModelId = ModelId::new(371);
+const POINT_MASS_RECOVERY_RISER_FORCE_MODEL_ID: ModelId = ModelId::new(372);
+const POINT_MASS_RECOVERY_SEQUENCE_FORCE_MODEL_ID: ModelId = ModelId::new(373);
 const MISSING_AEROTHERMAL_DIAGNOSTICS_MESSAGE: &str =
     "forces includes `aerothermal_diagnostics` but [aerothermal] block is missing";
 
@@ -152,13 +166,14 @@ pub fn run(
     let propellant_budget = crate::propulsion::build_propellant_budget(document)?;
     let mut feed_network_rack =
         crate::feed_network::FeedNetworkRack::build(document, resolved_files)?;
-    let _pogo_rack = crate::pogo::PogoStabilityRack::build(document)?;
+    let pogo = crate::pogo::PogoStabilityRack::build(document)?.into_report();
+    let countdown = crate::ground::evaluate_countdown_document(document)?;
     // Build the runner-side recovery rack. Empty when no
     // `[[vehicle.assembly.recovery]]` are declared, in which case
     // every per-step rack operation short-circuits and the kernel's
     // recovery snapshot stays empty (byte-stable for scenarios
     // without recovery devices).
-    let mut recovery_rack = crate::recovery::RecoveryRack::build(document)?;
+    let mut recovery_rack = crate::recovery::RecoveryRack::build(document, resolved_files)?;
     // Build the runner-side wind rack. Inactive when no
     // `[wind]` block is declared (or `kind = "none"`); the per-step
     // rack op short-circuits and the kernel's wind override stays
@@ -239,6 +254,7 @@ pub fn run(
         kernel.set_external_mission_state(Some(initial_phase));
     }
     let channel_set = PointMassChannelSet::new(document)?;
+    let mut acoustics_report = crate::acoustics::evaluate_document(document, resolved_files)?;
     let plume_evaluator =
         crate::plume::PointMassPlumeEvaluator::maybe_new(document, loaded_models.motor.as_ref())?;
     let contact_evaluator = document
@@ -307,24 +323,29 @@ pub fn run(
         let environment = kernel.current_environment_sample()?;
         driver.evaluate_point_mass(kernel.current_state(), &environment, 0.0)?;
     }
-    let mut fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files)?;
+    let mut fc_bridge = crate::fc_bridge::FcBridge::maybe_new(scenario, resolved_files, None)?;
     let mut mission_region_trace =
         crate::MissionRegionTraceState::new(&crate::mission_region_declarations(document));
     let mut afts_monitor = crate::afts::RunnerAftsMonitor::maybe_new(document)?;
     let mut comm_accumulator =
         crate::comm::CommRunAccumulator::maybe_new(document, resolved_files)?;
+    let initial_aerothermal_electron_number_density_m3 = aerothermal_driver
+        .as_ref()
+        .map(|driver| driver.output().electron_number_density_m3);
     let initial_comm_observation = comm_accumulator
         .as_mut()
         .map(|accumulator| {
             let state = kernel.current_state();
-            accumulator.observe_eci(
-                &frame,
-                kernel.current_step(),
-                state.time,
-                state.position,
-                state.velocity,
-                UnitQuaternion::identity(),
-            )
+            accumulator.observe_eci(crate::comm::CommEciObservationInput {
+                frame: &frame,
+                step: kernel.current_step(),
+                time: state.time,
+                position_eci: state.position,
+                velocity_eci: state.velocity,
+                body_to_eci: UnitQuaternion::identity(),
+                aerothermal_electron_number_density_m3:
+                    initial_aerothermal_electron_number_density_m3,
+            })
         })
         .transpose()?;
     record_step(
@@ -341,6 +362,8 @@ pub fn run(
         aerothermal_driver.as_ref().map(|driver| driver.output()),
         fc_bridge.as_ref(),
         initial_comm_observation.as_ref(),
+        acoustics_report.as_ref(),
+        countdown.as_ref(),
         &[],
         &mut mission_region_trace,
         &initial_snapshot,
@@ -368,7 +391,8 @@ pub fn run(
             engine_rack.apply_commands(&pending_engine_events)?;
         }
         if let Some(bridge) = &mut fc_bridge {
-            let gravity = kernel.current_environment_sample()?.gravity_eci_m_s2;
+            let environment = kernel.current_environment_sample()?;
+            let gravity = environment.gravity_eci_m_s2;
             let specific_force_truth = if bridge.uses_force_accumulator_truth() {
                 Some(point_mass_specific_force_truth(
                     &kernel,
@@ -392,6 +416,7 @@ pub fn run(
             bridge.tick_point_mass(
                 kernel.current_state(),
                 kernel.current_step(),
+                &environment,
                 gravity,
                 specific_force_truth,
                 propellant_state,
@@ -411,6 +436,12 @@ pub fn run(
                 }
             }
         }
+        let propellant_safing_command = fc_bridge
+            .as_ref()
+            .and_then(crate::fc_bridge::FcBridge::latest_propellant_safing_command);
+        if !tank_rack.is_empty() {
+            tank_rack.apply_propellant_safing_command(propellant_safing_command);
+        }
         if let Some(propellant_budget) = &propellant_budget {
             let mut report = propellant_budget
                 .evaluate(
@@ -421,7 +452,12 @@ pub fn run(
                     field: "vehicle.assembly.engines[*].propellant".to_owned(),
                     reason: err.to_string(),
                 })?;
+            feed_network_rack.apply_propellant_safing_command(propellant_safing_command);
             feed_network_rack.apply_to_report(&mut report, kernel_step_s, kernel.current_step())?;
+            crate::propulsion::apply_propellant_safing_to_report(
+                &mut report,
+                propellant_safing_command,
+            );
             tank_rack.set_propellant_budget_drain_rates(report.tank_drain_rates_kg_per_s.clone());
             engine_rack.apply_propellant_budget(&report)?;
         }
@@ -438,12 +474,23 @@ pub fn run(
             engine_rack.apply_scheduled_faults(kernel.current_step())?;
             engine_rack.step()?;
         }
+        crate::acoustics::observe_source_engine_runtime_sample(
+            &mut acoustics_report,
+            kernel.current_step().value(),
+            kernel.current_time().as_seconds(),
+            &engine_rack.propulsion_snapshot_map(),
+        )?;
         // Advance the tank rack using prior-step cached
         // drivers (set after the previous kernel step). For point-
         // mass kernels the drivers are zeros — slosh in point-mass
         // is RigidLiquid-only per the scenario validator (D10), so
         // the dynamic drivers are irrelevant.
         if !tank_rack.is_empty() {
+            if tank_rack.uses_safe_dump_ambient_backpressure() {
+                let environment = kernel.current_environment_sample()?;
+                tank_rack
+                    .set_safe_dump_ambient_backpressure_pa(environment.atmosphere_pressure_pa)?;
+            }
             tank_rack.step()?;
         }
         // Drain pending deploy/stow events from the prior
@@ -475,11 +522,6 @@ pub fn run(
         if !tank_rack.is_empty() {
             kernel.set_tank_snapshot(tank_rack.snapshot_map());
         }
-        // Push recovery snapshot to the kernel before
-        // `step()` so all four RK4 stages see the same view.
-        if !recovery_rack.is_empty() {
-            kernel.set_recovery_snapshot(recovery_rack.snapshot_map());
-        }
         // Advance the wind rack and push the new sample
         // to the kernel before `step()`. For `GustWind` this rolls
         // the Dryden filter forward by one tick; the time-only
@@ -490,26 +532,45 @@ pub fn run(
             let wind = wind_rack.sample(s.position, &frame, s.time)?;
             kernel.set_wind_sample(wind);
         }
+        // Push recovery snapshot after wind sampling so opening-load
+        // diagnostics use the same air-relative velocity the recovery
+        // force adapter will see during this kernel step.
+        if !recovery_rack.is_empty() {
+            let environment = kernel.current_environment_sample()?;
+            let context = crate::recovery::recovery_opening_load_context_with_mass(
+                kernel.current_state().velocity.vector,
+                &environment,
+                kernel.current_state().mass.get::<kilogram>(),
+            )?;
+            kernel.set_recovery_snapshot(
+                recovery_rack.snapshot_map_with_opening_load_context(context)?,
+            );
+        }
         kernel.step()?;
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
+        crate::acoustics::observe_source_engine_ignitions(&mut acoustics_report, &script_fired);
         if let Some(driver) = &mut aerothermal_driver {
             let environment = kernel.current_environment_sample()?;
             driver.evaluate_point_mass(kernel.current_state(), &environment, kernel_step_s)?;
         }
         let snapshot = effector_rack.snapshot();
+        let aerothermal_electron_number_density_m3 = aerothermal_driver
+            .as_ref()
+            .map(|driver| driver.output().electron_number_density_m3);
         let comm_observation = comm_accumulator
             .as_mut()
             .map(|accumulator| {
                 let state = kernel.current_state();
-                accumulator.observe_eci(
-                    &frame,
-                    kernel.current_step(),
-                    state.time,
-                    state.position,
-                    state.velocity,
-                    UnitQuaternion::identity(),
-                )
+                accumulator.observe_eci(crate::comm::CommEciObservationInput {
+                    frame: &frame,
+                    step: kernel.current_step(),
+                    time: state.time,
+                    position_eci: state.position,
+                    velocity_eci: state.velocity,
+                    body_to_eci: UnitQuaternion::identity(),
+                    aerothermal_electron_number_density_m3,
+                })
             })
             .transpose()?;
         record_step(
@@ -526,6 +587,8 @@ pub fn run(
             aerothermal_driver.as_ref().map(|driver| driver.output()),
             fc_bridge.as_ref(),
             comm_observation.as_ref(),
+            acoustics_report.as_ref(),
+            countdown.as_ref(),
             &mission_fired,
             &mut mission_region_trace,
             &snapshot,
@@ -593,6 +656,12 @@ pub fn run(
         landing_gear: None,
         afts: afts_monitor.map(crate::afts::RunnerAftsMonitor::finish),
         comm,
+        acoustics: acoustics_report,
+        structural_acoustics: None,
+        structural_events: None,
+        pogo,
+        csi: None,
+        countdown,
         upstream_uq,
     })
 }
@@ -842,6 +911,37 @@ fn build_gravity_force_adapter_point_mass(
     }
 }
 
+fn riser_recovery_ids(document: &ScenarioDocument) -> Vec<RecoveryId> {
+    document
+        .vehicle
+        .assembly
+        .recovery
+        .iter()
+        .filter(|recovery| !recovery.risers.is_empty())
+        .map(|recovery| {
+            RecoveryId::from_path(&format!("vehicle.assembly.recovery.{id}", id = recovery.id))
+        })
+        .collect()
+}
+
+fn sequence_force_recovery_ids(document: &ScenarioDocument) -> Vec<RecoveryId> {
+    document
+        .vehicle
+        .assembly
+        .recovery
+        .iter()
+        .filter(|recovery| {
+            recovery
+                .sequence
+                .as_ref()
+                .is_some_and(|sequence| sequence.mortar_pack_mass_kg.is_some())
+        })
+        .map(|recovery| {
+            RecoveryId::from_path(&format!("vehicle.assembly.recovery.{id}", id = recovery.id))
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_lines)] // the recovery-rack force-adapter wiring branch is large
 fn build_vehicle(
     document: &ScenarioDocument,
@@ -1014,6 +1114,33 @@ fn build_vehicle(
         ));
     }
 
+    // Declared-riser aggregate line-force adapter. This consumes the recovery
+    // rack's body-frame riser-force snapshot as a separate force-breakdown
+    // component; it does not replace aerodynamic recovery drag.
+    let recovery_riser_ids = riser_recovery_ids(document);
+    if !recovery_riser_ids.is_empty() {
+        let recovery_riser_force = RecoveryRiserForceAdapter::new(
+            recovery_riser_ids,
+            POINT_MASS_RECOVERY_RISER_FORCE_MODEL_ID,
+        );
+        named.push(NamedForceModel::new(
+            "recovery_riser_force",
+            Box::new(recovery_riser_force),
+        ));
+    }
+
+    let recovery_sequence_force_ids = sequence_force_recovery_ids(document);
+    if !recovery_sequence_force_ids.is_empty() {
+        let recovery_sequence_force = RecoverySequenceForceAdapter::new(
+            recovery_sequence_force_ids,
+            POINT_MASS_RECOVERY_SEQUENCE_FORCE_MODEL_ID,
+        );
+        named.push(NamedForceModel::new(
+            "recovery_sequence_force",
+            Box::new(recovery_sequence_force),
+        ));
+    }
+
     // KernelVehicle requires a mass model even for vehicle-internal
     // queries. The kernel's mass model is built
     // separately in `build_mass_model` because it owns its own copy.
@@ -1074,8 +1201,8 @@ fn build_mass_model(
     // Wrap the base mass model with a tank-rack mass
     // adapter when tanks are declared. The wrapper adds each tank's
     // `mass_kg` from the kernel snapshot to the base mass.
-    if document.vehicle.assembly.tanks.is_empty() {
-        Ok(base)
+    let mass: Box<dyn MassModel> = if document.vehicle.assembly.tanks.is_empty() {
+        base
     } else {
         let tank_ids: Vec<openbmp_core::TankId> = document
             .vehicle
@@ -1086,12 +1213,74 @@ fn build_mass_model(
                 openbmp_core::TankId::from_path(&format!("vehicle.assembly.tanks.{id}", id = t.id))
             })
             .collect();
-        Ok(Box::new(TankRackMassAdapter::new(
+        Box::new(TankRackMassAdapter::new(
             base,
             tank_ids,
             RIGID_BODY_TANK_RACK_MASS_MODEL_ID,
+        ))
+    };
+    let recovery_ids = apparent_mass_recovery_ids(document);
+    if recovery_ids.is_empty() {
+        Ok(mass)
+    } else {
+        Ok(Box::new(RecoveryRackMassAdapter::new(
+            mass,
+            recovery_ids,
+            POINT_MASS_RECOVERY_RACK_MASS_MODEL_ID,
         )))
     }
+}
+
+fn apparent_mass_recovery_ids(document: &ScenarioDocument) -> Vec<RecoveryId> {
+    document
+        .vehicle
+        .assembly
+        .recovery
+        .iter()
+        .filter(|recovery| recovery_has_apparent_mass(recovery))
+        .map(|recovery| {
+            RecoveryId::from_path(&format!("vehicle.assembly.recovery.{id}", id = recovery.id))
+        })
+        .collect()
+}
+
+fn recovery_has_inflation(recovery: &RecoveryConfig) -> bool {
+    recovery.inflation.is_some()
+        || recovery.drogue_inflation.is_some()
+        || recovery.main_inflation.is_some()
+}
+
+fn recovery_has_apparent_mass(recovery: &RecoveryConfig) -> bool {
+    [
+        recovery.inflation.as_ref(),
+        recovery.drogue_inflation.as_ref(),
+        recovery.main_inflation.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|inflation| inflation.apparent_mass_coeff_k_a.is_some())
+}
+
+fn recovery_has_pflanz(recovery: &RecoveryConfig) -> bool {
+    [
+        recovery.inflation.as_ref(),
+        recovery.drogue_inflation.as_ref(),
+        recovery.main_inflation.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|inflation| inflation.pflanz.is_some())
+}
+
+fn recovery_has_sequence(recovery: &RecoveryConfig) -> bool {
+    recovery.sequence.is_some()
+}
+
+fn recovery_sequence_has_mortar(recovery: &RecoveryConfig) -> bool {
+    recovery
+        .sequence
+        .as_ref()
+        .is_some_and(|sequence| sequence.mortar_pack_mass_kg.is_some())
 }
 
 fn motor_ignition_time_s(document: &ScenarioDocument) -> Result<f64, RunnerError> {
@@ -1140,13 +1329,75 @@ type ForceComponentChannels = Vec<(
 )>;
 
 /// Per-recovery telemetry channels in scenario-declared order.
-/// Each entry is `(id, deployed, phase_index, drag_area)`.
-type RecoveryTelemetryChannels = Vec<(
-    RecoveryId,
-    TelemetryChannel<bool>,
-    TelemetryChannel<i64>,
-    TelemetryChannel<f64>,
-)>;
+type RecoveryTelemetryChannels = Vec<RecoveryTelemetryChannelSet>;
+
+#[derive(Debug)]
+struct RecoveryTelemetryChannelSet {
+    id: RecoveryId,
+    deployed: TelemetryChannel<bool>,
+    phase_index: TelemetryChannel<i64>,
+    drag_area: TelemetryChannel<f64>,
+    inflation: Option<RecoveryInflationTelemetryChannels>,
+    sequence: Option<RecoverySequenceTelemetryChannels>,
+    riser: Option<RecoveryRiserTelemetryChannels>,
+}
+
+#[derive(Debug)]
+struct RecoveryInflationTelemetryChannels {
+    progress: TelemetryChannel<f64>,
+    complete: TelemetryChannel<bool>,
+    dynamic_pressure: TelemetryChannel<f64>,
+    opening_load: TelemetryChannel<f64>,
+    opening_peak_load: TelemetryChannel<f64>,
+    apparent_mass: Option<RecoveryApparentMassTelemetryChannels>,
+    pflanz: Option<RecoveryPflanzTelemetryChannels>,
+}
+
+#[derive(Debug)]
+struct RecoveryApparentMassTelemetryChannels {
+    apparent_mass: TelemetryChannel<f64>,
+    apparent_mass_rate: TelemetryChannel<f64>,
+}
+
+#[derive(Debug)]
+struct RecoveryPflanzTelemetryChannels {
+    ballistic_parameter: TelemetryChannel<f64>,
+    reduction_factor: TelemetryChannel<f64>,
+    finite_mass_peak_load: TelemetryChannel<f64>,
+}
+
+#[derive(Debug)]
+struct RecoverySequenceTelemetryChannels {
+    delta_v: TelemetryChannel<f64>,
+    stiffness: TelemetryChannel<f64>,
+    effective_mass: TelemetryChannel<f64>,
+    pack_drag_load: TelemetryChannel<f64>,
+    peak_load: TelemetryChannel<f64>,
+    mortar: Option<RecoveryMortarTelemetryChannels>,
+}
+
+#[derive(Debug)]
+struct RecoveryMortarTelemetryChannels {
+    impulse_body_x: TelemetryChannel<f64>,
+    impulse_body_y: TelemetryChannel<f64>,
+    impulse_body_z: TelemetryChannel<f64>,
+    force_body_x: TelemetryChannel<f64>,
+    force_body_y: TelemetryChannel<f64>,
+    force_body_z: TelemetryChannel<f64>,
+}
+
+#[derive(Debug)]
+struct RecoveryRiserTelemetryChannels {
+    tension_sum: TelemetryChannel<f64>,
+    tension_max: TelemetryChannel<f64>,
+    force_body_x: TelemetryChannel<f64>,
+    force_body_y: TelemetryChannel<f64>,
+    force_body_z: TelemetryChannel<f64>,
+    moment_body_x: TelemetryChannel<f64>,
+    moment_body_y: TelemetryChannel<f64>,
+    moment_body_z: TelemetryChannel<f64>,
+    elastic_energy: TelemetryChannel<f64>,
+}
 
 #[derive(Debug)]
 struct AerothermalTelemetryChannels {
@@ -1155,6 +1406,7 @@ struct AerothermalTelemetryChannels {
     h_aw: TelemetryChannel<f64>,
     recovery_temperature: TelemetryChannel<f64>,
     stagnation_temperature: TelemetryChannel<f64>,
+    electron_number_density: Option<TelemetryChannel<f64>>,
     knudsen: TelemetryChannel<f64>,
     wall_temperature: TelemetryChannel<f64>,
     backwall_temperature: TelemetryChannel<f64>,
@@ -1186,6 +1438,8 @@ struct PointMassChannelSet {
     mission_phase: Option<TelemetryChannel<String>>,
     mission_regions: Vec<(crate::MissionRegionDeclaration, TelemetryChannel<String>)>,
     comm: Option<crate::comm::CommTelemetryChannels>,
+    acoustics: Option<crate::acoustics::AcousticsTelemetryChannels>,
+    countdown: Option<crate::ground::GroundCountdownTelemetryChannels>,
     has_atmosphere: bool,
     atmosphere_density: Option<TelemetryChannel<f64>>,
     atmosphere_pressure: Option<TelemetryChannel<f64>>,
@@ -1258,6 +1512,10 @@ impl PointMassChannelSet {
             mission_regions.push((declaration, channel));
         }
         let comm = crate::comm::CommTelemetryChannels::maybe_new(document, &mut alloc)?;
+        let acoustics =
+            crate::acoustics::AcousticsTelemetryChannels::maybe_new(document, &mut alloc)?;
+        let countdown =
+            crate::ground::GroundCountdownTelemetryChannels::maybe_new(document, &mut alloc)?;
 
         let fc_reference = if document.fc.is_some() {
             Some(FcReferenceTelemetryChannels {
@@ -1361,10 +1619,12 @@ impl PointMassChannelSet {
             (None, None, None, None)
         };
 
-        // Per-model force breakdown channels, in scenario-declared
-        // order — the same order the kernel uses for the RK4 sum.
-        let mut force_components = Vec::with_capacity(document.force_model_universe().len());
-        for name in document.force_model_universe() {
+        // Per-model force breakdown channels: scenario-declared force
+        // universe plus runner-internal force components, in the same order
+        // the kernel vehicle registers them for the force sum.
+        let force_model_universe = crate::force_breakdown_model_universe(document);
+        let mut force_components = Vec::with_capacity(force_model_universe.len());
+        for name in force_model_universe {
             let x_channel = TelemetryChannel::<f64>::new(
                 alloc(),
                 format!("force.{name}.x_n"),
@@ -1438,6 +1698,19 @@ impl PointMassChannelSet {
                     "K",
                     None::<&str>,
                 )?,
+                electron_number_density: document
+                    .aerothermal
+                    .as_ref()
+                    .and_then(|aerothermal| aerothermal.electron_density_proxy.as_ref())
+                    .map(|_| {
+                        TelemetryChannel::<f64>::new(
+                            alloc(),
+                            "aerothermal.electron_number_density_m3",
+                            "1/m^3",
+                            None::<&str>,
+                        )
+                    })
+                    .transpose()?,
                 knudsen: TelemetryChannel::<f64>::new(
                     alloc(),
                     "aerothermal.knudsen",
@@ -1503,9 +1776,8 @@ impl PointMassChannelSet {
             effector_actuals.push(channel);
         }
 
-        // Recovery telemetry channels, one triple per
-        // declared device. Scenario-declared order matches the
-        // recovery force-adapter operand order.
+        // Recovery telemetry channels per declared device. Scenario-
+        // declared order matches the recovery force-adapter operand order.
         let mut recovery_states: RecoveryTelemetryChannels = Vec::new();
         for config in &document.vehicle.assembly.recovery {
             let id =
@@ -1528,7 +1800,236 @@ impl PointMassChannelSet {
                 "m^2",
                 None::<&str>,
             )?;
-            recovery_states.push((id, deployed, phase_index, drag_area));
+            let inflation = if recovery_has_inflation(config) {
+                Some(RecoveryInflationTelemetryChannels {
+                    progress: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("recovery.{}.inflation_progress", config.id),
+                        "1",
+                        None::<&str>,
+                    )?,
+                    complete: TelemetryChannel::<bool>::new(
+                        alloc(),
+                        format!("recovery.{}.inflation_complete", config.id),
+                        "bool",
+                        None::<&str>,
+                    )?,
+                    dynamic_pressure: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("recovery.{}.opening_dynamic_pressure_pa", config.id),
+                        "Pa",
+                        None::<&str>,
+                    )?,
+                    opening_load: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("recovery.{}.opening_load_n", config.id),
+                        "N",
+                        None::<&str>,
+                    )?,
+                    opening_peak_load: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("recovery.{}.opening_peak_load_n", config.id),
+                        "N",
+                        None::<&str>,
+                    )?,
+                    apparent_mass: if recovery_has_apparent_mass(config) {
+                        Some(RecoveryApparentMassTelemetryChannels {
+                            apparent_mass: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.apparent_mass_kg", config.id),
+                                "kg",
+                                None::<&str>,
+                            )?,
+                            apparent_mass_rate: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.apparent_mass_rate_kg_s", config.id),
+                                "kg/s",
+                                None::<&str>,
+                            )?,
+                        })
+                    } else {
+                        None
+                    },
+                    pflanz: if recovery_has_pflanz(config) {
+                        Some(RecoveryPflanzTelemetryChannels {
+                            ballistic_parameter: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.opening_ballistic_parameter_a", config.id),
+                                "1",
+                                None::<&str>,
+                            )?,
+                            reduction_factor: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!(
+                                    "recovery.{}.opening_pflanz_reduction_factor_x1",
+                                    config.id
+                                ),
+                                "1",
+                                None::<&str>,
+                            )?,
+                            finite_mass_peak_load: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.opening_finite_mass_peak_load_n", config.id),
+                                "N",
+                                None::<&str>,
+                            )?,
+                        })
+                    } else {
+                        None
+                    },
+                })
+            } else {
+                None
+            };
+            let sequence = if recovery_has_sequence(config) {
+                Some(RecoverySequenceTelemetryChannels {
+                    delta_v: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("recovery.{}.snatch_delta_v_m_s", config.id),
+                        "m/s",
+                        None::<&str>,
+                    )?,
+                    stiffness: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("recovery.{}.snatch_stiffness_n_m", config.id),
+                        "N/m",
+                        None::<&str>,
+                    )?,
+                    effective_mass: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("recovery.{}.snatch_effective_mass_kg", config.id),
+                        "kg",
+                        None::<&str>,
+                    )?,
+                    pack_drag_load: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("recovery.{}.snatch_pack_drag_load_n", config.id),
+                        "N",
+                        None::<&str>,
+                    )?,
+                    peak_load: TelemetryChannel::<f64>::new(
+                        alloc(),
+                        format!("recovery.{}.snatch_peak_load_n", config.id),
+                        "N",
+                        None::<&str>,
+                    )?,
+                    mortar: if recovery_sequence_has_mortar(config) {
+                        Some(RecoveryMortarTelemetryChannels {
+                            impulse_body_x: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.mortar_impulse_body_x_n_s", config.id),
+                                "N*s",
+                                None::<&str>,
+                            )?,
+                            impulse_body_y: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.mortar_impulse_body_y_n_s", config.id),
+                                "N*s",
+                                None::<&str>,
+                            )?,
+                            impulse_body_z: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.mortar_impulse_body_z_n_s", config.id),
+                                "N*s",
+                                None::<&str>,
+                            )?,
+                            force_body_x: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.mortar_force_body_x_n", config.id),
+                                "N",
+                                None::<&str>,
+                            )?,
+                            force_body_y: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.mortar_force_body_y_n", config.id),
+                                "N",
+                                None::<&str>,
+                            )?,
+                            force_body_z: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.mortar_force_body_z_n", config.id),
+                                "N",
+                                None::<&str>,
+                            )?,
+                        })
+                    } else {
+                        None
+                    },
+                })
+            } else {
+                None
+            };
+            let riser = (!config.risers.is_empty())
+                .then(|| {
+                    Ok::<RecoveryRiserTelemetryChannels, RunnerError>(
+                        RecoveryRiserTelemetryChannels {
+                            tension_sum: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.riser_tension_sum_n", config.id),
+                                "N",
+                                None::<&str>,
+                            )?,
+                            tension_max: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.riser_tension_max_n", config.id),
+                                "N",
+                                None::<&str>,
+                            )?,
+                            force_body_x: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.riser_force_body_x_n", config.id),
+                                "N",
+                                None::<&str>,
+                            )?,
+                            force_body_y: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.riser_force_body_y_n", config.id),
+                                "N",
+                                None::<&str>,
+                            )?,
+                            force_body_z: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.riser_force_body_z_n", config.id),
+                                "N",
+                                None::<&str>,
+                            )?,
+                            moment_body_x: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.riser_moment_body_x_n_m", config.id),
+                                "N*m",
+                                None::<&str>,
+                            )?,
+                            moment_body_y: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.riser_moment_body_y_n_m", config.id),
+                                "N*m",
+                                None::<&str>,
+                            )?,
+                            moment_body_z: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.riser_moment_body_z_n_m", config.id),
+                                "N*m",
+                                None::<&str>,
+                            )?,
+                            elastic_energy: TelemetryChannel::<f64>::new(
+                                alloc(),
+                                format!("recovery.{}.riser_elastic_energy_j", config.id),
+                                "J",
+                                None::<&str>,
+                            )?,
+                        },
+                    )
+                })
+                .transpose()?;
+            recovery_states.push(RecoveryTelemetryChannelSet {
+                id,
+                deployed,
+                phase_index,
+                drag_area,
+                inflation,
+                sequence,
+                riser,
+            });
         }
 
         // Mission marker channels. `BTreeMap` ordering on
@@ -1558,6 +2059,8 @@ impl PointMassChannelSet {
             mission_phase,
             mission_regions,
             comm,
+            acoustics,
+            countdown,
             has_atmosphere,
             atmosphere_density,
             atmosphere_pressure,
@@ -1593,6 +2096,12 @@ impl PointMassChannelSet {
         }
         if let Some(comm) = &self.comm {
             comm.push_metadata(&mut channels);
+        }
+        if let Some(acoustics) = &self.acoustics {
+            acoustics.push_metadata(&mut channels);
+        }
+        if let Some(countdown) = &self.countdown {
+            countdown.push_metadata(&mut channels);
         }
         if let Some(reference) = &self.fc_reference {
             channels.push(reference.valid.metadata().clone());
@@ -1635,6 +2144,9 @@ impl PointMassChannelSet {
             channels.push(aerothermal.h_aw.metadata().clone());
             channels.push(aerothermal.recovery_temperature.metadata().clone());
             channels.push(aerothermal.stagnation_temperature.metadata().clone());
+            if let Some(channel) = &aerothermal.electron_number_density {
+                channels.push(channel.metadata().clone());
+            }
             channels.push(aerothermal.knudsen.metadata().clone());
             channels.push(aerothermal.wall_temperature.metadata().clone());
             channels.push(aerothermal.backwall_temperature.metadata().clone());
@@ -1653,10 +2165,52 @@ impl PointMassChannelSet {
         }
         // Recovery channels, in scenario-declared order,
         // between effectors and mission markers.
-        for (_, deployed, phase_index, drag_area) in &self.recovery_states {
-            channels.push(deployed.metadata().clone());
-            channels.push(phase_index.metadata().clone());
-            channels.push(drag_area.metadata().clone());
+        for recovery in &self.recovery_states {
+            channels.push(recovery.deployed.metadata().clone());
+            channels.push(recovery.phase_index.metadata().clone());
+            channels.push(recovery.drag_area.metadata().clone());
+            if let Some(inflation) = &recovery.inflation {
+                channels.push(inflation.progress.metadata().clone());
+                channels.push(inflation.complete.metadata().clone());
+                channels.push(inflation.dynamic_pressure.metadata().clone());
+                channels.push(inflation.opening_load.metadata().clone());
+                channels.push(inflation.opening_peak_load.metadata().clone());
+                if let Some(apparent_mass) = &inflation.apparent_mass {
+                    channels.push(apparent_mass.apparent_mass.metadata().clone());
+                    channels.push(apparent_mass.apparent_mass_rate.metadata().clone());
+                }
+                if let Some(pflanz) = &inflation.pflanz {
+                    channels.push(pflanz.ballistic_parameter.metadata().clone());
+                    channels.push(pflanz.reduction_factor.metadata().clone());
+                    channels.push(pflanz.finite_mass_peak_load.metadata().clone());
+                }
+            }
+            if let Some(sequence) = &recovery.sequence {
+                channels.push(sequence.delta_v.metadata().clone());
+                channels.push(sequence.stiffness.metadata().clone());
+                channels.push(sequence.effective_mass.metadata().clone());
+                channels.push(sequence.pack_drag_load.metadata().clone());
+                channels.push(sequence.peak_load.metadata().clone());
+                if let Some(mortar) = &sequence.mortar {
+                    channels.push(mortar.impulse_body_x.metadata().clone());
+                    channels.push(mortar.impulse_body_y.metadata().clone());
+                    channels.push(mortar.impulse_body_z.metadata().clone());
+                    channels.push(mortar.force_body_x.metadata().clone());
+                    channels.push(mortar.force_body_y.metadata().clone());
+                    channels.push(mortar.force_body_z.metadata().clone());
+                }
+            }
+            if let Some(riser) = &recovery.riser {
+                channels.push(riser.tension_sum.metadata().clone());
+                channels.push(riser.tension_max.metadata().clone());
+                channels.push(riser.force_body_x.metadata().clone());
+                channels.push(riser.force_body_y.metadata().clone());
+                channels.push(riser.force_body_z.metadata().clone());
+                channels.push(riser.moment_body_x.metadata().clone());
+                channels.push(riser.moment_body_y.metadata().clone());
+                channels.push(riser.moment_body_z.metadata().clone());
+                channels.push(riser.elastic_energy.metadata().clone());
+            }
         }
         // Marker channels last, in alphabetical (BTreeMap) order.
         for marker in self.mission_markers.values() {
@@ -1725,6 +2279,8 @@ fn record_step<I, F, MM, E, SC>(
     aerothermal: Option<&crate::aerothermal::LiveAerothermalOutput>,
     fc_bridge: Option<&crate::fc_bridge::FcBridge>,
     comm_observation: Option<&crate::comm::CommObservation>,
+    acoustics_report: Option<&crate::acoustics::AcousticsRunReport>,
+    countdown_report: Option<&crate::ground::GroundCountdownRunReport>,
     fired_events: &[openbmp_sim::FiredEvent<openbmp_sim::MissionAction>],
     mission_region_trace: &mut crate::MissionRegionTraceState,
     effector_snapshot: &[openbmp_vehicle::EffectorState],
@@ -1758,6 +2314,12 @@ where
     }
     if let (Some(comm_channels), Some(observation)) = (&channels.comm, comm_observation) {
         comm_channels.insert_samples(&mut row, observation)?;
+    }
+    if let Some(acoustics_channels) = &channels.acoustics {
+        acoustics_channels.insert_samples(&mut row, acoustics_report)?;
+    }
+    if let Some(countdown_channels) = &channels.countdown {
+        countdown_channels.insert_samples(&mut row, countdown_report)?;
     }
     insert_fc_reference_channels(&mut row, &channels.fc_reference, fc_bridge)?;
 
@@ -1870,6 +2432,9 @@ where
             &aerothermal_channels.stagnation_temperature,
             sample.stagnation_temperature_k,
         )?;
+        if let Some(channel) = &aerothermal_channels.electron_number_density {
+            row.insert(channel, sample.electron_number_density_m3)?;
+        }
         row.insert(&aerothermal_channels.knudsen, sample.knudsen)?;
         row.insert(
             &aerothermal_channels.wall_temperature,
@@ -1977,18 +2542,75 @@ fn insert_recovery_state_channels(
     snapshot: &BTreeMap<RecoveryId, openbmp_sim::RecoverySnapshot>,
     channels: &RecoveryTelemetryChannels,
 ) -> Result<(), RunnerError> {
-    for (id, deployed, phase_index, drag_area) in channels {
+    for recovery in channels {
         let state = snapshot
-            .get(id)
+            .get(&recovery.id)
             .ok_or_else(|| RunnerError::UnsupportedScenario {
                 what: format!(
                     "recovery telemetry snapshot missing declared recovery id {}",
-                    id.value()
+                    recovery.id.value()
                 ),
             })?;
-        row.insert(deployed, state.deployed)?;
-        row.insert(phase_index, i64::from(state.phase_index))?;
-        row.insert(drag_area, state.drag_area_m2)?;
+        row.insert(&recovery.deployed, state.deployed)?;
+        row.insert(&recovery.phase_index, i64::from(state.phase_index))?;
+        row.insert(&recovery.drag_area, state.drag_area_m2)?;
+        if let Some(inflation) = &recovery.inflation {
+            row.insert(&inflation.progress, state.inflation_progress)?;
+            row.insert(&inflation.complete, state.inflation_complete)?;
+            row.insert(
+                &inflation.dynamic_pressure,
+                state.opening_dynamic_pressure_pa,
+            )?;
+            row.insert(&inflation.opening_load, state.opening_load_n)?;
+            row.insert(&inflation.opening_peak_load, state.opening_peak_load_n)?;
+            if let Some(apparent_mass) = &inflation.apparent_mass {
+                row.insert(&apparent_mass.apparent_mass, state.apparent_mass_kg)?;
+                row.insert(
+                    &apparent_mass.apparent_mass_rate,
+                    state.apparent_mass_rate_kg_s,
+                )?;
+            }
+            if let Some(pflanz) = &inflation.pflanz {
+                row.insert(
+                    &pflanz.ballistic_parameter,
+                    state.opening_ballistic_parameter_a,
+                )?;
+                row.insert(
+                    &pflanz.reduction_factor,
+                    state.opening_pflanz_reduction_factor_x1,
+                )?;
+                row.insert(
+                    &pflanz.finite_mass_peak_load,
+                    state.opening_finite_mass_peak_load_n,
+                )?;
+            }
+        }
+        if let Some(sequence) = &recovery.sequence {
+            row.insert(&sequence.delta_v, state.snatch_delta_v_m_s)?;
+            row.insert(&sequence.stiffness, state.snatch_stiffness_n_m)?;
+            row.insert(&sequence.effective_mass, state.snatch_effective_mass_kg)?;
+            row.insert(&sequence.pack_drag_load, state.snatch_pack_drag_load_n)?;
+            row.insert(&sequence.peak_load, state.snatch_peak_load_n)?;
+            if let Some(mortar) = &sequence.mortar {
+                row.insert(&mortar.impulse_body_x, state.mortar_impulse_body_n_s.x)?;
+                row.insert(&mortar.impulse_body_y, state.mortar_impulse_body_n_s.y)?;
+                row.insert(&mortar.impulse_body_z, state.mortar_impulse_body_n_s.z)?;
+                row.insert(&mortar.force_body_x, state.mortar_force_body_n.x)?;
+                row.insert(&mortar.force_body_y, state.mortar_force_body_n.y)?;
+                row.insert(&mortar.force_body_z, state.mortar_force_body_n.z)?;
+            }
+        }
+        if let Some(riser) = &recovery.riser {
+            row.insert(&riser.tension_sum, state.riser_tension_sum_n)?;
+            row.insert(&riser.tension_max, state.riser_tension_max_n)?;
+            row.insert(&riser.force_body_x, state.riser_force_body_n.x)?;
+            row.insert(&riser.force_body_y, state.riser_force_body_n.y)?;
+            row.insert(&riser.force_body_z, state.riser_force_body_n.z)?;
+            row.insert(&riser.moment_body_x, state.riser_moment_body_n_m.x)?;
+            row.insert(&riser.moment_body_y, state.riser_moment_body_n_m.y)?;
+            row.insert(&riser.moment_body_z, state.riser_moment_body_n_m.z)?;
+            row.insert(&riser.elastic_energy, state.riser_elastic_energy_j)?;
+        }
     }
     Ok(())
 }
@@ -1998,8 +2620,11 @@ fn insert_recovery_state_channels(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use approx::assert_abs_diff_eq;
+    use approx::{assert_abs_diff_eq, assert_relative_eq};
+    use openbmp_physics::{AtmosphereModel, UsStandard1976};
     use openbmp_telemetry::TelemetryValue;
+    use openbmp_thermochem::ThermochemDeck;
+    use serde::Deserialize;
 
     use super::*;
 
@@ -2439,12 +3064,71 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const COMM_OFF_DEFAULT_POINT_MASS_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "comm-off-default-point-mass-test"
+description = "Synthetic point-mass run used to prove the no-comm default path is byte-neutral."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.2
+dt_s = 0.1
+seed = 17
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 100.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "comm-off-default-point-mass-test"
+
+[[vehicle.assembly.bodies]]
+id = "stage"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 10.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/comm-off-default-point-mass-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     fn workspace_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .expect("workspace root must exist")
+    }
+
+    fn add_iop_source_engine(toml: &str) -> String {
+        toml.replace("models = [\"gravity\"]", "models = [\"gravity\", \"thrust\"]").replace(
+            "[environment]",
+            r#"[[vehicle.assembly.engines]]
+id = "main"
+kind = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, 0.0]
+limits = { max_thrust_n = 600000.0, isp_s = 250.0, ignition_transient_s = 0.25, shutdown_transient_s = 0.1, max_gimbal_rad = 0.0 }
+
+[environment]"#,
+        )
     }
 
     fn niskanen_scenario() -> Scenario {
@@ -2459,6 +3143,460 @@ require_monotonic_time = true
             workspace_root().join("scenarios/parachute-recovery/parachute-descent.toml"),
         )
         .expect("canonical parachute scenario must parse")
+    }
+
+    fn inflating_parachute_scenario() -> Scenario {
+        Scenario::from_toml_str(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-inflating-parachute-telemetry"
+description = "Synthetic point-mass recovery inflation telemetry test."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 0.25
+seed = 16
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 1000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, -50.0]
+
+[vehicle.assembly]
+id = "point-mass-inflating-parachute-telemetry"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 0.5 }
+dry_mass_kg = 10.0
+
+[[vehicle.assembly.recovery]]
+id = "main_chute"
+kind = { kind = "parachute_drag", c_d = 1.5, area_inflated_m2 = 8.0 }
+inflation = { fill_time_s = 1.0, opening_force_coeff_c_x = 1.2, growth = "polynomial", exponent_j = 1.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "us_standard_1976"
+wind = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[telemetry]
+output.csv = "out/point-mass-inflating-parachute-telemetry.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "descent"
+
+[[mission.phases]]
+id = "descent"
+label = "descent"
+
+[[scenario_script.events]]
+id = "deploy_main_chute"
+trigger = { kind = "at_time", time_s = 0.25 }
+action = { kind = "deploy_recovery", id = "main_chute", command = "deploy" }
+
+[scenario_script]
+"#,
+        )
+        .expect("inflating parachute scenario must parse")
+    }
+
+    fn pflanz_integrated_peak_scenario(expected_reduction_factor: f64) -> Scenario {
+        pflanz_integrated_peak_scenario_from_values(
+            "single",
+            10.0,
+            50.0,
+            1.0,
+            0.002,
+            1.5,
+            8.0,
+            expected_reduction_factor,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pflanz_integrated_peak_scenario_from_values(
+        case: &str,
+        dry_mass_kg: f64,
+        initial_speed_m_s: f64,
+        fill_time_s: f64,
+        dt_s: f64,
+        c_d: f64,
+        area_m2: f64,
+        expected_reduction_factor: f64,
+    ) -> Scenario {
+        let toml = format!(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-pflanz-integrated-peak-{case}"
+description = "Synthetic point-mass recovery inflation integrated peak-load validation."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = {stop_s:.17e}
+dt_s = {dt_s:.17e}
+seed = 20
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 1000.0]
+initial_velocity_eci_m_s = [{initial_speed_m_s:.17e}, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-pflanz-integrated-peak-{case}"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 0.5 }}
+dry_mass_kg = {dry_mass_kg:.17e}
+
+[[vehicle.assembly.recovery]]
+id = "main_chute"
+kind = {{ kind = "parachute_drag", c_d = {c_d:.17e}, area_inflated_m2 = {area_m2:.17e} }}
+inflation = {{ fill_time_s = {fill_time_s:.17e}, opening_force_coeff_c_x = 1.0, growth = "polynomial", exponent_j = 1.0, pflanz = {{ ballistic_parameter_a = [0.01, 100.0], exponent_j = [1.0], reduction_factors = [{expected_reduction_factor:.17e}, {expected_reduction_factor:.17e}] }} }}
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "us_standard_1976"
+wind = "none"
+
+[atmosphere]
+kind = "us_standard_1976"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/point-mass-pflanz-integrated-peak-{case}.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "descent"
+
+[[mission.phases]]
+id = "descent"
+label = "descent"
+
+[[scenario_script.events]]
+id = "deploy_main_chute"
+trigger = {{ kind = "at_time", time_s = {dt_s:.17e} }}
+action = {{ kind = "deploy_recovery", id = "main_chute", command = "deploy" }}
+
+[scenario_script]
+"#,
+            stop_s = fill_time_s + 0.2,
+        );
+        Scenario::from_toml_str(&toml).expect("Pflanz integrated peak scenario must parse")
+    }
+
+    #[derive(Copy, Clone, Debug, PartialEq)]
+    struct IntegratedOpeningLoadResult {
+        peak_ratio: f64,
+        final_speed_m_s: f64,
+    }
+
+    fn integrated_opening_load_fixed_step(
+        density_kg_m3: f64,
+        mass_kg: f64,
+        full_c_d_s_m2: f64,
+        initial_speed_m_s: f64,
+        fill_time_s: f64,
+        dt_s: f64,
+    ) -> IntegratedOpeningLoadResult {
+        fn derivative(
+            density_kg_m3: f64,
+            mass_kg: f64,
+            full_c_d_s_m2: f64,
+            fraction: f64,
+            speed_m_s: f64,
+        ) -> f64 {
+            -0.5 * density_kg_m3 * full_c_d_s_m2 * fraction * speed_m_s * speed_m_s / mass_kg
+        }
+
+        let mut speed_m_s = initial_speed_m_s;
+        let mut elapsed_s = 0.0_f64;
+        let initial_full_load_n = 0.5 * density_kg_m3 * initial_speed_m_s.powi(2) * full_c_d_s_m2;
+        let mut peak_load_n = 0.0_f64;
+        while elapsed_s < fill_time_s {
+            elapsed_s = (elapsed_s + dt_s).min(fill_time_s);
+            let fraction = (elapsed_s / fill_time_s).clamp(0.0, 1.0);
+            let load_n = 0.5 * density_kg_m3 * speed_m_s.powi(2) * full_c_d_s_m2 * fraction;
+            peak_load_n = peak_load_n.max(load_n);
+            let k1 = derivative(density_kg_m3, mass_kg, full_c_d_s_m2, fraction, speed_m_s);
+            let k2 = derivative(
+                density_kg_m3,
+                mass_kg,
+                full_c_d_s_m2,
+                fraction,
+                speed_m_s + 0.5 * dt_s * k1,
+            );
+            let k3 = derivative(
+                density_kg_m3,
+                mass_kg,
+                full_c_d_s_m2,
+                fraction,
+                speed_m_s + 0.5 * dt_s * k2,
+            );
+            let k4 = derivative(
+                density_kg_m3,
+                mass_kg,
+                full_c_d_s_m2,
+                fraction,
+                speed_m_s + dt_s * k3,
+            );
+            speed_m_s += dt_s * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0;
+        }
+        IntegratedOpeningLoadResult {
+            peak_ratio: peak_load_n / initial_full_load_n,
+            final_speed_m_s: speed_m_s,
+        }
+    }
+
+    fn integrated_opening_load_ratio_fixed_step(
+        density_kg_m3: f64,
+        mass_kg: f64,
+        full_c_d_s_m2: f64,
+        initial_speed_m_s: f64,
+        fill_time_s: f64,
+        dt_s: f64,
+    ) -> f64 {
+        integrated_opening_load_fixed_step(
+            density_kg_m3,
+            mass_kg,
+            full_c_d_s_m2,
+            initial_speed_m_s,
+            fill_time_s,
+            dt_s,
+        )
+        .peak_ratio
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct RecoveryPflanzIntegratedSweepFixture {
+        format: String,
+        cases: Vec<RecoveryPflanzIntegratedSweepCase>,
+        tolerances: RecoveryPflanzIntegratedSweepTolerances,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct RecoveryPflanzIntegratedSweepCase {
+        case: String,
+        target_ballistic_parameter_a: f64,
+        initial_speed_m_s: f64,
+        fill_time_s: f64,
+        dt_s: f64,
+        c_d: f64,
+        area_m2: f64,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct RecoveryPflanzIntegratedSweepTolerances {
+        peak_ratio_abs: f64,
+        final_speed_abs_m_s: f64,
+        ballistic_parameter_rel: f64,
+        finite_peak_ratio_abs: f64,
+    }
+
+    fn load_recovery_pflanz_integrated_sweep_fixture() -> RecoveryPflanzIntegratedSweepFixture {
+        toml::from_str(include_str!(
+            "../tests/expected/recovery-pflanz-integrated-sweep-v1.toml"
+        ))
+        .expect("recovery Pflanz integrated sweep fixture parses")
+    }
+
+    fn dry_mass_for_target_pflanz_a(
+        target_ballistic_parameter_a: f64,
+        density_kg_m3: f64,
+        full_c_d_s_m2: f64,
+        initial_speed_m_s: f64,
+        fill_time_s: f64,
+    ) -> f64 {
+        0.5 * target_ballistic_parameter_a
+            * density_kg_m3
+            * full_c_d_s_m2
+            * initial_speed_m_s
+            * fill_time_s
+    }
+
+    fn recovery_wind_drift_scenario(with_constant_wind: bool) -> Scenario {
+        let (environment_wind, wind_block) = if with_constant_wind {
+            (
+                "constant",
+                r#"
+[wind]
+kind = "constant"
+wind_ned_m_s = [12.0, 0.0, 0.0]
+"#,
+            )
+        } else {
+            ("none", "")
+        };
+        let toml = format!(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-recovery-wind-drift"
+description = "Synthetic point-mass recovery drift validation with declared constant wind."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 5.0
+dt_s = 0.1
+seed = 18
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 1000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-recovery-wind-drift"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 0.5 }}
+dry_mass_kg = 10.0
+
+[[vehicle.assembly.recovery]]
+id = "main_chute"
+kind = {{ kind = "parachute_drag", c_d = 1.0, area_inflated_m2 = 1.0 }}
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "us_standard_1976"
+wind = "{environment_wind}"
+
+[atmosphere]
+kind = "us_standard_1976"
+{wind_block}
+[telemetry]
+output.csv = "out/point-mass-recovery-wind-drift.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "drift"
+
+[[mission.phases]]
+id = "drift"
+label = "drift"
+
+[[scenario_script.events]]
+id = "deploy_main_chute"
+trigger = {{ kind = "at_time", time_s = 0.05 }}
+action = {{ kind = "deploy_recovery", id = "main_chute", command = "deploy" }}
+
+[scenario_script]
+"#
+        );
+        Scenario::from_toml_str(&toml).expect("recovery wind drift scenario must parse")
+    }
+
+    fn recovery_splash_drift_scenario(with_constant_wind: bool) -> Scenario {
+        let (environment_wind, wind_block) = if with_constant_wind {
+            (
+                "constant",
+                r#"
+[wind]
+kind = "constant"
+wind_ned_m_s = [6.0, 0.0, 0.0]
+"#,
+            )
+        } else {
+            ("none", "")
+        };
+        let toml = format!(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "point-mass-recovery-splash-drift"
+description = "Synthetic point-mass recovery splash-point drift validation."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 20.0
+dt_s = 0.05
+seed = 19
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 60.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "point-mass-recovery-splash-drift"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 0.5 }}
+dry_mass_kg = 10.0
+
+[[vehicle.assembly.recovery]]
+id = "main_chute"
+kind = {{ kind = "parachute_drag", c_d = 1.0, area_inflated_m2 = 1.0 }}
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "us_standard_1976"
+wind = "{environment_wind}"
+
+[atmosphere]
+kind = "us_standard_1976"
+{wind_block}
+[telemetry]
+output.csv = "out/point-mass-recovery-splash-drift.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+
+[mission]
+initial_phase = "descent"
+
+[[mission.phases]]
+id = "descent"
+label = "descent"
+
+[[scenario_script.events]]
+id = "deploy_main_chute"
+trigger = {{ kind = "at_time", time_s = 0.025 }}
+action = {{ kind = "deploy_recovery", id = "main_chute", command = "deploy" }}
+
+[scenario_script]
+"#
+        );
+        Scenario::from_toml_str(&toml).expect("recovery splash drift scenario must parse")
     }
 
     fn hypersonic_hybrid_scenario() -> Scenario {
@@ -2496,6 +3634,15 @@ require_monotonic_time = true
             .unwrap_or_else(|| panic!("channel `{name}` must have an initial value"))
     }
 
+    fn has_channel(outcome: &RunOutcome, name: &str) -> bool {
+        outcome
+            .table
+            .schema()
+            .channels()
+            .iter()
+            .any(|channel| channel.name == name)
+    }
+
     fn first_row_f64(outcome: &RunOutcome, name: &str) -> f64 {
         match first_row_value(outcome, name) {
             TelemetryValue::Float64(value) => *value,
@@ -2506,6 +3653,13 @@ require_monotonic_time = true
     fn first_row_bool(outcome: &RunOutcome, name: &str) -> bool {
         match first_row_value(outcome, name) {
             TelemetryValue::Bool(value) => *value,
+            other => panic!("unexpected first-row value for {name}: {other:?}"),
+        }
+    }
+
+    fn first_row_i64(outcome: &RunOutcome, name: &str) -> i64 {
+        match first_row_value(outcome, name) {
+            TelemetryValue::Int64(value) => *value,
             other => panic!("unexpected first-row value for {name}: {other:?}"),
         }
     }
@@ -3239,6 +4393,2887 @@ require_monotonic_time = true
     }
 
     #[test]
+    fn point_mass_no_comm_block_has_no_comm_channels_and_stable_hash() {
+        let baseline =
+            Scenario::from_toml_str(COMM_OFF_DEFAULT_POINT_MASS_SCENARIO).expect("baseline parses");
+        let repeat =
+            Scenario::from_toml_str(COMM_OFF_DEFAULT_POINT_MASS_SCENARIO).expect("repeat parses");
+
+        let baseline = crate::run(&baseline).expect("baseline run");
+        let repeat = crate::run(&repeat).expect("repeat run");
+
+        assert!(
+            baseline.comm.is_none(),
+            "baseline scenario should not emit a comm report"
+        );
+        assert!(
+            baseline.acoustics.is_none(),
+            "baseline scenario should not emit an acoustics report"
+        );
+        assert!(
+            baseline
+                .table
+                .schema()
+                .channels()
+                .iter()
+                .all(|channel| !channel.name.starts_with("comm.")),
+            "scenario without [comm] must not emit comm telemetry channels"
+        );
+        assert!(
+            baseline
+                .table
+                .schema()
+                .channels()
+                .iter()
+                .all(|channel| !channel.name.starts_with("acoustics.")),
+            "scenario without [acoustics] must not emit acoustics telemetry channels"
+        );
+        assert_eq!(
+            crate::determinism::telemetry_sha256_hex(&baseline.table)
+                .expect("baseline telemetry hash"),
+            crate::determinism::telemetry_sha256_hex(&repeat.table).expect("repeat telemetry hash"),
+            "a scenario without [comm] must preserve the canonical telemetry hash across runs"
+        );
+        assert_eq!(
+            baseline.table, repeat.table,
+            "a scenario without [comm] must remain byte-identical across runs"
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_ascent_deck_report_carries_provenance() {
+        let deck_bytes = include_bytes!("../../../data/acoustics/ascent-acoustic-env-v1.toml");
+        let deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/ascent-acoustic-env-v1.toml",
+            deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            &format!(
+                r#"[acoustics.ascent]
+station_id = "station-a"
+deck_file = "data/acoustics/ascent-acoustic-env-v1.toml"
+deck_file_sha256 = "{deck_sha256}"
+class_id = "attached_turbulent"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[telemetry]"#,
+            ),
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("ascent acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("ascent acoustics scenario runs");
+        let acoustics = outcome.acoustics.as_ref().expect("acoustics report");
+        assert!(acoustics.dsm.is_none());
+        assert!(acoustics.iop.is_none());
+        let ascent = acoustics.ascent.as_ref().expect("ascent report emitted");
+
+        assert_eq!(ascent.station_id, "station-a");
+        assert_eq!(ascent.class_id, "attached_turbulent");
+        assert_eq!(ascent.dynamic_pressure_pa.to_bits(), 50_000.0_f64.to_bits());
+        assert_eq!(ascent.mach.to_bits(), 0.8_f64.to_bits());
+        assert_eq!(ascent.sample_count, 1);
+        assert_eq!(ascent.peak_sample_index, 0);
+        assert_eq!(ascent.peak_sample_id, None);
+        assert_eq!(
+            ascent.peak_sample_oaspl_db.to_bits(),
+            ascent.oaspl_db.to_bits()
+        );
+        assert_eq!(ascent.deck_file_sha256_hex, deck_sha256);
+        assert_eq!(ascent.deck_dataset_id, "openbmp.acoustics.ascent_env.v1");
+        assert_eq!(ascent.deck_source_class, "synthetic-openbmp");
+        assert_eq!(ascent.uncertainty_db.to_bits(), 3.0_f64.to_bits());
+        assert!((ascent.oaspl_db - 132.0).abs() <= 1.0e-12);
+        assert_eq!(ascent.p95_50_oaspl_db, None);
+        assert_eq!(ascent.p95_50_tolerance_factor, None);
+        assert!(ascent.p95_50_environment_csv.is_empty());
+        assert_eq!(ascent.p95_50_wilks_required_sample_count, None);
+        assert_eq!(ascent.p95_50_wilks_achieved_confidence, None);
+        assert_eq!(ascent.p95_50_wilks_sample_count_sufficient, None);
+        assert!(ascent.p95_50_wilks_sizing_csv.is_empty());
+        assert_eq!(
+            std::str::from_utf8(&ascent.spectrum_csv)
+                .expect("spectrum CSV is UTF-8")
+                .lines()
+                .count(),
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len() + 1
+        );
+        assert_eq!(
+            std::str::from_utf8(&ascent.sample_trace_csv)
+                .expect("sample trace CSV is UTF-8")
+                .lines()
+                .count(),
+            2
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.ascent.oaspl_db").to_bits(),
+            ascent.oaspl_db.to_bits()
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.ascent.uncertainty_db").to_bits(),
+            ascent.uncertainty_db.to_bits()
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_ascent_mach_gate_selects_sample_classes() {
+        let deck_bytes = include_bytes!("../../../data/acoustics/ascent-acoustic-env-v1.toml");
+        let deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/ascent-acoustic-env-v1.toml",
+            deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            &format!(
+                r#"[acoustics.ascent]
+station_id = "station-a"
+deck_file = "data/acoustics/ascent-acoustic-env-v1.toml"
+deck_file_sha256 = "{deck_sha256}"
+class_selection = "mach_gate"
+
+[[acoustics.ascent.samples]]
+sample_id = "attached"
+dynamic_pressure_pa = 50000.0
+mach = 0.5
+
+[[acoustics.ascent.samples]]
+sample_id = "transonic"
+dynamic_pressure_pa = 65000.0
+mach = 1.1
+
+[telemetry]"#,
+            ),
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("mach-gated ascent acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("mach-gated ascent acoustics scenario runs");
+        let ascent = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.ascent.as_ref())
+            .expect("ascent report emitted");
+
+        assert_eq!(ascent.sample_count, 2);
+        assert_eq!(ascent.peak_sample_index, 1);
+        assert_eq!(ascent.peak_sample_id.as_deref(), Some("transonic"));
+        assert_eq!(ascent.class_id, "transonic_buffet");
+        assert_eq!(ascent.dynamic_pressure_pa.to_bits(), 65_000.0_f64.to_bits());
+        assert_eq!(ascent.mach.to_bits(), 1.1_f64.to_bits());
+        assert!((ascent.peak_sample_oaspl_db - 138.0).abs() <= 1.0e-12);
+        assert!((ascent.oaspl_db - 138.0).abs() <= 1.0e-12);
+        let sample_trace =
+            std::str::from_utf8(&ascent.sample_trace_csv).expect("sample trace CSV is UTF-8");
+        assert!(sample_trace.contains("attached,attached_turbulent"));
+        assert!(sample_trace.contains("transonic,transonic_buffet"));
+    }
+
+    #[test]
+    fn point_mass_acoustics_ascent_sample_trace_envelopes_fairing_source() {
+        let ascent_deck_bytes =
+            include_bytes!("../../../data/acoustics/ascent-acoustic-env-v1.toml");
+        let ascent_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/ascent-acoustic-env-v1.toml",
+            ascent_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let fairing_deck_bytes = include_bytes!("../../../data/acoustics/fairing-internal-v1.toml");
+        let fairing_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/fairing-internal-v1.toml",
+            fairing_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            &format!(
+                r#"[acoustics.ascent]
+station_id = "station-a"
+deck_file = "data/acoustics/ascent-acoustic-env-v1.toml"
+deck_file_sha256 = "{ascent_deck_sha256}"
+class_id = "attached_turbulent"
+
+[[acoustics.ascent.samples]]
+sample_id = "max-q"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[[acoustics.ascent.samples]]
+sample_id = "late-max-q"
+dynamic_pressure_pa = 200000.0
+mach = 0.8
+
+[acoustics.fairing_internal]
+station_id = "payload-a"
+deck_file = "data/acoustics/fairing-internal-v1.toml"
+deck_file_sha256 = "{fairing_deck_sha256}"
+class_id = "synthetic_light_fairing"
+fill_factor = 1.0
+
+[telemetry]"#,
+            ),
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("ascent trace acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("ascent trace acoustics scenario runs");
+        let acoustics = outcome.acoustics.as_ref().expect("acoustics report");
+        let ascent = acoustics.ascent.as_ref().expect("ascent report emitted");
+        let fairing = acoustics
+            .fairing_internal
+            .as_ref()
+            .expect("fairing report emitted");
+
+        let expected_ascent_oaspl_db = 132.0 + 10.0 * 0.6 * 4.0_f64.log10();
+        let expected_fairing_oaspl_db = expected_ascent_oaspl_db - 8.0 + 10.0 * 2.0_f64.log10();
+        let expected_wilks_required = openbmp_mc::wilks_one_sided_n(
+            openbmp_acoustics::stats::P95_50_COVERAGE_PROBABILITY,
+            openbmp_acoustics::stats::P95_50_CONFIDENCE_PROBABILITY,
+        )
+        .expect("Wilks floor");
+        let expected_wilks_achieved = openbmp_mc::wilks_one_sided_confidence(
+            openbmp_acoustics::stats::P95_50_COVERAGE_PROBABILITY,
+            2,
+        )
+        .expect("Wilks confidence");
+        assert_eq!(ascent.sample_count, 2);
+        assert_eq!(ascent.peak_sample_index, 1);
+        assert_eq!(ascent.peak_sample_id.as_deref(), Some("late-max-q"));
+        assert_eq!(ascent.class_id, "attached_turbulent");
+        assert_eq!(
+            ascent.dynamic_pressure_pa.to_bits(),
+            200_000.0_f64.to_bits()
+        );
+        assert_eq!(ascent.mach.to_bits(), 0.8_f64.to_bits());
+        assert!((ascent.peak_sample_oaspl_db - expected_ascent_oaspl_db).abs() <= 1.0e-12);
+        assert!((ascent.oaspl_db - expected_ascent_oaspl_db).abs() <= 1.0e-12);
+        let p95_50_oaspl_db = ascent.p95_50_oaspl_db.expect("P95/50 emitted");
+        let p95_50_tolerance_factor = ascent
+            .p95_50_tolerance_factor
+            .expect("P95/50 factor emitted");
+        assert!(
+            p95_50_oaspl_db > ascent.oaspl_db,
+            "P95/50 environment should exceed the two-sample envelope for this synthetic dispersion"
+        );
+        assert!(
+            (p95_50_tolerance_factor
+                - openbmp_physics::inverse_standard_normal_cdf(
+                    openbmp_acoustics::stats::P95_50_COVERAGE_PROBABILITY,
+                ))
+            .abs()
+                <= 1.0e-12
+        );
+        assert_eq!(
+            std::str::from_utf8(&ascent.sample_trace_csv)
+                .expect("sample trace CSV is UTF-8")
+                .lines()
+                .count(),
+            3
+        );
+        assert_eq!(
+            std::str::from_utf8(&ascent.p95_50_environment_csv)
+                .expect("P95/50 CSV is UTF-8")
+                .lines()
+                .count(),
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len() + 1
+        );
+        assert_eq!(
+            ascent.p95_50_wilks_required_sample_count,
+            Some(expected_wilks_required)
+        );
+        assert_eq!(
+            ascent
+                .p95_50_wilks_achieved_confidence
+                .expect("ascent Wilks confidence")
+                .to_bits(),
+            expected_wilks_achieved.to_bits()
+        );
+        assert_eq!(ascent.p95_50_wilks_sample_count_sufficient, Some(false));
+        let ascent_wilks_csv = std::str::from_utf8(&ascent.p95_50_wilks_sizing_csv)
+            .expect("ascent Wilks CSV is UTF-8");
+        assert!(ascent_wilks_csv.contains("required_sample_count"));
+        assert_eq!(ascent_wilks_csv.lines().count(), 2);
+        assert!((fairing.oaspl_db - expected_fairing_oaspl_db).abs() <= 1.0e-12);
+        let fairing_p95_50_oaspl_db = fairing.p95_50_oaspl_db.expect("fairing P95/50 emitted");
+        assert!(
+            fairing_p95_50_oaspl_db > fairing.oaspl_db,
+            "fairing P95/50 environment should exceed the two-sample internal envelope"
+        );
+        assert_eq!(
+            fairing
+                .p95_50_tolerance_factor
+                .expect("fairing P95/50 factor")
+                .to_bits(),
+            p95_50_tolerance_factor.to_bits()
+        );
+        assert_eq!(
+            std::str::from_utf8(&fairing.p95_50_environment_csv)
+                .expect("fairing P95/50 CSV is UTF-8")
+                .lines()
+                .count(),
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len() + 1
+        );
+        assert_eq!(
+            fairing.p95_50_wilks_required_sample_count,
+            Some(expected_wilks_required)
+        );
+        assert_eq!(
+            fairing
+                .p95_50_wilks_achieved_confidence
+                .expect("fairing Wilks confidence")
+                .to_bits(),
+            expected_wilks_achieved.to_bits()
+        );
+        assert_eq!(fairing.p95_50_wilks_sample_count_sufficient, Some(false));
+        let fairing_wilks_csv = std::str::from_utf8(&fairing.p95_50_wilks_sizing_csv)
+            .expect("fairing Wilks CSV is UTF-8");
+        assert!(fairing_wilks_csv.contains("sample_count_sufficient"));
+        assert_eq!(fairing_wilks_csv.lines().count(), 2);
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.ascent.oaspl_db").to_bits(),
+            ascent.oaspl_db.to_bits()
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.fairing_internal.oaspl_db").to_bits(),
+            fairing.oaspl_db.to_bits()
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_fairing_internal_report_carries_provenance() {
+        let ascent_deck_bytes =
+            include_bytes!("../../../data/acoustics/ascent-acoustic-env-v1.toml");
+        let ascent_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/ascent-acoustic-env-v1.toml",
+            ascent_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let fairing_deck_bytes = include_bytes!("../../../data/acoustics/fairing-internal-v1.toml");
+        let fairing_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/fairing-internal-v1.toml",
+            fairing_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            &format!(
+                r#"[acoustics.ascent]
+station_id = "station-a"
+deck_file = "data/acoustics/ascent-acoustic-env-v1.toml"
+deck_file_sha256 = "{ascent_deck_sha256}"
+class_id = "attached_turbulent"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[acoustics.fairing_internal]
+station_id = "payload-a"
+deck_file = "data/acoustics/fairing-internal-v1.toml"
+deck_file_sha256 = "{fairing_deck_sha256}"
+class_id = "synthetic_light_fairing"
+fill_factor = 1.0
+
+[telemetry]"#,
+            ),
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("fairing acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("fairing acoustics scenario runs");
+        let acoustics = outcome.acoustics.as_ref().expect("acoustics report");
+        assert!(acoustics.dsm.is_none());
+        assert!(acoustics.iop.is_none());
+        assert!(acoustics.ascent.is_some());
+        let fairing = acoustics
+            .fairing_internal
+            .as_ref()
+            .expect("fairing report emitted");
+
+        let expected_gain_db = 10.0 * 2.0_f64.log10();
+        let expected_oaspl_db = 132.0 - 8.0 + expected_gain_db;
+        assert_eq!(fairing.station_id, "payload-a");
+        assert_eq!(fairing.class_id, "synthetic_light_fairing");
+        assert_eq!(fairing.fill_factor.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(fairing.deck_file_sha256_hex, fairing_deck_sha256);
+        assert_eq!(
+            fairing.deck_dataset_id,
+            "openbmp.acoustics.fairing_internal.v1"
+        );
+        assert_eq!(fairing.deck_source_class, "synthetic-openbmp");
+        assert_eq!(fairing.uncertainty_db.to_bits(), 2.5_f64.to_bits());
+        assert!((fairing.fill_factor_gain_db - expected_gain_db).abs() <= 1.0e-12);
+        assert!((fairing.oaspl_db - expected_oaspl_db).abs() <= 1.0e-12);
+        assert_eq!(fairing.p95_50_oaspl_db, None);
+        assert_eq!(fairing.p95_50_tolerance_factor, None);
+        assert!(fairing.p95_50_environment_csv.is_empty());
+        assert!(fairing.p95_50_sample_trace_csv.is_empty());
+        assert_eq!(fairing.p95_50_wilks_required_sample_count, None);
+        assert_eq!(fairing.p95_50_wilks_achieved_confidence, None);
+        assert_eq!(fairing.p95_50_wilks_sample_count_sufficient, None);
+        assert!(fairing.p95_50_wilks_sizing_csv.is_empty());
+        assert_eq!(
+            std::str::from_utf8(&fairing.spectrum_csv)
+                .expect("spectrum CSV is UTF-8")
+                .lines()
+                .count(),
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len() + 1
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.fairing_internal.oaspl_db").to_bits(),
+            fairing.oaspl_db.to_bits()
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.fairing_internal.uncertainty_db").to_bits(),
+            fairing.uncertainty_db.to_bits()
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.fairing_internal.fill_factor_gain_db").to_bits(),
+            fairing.fill_factor_gain_db.to_bits()
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_fairing_internal_p95_50_uses_sample_inputs() {
+        let ascent_deck_bytes =
+            include_bytes!("../../../data/acoustics/ascent-acoustic-env-v1.toml");
+        let ascent_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/ascent-acoustic-env-v1.toml",
+            ascent_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let fairing_deck_bytes = include_bytes!("../../../data/acoustics/fairing-internal-v1.toml");
+        let fairing_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/fairing-internal-v1.toml",
+            fairing_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            &format!(
+                r#"[acoustics.ascent]
+station_id = "station-a"
+deck_file = "data/acoustics/ascent-acoustic-env-v1.toml"
+deck_file_sha256 = "{ascent_deck_sha256}"
+class_id = "attached_turbulent"
+
+[[acoustics.ascent.samples]]
+sample_id = "max-q"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[[acoustics.ascent.samples]]
+sample_id = "late-max-q"
+dynamic_pressure_pa = 200000.0
+mach = 0.8
+
+[acoustics.fairing_internal]
+station_id = "payload-a"
+deck_file = "data/acoustics/fairing-internal-v1.toml"
+deck_file_sha256 = "{fairing_deck_sha256}"
+class_id = "synthetic_light_fairing"
+fill_factor = 1.0
+
+[[acoustics.fairing_internal.samples]]
+sample_id = "fairing-open"
+fill_factor = 0.25
+
+[[acoustics.fairing_internal.samples]]
+sample_id = "fairing-packed"
+class_id = "synthetic_heavy_fairing"
+fill_factor = 0.75
+
+[telemetry]"#,
+            ),
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("fairing sample acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("fairing sample acoustics scenario runs");
+        let fairing = outcome
+            .acoustics
+            .as_ref()
+            .expect("acoustics report")
+            .fairing_internal
+            .as_ref()
+            .expect("fairing report emitted");
+
+        assert_eq!(fairing.class_id, "synthetic_light_fairing");
+        assert_eq!(fairing.fill_factor.to_bits(), 1.0_f64.to_bits());
+        assert!(fairing.p95_50_oaspl_db.is_some());
+        assert!(fairing.p95_50_tolerance_factor.is_some());
+        let environment_csv = std::str::from_utf8(&fairing.p95_50_environment_csv)
+            .expect("fairing P95/50 environment CSV is UTF-8");
+        assert!(environment_csv.contains("p95_50_spl_db"));
+        let sample_trace_csv = std::str::from_utf8(&fairing.p95_50_sample_trace_csv)
+            .expect("fairing P95/50 sample trace CSV is UTF-8");
+        assert!(
+            sample_trace_csv.contains(
+                "sample_index,sample_id,class_id,fill_factor,fill_factor_gain_db,oaspl_db,uncertainty_db"
+            )
+        );
+        assert!(sample_trace_csv.contains("fairing-open"));
+        assert!(sample_trace_csv.contains("synthetic_light_fairing"));
+        assert!(sample_trace_csv.contains("fairing-packed"));
+        assert!(sample_trace_csv.contains("synthetic_heavy_fairing"));
+        assert!(sample_trace_csv.contains("2.50000000000000000e-1"));
+        assert!(sample_trace_csv.contains("7.50000000000000000e-1"));
+        assert_eq!(sample_trace_csv.lines().count(), 3);
+
+        let mismatch_toml = scenario_toml.replace(
+            "[telemetry]",
+            r#"[[acoustics.fairing_internal.samples]]
+sample_id = "extra"
+fill_factor = 0.5
+
+[telemetry]"#,
+        );
+        let mismatch =
+            Scenario::from_toml_str_with_source_dir(&mismatch_toml, Some(workspace_root()))
+                .expect("mismatched fairing sample scenario parses");
+        let err = crate::run(&mismatch).expect_err("fairing sample count mismatch rejects");
+        assert!(
+            err.to_string()
+                .contains("fairing P95/50 sample input count"),
+            "expected fairing sample count mismatch error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_response_report_carries_modal_force_handoff() {
+        let ascent_deck_bytes =
+            include_bytes!("../../../data/acoustics/ascent-acoustic-env-v1.toml");
+        let ascent_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/ascent-acoustic-env-v1.toml",
+            ascent_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let fairing_deck_bytes = include_bytes!("../../../data/acoustics/fairing-internal-v1.toml");
+        let fairing_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/fairing-internal-v1.toml",
+            fairing_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let response_deck_bytes =
+            include_bytes!("../../../data/acoustics/vibroacoustic-transfer-v1.toml");
+        let response_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/vibroacoustic-transfer-v1.toml",
+            response_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            &format!(
+                r#"[acoustics.ascent]
+station_id = "station-a"
+deck_file = "data/acoustics/ascent-acoustic-env-v1.toml"
+deck_file_sha256 = "{ascent_deck_sha256}"
+class_id = "attached_turbulent"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[acoustics.fairing_internal]
+station_id = "payload-a"
+deck_file = "data/acoustics/fairing-internal-v1.toml"
+deck_file_sha256 = "{fairing_deck_sha256}"
+class_id = "synthetic_light_fairing"
+fill_factor = 1.0
+
+[acoustics.response]
+station_id = "payload-a"
+source = "fairing_internal"
+deck_file = "data/acoustics/vibroacoustic-transfer-v1.toml"
+deck_file_sha256 = "{response_deck_sha256}"
+class_id = "synthetic_panel_light"
+surface_mass_kg_m2 = 12.0
+area_m2 = 3.0
+mode_shape_factor = 0.5
+
+[telemetry]"#,
+            ),
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("response acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("response acoustics scenario runs");
+        let acoustics = outcome.acoustics.as_ref().expect("acoustics report");
+        let response = acoustics
+            .response
+            .as_ref()
+            .expect("response report emitted");
+
+        let ascent_deck = openbmp_acoustics::ascent::AscentAcousticDeck::load_from_str(
+            std::str::from_utf8(ascent_deck_bytes).unwrap(),
+        )
+        .unwrap();
+        let ascent_prediction = ascent_deck
+            .evaluate_class(
+                "attached_turbulent",
+                openbmp_acoustics::ascent::AscentAcousticInput::new(50_000.0, 0.8).unwrap(),
+            )
+            .unwrap();
+        let fairing_deck = openbmp_acoustics::ascent::FairingInternalDeck::load_from_str(
+            std::str::from_utf8(fairing_deck_bytes).unwrap(),
+        )
+        .unwrap();
+        let fairing_prediction = fairing_deck
+            .evaluate_class(
+                "synthetic_light_fairing",
+                &ascent_prediction.spectrum,
+                openbmp_acoustics::ascent::FairingInternalInput::new(1.0).unwrap(),
+            )
+            .unwrap();
+        let response_deck = openbmp_acoustics::response::VibroacousticTransferDeck::load_from_str(
+            std::str::from_utf8(response_deck_bytes).unwrap(),
+        )
+        .unwrap();
+        let expected = response_deck
+            .evaluate_class(
+                "synthetic_panel_light",
+                &fairing_prediction.spectrum,
+                openbmp_acoustics::response::VibroacousticResponseInput::new(12.0, 3.0, 0.5)
+                    .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(response.station_id, "payload-a");
+        assert_eq!(
+            response.source,
+            openbmp_scenario::AcousticsResponseSourceConfig::FairingInternal
+        );
+        assert_eq!(response.class_id, "synthetic_panel_light");
+        assert_eq!(response.deck_file_sha256_hex, response_deck_sha256);
+        assert_eq!(
+            response.deck_dataset_id,
+            "openbmp.acoustics.vibro_transfer.v1"
+        );
+        assert_eq!(response.deck_source_class, "synthetic-openbmp");
+        assert_eq!(response.uncertainty_db.to_bits(), 5.0_f64.to_bits());
+        assert_eq!(response.surface_mass_gain.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(
+            response.modal_force_participation_m2.to_bits(),
+            1.5_f64.to_bits()
+        );
+        assert!(
+            (response.total_mean_square_acceleration_m2_s4
+                - expected
+                    .acceleration_psd
+                    .total_mean_square_acceleration_m2_s4())
+            .abs()
+                <= 1.0e-18
+        );
+        assert!(
+            (response.total_mean_square_force_n2
+                - expected.modal_force_psd.total_mean_square_force_n2())
+            .abs()
+                <= 1.0e-18
+        );
+        assert_eq!(
+            std::str::from_utf8(&response.acceleration_psd_csv)
+                .expect("acceleration CSV is UTF-8")
+                .lines()
+                .count(),
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len() + 1
+        );
+        assert_eq!(
+            std::str::from_utf8(&response.modal_force_psd_csv)
+                .expect("modal force CSV is UTF-8")
+                .lines()
+                .count(),
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len() + 1
+        );
+        let loads_handoff_csv =
+            std::str::from_utf8(&response.loads_handoff_csv).expect("loads handoff CSV is UTF-8");
+        assert!(loads_handoff_csv.contains("band_mean_square_force_n2"));
+        assert!(loads_handoff_csv.contains("total_mean_square_force_n2"));
+        assert_eq!(
+            loads_handoff_csv.lines().count(),
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len() + 1
+        );
+        assert_eq!(response.p95_50_tolerance_factor, None);
+        assert_eq!(response.p95_50_total_mean_square_acceleration_m2_s4, None);
+        assert_eq!(response.p95_50_total_mean_square_force_n2, None);
+        assert!(response.p95_50_acceleration_psd_csv.is_empty());
+        assert!(response.p95_50_modal_force_psd_csv.is_empty());
+        assert!(response.p95_50_sample_trace_csv.is_empty());
+        assert_eq!(response.p95_50_wilks_required_sample_count, None);
+        assert_eq!(response.p95_50_wilks_achieved_confidence, None);
+        assert_eq!(response.p95_50_wilks_sample_count_sufficient, None);
+        assert!(response.p95_50_wilks_sizing_csv.is_empty());
+        assert_eq!(
+            first_row_f64(
+                &outcome,
+                "acoustics.response.total_mean_square_acceleration_m2_s4"
+            )
+            .to_bits(),
+            response.total_mean_square_acceleration_m2_s4.to_bits()
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.response.total_mean_square_force_n2").to_bits(),
+            response.total_mean_square_force_n2.to_bits()
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.response.uncertainty_db").to_bits(),
+            response.uncertainty_db.to_bits()
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_response_p95_50_from_fairing_trace() {
+        let ascent_deck_bytes =
+            include_bytes!("../../../data/acoustics/ascent-acoustic-env-v1.toml");
+        let ascent_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/ascent-acoustic-env-v1.toml",
+            ascent_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let fairing_deck_bytes = include_bytes!("../../../data/acoustics/fairing-internal-v1.toml");
+        let fairing_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/fairing-internal-v1.toml",
+            fairing_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let response_deck_bytes =
+            include_bytes!("../../../data/acoustics/vibroacoustic-transfer-v1.toml");
+        let response_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/vibroacoustic-transfer-v1.toml",
+            response_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            &format!(
+                r#"[acoustics.ascent]
+station_id = "station-a"
+deck_file = "data/acoustics/ascent-acoustic-env-v1.toml"
+deck_file_sha256 = "{ascent_deck_sha256}"
+class_id = "attached_turbulent"
+
+[[acoustics.ascent.samples]]
+sample_id = "max-q"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[[acoustics.ascent.samples]]
+sample_id = "late-max-q"
+dynamic_pressure_pa = 200000.0
+mach = 0.8
+
+[acoustics.fairing_internal]
+station_id = "payload-a"
+deck_file = "data/acoustics/fairing-internal-v1.toml"
+deck_file_sha256 = "{fairing_deck_sha256}"
+class_id = "synthetic_light_fairing"
+fill_factor = 1.0
+
+[acoustics.response]
+station_id = "payload-a"
+source = "fairing_internal"
+deck_file = "data/acoustics/vibroacoustic-transfer-v1.toml"
+deck_file_sha256 = "{response_deck_sha256}"
+class_id = "synthetic_panel_light"
+surface_mass_kg_m2 = 12.0
+area_m2 = 3.0
+mode_shape_factor = 0.5
+
+[telemetry]"#,
+            ),
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("response P95/50 acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("response P95/50 acoustics scenario runs");
+        let response = outcome
+            .acoustics
+            .as_ref()
+            .expect("acoustics report")
+            .response
+            .as_ref()
+            .expect("response report emitted");
+
+        assert_eq!(
+            response.source,
+            openbmp_scenario::AcousticsResponseSourceConfig::FairingInternal
+        );
+        let tolerance_factor = response
+            .p95_50_tolerance_factor
+            .expect("response P95/50 factor emitted");
+        let expected_wilks_required = openbmp_mc::wilks_one_sided_n(
+            openbmp_acoustics::stats::P95_50_COVERAGE_PROBABILITY,
+            openbmp_acoustics::stats::P95_50_CONFIDENCE_PROBABILITY,
+        )
+        .expect("Wilks floor");
+        let expected_wilks_achieved = openbmp_mc::wilks_one_sided_confidence(
+            openbmp_acoustics::stats::P95_50_COVERAGE_PROBABILITY,
+            2,
+        )
+        .expect("Wilks confidence");
+        assert!(
+            (tolerance_factor
+                - openbmp_physics::inverse_standard_normal_cdf(
+                    openbmp_acoustics::stats::P95_50_COVERAGE_PROBABILITY,
+                ))
+            .abs()
+                <= 1.0e-12
+        );
+        assert!(
+            response
+                .p95_50_total_mean_square_acceleration_m2_s4
+                .expect("response P95/50 acceleration emitted")
+                > response.total_mean_square_acceleration_m2_s4
+        );
+        assert!(
+            response
+                .p95_50_total_mean_square_force_n2
+                .expect("response P95/50 modal force emitted")
+                > response.total_mean_square_force_n2
+        );
+        let acceleration_csv = std::str::from_utf8(&response.p95_50_acceleration_psd_csv)
+            .expect("response P95/50 acceleration CSV is UTF-8");
+        let modal_force_csv = std::str::from_utf8(&response.p95_50_modal_force_psd_csv)
+            .expect("response P95/50 modal-force CSV is UTF-8");
+        assert!(acceleration_csv.contains("p95_50_acceleration_psd_m2_s4_per_hz"));
+        assert!(modal_force_csv.contains("p95_50_modal_force_psd_n2_per_hz"));
+        let sample_trace_csv = std::str::from_utf8(&response.p95_50_sample_trace_csv)
+            .expect("response P95/50 sample trace CSV is UTF-8");
+        assert!(sample_trace_csv.contains(
+            "sample_index,sample_id,class_id,surface_mass_kg_m2,area_m2,mode_shape_factor"
+        ));
+        assert!(sample_trace_csv.contains("0,,synthetic_panel_light"));
+        assert!(sample_trace_csv.contains("1,,synthetic_panel_light"));
+        assert_eq!(sample_trace_csv.lines().count(), 3);
+        assert_eq!(
+            acceleration_csv.lines().count(),
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len() + 1
+        );
+        assert_eq!(
+            modal_force_csv.lines().count(),
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len() + 1
+        );
+        assert_eq!(
+            response.p95_50_wilks_required_sample_count,
+            Some(expected_wilks_required)
+        );
+        assert_eq!(
+            response
+                .p95_50_wilks_achieved_confidence
+                .expect("response Wilks confidence")
+                .to_bits(),
+            expected_wilks_achieved.to_bits()
+        );
+        assert_eq!(response.p95_50_wilks_sample_count_sufficient, Some(false));
+        let response_wilks_csv = std::str::from_utf8(&response.p95_50_wilks_sizing_csv)
+            .expect("response Wilks CSV is UTF-8");
+        assert!(response_wilks_csv.contains("required_sample_count"));
+        assert_eq!(response_wilks_csv.lines().count(), 2);
+    }
+
+    #[test]
+    fn point_mass_acoustics_response_p95_50_uses_sample_inputs() {
+        let ascent_deck_bytes =
+            include_bytes!("../../../data/acoustics/ascent-acoustic-env-v1.toml");
+        let ascent_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/ascent-acoustic-env-v1.toml",
+            ascent_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let fairing_deck_bytes = include_bytes!("../../../data/acoustics/fairing-internal-v1.toml");
+        let fairing_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/fairing-internal-v1.toml",
+            fairing_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let response_deck_bytes =
+            include_bytes!("../../../data/acoustics/vibroacoustic-transfer-v1.toml");
+        let response_deck_sha256 = openbmp_scenario::ResolvedFile::from_bytes(
+            "data/acoustics/vibroacoustic-transfer-v1.toml",
+            response_deck_bytes.to_vec(),
+        )
+        .sha256_hex;
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            &format!(
+                r#"[acoustics.ascent]
+station_id = "station-a"
+deck_file = "data/acoustics/ascent-acoustic-env-v1.toml"
+deck_file_sha256 = "{ascent_deck_sha256}"
+class_id = "attached_turbulent"
+
+[[acoustics.ascent.samples]]
+sample_id = "max-q"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[[acoustics.ascent.samples]]
+sample_id = "late-max-q"
+dynamic_pressure_pa = 200000.0
+mach = 0.8
+
+[acoustics.fairing_internal]
+station_id = "payload-a"
+deck_file = "data/acoustics/fairing-internal-v1.toml"
+deck_file_sha256 = "{fairing_deck_sha256}"
+class_id = "synthetic_light_fairing"
+fill_factor = 1.0
+
+[acoustics.response]
+station_id = "payload-a"
+source = "fairing_internal"
+deck_file = "data/acoustics/vibroacoustic-transfer-v1.toml"
+deck_file_sha256 = "{response_deck_sha256}"
+class_id = "synthetic_panel_light"
+surface_mass_kg_m2 = 12.0
+area_m2 = 3.0
+mode_shape_factor = 0.5
+
+[[acoustics.response.samples]]
+sample_id = "panel-light"
+surface_mass_kg_m2 = 12.0
+area_m2 = 3.0
+mode_shape_factor = 0.5
+
+[[acoustics.response.samples]]
+sample_id = "panel-heavy"
+class_id = "synthetic_panel_heavy"
+surface_mass_kg_m2 = 24.0
+area_m2 = 4.0
+mode_shape_factor = 0.75
+
+[telemetry]"#,
+            ),
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("sampled response P95/50 acoustics scenario parses");
+        let outcome =
+            crate::run(&scenario).expect("sampled response P95/50 acoustics scenario runs");
+        let response = outcome
+            .acoustics
+            .as_ref()
+            .expect("acoustics report")
+            .response
+            .as_ref()
+            .expect("response report emitted");
+
+        assert!(
+            response
+                .p95_50_total_mean_square_acceleration_m2_s4
+                .is_some()
+        );
+        assert!(response.p95_50_total_mean_square_force_n2.is_some());
+        let sample_trace_csv = std::str::from_utf8(&response.p95_50_sample_trace_csv)
+            .expect("response P95/50 sample trace CSV is UTF-8");
+        assert!(sample_trace_csv.contains("0,panel-light,synthetic_panel_light"));
+        assert!(sample_trace_csv.contains("1,panel-heavy,synthetic_panel_heavy"));
+        assert!(sample_trace_csv.contains(",2.40000000000000000e1,4.00000000000000000e0,7.50000000000000000e-1,3.00000000000000000e0,"));
+
+        let mismatched = scenario_toml.replace(
+            "[telemetry]",
+            r#"[[acoustics.response.samples]]
+sample_id = "extra-panel"
+surface_mass_kg_m2 = 18.0
+area_m2 = 3.0
+mode_shape_factor = 0.5
+
+[telemetry]"#,
+        );
+        let scenario = Scenario::from_toml_str_with_source_dir(&mismatched, Some(workspace_root()))
+            .expect("mismatched response sample scenario parses");
+        let err = crate::run(&scenario).expect_err("mismatched response sample count rejects");
+        assert!(
+            err.to_string().contains(
+                "response P95/50 sample input count 3 does not match source sample spectrum count 2"
+            ),
+            "expected response sample count mismatch rejection, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_iop_report_matches_closed_form_and_telemetry() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.iop]
+station_id = "station-a"
+gas_generation_rate_n_per_s = 2400000.0
+ramp_duration_s = 0.25
+duct_volume_m3 = 120.0
+duct_exit_area_m2 = 6.0
+duct_discharge_velocity_m_s = 40.0
+duct_geometry_gain = 1.5
+receiver_distance_m = 30.0
+suppression_loss_db = 3.0
+uncertainty_minus_db = 2.0
+uncertainty_plus_db = 4.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str(&scenario_toml).expect("IOP acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("IOP acoustics scenario runs");
+        let acoustics = outcome
+            .acoustics
+            .as_ref()
+            .expect("acoustics report emitted");
+        assert!(acoustics.dsm.is_none());
+        let iop = acoustics.iop.as_ref().expect("IOP report emitted");
+        let residence_time_s = 120.0 / (6.0 * 40.0);
+        let unsuppressed_peak_pa =
+            2_400_000.0 * residence_time_s * 1.5 / (4.0 * std::f64::consts::PI * 30.0 * 30.0);
+        let expected_peak_pa = unsuppressed_peak_pa * 10.0_f64.powf(-3.0 / 20.0);
+        let expected_lower_pa = expected_peak_pa * 10.0_f64.powf(-2.0 / 20.0);
+        let expected_upper_pa = expected_peak_pa * 10.0_f64.powf(4.0 / 20.0);
+
+        assert_eq!(iop.station_id, "station-a");
+        assert_eq!(iop.source_engine_id, None);
+        assert_eq!(iop.source_engine_ignition_event_id, None);
+        assert_eq!(iop.source_engine_ignition_time_s, None);
+        assert_eq!(iop.source_engine_observed_ignition_event_id, None);
+        assert_eq!(iop.source_engine_observed_ignition_step, None);
+        assert_eq!(iop.source_engine_observed_ignition_time_s, None);
+        assert_eq!(iop.source_engine_max_thrust_n, None);
+        assert_eq!(iop.source_engine_mdot_cstar_n, None);
+        assert_eq!(iop.source_engine_effective_cstar_m_s, None);
+        assert_eq!(iop.source_engine_runtime_sample_count, 0);
+        assert_eq!(iop.source_engine_runtime_peak_source_rate_n_per_s, None);
+        assert_eq!(iop.source_engine_runtime_peak_overpressure_pa, None);
+        assert_eq!(iop.source_engine_runtime_lower_peak_overpressure_pa, None);
+        assert_eq!(iop.source_engine_runtime_upper_peak_overpressure_pa, None);
+        assert_eq!(iop.source_engine_runtime_duration_s, None);
+        assert!(iop.source_engine_runtime_history_csv.is_empty());
+        assert!(!iop.source_engine_thermochemical_performance);
+        assert_eq!(
+            iop.gas_generation_rate_n_per_s.to_bits(),
+            2_400_000.0_f64.to_bits()
+        );
+        assert_eq!(iop.ramp_duration_s.to_bits(), 0.25_f64.to_bits());
+        assert_eq!(
+            iop.duct_residence_time_s.to_bits(),
+            residence_time_s.to_bits()
+        );
+        assert_eq!(iop.duct_volume_m3.to_bits(), 120.0_f64.to_bits());
+        assert_eq!(iop.duct_exit_area_m2.to_bits(), 6.0_f64.to_bits());
+        assert_eq!(
+            iop.duct_discharge_velocity_m_s.to_bits(),
+            40.0_f64.to_bits()
+        );
+        assert_eq!(iop.duct_geometry_gain.to_bits(), 1.5_f64.to_bits());
+        assert_eq!(iop.duct_deck_file_sha256_hex, None);
+        assert_eq!(iop.duct_deck_dataset_id, None);
+        assert_eq!(iop.duct_deck_source_class, None);
+        assert_eq!(iop.duct_class_id, None);
+        assert_eq!(iop.receiver_distance_m.to_bits(), 30.0_f64.to_bits());
+        assert_eq!(iop.suppression_loss_db.to_bits(), 3.0_f64.to_bits());
+        assert_eq!(iop.suppression_deck_file_sha256_hex, None);
+        assert_eq!(iop.suppression_deck_dataset_id, None);
+        assert_eq!(iop.suppression_deck_source_class, None);
+        assert_eq!(iop.suppression_class_id, None);
+        assert_eq!(iop.suppression_class_loss_db, None);
+        assert_eq!(iop.suppression_class_uncertainty_db, None);
+        assert_eq!(iop.uncertainty_minus_db.to_bits(), 2.0_f64.to_bits());
+        assert_eq!(iop.uncertainty_plus_db.to_bits(), 4.0_f64.to_bits());
+        assert_relative_eq!(
+            iop.peak_overpressure_pa,
+            expected_peak_pa,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            iop.lower_peak_overpressure_pa,
+            expected_lower_pa,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            iop.upper_peak_overpressure_pa,
+            expected_upper_pa,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(iop.duration_s.to_bits(), 0.75_f64.to_bits());
+        assert_relative_eq!(
+            first_row_f64(&outcome, "acoustics.iop.peak_overpressure_pa"),
+            iop.peak_overpressure_pa,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            first_row_f64(&outcome, "acoustics.iop.lower_peak_overpressure_pa"),
+            iop.lower_peak_overpressure_pa,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            first_row_f64(&outcome, "acoustics.iop.upper_peak_overpressure_pa"),
+            iop.upper_peak_overpressure_pa,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.iop.duration_s").to_bits(),
+            iop.duration_s.to_bits()
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_iop_source_engine_derives_start_transient() {
+        let scenario_toml = add_iop_source_engine(&COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.iop]
+station_id = "station-a"
+source_engine_id = "main"
+duct_volume_m3 = 120.0
+duct_exit_area_m2 = 6.0
+duct_discharge_velocity_m_s = 40.0
+duct_geometry_gain = 1.5
+receiver_distance_m = 30.0
+suppression_loss_db = 3.0
+uncertainty_minus_db = 2.0
+uncertainty_plus_db = 4.0
+
+[telemetry]"#,
+        ));
+        let scenario = Scenario::from_toml_str(&scenario_toml)
+            .expect("IOP source-engine acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("IOP source-engine acoustics scenario runs");
+        let iop = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.iop.as_ref())
+            .expect("IOP report emitted");
+        let residence_time_s = 120.0 / (6.0 * 40.0);
+        let gas_generation_rate_n_per_s = 600_000.0 / 0.25;
+        let unsuppressed_peak_pa = gas_generation_rate_n_per_s * residence_time_s * 1.5
+            / (4.0 * std::f64::consts::PI * 30.0 * 30.0);
+        let expected_peak_pa = unsuppressed_peak_pa * 10.0_f64.powf(-3.0 / 20.0);
+
+        assert_eq!(iop.source_engine_id.as_deref(), Some("main"));
+        assert_eq!(iop.source_engine_ignition_event_id, None);
+        assert_eq!(iop.source_engine_ignition_time_s, None);
+        assert_eq!(iop.source_engine_observed_ignition_event_id, None);
+        assert_eq!(iop.source_engine_observed_ignition_step, None);
+        assert_eq!(iop.source_engine_observed_ignition_time_s, None);
+        assert_eq!(
+            iop.source_engine_max_thrust_n.map(f64::to_bits),
+            Some(600_000.0_f64.to_bits())
+        );
+        assert_eq!(iop.source_engine_mdot_cstar_n, None);
+        assert_eq!(iop.source_engine_effective_cstar_m_s, None);
+        assert!(!iop.source_engine_thermochemical_performance);
+        assert_eq!(
+            iop.gas_generation_rate_n_per_s.to_bits(),
+            gas_generation_rate_n_per_s.to_bits()
+        );
+        assert_eq!(iop.ramp_duration_s.to_bits(), 0.25_f64.to_bits());
+        assert_relative_eq!(
+            iop.peak_overpressure_pa,
+            expected_peak_pa,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(iop.duration_s.to_bits(), 0.75_f64.to_bits());
+        assert_relative_eq!(
+            first_row_f64(&outcome, "acoustics.iop.peak_overpressure_pa"),
+            iop.peak_overpressure_pa,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_iop_source_engine_uses_thermochemical_performance() {
+        let scenario_toml = add_iop_source_engine(&COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[propulsion.thermochem]
+file = "crates/openbmp-runner/tests/fixtures/thermochem/synthetic-grain.toml"
+file_sha256 = "fa3ff43bc91d04317d44a141cf5ff28680e4e0b35d89ff3c91d92ee60f1a842b"
+chamber_pressure_pa = 2000000.0
+mixture_ratio = 2.5
+
+[vehicle.assembly.engines.thermochemical_performance]
+throat_area_m2 = 0.02
+exit_area_m2 = 0.24
+ambient_pressure_pa = 101325.0
+separation = "off"
+
+[acoustics.iop]
+station_id = "station-a"
+source_engine_id = "main"
+duct_volume_m3 = 120.0
+duct_exit_area_m2 = 6.0
+duct_discharge_velocity_m_s = 40.0
+duct_geometry_gain = 1.5
+receiver_distance_m = 30.0
+suppression_loss_db = 3.0
+uncertainty_minus_db = 2.0
+uncertainty_plus_db = 4.0
+
+[telemetry]"#,
+        ));
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("IOP thermochemical source-engine acoustics scenario parses");
+        let outcome = crate::run(&scenario)
+            .expect("IOP thermochemical source-engine acoustics scenario runs");
+        let iop = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.iop.as_ref())
+            .expect("IOP report emitted");
+        let deck = openbmp_thermochem::ThermochemTable::load_from_str(include_str!(
+            "../tests/fixtures/thermochem/synthetic-grain.toml"
+        ))
+        .expect("fixture thermochemistry deck parses");
+        let state = deck
+            .lookup(openbmp_thermochem::ThermochemQuery {
+                chamber_pressure_pa: 2_000_000.0,
+                mixture_ratio: 2.5,
+            })
+            .expect("fixture thermochemistry lookup succeeds");
+        let expected =
+            openbmp_propulsion::LiquidEnginePerformance::from_thermochemistry_with_efficiency(
+                openbmp_propulsion::LiquidEngineThermochemistry {
+                    chamber_pressure_pa: 2_000_000.0,
+                    c_star_m_s: state.c_star_m_s,
+                    gamma: state.gamma,
+                },
+                openbmp_propulsion::LiquidEngineNozzle {
+                    throat_area_m2: 0.02,
+                    exit_area_m2: 0.24,
+                    ambient_pressure_pa: 101_325.0,
+                    separation: openbmp_propulsion::NozzleSeparationCriterion::Off,
+                },
+                openbmp_propulsion::LiquidEngineCStarEfficiencyBand {
+                    min: state.c_star_efficiency.min,
+                    nominal: state.c_star_efficiency.nominal,
+                    max: state.c_star_efficiency.max,
+                },
+            )
+            .expect("fixture thermochemical performance solves");
+        let expected_mdot_cstar_n =
+            expected.mass_flow_kg_per_s * state.c_star_m_s * state.c_star_efficiency.nominal;
+        let gas_generation_rate_n_per_s = expected_mdot_cstar_n / 0.25;
+        let residence_time_s = 120.0 / (6.0 * 40.0);
+        let unsuppressed_peak_pa = gas_generation_rate_n_per_s * residence_time_s * 1.5
+            / (4.0 * std::f64::consts::PI * 30.0 * 30.0);
+        let expected_peak_pa = unsuppressed_peak_pa * 10.0_f64.powf(-3.0 / 20.0);
+
+        assert_eq!(iop.source_engine_id.as_deref(), Some("main"));
+        assert_eq!(iop.source_engine_ignition_event_id, None);
+        assert_eq!(iop.source_engine_ignition_time_s, None);
+        assert_eq!(iop.source_engine_observed_ignition_event_id, None);
+        assert_eq!(iop.source_engine_observed_ignition_step, None);
+        assert_eq!(iop.source_engine_observed_ignition_time_s, None);
+        assert!(iop.source_engine_thermochemical_performance);
+        assert_eq!(
+            iop.source_engine_max_thrust_n.map(f64::to_bits),
+            Some(expected.max_thrust_n.to_bits())
+        );
+        assert_eq!(
+            iop.source_engine_mdot_cstar_n.map(f64::to_bits),
+            Some(expected_mdot_cstar_n.to_bits())
+        );
+        assert_eq!(
+            iop.source_engine_effective_cstar_m_s.map(f64::to_bits),
+            Some((state.c_star_m_s * state.c_star_efficiency.nominal).to_bits())
+        );
+        assert_ne!(
+            iop.source_engine_max_thrust_n.map(f64::to_bits),
+            Some(600_000.0_f64.to_bits())
+        );
+        assert_ne!(
+            iop.gas_generation_rate_n_per_s.to_bits(),
+            (expected.max_thrust_n / 0.25).to_bits()
+        );
+        assert_eq!(
+            iop.gas_generation_rate_n_per_s.to_bits(),
+            gas_generation_rate_n_per_s.to_bits()
+        );
+        assert_relative_eq!(
+            iop.peak_overpressure_pa,
+            expected_peak_pa,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            first_row_f64(&outcome, "acoustics.iop.peak_overpressure_pa"),
+            iop.peak_overpressure_pa,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_iop_source_engine_reports_scripted_ignite_time() {
+        let scenario_toml = add_iop_source_engine(&COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.iop]
+station_id = "station-a"
+source_engine_id = "main"
+duct_volume_m3 = 120.0
+duct_exit_area_m2 = 6.0
+duct_discharge_velocity_m_s = 40.0
+duct_geometry_gain = 1.5
+receiver_distance_m = 30.0
+suppression_loss_db = 3.0
+uncertainty_minus_db = 2.0
+uncertainty_plus_db = 4.0
+
+[mission]
+initial_phase = "powered"
+
+[[mission.phases]]
+id = "powered"
+label = "Powered"
+
+[scenario_script]
+[[scenario_script.events]]
+id = "main_ignite_late"
+trigger = { kind = "at_time", time_s = 2.0 }
+action = { kind = "engine_command", id = "main", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[[scenario_script.events]]
+id = "main_ignite"
+trigger = { kind = "at_time", time_s = 0.05 }
+action = { kind = "engine_command", id = "main", command = { throttle_unit = 1.0, gimbal_pitch_rad = 0.0, gimbal_yaw_rad = 0.0, ignite = true, shutdown = false } }
+
+[telemetry]"#,
+        ));
+        let scenario = Scenario::from_toml_str(&scenario_toml)
+            .expect("IOP timed source-engine acoustics scenario parses");
+        let outcome =
+            crate::run(&scenario).expect("IOP timed source-engine acoustics scenario runs");
+        let iop = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.iop.as_ref())
+            .expect("IOP report emitted");
+
+        assert_eq!(iop.source_engine_id.as_deref(), Some("main"));
+        assert_eq!(
+            iop.source_engine_max_thrust_n.map(f64::to_bits),
+            Some(600_000.0_f64.to_bits())
+        );
+        assert_eq!(iop.source_engine_mdot_cstar_n, None);
+        assert_eq!(
+            iop.source_engine_ignition_event_id.as_deref(),
+            Some("main_ignite")
+        );
+        assert_eq!(
+            iop.source_engine_ignition_time_s.map(f64::to_bits),
+            Some(0.05_f64.to_bits())
+        );
+        assert_eq!(
+            iop.source_engine_observed_ignition_event_id,
+            Some(openbmp_sim::EventId::from_path("scenario_script.events.main_ignite").value())
+        );
+        assert_eq!(iop.source_engine_observed_ignition_step, Some(1));
+        assert_eq!(
+            iop.source_engine_observed_ignition_time_s.map(f64::to_bits),
+            Some(0.1_f64.to_bits())
+        );
+        assert_eq!(iop.source_engine_runtime_sample_count, 2);
+        assert_eq!(
+            iop.source_engine_runtime_last_source_strength_n
+                .map(f64::to_bits),
+            Some(240_000.0_f64.to_bits())
+        );
+        assert_eq!(
+            iop.source_engine_runtime_last_time_s.map(f64::to_bits),
+            Some(0.1_f64.to_bits())
+        );
+        assert_relative_eq!(
+            iop.source_engine_runtime_peak_source_rate_n_per_s
+                .expect("runtime source-rate peak recorded"),
+            2_400_000.0,
+            epsilon = 1.0e-9
+        );
+        assert_relative_eq!(
+            iop.source_engine_runtime_peak_overpressure_pa
+                .expect("runtime peak pressure recorded"),
+            iop.peak_overpressure_pa,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            iop.source_engine_runtime_lower_peak_overpressure_pa
+                .expect("runtime lower peak pressure recorded"),
+            iop.lower_peak_overpressure_pa,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            iop.source_engine_runtime_upper_peak_overpressure_pa
+                .expect("runtime upper peak pressure recorded"),
+            iop.upper_peak_overpressure_pa,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            iop.source_engine_runtime_duration_s
+                .expect("runtime duration recorded"),
+            iop.duration_s,
+            epsilon = 1.0e-12
+        );
+        let history = std::str::from_utf8(&iop.source_engine_runtime_history_csv)
+            .expect("runtime source history is UTF-8 CSV");
+        let rows = history.trim_end().lines().collect::<Vec<_>>();
+        assert_eq!(
+            rows[0],
+            "step,time_s,source_strength_n,source_rate_n_per_s,thrust_n,mass_flow_kg_per_s"
+        );
+        assert_eq!(rows.len(), 3);
+        let final_row = rows[2].split(',').collect::<Vec<_>>();
+        assert_eq!(final_row[0], "1");
+        assert_relative_eq!(
+            final_row[2]
+                .parse::<f64>()
+                .expect("source strength column parses"),
+            240_000.0,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            final_row[3]
+                .parse::<f64>()
+                .expect("source rate column parses"),
+            2_400_000.0,
+            epsilon = 1.0e-9
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_iop_duct_deck_report_carries_provenance() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.iop]
+station_id = "station-a"
+gas_generation_rate_n_per_s = 2400000.0
+ramp_duration_s = 0.25
+duct_deck_file = "data/acoustics/iop-duct-v1.toml"
+duct_deck_file_sha256 = "7711a6c472fc5343fda1452626ad7ff41323c8510b6d82d8de6d7b707e807c7e"
+duct_class = "long_trench"
+receiver_distance_m = 30.0
+suppression_loss_db = 3.0
+uncertainty_minus_db = 2.0
+uncertainty_plus_db = 4.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("IOP duct-deck acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("IOP duct-deck acoustics scenario runs");
+        let iop = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.iop.as_ref())
+            .expect("IOP report emitted");
+        let residence_time_s = 300.0 / (9.0 * 35.0);
+        let unsuppressed_peak_pa =
+            2_400_000.0 * residence_time_s * 2.2 / (4.0 * std::f64::consts::PI * 30.0 * 30.0);
+        let expected_peak_pa = unsuppressed_peak_pa * 10.0_f64.powf(-3.0 / 20.0);
+
+        assert_eq!(iop.source_engine_id, None);
+        assert_eq!(iop.source_engine_observed_ignition_event_id, None);
+        assert_eq!(iop.source_engine_observed_ignition_step, None);
+        assert_eq!(iop.source_engine_observed_ignition_time_s, None);
+        assert_eq!(iop.source_engine_max_thrust_n, None);
+        assert_eq!(iop.source_engine_mdot_cstar_n, None);
+        assert!(!iop.source_engine_thermochemical_performance);
+        assert_eq!(
+            iop.duct_deck_file_sha256_hex.as_deref(),
+            Some("7711a6c472fc5343fda1452626ad7ff41323c8510b6d82d8de6d7b707e807c7e")
+        );
+        assert_eq!(
+            iop.duct_deck_dataset_id.as_deref(),
+            Some("openbmp.acoustics.iop_duct.v1")
+        );
+        assert_eq!(
+            iop.duct_deck_source_class.as_deref(),
+            Some("synthetic-openbmp")
+        );
+        assert_eq!(iop.duct_class_id.as_deref(), Some("long_trench"));
+        assert_eq!(iop.duct_volume_m3.to_bits(), 300.0_f64.to_bits());
+        assert_eq!(iop.duct_exit_area_m2.to_bits(), 9.0_f64.to_bits());
+        assert_eq!(
+            iop.duct_discharge_velocity_m_s.to_bits(),
+            35.0_f64.to_bits()
+        );
+        assert_eq!(iop.duct_geometry_gain.to_bits(), 2.2_f64.to_bits());
+        assert_eq!(
+            iop.duct_residence_time_s.to_bits(),
+            residence_time_s.to_bits()
+        );
+        assert_eq!(iop.suppression_deck_file_sha256_hex, None);
+        assert_eq!(iop.suppression_deck_dataset_id, None);
+        assert_eq!(iop.suppression_deck_source_class, None);
+        assert_eq!(iop.suppression_class_id, None);
+        assert_eq!(iop.suppression_class_loss_db, None);
+        assert_eq!(iop.suppression_class_uncertainty_db, None);
+        assert_relative_eq!(
+            iop.peak_overpressure_pa,
+            expected_peak_pa,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(
+            iop.duration_s.to_bits(),
+            (0.25 + residence_time_s).to_bits()
+        );
+        assert_relative_eq!(
+            first_row_f64(&outcome, "acoustics.iop.peak_overpressure_pa"),
+            iop.peak_overpressure_pa,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_iop_suppression_deck_report_carries_provenance() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.iop]
+station_id = "station-a"
+gas_generation_rate_n_per_s = 2400000.0
+ramp_duration_s = 0.25
+duct_volume_m3 = 120.0
+duct_exit_area_m2 = 6.0
+duct_discharge_velocity_m_s = 40.0
+duct_geometry_gain = 1.5
+receiver_distance_m = 30.0
+suppression_deck_file = "data/acoustics/iop-suppression-v1.toml"
+suppression_deck_file_sha256 = "641894d3cd5ac3dbc8529219b47e39deb1c0974121724fb5023f879f98e9ecc7"
+suppression_class = "water_deluge_nominal"
+suppression_loss_db = 1.0
+uncertainty_minus_db = 2.0
+uncertainty_plus_db = 4.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("IOP suppression-deck acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("IOP suppression-deck acoustics scenario runs");
+        let iop = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.iop.as_ref())
+            .expect("IOP report emitted");
+        let residence_time_s = 120.0 / (6.0 * 40.0);
+        let unsuppressed_peak_pa =
+            2_400_000.0 * residence_time_s * 1.5 / (4.0 * std::f64::consts::PI * 30.0 * 30.0);
+        let expected_peak_pa = unsuppressed_peak_pa * 10.0_f64.powf(-4.0 / 20.0);
+
+        assert_eq!(iop.source_engine_id, None);
+        assert_eq!(iop.source_engine_observed_ignition_event_id, None);
+        assert_eq!(iop.source_engine_observed_ignition_step, None);
+        assert_eq!(iop.source_engine_observed_ignition_time_s, None);
+        assert_eq!(iop.source_engine_max_thrust_n, None);
+        assert_eq!(iop.source_engine_mdot_cstar_n, None);
+        assert!(!iop.source_engine_thermochemical_performance);
+        assert_eq!(
+            iop.suppression_deck_file_sha256_hex.as_deref(),
+            Some("641894d3cd5ac3dbc8529219b47e39deb1c0974121724fb5023f879f98e9ecc7")
+        );
+        assert_eq!(
+            iop.suppression_deck_dataset_id.as_deref(),
+            Some("openbmp.acoustics.iop_suppression.v1")
+        );
+        assert_eq!(
+            iop.suppression_deck_source_class.as_deref(),
+            Some("synthetic-openbmp")
+        );
+        assert_eq!(
+            iop.suppression_class_id.as_deref(),
+            Some("water_deluge_nominal")
+        );
+        assert_eq!(
+            iop.suppression_class_loss_db.map(f64::to_bits),
+            Some(3.0_f64.to_bits())
+        );
+        assert_eq!(
+            iop.suppression_class_uncertainty_db.map(f64::to_bits),
+            Some(1.5_f64.to_bits())
+        );
+        assert_eq!(iop.suppression_loss_db.to_bits(), 4.0_f64.to_bits());
+        assert_relative_eq!(
+            iop.peak_overpressure_pa,
+            expected_peak_pa,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            first_row_f64(&outcome, "acoustics.iop.peak_overpressure_pa"),
+            iop.peak_overpressure_pa,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_report_matches_dsm_fixtures() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.dsm]
+station_id = "station-a"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 2.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 20.0
+weight = 1.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 2.0
+vehicle_height_m = 100.0
+
+[telemetry]"#,
+        );
+        let scenario = Scenario::from_toml_str(&scenario_toml).expect("scenario parses");
+        let outcome = crate::run(&scenario).expect("acoustics scenario runs");
+        let acoustics = outcome
+            .acoustics
+            .as_ref()
+            .expect("acoustics report emitted");
+        let dsm = acoustics.dsm.as_ref().expect("dsm report emitted");
+
+        assert_eq!(dsm.station_id, "station-a");
+        assert_eq!(dsm.source_count, 3);
+        assert_eq!(dsm.acoustic_power_w.to_bits(), 200_000.0_f64.to_bits());
+        assert_relative_eq!(
+            dsm.sound_power_level_db,
+            10.0 * (200_000.0_f64 / 1.0e-12).log10(),
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            dsm.station_oaspl_db,
+            132.214_258_788_974_58,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(
+            first_row_f64(&outcome, "acoustics.dsm.acoustic_power_w").to_bits(),
+            dsm.acoustic_power_w.to_bits()
+        );
+        assert_relative_eq!(
+            first_row_f64(&outcome, "acoustics.dsm.sound_power_level_db"),
+            dsm.sound_power_level_db,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            first_row_f64(&outcome, "acoustics.dsm.station_oaspl_db"),
+            dsm.station_oaspl_db,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(first_row_i64(&outcome, "acoustics.dsm.source_count"), 3);
+        assert_eq!(
+            dsm.station_spectrum_csv.as_slice(),
+            include_bytes!("../../openbmp-acoustics/tests/fixtures/dsm-free-field-station.csv")
+        );
+        assert_eq!(
+            dsm.liftoff_oaspl_csv.as_slice(),
+            include_bytes!("../../openbmp-acoustics/tests/fixtures/dsm-liftoff-oaspl.csv")
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_cluster_engine_count_scales_oaspl() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.dsm]
+station_id = "station-a"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+mass_flow_kg_s = 10.0
+cluster_engine_count = 4
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 2.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 20.0
+weight = 1.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str(&scenario_toml).expect("cluster acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("cluster acoustics scenario runs");
+        let dsm = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.dsm.as_ref())
+            .expect("dsm report emitted");
+        let cluster_gain_db = 10.0 * 4.0_f64.log10();
+
+        assert_eq!(dsm.cluster_engine_count, 4);
+        assert_relative_eq!(
+            dsm.cluster_power_gain_db,
+            cluster_gain_db,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(dsm.source_count, 3);
+        assert_eq!(dsm.acoustic_power_w.to_bits(), 800_000.0_f64.to_bits());
+        assert_relative_eq!(
+            dsm.sound_power_level_db,
+            10.0 * (800_000.0_f64 / 1.0e-12).log10(),
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            dsm.station_oaspl_db,
+            132.214_258_788_974_58 + cluster_gain_db,
+            epsilon = 1.0e-12
+        );
+        assert_relative_eq!(
+            first_row_f64(&outcome, "acoustics.dsm.station_oaspl_db"),
+            dsm.station_oaspl_db,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_cluster_engine_offsets_sum_geometrically() {
+        fn scenario_toml(receiver_radial_m: f64, cluster_engines: &str) -> String {
+            COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+                "[telemetry]",
+                &format!(
+                    r#"[acoustics.dsm]
+station_id = "station-a"
+receiver_axial_m = 5.0
+receiver_radial_m = {receiver_radial_m:.1}
+receiver_azimuth_deg = 0.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+{cluster_engines}
+
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 2.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 20.0
+weight = 1.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#
+                ),
+            )
+        }
+
+        fn run_dsm(scenario_toml: &str) -> crate::acoustics::AcousticsDsmRunReport {
+            let scenario = Scenario::from_toml_str(scenario_toml).expect("scenario parses");
+            crate::run(&scenario)
+                .expect("scenario runs")
+                .acoustics
+                .expect("acoustics report")
+                .dsm
+                .expect("dsm report")
+        }
+
+        fn energy_add_db(lhs_db: f64, rhs_db: f64) -> f64 {
+            10.0 * (10.0_f64.powf(lhs_db / 10.0) + 10.0_f64.powf(rhs_db / 10.0)).log10()
+        }
+
+        let center = run_dsm(&scenario_toml(30.0, ""));
+        let near = run_dsm(&scenario_toml(20.0, ""));
+        let cluster = run_dsm(&scenario_toml(
+            30.0,
+            r#"[[acoustics.dsm.cluster_engines]]
+id = "center"
+offset_x_m = 0.0
+offset_y_m = 0.0
+
+[[acoustics.dsm.cluster_engines]]
+id = "near"
+offset_x_m = 10.0
+offset_y_m = 0.0"#,
+        ));
+        let expected_oaspl_db = energy_add_db(center.station_oaspl_db, near.station_oaspl_db);
+        let same_location_gain_db = 10.0 * 2.0_f64.log10();
+
+        assert_eq!(cluster.cluster_engine_count, 2);
+        assert_relative_eq!(
+            cluster.cluster_power_gain_db,
+            same_location_gain_db,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(cluster.source_count, 6);
+        assert_eq!(cluster.acoustic_power_w.to_bits(), 400_000.0_f64.to_bits());
+        assert_relative_eq!(
+            cluster.station_oaspl_db,
+            expected_oaspl_db,
+            epsilon = 1.0e-10
+        );
+        assert!(
+            cluster.station_oaspl_db > center.station_oaspl_db + same_location_gain_db + 0.1,
+            "offset engine should use geometric range/directivity, not same-location scalar gain"
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_cluster_interaction_matches_coherence_oracle() {
+        fn scenario_toml(cluster_interaction: &str) -> String {
+            COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+                "[telemetry]",
+                &format!(
+                    r#"[acoustics.dsm]
+station_id = "station-a"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+receiver_azimuth_deg = 0.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+{cluster_interaction}
+
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 2.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 20.0
+weight = 1.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#
+                ),
+            )
+        }
+
+        fn run_dsm(cluster_interaction: &str) -> crate::acoustics::AcousticsDsmRunReport {
+            let scenario = Scenario::from_toml_str(&scenario_toml(cluster_interaction))
+                .expect("scenario parses");
+            crate::run(&scenario)
+                .expect("scenario runs")
+                .acoustics
+                .expect("acoustics report")
+                .dsm
+                .expect("dsm report")
+        }
+
+        let single_engine = run_dsm("");
+        let cluster = run_dsm(
+            r#"cluster_correlation_coefficient = 1.0
+cluster_shielding_loss_db = 1.5
+
+[[acoustics.dsm.cluster_engines]]
+id = "engine-a"
+offset_x_m = 0.0
+offset_y_m = 0.0
+
+[[acoustics.dsm.cluster_engines]]
+id = "engine-b"
+offset_x_m = 0.0
+offset_y_m = 0.0"#,
+        );
+        let expected_delta_db = 20.0 * 2.0_f64.log10() - 1.5;
+
+        assert_eq!(cluster.cluster_engine_count, 2);
+        assert_eq!(cluster.source_count, 6);
+        assert_eq!(
+            cluster.cluster_correlation_coefficient.to_bits(),
+            1.0_f64.to_bits()
+        );
+        assert_eq!(
+            cluster.cluster_shielding_loss_db.to_bits(),
+            1.5_f64.to_bits()
+        );
+        assert_relative_eq!(
+            cluster.station_oaspl_db - single_engine.station_oaspl_db,
+            expected_delta_db,
+            epsilon = 1.0e-12
+        );
+        assert!(cluster.station_oaspl_db > single_engine.station_oaspl_db);
+    }
+
+    #[test]
+    fn point_mass_acoustics_pad_path_length_extra_matches_spreading_oracle() {
+        fn scenario_toml(path_extra_m: f64) -> String {
+            COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+                "[telemetry]",
+                &format!(
+                    r#"[acoustics.dsm]
+station_id = "station-a"
+receiver_axial_m = 0.0
+receiver_radial_m = 10.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.0
+pad_path_length_extra_m = {path_extra_m:.1}
+
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 10.0
+
+[telemetry]"#
+                ),
+            )
+        }
+
+        fn run_dsm(path_extra_m: f64) -> crate::acoustics::AcousticsDsmRunReport {
+            let scenario =
+                Scenario::from_toml_str(&scenario_toml(path_extra_m)).expect("scenario parses");
+            crate::run(&scenario)
+                .expect("scenario runs")
+                .acoustics
+                .expect("acoustics report")
+                .dsm
+                .expect("dsm report")
+        }
+
+        let baseline = run_dsm(0.0);
+        let pad_path = run_dsm(5.0);
+        let expected_delta_db = -20.0 * (15.0_f64 / 10.0).log10();
+
+        assert_eq!(
+            pad_path.pad_path_length_extra_m.to_bits(),
+            5.0_f64.to_bits()
+        );
+        assert_eq!(pad_path.source_count, 1);
+        assert_relative_eq!(
+            pad_path.station_oaspl_db - baseline.station_oaspl_db,
+            expected_delta_db,
+            epsilon = 1.0e-12
+        );
+        assert!(pad_path.station_oaspl_db < baseline.station_oaspl_db);
+    }
+
+    #[test]
+    fn point_mass_acoustics_pad_deflection_matches_spreading_oracle() {
+        fn scenario_toml(deflection: &str) -> String {
+            COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+                "[telemetry]",
+                &format!(
+                    r#"[acoustics.dsm]
+station_id = "station-a"
+receiver_axial_m = 0.0
+receiver_radial_m = 20.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.0
+{deflection}
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 1.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 10.0
+
+[telemetry]"#
+                ),
+            )
+        }
+
+        fn run_dsm(deflection: &str) -> crate::acoustics::AcousticsDsmRunReport {
+            let scenario =
+                Scenario::from_toml_str(&scenario_toml(deflection)).expect("scenario parses");
+            crate::run(&scenario)
+                .expect("scenario runs")
+                .acoustics
+                .expect("acoustics report")
+                .dsm
+                .expect("dsm report")
+        }
+
+        let straight = run_dsm("");
+        let deflected =
+            run_dsm("pad_deflection_origin_axial_m = 0.0\npad_deflection_angle_deg = 90.0");
+        let straight_distance_m = 10.0_f64.hypot(20.0);
+        let deflected_distance_m = 10.0_f64;
+        let expected_delta_db = 20.0 * (straight_distance_m / deflected_distance_m).log10();
+
+        assert_eq!(deflected.source_count, 1);
+        assert_eq!(
+            deflected.pad_deflection_origin_axial_m.map(f64::to_bits),
+            Some(0.0_f64.to_bits())
+        );
+        assert_eq!(
+            deflected.pad_deflection_angle_deg.map(f64::to_bits),
+            Some(90.0_f64.to_bits())
+        );
+        assert_relative_eq!(
+            deflected.station_oaspl_db - straight.station_oaspl_db,
+            expected_delta_db,
+            epsilon = 1.0e-12
+        );
+        assert!(deflected.station_oaspl_db > straight.station_oaspl_db);
+    }
+
+    #[test]
+    fn point_mass_acoustics_deck_file_report_carries_provenance() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.dsm]
+station_id = "station-a"
+deck_file = "data/acoustics/dsm-source-directivity-v1.toml"
+deck_file_sha256 = "169a6c35e513aafd8f111e6ba7e0b8d707cd0f1c8b1904eabc056d5d7536fe00"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("deck-backed acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("deck-backed acoustics scenario runs");
+        let dsm = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.dsm.as_ref())
+            .expect("dsm report emitted");
+
+        assert_eq!(dsm.source_count, 3);
+        assert_eq!(
+            dsm.deck_file_sha256_hex.as_deref(),
+            Some("169a6c35e513aafd8f111e6ba7e0b8d707cd0f1c8b1904eabc056d5d7536fe00")
+        );
+        assert_eq!(
+            dsm.deck_dataset_id.as_deref(),
+            Some("openbmp.acoustics.dsm_source_directivity.v1")
+        );
+        assert_eq!(dsm.deck_source_class.as_deref(), Some("synthetic-openbmp"));
+        assert!(
+            (first_row_f64(&outcome, "acoustics.dsm.station_oaspl_db") - dsm.station_oaspl_db)
+                .abs()
+                <= 1.0e-12
+        );
+        assert!(
+            (dsm.station_oaspl_db - 132.214_258_788_974_58).abs() > 1.0e-3,
+            "deck-backed directivity/allocation should change the synthetic omni fixture"
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_absorption_deck_report_carries_provenance() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.dsm]
+station_id = "station-a"
+absorption_deck_file = "data/acoustics/dsm-air-absorption-v1.toml"
+absorption_deck_file_sha256 = "cda1136c9a9f935ac576fbe06671f00d8e0d1ed56bbb5d9c2cd42dc34847af48"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 2.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 20.0
+weight = 1.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("absorption-deck acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("absorption-deck acoustics scenario runs");
+        let dsm = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.dsm.as_ref())
+            .expect("dsm report emitted");
+
+        assert_eq!(dsm.source_count, 3);
+        assert_eq!(
+            dsm.absorption_deck_file_sha256_hex.as_deref(),
+            Some("cda1136c9a9f935ac576fbe06671f00d8e0d1ed56bbb5d9c2cd42dc34847af48")
+        );
+        assert_eq!(
+            dsm.absorption_deck_dataset_id.as_deref(),
+            Some("openbmp.acoustics.dsm_air_absorption.v1")
+        );
+        assert_eq!(
+            dsm.absorption_deck_source_class.as_deref(),
+            Some("synthetic-openbmp")
+        );
+        assert!(
+            (first_row_f64(&outcome, "acoustics.dsm.station_oaspl_db") - dsm.station_oaspl_db)
+                .abs()
+                <= 1.0e-12
+        );
+        assert!(
+            (dsm.station_oaspl_db - 132.214_258_788_974_58).abs() > 1.0e-3,
+            "band absorption deck should change the scalar-absorption fixture"
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_absorption_profile_selects_atmosphere() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.dsm]
+station_id = "station-a"
+absorption_deck_file = "data/acoustics/dsm-air-absorption-atmospheres-v1.toml"
+absorption_deck_file_sha256 = "c4f425557a8a99204b1edb05383abf7a07abcf846345679544ac2894ba841fca"
+absorption_profile_id = "humid_pad_303k_70rh"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 2.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 20.0
+weight = 1.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("atmosphere-profile absorption scenario parses");
+        let outcome = crate::run(&scenario).expect("atmosphere-profile absorption scenario runs");
+        let dsm = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.dsm.as_ref())
+            .expect("dsm report emitted");
+
+        assert_eq!(
+            dsm.absorption_deck_file_sha256_hex.as_deref(),
+            Some("c4f425557a8a99204b1edb05383abf7a07abcf846345679544ac2894ba841fca")
+        );
+        assert_eq!(
+            dsm.absorption_deck_dataset_id.as_deref(),
+            Some("openbmp.acoustics.dsm_air_absorption_atmospheres.v1")
+        );
+        assert_eq!(
+            dsm.absorption_deck_source_class.as_deref(),
+            Some("synthetic-openbmp-atmosphere-profiles")
+        );
+        assert_eq!(
+            dsm.absorption_profile_id.as_deref(),
+            Some("humid_pad_303k_70rh")
+        );
+        assert!(
+            (first_row_f64(&outcome, "acoustics.dsm.station_oaspl_db") - dsm.station_oaspl_db)
+                .abs()
+                <= 1.0e-12
+        );
+        assert!(
+            (dsm.station_oaspl_db - 132.214_258_788_974_58).abs() > 1.0e-3,
+            "selected atmosphere profile should change the scalar-absorption fixture"
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_suppression_deck_report_carries_provenance() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.dsm]
+station_id = "station-a"
+suppression_deck_file = "data/acoustics/pad-suppression-v1.toml"
+suppression_deck_file_sha256 = "4888aeb8dde08333638d7d1127d864ea544a1a2ab78e4eabd95ad3d0b42cf932"
+suppression_class = "water_nominal"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 2.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 20.0
+weight = 1.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("suppression-deck acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("suppression-deck acoustics scenario runs");
+        let dsm = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.dsm.as_ref())
+            .expect("dsm report emitted");
+
+        assert_eq!(dsm.source_count, 3);
+        assert_eq!(
+            dsm.suppression_deck_file_sha256_hex.as_deref(),
+            Some("4888aeb8dde08333638d7d1127d864ea544a1a2ab78e4eabd95ad3d0b42cf932")
+        );
+        assert_eq!(
+            dsm.suppression_deck_dataset_id.as_deref(),
+            Some("openbmp.acoustics.pad_suppression.v1")
+        );
+        assert_eq!(
+            dsm.suppression_deck_source_class.as_deref(),
+            Some("synthetic-openbmp")
+        );
+        assert_eq!(dsm.suppression_class_id.as_deref(), Some("water_nominal"));
+        assert_eq!(
+            dsm.suppression_uncertainty_db.map(f64::to_bits),
+            Some(3.0_f64.to_bits())
+        );
+        assert!(
+            (first_row_f64(&outcome, "acoustics.dsm.station_oaspl_db") - dsm.station_oaspl_db)
+                .abs()
+                <= 1.0e-12
+        );
+        assert!(
+            dsm.station_oaspl_db < 132.214_258_788_974_58,
+            "water suppression should reduce the unsuppressed omni fixture OASPL"
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_cluster_interaction_deck_report_carries_provenance() {
+        fn scenario_toml(cluster_interaction: &str) -> String {
+            COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+                "[telemetry]",
+                &format!(
+                    r#"[acoustics.dsm]
+station_id = "station-a"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+receiver_azimuth_deg = 0.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+{cluster_interaction}
+
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 2.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 20.0
+weight = 1.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#
+                ),
+            )
+        }
+
+        fn run_dsm(cluster_interaction: &str) -> crate::acoustics::AcousticsDsmRunReport {
+            let scenario = Scenario::from_toml_str_with_source_dir(
+                &scenario_toml(cluster_interaction),
+                Some(workspace_root()),
+            )
+            .expect("scenario parses");
+            crate::run(&scenario)
+                .expect("scenario runs")
+                .acoustics
+                .expect("acoustics report")
+                .dsm
+                .expect("dsm report")
+        }
+
+        let single_engine = run_dsm("");
+        let cluster = run_dsm(
+            r#"cluster_interaction_deck_file = "data/acoustics/pad-cluster-interaction-v1.toml"
+cluster_interaction_deck_file_sha256 = "301aaf420d9231834a89962184b8e57e9a3117a704f556f61a4eb1ab0c836b37"
+cluster_interaction_class = "coherent_shielded"
+
+[[acoustics.dsm.cluster_engines]]
+id = "engine-a"
+offset_x_m = 0.0
+offset_y_m = 0.0
+
+[[acoustics.dsm.cluster_engines]]
+id = "engine-b"
+offset_x_m = 0.0
+offset_y_m = 0.0"#,
+        );
+        let expected_delta_db = 20.0 * 2.0_f64.log10() - 1.5;
+
+        assert_eq!(cluster.cluster_engine_count, 2);
+        assert_eq!(cluster.source_count, 6);
+        assert_eq!(
+            cluster.cluster_correlation_coefficient.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            cluster.cluster_shielding_loss_db.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            cluster.cluster_interaction_deck_file_sha256_hex.as_deref(),
+            Some("301aaf420d9231834a89962184b8e57e9a3117a704f556f61a4eb1ab0c836b37")
+        );
+        assert_eq!(
+            cluster.cluster_interaction_deck_dataset_id.as_deref(),
+            Some("openbmp.acoustics.pad_cluster_interaction.v1")
+        );
+        assert_eq!(
+            cluster.cluster_interaction_deck_source_class.as_deref(),
+            Some("synthetic-openbmp")
+        );
+        assert_eq!(
+            cluster.cluster_interaction_class_id.as_deref(),
+            Some("coherent_shielded")
+        );
+        assert_eq!(
+            cluster.cluster_interaction_uncertainty_db.map(f64::to_bits),
+            Some(2.0_f64.to_bits())
+        );
+        assert_relative_eq!(
+            cluster.station_oaspl_db - single_engine.station_oaspl_db,
+            expected_delta_db,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn point_mass_acoustics_apparent_source_curve_report_carries_provenance() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.dsm]
+station_id = "station-a"
+apparent_source_curve_file = "data/acoustics/sp8072-figure14-apparent-source-v1.toml"
+apparent_source_curve_file_sha256 = "5c768b2ce628c07ad2cc8e2a1a6df99e893318ce79757c0675e77bc79f1b6000"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("apparent-source acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("apparent-source acoustics scenario runs");
+        let dsm = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.dsm.as_ref())
+            .expect("dsm report emitted");
+
+        assert_eq!(
+            dsm.source_count,
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len()
+        );
+        assert_eq!(
+            dsm.apparent_source_curve_file_sha256_hex.as_deref(),
+            Some("5c768b2ce628c07ad2cc8e2a1a6df99e893318ce79757c0675e77bc79f1b6000")
+        );
+        assert_eq!(
+            dsm.apparent_source_curve_dataset_id.as_deref(),
+            Some("openbmp.acoustics.sp8072_figure14_apparent_source.v1")
+        );
+        assert_eq!(
+            dsm.apparent_source_curve_figure_id.as_deref(),
+            Some("figure_14")
+        );
+        assert_eq!(
+            first_row_i64(&outcome, "acoustics.dsm.source_count"),
+            openbmp_acoustics::STANDARD_THIRD_OCTAVE_CENTER_HZ.len() as i64
+        );
+        assert!(
+            (first_row_f64(&outcome, "acoustics.dsm.station_oaspl_db") - dsm.station_oaspl_db)
+                .abs()
+                <= 1.0e-12
+        );
+        assert!(dsm.station_oaspl_db.is_finite());
+    }
+
+    #[test]
+    fn point_mass_acoustics_source_curve_report_carries_provenance() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.dsm]
+station_id = "station-a"
+source_curve_file = "data/acoustics/sp8072-figure12-source-power-v1.toml"
+source_curve_file_sha256 = "d199bebbb4bcd217f03f7a8ad717f875aa33419f7dbb2532e3b04649fb848b62"
+directivity_curve_file = "data/acoustics/sp8072-figure10-directivity-v1.toml"
+directivity_curve_file_sha256 = "b374017177dae2cb5028ae7d096d253e9fd300665d05f33dd82d1ce2aaad7894"
+spectrum_curve_file = "data/acoustics/sp8072-figure5-spectrum-v1.toml"
+spectrum_curve_file_sha256 = "0d5c9ed47b94e835562f13e71d3ace4207b5a56b0991bfdbf0b9ebed11bb8b19"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+exit_mach = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("source-curve acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("source-curve acoustics scenario runs");
+        let dsm = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.dsm.as_ref())
+            .expect("dsm report emitted");
+
+        assert_eq!(dsm.source_count, 15);
+        assert_eq!(
+            dsm.source_curve_file_sha256_hex.as_deref(),
+            Some("d199bebbb4bcd217f03f7a8ad717f875aa33419f7dbb2532e3b04649fb848b62")
+        );
+        assert_eq!(
+            dsm.source_curve_dataset_id.as_deref(),
+            Some("openbmp.acoustics.sp8072_figure12_source_power.v1")
+        );
+        assert_eq!(dsm.source_curve_figure_id.as_deref(), Some("figure_12"));
+        assert_eq!(
+            dsm.directivity_curve_file_sha256_hex.as_deref(),
+            Some("b374017177dae2cb5028ae7d096d253e9fd300665d05f33dd82d1ce2aaad7894")
+        );
+        assert_eq!(
+            dsm.directivity_curve_dataset_id.as_deref(),
+            Some("openbmp.acoustics.sp8072_figure10_directivity.v1")
+        );
+        assert_eq!(
+            dsm.directivity_curve_figure_id.as_deref(),
+            Some("figure_10")
+        );
+        assert_eq!(
+            dsm.spectrum_curve_file_sha256_hex.as_deref(),
+            Some("0d5c9ed47b94e835562f13e71d3ace4207b5a56b0991bfdbf0b9ebed11bb8b19")
+        );
+        assert_eq!(
+            dsm.spectrum_curve_dataset_id.as_deref(),
+            Some("openbmp.acoustics.sp8072_figure5_spectrum.v1")
+        );
+        assert_eq!(dsm.spectrum_curve_figure_id.as_deref(), Some("figure_5"));
+        assert!(
+            (dsm.source_curve_core_length_m.unwrap() - 6.570_18).abs() <= 1.0e-12,
+            "source-curve path should derive SP-8072 Figure 11 core length"
+        );
+        assert_eq!(first_row_i64(&outcome, "acoustics.dsm.source_count"), 15);
+        assert!(
+            (first_row_f64(&outcome, "acoustics.dsm.station_oaspl_db") - dsm.station_oaspl_db)
+                .abs()
+                <= 1.0e-12
+        );
+        assert!(dsm.station_oaspl_db.is_finite());
+    }
+
+    #[test]
+    fn point_mass_acoustics_sp8072_curve_loaders_reject_manifest_mismatch() {
+        struct CurveCase {
+            scenario_field: &'static str,
+            resolved_key: &'static str,
+            path: &'static str,
+            contents: &'static str,
+            extra_toml: &'static str,
+            needs_inline_sources: bool,
+        }
+
+        const INLINE_SOURCES: &str = r#"
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 2.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 20.0
+weight = 1.0
+"#;
+        let cases = [
+            CurveCase {
+                scenario_field: "source_curve_file",
+                resolved_key: "acoustics.dsm.source_curve_file",
+                path: "data/acoustics/sp8072-figure12-source-power-v1.toml",
+                contents: include_str!(
+                    "../../../data/acoustics/sp8072-figure12-source-power-v1.toml"
+                ),
+                extra_toml: "exit_mach = 1.0",
+                needs_inline_sources: false,
+            },
+            CurveCase {
+                scenario_field: "apparent_source_curve_file",
+                resolved_key: "acoustics.dsm.apparent_source_curve_file",
+                path: "data/acoustics/sp8072-figure14-apparent-source-v1.toml",
+                contents: include_str!(
+                    "../../../data/acoustics/sp8072-figure14-apparent-source-v1.toml"
+                ),
+                extra_toml: "",
+                needs_inline_sources: false,
+            },
+            CurveCase {
+                scenario_field: "axial_spectrum_curve_file",
+                resolved_key: "acoustics.dsm.axial_spectrum_curve_file",
+                path: "data/acoustics/sp8072-figure13-axial-spectrum-v1.toml",
+                contents: include_str!(
+                    "../../../data/acoustics/sp8072-figure13-axial-spectrum-v1.toml"
+                ),
+                extra_toml: "",
+                needs_inline_sources: true,
+            },
+            CurveCase {
+                scenario_field: "spectrum_curve_file",
+                resolved_key: "acoustics.dsm.spectrum_curve_file",
+                path: "data/acoustics/sp8072-figure5-spectrum-v1.toml",
+                contents: include_str!("../../../data/acoustics/sp8072-figure5-spectrum-v1.toml"),
+                extra_toml: "",
+                needs_inline_sources: true,
+            },
+            CurveCase {
+                scenario_field: "directivity_curve_file",
+                resolved_key: "acoustics.dsm.directivity_curve_file",
+                path: "data/acoustics/sp8072-figure10-directivity-v1.toml",
+                contents: include_str!(
+                    "../../../data/acoustics/sp8072-figure10-directivity-v1.toml"
+                ),
+                extra_toml: "",
+                needs_inline_sources: true,
+            },
+        ];
+
+        for case in cases {
+            let bad_curve = case.contents.replace(
+                "source_manifest_id = \"openbmp.acoustics.sp8072_source.v1\"",
+                "source_manifest_id = \"openbmp.acoustics.sp8072_source.bad\"",
+            );
+            assert_ne!(
+                bad_curve, case.contents,
+                "{} fixture should contain a source manifest id",
+                case.scenario_field
+            );
+            let resolved =
+                openbmp_scenario::ResolvedFile::from_bytes(case.path, bad_curve.into_bytes());
+            let inline_sources = if case.needs_inline_sources {
+                INLINE_SOURCES
+            } else {
+                ""
+            };
+            let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+                "[telemetry]",
+                &format!(
+                    r#"[acoustics.dsm]
+station_id = "station-a"
+{scenario_field} = "{path}"
+{scenario_field}_sha256 = "{sha256}"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+{extra_toml}
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+{inline_sources}
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#,
+                    scenario_field = case.scenario_field,
+                    path = case.path,
+                    sha256 = resolved.sha256_hex.as_str(),
+                    extra_toml = case.extra_toml,
+                    inline_sources = inline_sources,
+                ),
+            );
+            let scenario =
+                Scenario::from_toml_str(&scenario_toml).expect("manifest-mismatch scenario parses");
+            let resolved_files = BTreeMap::from([(case.resolved_key.to_owned(), resolved)]);
+            let err = crate::acoustics::evaluate_document(&scenario.document, &resolved_files)
+                .expect_err("curve manifest mismatch must fail runner evaluation");
+
+            match err {
+                RunnerError::UnsupportedScenario { what } => {
+                    assert!(
+                        what.contains("source_manifest_id"),
+                        "{} emitted unexpected error: {what}",
+                        case.scenario_field
+                    );
+                }
+                other => panic!(
+                    "{} emitted unexpected error: {other:?}",
+                    case.scenario_field
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn point_mass_acoustics_axial_spectrum_curve_report_carries_provenance() {
+        let scenario_toml = COMM_OFF_DEFAULT_POINT_MASS_SCENARIO.replace(
+            "[telemetry]",
+            r#"[acoustics.dsm]
+station_id = "station-a"
+source_curve_file = "data/acoustics/sp8072-figure12-source-power-v1.toml"
+source_curve_file_sha256 = "d199bebbb4bcd217f03f7a8ad717f875aa33419f7dbb2532e3b04649fb848b62"
+axial_spectrum_curve_file = "data/acoustics/sp8072-figure13-axial-spectrum-v1.toml"
+axial_spectrum_curve_file_sha256 = "41d90c99e53afe77d1d4503d7bf17df627341d4ac26323ec2a32f601faa318da"
+spectrum_curve_file = "data/acoustics/sp8072-figure5-spectrum-v1.toml"
+spectrum_curve_file_sha256 = "0d5c9ed47b94e835562f13e71d3ace4207b5a56b0991bfdbf0b9ebed11bb8b19"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+mass_flow_kg_s = 10.0
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+exit_mach = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+
+[telemetry]"#,
+        );
+        let scenario =
+            Scenario::from_toml_str_with_source_dir(&scenario_toml, Some(workspace_root()))
+                .expect("axial-spectrum acoustics scenario parses");
+        let outcome = crate::run(&scenario).expect("axial-spectrum acoustics scenario runs");
+        let dsm = outcome
+            .acoustics
+            .as_ref()
+            .and_then(|acoustics| acoustics.dsm.as_ref())
+            .expect("dsm report emitted");
+
+        assert_eq!(dsm.source_count, 15);
+        assert_eq!(
+            dsm.axial_spectrum_curve_file_sha256_hex.as_deref(),
+            Some("41d90c99e53afe77d1d4503d7bf17df627341d4ac26323ec2a32f601faa318da")
+        );
+        assert_eq!(
+            dsm.axial_spectrum_curve_dataset_id.as_deref(),
+            Some("openbmp.acoustics.sp8072_figure13_axial_spectrum.v1")
+        );
+        assert_eq!(
+            dsm.axial_spectrum_curve_figure_id.as_deref(),
+            Some("figure_13")
+        );
+        assert_eq!(
+            dsm.source_curve_file_sha256_hex.as_deref(),
+            Some("d199bebbb4bcd217f03f7a8ad717f875aa33419f7dbb2532e3b04649fb848b62")
+        );
+        assert_eq!(
+            dsm.spectrum_curve_file_sha256_hex.as_deref(),
+            Some("0d5c9ed47b94e835562f13e71d3ace4207b5a56b0991bfdbf0b9ebed11bb8b19")
+        );
+        assert_eq!(
+            first_row_i64(&outcome, "acoustics.dsm.source_count"),
+            dsm.source_count as i64
+        );
+        assert!(
+            (first_row_f64(&outcome, "acoustics.dsm.station_oaspl_db") - dsm.station_oaspl_db)
+                .abs()
+                <= 1.0e-12
+        );
+        assert!(dsm.station_oaspl_db.is_finite());
+    }
+
+    #[test]
     fn point_mass_comm_report_contains_byte_stable_pass_table() {
         let scenario = Scenario::from_toml_str_with_source_dir(
             r#"
@@ -3396,6 +7431,7 @@ require_monotonic_time = true
             .as_ref()
             .expect("data-loss timeout report");
         assert_eq!(data_loss.timeout_s.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(data_loss.verdict, "hold");
         assert!(!data_loss.triggered);
         assert_eq!(data_loss.first_trigger_step, None);
         assert!(data_loss.delivered_sample_count > 0);
@@ -3548,6 +7584,7 @@ require_monotonic_time = true
             .expect("data-loss timeout report");
 
         assert!(data_loss.triggered);
+        assert_eq!(data_loss.verdict, "terminate");
         assert_eq!(data_loss.first_loss_step, Some(0));
         assert_eq!(data_loss.first_loss_time_s, Some(0.0));
         assert_eq!(data_loss.first_trigger_step, Some(1));
@@ -4022,6 +8059,656 @@ require_monotonic_time = true
         assert_eq!(
             first_row_value(&outcome, "recovery.dual_chute.drag_area_m2"),
             &TelemetryValue::Float64(0.0)
+        );
+        assert!(!has_channel(&outcome, "recovery.dual_chute.opening_load_n"));
+    }
+
+    #[test]
+    fn inflating_recovery_telemetry_channels_are_recorded() {
+        let mut scenario = inflating_parachute_scenario();
+        scenario.document.vehicle.assembly.recovery[0]
+            .inflation
+            .as_mut()
+            .expect("inflation config present")
+            .apparent_mass_coeff_k_a = Some(0.65);
+        let resolved_files = scenario
+            .resolved_files()
+            .expect("resolve inflating parachute scenario");
+
+        let outcome =
+            run(&scenario, &resolved_files, None).expect("inflating parachute run succeeds");
+
+        assert!(has_channel(
+            &outcome,
+            "recovery.main_chute.inflation_progress"
+        ));
+        let progress = f64_column(&outcome, "recovery.main_chute.inflation_progress");
+        let first_inflating = progress
+            .iter()
+            .position(|value| *value > 0.0)
+            .expect("inflation progress should become positive");
+        assert!(progress[first_inflating] < 1.0);
+
+        let drag_area = f64_column(&outcome, "recovery.main_chute.drag_area_m2");
+        let dynamic_pressure =
+            f64_column(&outcome, "recovery.main_chute.opening_dynamic_pressure_pa");
+        let opening_load = f64_column(&outcome, "recovery.main_chute.opening_load_n");
+        let opening_peak = f64_column(&outcome, "recovery.main_chute.opening_peak_load_n");
+        let apparent_mass = f64_column(&outcome, "recovery.main_chute.apparent_mass_kg");
+        let apparent_mass_rate =
+            f64_column(&outcome, "recovery.main_chute.apparent_mass_rate_kg_s");
+        assert!(drag_area[first_inflating] > 0.0);
+        assert!(dynamic_pressure[first_inflating] > 0.0);
+        assert!(opening_load[first_inflating] > 0.0);
+        assert!(opening_peak[first_inflating] > opening_load[first_inflating]);
+        assert!(apparent_mass[first_inflating] > 0.0);
+        assert!(apparent_mass_rate[first_inflating] > 0.0);
+        assert_relative_eq!(
+            opening_load[first_inflating] / opening_peak[first_inflating],
+            drag_area[first_inflating] / 8.0,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn recovery_riser_telemetry_channels_are_recorded() {
+        let mut scenario = inflating_parachute_scenario();
+        scenario.document.vehicle.assembly.recovery[0].risers.push(
+            openbmp_scenario::RecoveryRiserConfig {
+                id: "main_riser".to_owned(),
+                unstretched_length_m: 0.5,
+                axial_rigidity_n: 200.0,
+                damping_n_s_m: 0.0,
+                vehicle_attach_body_m: [0.0, 1.0, 0.0],
+                canopy_attach_body_m: [1.0, 1.0, 0.0],
+                canopy_velocity_body_m_s: None,
+                canopy_mass_kg: None,
+            },
+        );
+        let resolved_files = scenario
+            .resolved_files()
+            .expect("resolve riser parachute scenario");
+
+        let outcome = run(&scenario, &resolved_files, None).expect("riser run succeeds");
+
+        assert!(has_channel(
+            &outcome,
+            "recovery.main_chute.riser_tension_sum_n"
+        ));
+        assert!(has_channel(
+            &outcome,
+            "recovery.main_chute.riser_moment_body_z_n_m"
+        ));
+        assert!(has_channel(&outcome, "force.recovery_riser_force.x_n"));
+        let tension = f64_column(&outcome, "recovery.main_chute.riser_tension_sum_n");
+        let first_loaded = tension
+            .iter()
+            .position(|value| *value > 0.0)
+            .expect("riser tension should become positive after deploy");
+        assert_eq!(tension[first_loaded].to_bits(), 200.0_f64.to_bits());
+        assert_eq!(
+            f64_column(&outcome, "recovery.main_chute.riser_tension_max_n")[first_loaded].to_bits(),
+            200.0_f64.to_bits()
+        );
+        assert_eq!(
+            f64_column(&outcome, "recovery.main_chute.riser_force_body_x_n")[first_loaded]
+                .to_bits(),
+            200.0_f64.to_bits()
+        );
+        assert_eq!(
+            f64_column(&outcome, "force.recovery_riser_force.x_n")[first_loaded].to_bits(),
+            200.0_f64.to_bits()
+        );
+        assert_eq!(
+            f64_column(&outcome, "force.recovery_riser_force.y_n")[first_loaded].to_bits(),
+            0.0_f64.to_bits()
+        );
+        let riser_force_z =
+            f64_column(&outcome, "recovery.main_chute.riser_force_body_z_n")[first_loaded];
+        assert!(
+            riser_force_z > 0.0,
+            "riser drag handoff should add a positive body-Z force"
+        );
+        assert_eq!(
+            f64_column(&outcome, "force.recovery_riser_force.z_n")[first_loaded].to_bits(),
+            riser_force_z.to_bits()
+        );
+        assert_eq!(
+            f64_column(&outcome, "force.recovery_drag.z_n")[first_loaded].to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            f64_column(&outcome, "recovery.main_chute.riser_moment_body_z_n_m")[first_loaded]
+                .to_bits(),
+            (-200.0_f64).to_bits()
+        );
+        assert_eq!(
+            f64_column(&outcome, "recovery.main_chute.riser_elastic_energy_j")[first_loaded]
+                .to_bits(),
+            50.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn recovery_sequence_snatch_telemetry_channels_are_recorded() {
+        let mut scenario = inflating_parachute_scenario();
+        scenario.document.vehicle.assembly.recovery[0].sequence =
+            Some(openbmp_scenario::RecoverySequenceConfig {
+                snatch_delta_v_m_s: 3.0,
+                snatch_effective_mass_kg: 5.0,
+                pack_drag_load_n: 4.0,
+                mortar_pack_mass_kg: None,
+                mortar_pack_velocity_body_m_s: None,
+            });
+        scenario.document.vehicle.assembly.recovery[0].risers.push(
+            openbmp_scenario::RecoveryRiserConfig {
+                id: "main_riser".to_owned(),
+                unstretched_length_m: 0.5,
+                axial_rigidity_n: 200.0,
+                damping_n_s_m: 0.0,
+                vehicle_attach_body_m: [0.0, 1.0, 0.0],
+                canopy_attach_body_m: [1.0, 1.0, 0.0],
+                canopy_velocity_body_m_s: None,
+                canopy_mass_kg: None,
+            },
+        );
+        let resolved_files = scenario
+            .resolved_files()
+            .expect("resolve sequence parachute scenario");
+
+        let outcome = run(&scenario, &resolved_files, None).expect("sequence run succeeds");
+
+        assert!(has_channel(
+            &outcome,
+            "recovery.main_chute.snatch_peak_load_n"
+        ));
+        assert!(has_channel(
+            &outcome,
+            "recovery.main_chute.snatch_stiffness_n_m"
+        ));
+        let peak = f64_column(&outcome, "recovery.main_chute.snatch_peak_load_n");
+        let first_loaded = peak
+            .iter()
+            .position(|value| *value > 0.0)
+            .expect("snatch diagnostic should become positive after deploy");
+        assert_eq!(
+            f64_column(&outcome, "recovery.main_chute.snatch_delta_v_m_s")[first_loaded].to_bits(),
+            3.0_f64.to_bits()
+        );
+        assert_eq!(
+            f64_column(&outcome, "recovery.main_chute.snatch_stiffness_n_m")[first_loaded]
+                .to_bits(),
+            400.0_f64.to_bits()
+        );
+        assert_eq!(
+            f64_column(&outcome, "recovery.main_chute.snatch_effective_mass_kg")[first_loaded]
+                .to_bits(),
+            5.0_f64.to_bits()
+        );
+        assert_eq!(
+            f64_column(&outcome, "recovery.main_chute.snatch_pack_drag_load_n")[first_loaded]
+                .to_bits(),
+            4.0_f64.to_bits()
+        );
+        let expected_peak = 3.0 * (400.0_f64 * 5.0).sqrt() + 4.0;
+        assert!((peak[first_loaded] - expected_peak).abs() <= 1.0e-12);
+    }
+
+    #[test]
+    fn recovery_sequence_mortar_impulse_force_channels_are_recorded() {
+        let mut scenario = inflating_parachute_scenario();
+        let dt_s = scenario.document.time.dt_s;
+        scenario.document.vehicle.assembly.recovery[0].sequence =
+            Some(openbmp_scenario::RecoverySequenceConfig {
+                snatch_delta_v_m_s: 3.0,
+                snatch_effective_mass_kg: 5.0,
+                pack_drag_load_n: 4.0,
+                mortar_pack_mass_kg: Some(2.0),
+                mortar_pack_velocity_body_m_s: Some([0.0, 0.0, 6.0]),
+            });
+        scenario.document.vehicle.assembly.recovery[0].risers.push(
+            openbmp_scenario::RecoveryRiserConfig {
+                id: "main_riser".to_owned(),
+                unstretched_length_m: 0.5,
+                axial_rigidity_n: 200.0,
+                damping_n_s_m: 0.0,
+                vehicle_attach_body_m: [0.0, 1.0, 0.0],
+                canopy_attach_body_m: [1.0, 1.0, 0.0],
+                canopy_velocity_body_m_s: None,
+                canopy_mass_kg: None,
+            },
+        );
+        let resolved_files = scenario
+            .resolved_files()
+            .expect("resolve mortar sequence parachute scenario");
+
+        let outcome = run(&scenario, &resolved_files, None).expect("mortar sequence run succeeds");
+
+        assert!(has_channel(&outcome, "force.recovery_sequence_force.z_n"));
+        assert!(has_channel(
+            &outcome,
+            "recovery.main_chute.mortar_impulse_body_z_n_s"
+        ));
+        let force_z = f64_column(&outcome, "force.recovery_sequence_force.z_n");
+        let first_impulse = force_z
+            .iter()
+            .position(|value| *value != 0.0)
+            .expect("mortar impulse force should be applied for one tick");
+        let impulse_z =
+            f64_column(&outcome, "recovery.main_chute.mortar_impulse_body_z_n_s")[first_impulse];
+        let mortar_force_z =
+            f64_column(&outcome, "recovery.main_chute.mortar_force_body_z_n")[first_impulse];
+        assert_eq!(impulse_z.to_bits(), (-12.0_f64).to_bits());
+        assert_eq!(mortar_force_z.to_bits(), force_z[first_impulse].to_bits());
+        assert!((force_z[first_impulse] * dt_s - impulse_z).abs() <= 1.0e-12);
+        assert!(
+            force_z
+                .iter()
+                .enumerate()
+                .filter(|(_, value)| **value != 0.0)
+                .all(|(index, _)| index == first_impulse),
+            "mortar force should be nonzero for exactly one telemetry row"
+        );
+    }
+
+    #[test]
+    fn pflanz_recovery_telemetry_channels_are_recorded() {
+        let mut scenario = inflating_parachute_scenario();
+        scenario.document.vehicle.assembly.recovery[0]
+            .inflation
+            .as_mut()
+            .expect("inflation config present")
+            .pflanz = Some(openbmp_scenario::RecoveryPflanzReductionConfig {
+            format: None,
+            provenance: None,
+            file: Some(
+                workspace_root()
+                    .join("data/recovery/pflanz-x1-synthetic-v1.toml")
+                    .display()
+                    .to_string(),
+            ),
+            file_sha256: Some(
+                "2d679136f9f123eced753fbbbb3f6b67432be2530462b5ab2366cb239737546c".to_owned(),
+            ),
+            ballistic_parameter_a: Vec::new(),
+            exponent_j: Vec::new(),
+            reduction_factors: Vec::new(),
+        });
+        let resolved_files = scenario
+            .resolved_files()
+            .expect("resolve Pflanz parachute scenario");
+
+        let outcome = run(&scenario, &resolved_files, None).expect("Pflanz parachute run succeeds");
+
+        assert!(has_channel(
+            &outcome,
+            "recovery.main_chute.opening_ballistic_parameter_a"
+        ));
+        assert!(has_channel(
+            &outcome,
+            "recovery.main_chute.opening_pflanz_reduction_factor_x1"
+        ));
+        assert!(has_channel(
+            &outcome,
+            "recovery.main_chute.opening_finite_mass_peak_load_n"
+        ));
+
+        let progress = f64_column(&outcome, "recovery.main_chute.inflation_progress");
+        let first_inflating = progress
+            .iter()
+            .position(|value| *value > 0.0)
+            .expect("inflation progress should become positive");
+        let opening_peak = f64_column(&outcome, "recovery.main_chute.opening_peak_load_n");
+        let ballistic = f64_column(
+            &outcome,
+            "recovery.main_chute.opening_ballistic_parameter_a",
+        );
+        let reduction = f64_column(
+            &outcome,
+            "recovery.main_chute.opening_pflanz_reduction_factor_x1",
+        );
+        let finite_peak = f64_column(
+            &outcome,
+            "recovery.main_chute.opening_finite_mass_peak_load_n",
+        );
+        assert!(ballistic[first_inflating] > 0.0);
+        assert!((0.25..=0.97).contains(&reduction[first_inflating]));
+        assert!(finite_peak[first_inflating] > 0.0);
+        assert!(finite_peak[first_inflating] < opening_peak[first_inflating]);
+        assert_relative_eq!(
+            finite_peak[first_inflating] / opening_peak[first_inflating],
+            reduction[first_inflating],
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn pflanz_recovery_integrated_descent_peak_matches_synthetic_x1() {
+        let density_kg_m3 = UsStandard1976::new()
+            .sample(1000.0, SimTime::ZERO)
+            .expect("USSA76 density at inflation test altitude")
+            .density_kg_m3;
+        let expected_ratio = integrated_opening_load_ratio_fixed_step(
+            density_kg_m3,
+            10.0,
+            1.5 * 8.0,
+            50.0,
+            1.0,
+            0.002,
+        );
+        assert!(expected_ratio > 0.0);
+        assert!(expected_ratio < 1.0);
+
+        let scenario = pflanz_integrated_peak_scenario(expected_ratio);
+        let resolved_files = scenario
+            .resolved_files()
+            .expect("resolve Pflanz integrated peak scenario");
+        let outcome =
+            run(&scenario, &resolved_files, None).expect("Pflanz integrated peak run succeeds");
+
+        let progress = f64_column(&outcome, "recovery.main_chute.inflation_progress");
+        let first_inflating = progress
+            .iter()
+            .position(|value| *value > 0.0)
+            .expect("inflation progress should become positive");
+        let opening_load = f64_column(&outcome, "recovery.main_chute.opening_load_n");
+        let opening_peak = f64_column(&outcome, "recovery.main_chute.opening_peak_load_n");
+        let reduction = f64_column(
+            &outcome,
+            "recovery.main_chute.opening_pflanz_reduction_factor_x1",
+        );
+        let finite_peak = f64_column(
+            &outcome,
+            "recovery.main_chute.opening_finite_mass_peak_load_n",
+        );
+        let velocity_x = f64_column(&outcome, "velocity_x_m_s");
+
+        let (peak_index, measured_peak_load_n) = opening_load
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(index, _)| progress[*index] > 0.0 && progress[*index] <= 1.0)
+            .max_by(|(_, lhs), (_, rhs)| lhs.total_cmp(rhs))
+            .expect("inflation load samples exist");
+        let measured_ratio = measured_peak_load_n / opening_peak[first_inflating];
+
+        assert!(peak_index > first_inflating);
+        assert!(progress[peak_index] < 1.0);
+        assert!(velocity_x[peak_index] < velocity_x[first_inflating]);
+        assert_relative_eq!(
+            reduction[first_inflating],
+            expected_ratio,
+            epsilon = 1.0e-15
+        );
+        assert_relative_eq!(
+            finite_peak[first_inflating] / opening_peak[first_inflating],
+            expected_ratio,
+            epsilon = 1.0e-15
+        );
+        assert_relative_eq!(measured_ratio, expected_ratio, epsilon = 2.0e-4);
+        assert!(measured_ratio < 1.0);
+    }
+
+    #[test]
+    fn pflanz_recovery_integrated_descent_peak_sweep_matches_fixture() {
+        let fixture = load_recovery_pflanz_integrated_sweep_fixture();
+        assert_eq!(
+            fixture.format,
+            "openbmp.runner.recovery_pflanz_integrated_sweep.v1"
+        );
+        assert!(fixture.cases.len() >= 5);
+
+        let density_kg_m3 = UsStandard1976::new()
+            .sample(1000.0, SimTime::ZERO)
+            .expect("USSA76 density at inflation sweep altitude")
+            .density_kg_m3;
+
+        for fixture_case in &fixture.cases {
+            let full_c_d_s_m2 = fixture_case.c_d * fixture_case.area_m2;
+            let dry_mass_kg = dry_mass_for_target_pflanz_a(
+                fixture_case.target_ballistic_parameter_a,
+                density_kg_m3,
+                full_c_d_s_m2,
+                fixture_case.initial_speed_m_s,
+                fixture_case.fill_time_s,
+            );
+            let expected = integrated_opening_load_fixed_step(
+                density_kg_m3,
+                dry_mass_kg,
+                full_c_d_s_m2,
+                fixture_case.initial_speed_m_s,
+                fixture_case.fill_time_s,
+                fixture_case.dt_s,
+            );
+            assert!(
+                expected.peak_ratio > 0.0 && expected.peak_ratio <= 1.0,
+                "{} expected ratio out of range: {:?}",
+                fixture_case.case,
+                expected
+            );
+
+            let scenario = pflanz_integrated_peak_scenario_from_values(
+                &fixture_case.case,
+                dry_mass_kg,
+                fixture_case.initial_speed_m_s,
+                fixture_case.fill_time_s,
+                fixture_case.dt_s,
+                fixture_case.c_d,
+                fixture_case.area_m2,
+                expected.peak_ratio,
+            );
+            let resolved_files = scenario
+                .resolved_files()
+                .expect("resolve Pflanz integrated sweep scenario");
+            let outcome = run(&scenario, &resolved_files, None)
+                .expect("Pflanz integrated sweep run succeeds");
+
+            let progress = f64_column(&outcome, "recovery.main_chute.inflation_progress");
+            let first_inflating = progress
+                .iter()
+                .position(|value| *value > 0.0)
+                .expect("inflation progress should become positive");
+            let first_complete = progress
+                .iter()
+                .position(|value| *value >= 1.0)
+                .expect("inflation progress should complete");
+            let opening_load = f64_column(&outcome, "recovery.main_chute.opening_load_n");
+            let opening_peak = f64_column(&outcome, "recovery.main_chute.opening_peak_load_n");
+            let ballistic = f64_column(
+                &outcome,
+                "recovery.main_chute.opening_ballistic_parameter_a",
+            );
+            let reduction = f64_column(
+                &outcome,
+                "recovery.main_chute.opening_pflanz_reduction_factor_x1",
+            );
+            let finite_peak = f64_column(
+                &outcome,
+                "recovery.main_chute.opening_finite_mass_peak_load_n",
+            );
+            let velocity_x = f64_column(&outcome, "velocity_x_m_s");
+
+            let (peak_index, measured_peak_load_n) = opening_load
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(index, _)| progress[*index] > 0.0 && progress[*index] <= 1.0)
+                .max_by(|(_, lhs), (_, rhs)| lhs.total_cmp(rhs))
+                .expect("inflation load samples exist");
+            let measured_ratio = measured_peak_load_n / opening_peak[first_inflating];
+            let ballistic_rel =
+                ((ballistic[first_inflating] / fixture_case.target_ballistic_parameter_a) - 1.0)
+                    .abs();
+            let finite_peak_ratio = finite_peak[first_inflating] / opening_peak[first_inflating];
+
+            assert!(
+                ballistic_rel <= fixture.tolerances.ballistic_parameter_rel,
+                "{} ballistic parameter rel error {ballistic_rel:e}",
+                fixture_case.case
+            );
+            assert!(
+                (reduction[first_inflating] - expected.peak_ratio).abs()
+                    <= fixture.tolerances.finite_peak_ratio_abs,
+                "{} reduction factor mismatch",
+                fixture_case.case
+            );
+            assert!(
+                (finite_peak_ratio - expected.peak_ratio).abs()
+                    <= fixture.tolerances.finite_peak_ratio_abs,
+                "{} finite peak ratio mismatch",
+                fixture_case.case
+            );
+            assert!(
+                (measured_ratio - expected.peak_ratio).abs() <= fixture.tolerances.peak_ratio_abs,
+                "{} measured peak ratio {measured_ratio:e}, expected {:e}, peak_index {peak_index}",
+                fixture_case.case,
+                expected.peak_ratio
+            );
+            assert!(
+                (velocity_x[first_complete] - expected.final_speed_m_s).abs()
+                    <= fixture.tolerances.final_speed_abs_m_s,
+                "{} final speed {}, expected {}",
+                fixture_case.case,
+                velocity_x[first_complete],
+                expected.final_speed_m_s
+            );
+            assert!(velocity_x[first_complete] < fixture_case.initial_speed_m_s);
+        }
+    }
+
+    #[test]
+    fn recovery_drag_declared_constant_wind_matches_closed_form_drift() {
+        let no_wind_scenario = recovery_wind_drift_scenario(false);
+        let no_wind_files = no_wind_scenario
+            .resolved_files()
+            .expect("resolve no-wind recovery drift scenario");
+        let no_wind = run(&no_wind_scenario, &no_wind_files, None)
+            .expect("no-wind recovery drift scenario runs");
+
+        let wind_scenario = recovery_wind_drift_scenario(true);
+        let wind_files = wind_scenario
+            .resolved_files()
+            .expect("resolve wind recovery drift scenario");
+        let wind =
+            run(&wind_scenario, &wind_files, None).expect("wind recovery drift scenario runs");
+
+        assert_eq!(
+            f64_column(&no_wind, "position_x_m")
+                .last()
+                .copied()
+                .expect("no-wind final x")
+                .to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            f64_column(&no_wind, "velocity_x_m_s")
+                .last()
+                .copied()
+                .expect("no-wind final vx")
+                .to_bits(),
+            0.0_f64.to_bits()
+        );
+
+        let wind_speed_m_s = 12.0;
+        let mass_kg = 10.0;
+        let c_d_area_m2 = 1.0;
+        let density_kg_m3 = UsStandard1976::new()
+            .sample(1000.0, SimTime::ZERO)
+            .expect("USSA76 density at recovery drift altitude")
+            .density_kg_m3;
+        // Closed-form one-dimensional constant-wind solution for
+        // dv/dt = a * (wind - v)^2 after the deploy command reaches the rack.
+        let accel_coeff = 0.5 * density_kg_m3 * c_d_area_m2 / mass_kg;
+        let active_time_s = wind_scenario.document.time.stop_s - wind_scenario.document.time.dt_s;
+        let factor = 1.0 + accel_coeff * wind_speed_m_s * active_time_s;
+        let expected_vx_m_s = wind_speed_m_s * (1.0 - factor.recip());
+        let expected_x_m = wind_speed_m_s * active_time_s - factor.ln() / accel_coeff;
+
+        let wind_x = f64_column(&wind, "position_x_m")
+            .last()
+            .copied()
+            .expect("wind final x");
+        let wind_vx = f64_column(&wind, "velocity_x_m_s")
+            .last()
+            .copied()
+            .expect("wind final vx");
+        assert_relative_eq!(wind_x, expected_x_m, epsilon = 3.0e-5);
+        assert_relative_eq!(wind_vx, expected_vx_m_s, epsilon = 1.0e-5);
+        assert!(wind_x > 0.0);
+        assert!(wind_vx > 0.0);
+        assert!(wind_vx < wind_speed_m_s);
+        assert_eq!(
+            f64_column(&wind, "position_y_m")
+                .last()
+                .copied()
+                .expect("wind final y")
+                .to_bits(),
+            0.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn recovery_drag_declared_constant_wind_shifts_splash_point() {
+        let no_wind_scenario = recovery_splash_drift_scenario(false);
+        let no_wind_files = no_wind_scenario
+            .resolved_files()
+            .expect("resolve no-wind recovery splash drift scenario");
+        let no_wind = run(&no_wind_scenario, &no_wind_files, None)
+            .expect("no-wind recovery splash drift scenario runs");
+
+        let wind_scenario = recovery_splash_drift_scenario(true);
+        let wind_files = wind_scenario
+            .resolved_files()
+            .expect("resolve wind recovery splash drift scenario");
+        let wind = run(&wind_scenario, &wind_files, None)
+            .expect("wind recovery splash drift scenario runs");
+
+        assert!(matches!(
+            no_wind.stop_reason,
+            StopReason::GroundImpact {
+                ground_altitude_m,
+                ..
+            } if ground_altitude_m == 0.0
+        ));
+        assert!(matches!(
+            wind.stop_reason,
+            StopReason::GroundImpact {
+                ground_altitude_m,
+                ..
+            } if ground_altitude_m == 0.0
+        ));
+
+        let no_wind_x = f64_column(&no_wind, "position_x_m")
+            .last()
+            .copied()
+            .expect("no-wind final x");
+        let wind_x = f64_column(&wind, "position_x_m")
+            .last()
+            .copied()
+            .expect("wind final x");
+        assert_eq!(no_wind_x.to_bits(), 0.0_f64.to_bits());
+        assert!(wind_x > 0.0);
+        assert!(wind_x < 6.0 * wind.final_time_s);
+
+        assert!(
+            f64_column(&wind, "position_z_m")
+                .last()
+                .copied()
+                .expect("wind final z")
+                <= 0.0
+        );
+        assert!(
+            f64_column(&wind, "recovery.main_chute.drag_area_m2")
+                .iter()
+                .any(|area| area.to_bits() == 1.0_f64.to_bits())
+        );
+        assert_eq!(
+            f64_column(&wind, "position_y_m")
+                .last()
+                .copied()
+                .expect("wind final y")
+                .to_bits(),
+            0.0_f64.to_bits()
         );
     }
 }

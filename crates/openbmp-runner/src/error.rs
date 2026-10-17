@@ -6,10 +6,12 @@
 //! to a stable exit code.
 
 use openbmp_aero::AeroError;
+use openbmp_aerodb::AerodbError;
 use openbmp_aerothermal::AerothermalError;
 use openbmp_afts::AftsError;
 use openbmp_bridge::BridgeError;
 use openbmp_feedsystem::FeedSystemError;
+use openbmp_ground::GroundError;
 use openbmp_physics::PhysicsError;
 use openbmp_plume::PlumeError;
 use openbmp_propulsion::MotorError;
@@ -93,6 +95,9 @@ pub enum RunnerError {
     /// An aerodynamic-deck loader or sample evaluation failed.
     #[error("aerodynamic deck error")]
     Aero(#[from] AeroError),
+    /// An offline aero-database helper failed while preparing a run deck.
+    #[error("aero database error")]
+    Aerodb(#[from] AerodbError),
     /// A live aerothermal model construction or evaluation failed.
     #[error("aerothermal error")]
     Aerothermal(#[from] AerothermalError),
@@ -125,6 +130,9 @@ pub enum RunnerError {
     /// A physics-model construction or evaluation failed.
     #[error("physics error")]
     Env(#[from] PhysicsError),
+    /// A ground-segment countdown plan failed to materialize or evaluate.
+    #[error("ground countdown error")]
+    Ground(#[from] GroundError),
 }
 
 impl RunnerError {
@@ -146,6 +154,7 @@ impl RunnerError {
             | Self::Bridge(_)
             | Self::UnsupportedScenario { .. }
             | Self::Aero(_)
+            | Self::Aerodb(_)
             | Self::Aerothermal(_)
             | Self::Afts(_)
             | Self::Plume(_)
@@ -153,7 +162,8 @@ impl RunnerError {
             | Self::Motor(_)
             | Self::Thermochem(_)
             | Self::FeedSystem(_)
-            | Self::Env(_) => 2,
+            | Self::Env(_)
+            | Self::Ground(_) => 2,
             Self::Simulation(_) | Self::Telemetry(_) => 4,
         }
     }

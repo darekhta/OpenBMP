@@ -1,0 +1,50 @@
+openbmp.scenario = 3
+
+[meta]
+name = "mc-acoustics-ascent-campaign"
+description = "Synthetic MC ascent acoustics campaign test."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 220606
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 10.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "mc-acoustics-ascent-campaign"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[acoustics.ascent]
+station_id = "station-a"
+deck_file = @DECK_FILE@
+deck_file_sha256 = "@DECK_SHA256@"
+class_id = "attached_turbulent"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[telemetry]
+output.csv = "out/mc-acoustics-ascent-campaign.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true

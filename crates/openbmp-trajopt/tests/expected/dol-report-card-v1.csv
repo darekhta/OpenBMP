@@ -1,0 +1,17 @@
+openbmp.dol_report_card,1
+report_id,dol-report-card-test
+verification_provenance,runner_6dof_synthetic
+design_profile_digest,sha256:wind
+solver_provenance,dol_spliced_wind_recenter:test
+iload_sha256_hex,sha256:iload
+load_window_sample_count,3
+redesigned_min_margin_rad,2.000000000000e-2
+min_required_margin_rad,0.000000000000e0
+redesigned_not_worse_fraction,1.000000000000e0
+min_not_worse_fraction,9.000000000000e-1
+insertion_residual_norm_m,1.000000000000e-2
+insertion_residual_limit_m,1.000000000000e0
+verdict,go,
+indicator,design_value,verified_value,abs_error,allowed_abs_error,passed
+q_alpha_station,1.200000000000e1,1.205000000000e1,5.000000000000e-2,1.000000000000e-1,true
+station_moment,5.000000000000e3,5.000500000000e3,5.000000000000e-1,1.000000000000e0,true

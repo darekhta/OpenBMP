@@ -1,0 +1,144 @@
+openbmp.feed_system_gfssp_tank_blowdown_example8 = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.gfssp_tank_blowdown_example8.v1"
+source_class = "public-nasa-gfssp-manual-worked-example"
+source_title = "GFSSP Version 6 Example 8 simulation of the blowdown of a pressurized tank"
+source_url = "https://www.nasa.gov/wp-content/uploads/2024/04/gfssp-v6-usermanual.pdf?emrc=67b605705809e"
+source_hash_sha256 = "340f4b208a4814d776ef020df7167304dd74c09d641fb006d352b958cad4bc8c"
+provenance = "Manual extraction from GFSSP Version 6 User's Manual section 6.8: tank volume, initial air pressure and temperature, atmospheric boundary pressure, orifice diameter, unit-discharge coefficient, 200 s duration, and the Moody closed-form pressure solution GFSSP compares against."
+license_or_terms = "NASA public technical manual"
+validation = "research"
+
+[conversion]
+psi_to_pa = 6894.757293168
+ft3_to_m3 = 0.028316846592
+inch_to_m = 0.0254
+deg_f_to_k_offset = 255.37222222222223
+lbm_per_s_to_kg_per_s = 0.45359237
+
+[config]
+tank_volume_m3 = 0.28316846592
+initial_pressure_pa = 689475.7293168
+initial_temperature_k = 299.81666666666666
+downstream_pressure_pa = 101352.9322095696
+gas_gamma = 1.4
+gas_constant_j_per_kg_k = 287.058
+orifice_area_m2 = 5.067074790974978e-6
+discharge_coefficient = 1.0
+
+[manual_inputs]
+tank_volume_ft3 = 10.0
+initial_pressure_psia = 100.0
+initial_temperature_deg_f = 80.0
+downstream_pressure_psia = 14.7
+orifice_diameter_in = 0.1
+duration_s = 200.0
+reported_initial_mass_flow_lbm_per_s = 0.0177
+computed_initial_mass_flow_lbm_per_s = 0.017977037468029054
+
+[tolerances]
+absolute_pressure_pa = 1.0e-7
+absolute_pressure_ratio = 1.0e-14
+absolute_temperature_k = 1.0e-12
+absolute_mass_kg = 1.0e-12
+absolute_mass_flow_kg_per_s = 1.0e-14
+
+[[sample]]
+time_s = 0.0
+expected_pressure_pa = 689475.7293168
+expected_pressure_ratio = 1.0
+expected_temperature_k = 299.81666666666666
+expected_mass_kg = 2.268498230283613
+expected_mass_flow_kg_per_s = 0.008154247030702099
+expected_validation = "research"
+
+[[sample]]
+time_s = 20.0
+expected_pressure_pa = 623906.5485747803
+expected_pressure_ratio = 0.9048999436035378
+expected_temperature_k = 291.37744563700994
+expected_mass_kg = 2.1122185171089236
+expected_mass_flow_kg_per_s = 0.007484871436927508
+expected_validation = "research"
+
+[[sample]]
+time_s = 40.0
+expected_pressure_pa = 565367.6548885531
+expected_pressure_ratio = 0.8199964565087369
+expected_temperature_k = 283.28959374035566
+expected_mass_kg = 1.9686819990038755
+expected_mass_flow_kg_per_s = 0.006878732401198902
+expected_validation = "research"
+
+[[sample]]
+time_s = 60.0
+expected_pressure_pa = 513022.3303832664
+expected_pressure_ratio = 0.7440759820387283
+expected_temperature_k = 275.53387248892795
+expected_mass_kg = 1.8366927274862448
+expected_mass_flow_kg_per_s = 0.00632909388574797
+expected_validation = "research"
+
+[[sample]]
+time_s = 80.0
+expected_pressure_pa = 466143.0515304319
+expected_pressure_ratio = 0.6760833365263372
+expected_temperature_k = 268.0923422995945
+expected_mass_kg = 1.7151813236430766
+expected_mass_flow_kg_per_s = 0.005830016411175438
+expected_validation = "research"
+
+[[sample]]
+time_s = 100.0
+expected_pressure_pa = 424096.01712888095
+expected_pressure_ratio = 0.6150992690476818
+expected_temperature_k = 260.94825866136586
+expected_mass_kg = 1.6031901062321936
+expected_mass_flow_kg_per_s = 0.005376253759220099
+expected_validation = "research"
+
+[[sample]]
+time_s = 120.0
+expected_pressure_pa = 386328.0372471773
+expected_pressure_ratio = 0.5603214454408553
+expected_temperature_k = 254.0859778590218
+expected_mass_kg = 1.4998601362613966
+expected_mass_flow_kg_per_s = 0.004963164220977706
+expected_validation = "research"
+
+[[sample]]
+time_s = 140.0
+expected_pressure_pa = 352355.3977636242
+expected_pressure_ratio = 0.5110482976866675
+expected_temperature_k = 247.49087126079482
+expected_mass_kg = 1.4044199098510126
+expected_mass_flow_kg_per_s = 0.004586634184591488
+expected_validation = "research"
+
+[[sample]]
+time_s = 160.0
+expected_pressure_pa = 321754.38203375053
+expected_pressure_ratio = 0.4666652767495909
+expected_temperature_k = 241.14924729241426
+expected_mass_kg = 1.3161754716123792
+expected_mass_flow_kg_per_s = 0.00424301221433038
+expected_validation = "research"
+
+[[sample]]
+time_s = 180.0
+expected_pressure_pa = 294153.18582098966
+expected_pressure_ratio = 0.42663312617612426
+expected_temperature_k = 235.04828031973366
+expected_mass_kg = 1.2345017546823953
+expected_mass_flow_kg_per_s = 0.003929052069109508
+expected_validation = "research"
+
+[[sample]]
+time_s = 200.0
+expected_pressure_pa = 269225.00632252597
+expected_pressure_ratio = 0.39047785857422485
+expected_temperature_k = 229.175945749598
+expected_mass_kg = 1.1588349820606163
+expected_mass_flow_kg_per_s = 0.0036418633541675212
+expected_validation = "research"

@@ -16,6 +16,9 @@
 //!   as a locked-order pitch-then-yaw rotation. Mass flow is
 //!   `thrust / (g0 · isp)`. Used for liquid (and later hybrid /
 //!   cold-gas) propulsion.
+//! * [`tvc`] — deterministic TVC actuator plant primitives with
+//!   second-order bandwidth dynamics, position/rate limits, load-torque
+//!   feedback, and tail-wags-dog inertial reaction torque reporting.
 //! * [`grain`] — solid-grain geometry and quasi-steady regression
 //!   models that produce validated [`motor::SolidMotor`] instances
 //!   from textbook/synthetic internal-ballistics constants.
@@ -74,6 +77,7 @@ pub mod grain;
 pub mod motor;
 #[cfg(feature = "parser")]
 pub mod parser;
+pub mod tvc;
 
 pub use cluster::{ClusterLayout, EngineCluster};
 pub use engine::{
@@ -91,3 +95,7 @@ pub use motor::{
     NozzleSeparationCriterion, SolidMotor, ThrustCurve, Validation,
 };
 pub use motor::{ChamberState, IdealNozzlePerformance, NozzlePerformance, NozzleSolution};
+pub use tvc::{
+    TvcActuatorCommand, TvcActuatorParams, TvcActuatorPlant, TvcActuatorState, TvcActuatorStep,
+    TvcAxisState, TvcAxisStep, TvcLoadTorque,
+};

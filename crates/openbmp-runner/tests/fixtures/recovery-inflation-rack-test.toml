@@ -1,0 +1,44 @@
+openbmp.scenario = 3
+
+[meta]
+name = "recovery-inflation-rack-test"
+description = "Synthetic recovery inflation rack test."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 0.25
+seed = 1
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 1000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, -50.0]
+
+[vehicle.assembly]
+id = "recovery-inflation"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 0.5 }
+dry_mass_kg = 1.0
+
+[[vehicle.assembly.recovery]]
+id = "main_chute"
+kind = { kind = "parachute_drag", c_d = 1.5, area_inflated_m2 = 8.0 }
+inflation = { fill_time_s = 1.0, opening_force_coeff_c_x = 1.2, growth = "polynomial", exponent_j = 1.0 }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "us_standard_1976"
+wind = "none"
+
+[telemetry]
+output.csv = "out/recovery-inflation-rack-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true

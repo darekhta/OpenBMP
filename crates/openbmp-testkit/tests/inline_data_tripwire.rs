@@ -101,6 +101,8 @@ const INLINE_TOML_ALLOW_LIST: &[&str] = &[
     // exercise narrow wiring paths and mutation-based negative cases.
     "crates/openbmp-cli/tests/multi_body_e2e.rs",
     "crates/openbmp-runner/src/aero.rs",
+    "crates/openbmp-runner/src/aerothermal.rs",
+    "crates/openbmp-runner/src/atmosphere.rs",
     "crates/openbmp-runner/src/celestial.rs",
     "crates/openbmp-runner/src/frames.rs",
     "crates/openbmp-runner/src/point_mass.rs",
@@ -125,7 +127,9 @@ const TRIPWIRES: &[Tripwire] = &[
         // canonical WGS84 constants for both frame transformations and
         // gravity models.
         allow_list: &[
+            "data/afts/closed-form-iip-tolerance-v1.toml",
             "data/gravity/wgs84-j2.toml",
+            "docs/scenario-format.md",
             "docs/data-provenance.md",
             "crates/openbmp-physics/src/frames.rs",
             "crates/openbmp-runner/src/celestial.rs",
@@ -143,6 +147,9 @@ const TRIPWIRES: &[Tripwire] = &[
             "docs/data-provenance.md",
             "crates/openbmp-physics/src/gravity.rs",
             "crates/openbmp-scenario/src/document.rs",
+            "crates/openbmp-runner/src/celestial.rs",
+            "crates/openbmp-runner/src/point_mass.rs",
+            "crates/openbmp-scenario/src/scenario.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],
     },
@@ -151,9 +158,14 @@ const TRIPWIRES: &[Tripwire] = &[
         needle: "6378137.0",
         // Single source of truth: openbmp-physics::frames.
         allow_list: &[
+            "data/afts/closed-form-iip-tolerance-v1.toml",
             "data/gravity/wgs84-j2.toml",
+            "docs/scenario-format.md",
             "docs/data-provenance.md",
+            "crates/openbmp-comm/src/lib.rs",
             "crates/openbmp-physics/src/frames.rs",
+            "crates/openbmp-runner/src/celestial.rs",
+            "crates/openbmp-runner/src/point_mass.rs",
             "crates/openbmp-scenario/src/scenario.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],

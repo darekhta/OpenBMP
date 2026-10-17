@@ -1,0 +1,33 @@
+# Public NASA SP-405 rectangular-wing lift-curve-slope fixture.
+#
+# Uses the Figure 5 rectangular-planform formula for lift-curve slope:
+# CL_alpha = 2*pi*A / (A + 2.903 + 0.027/A). This is public NASA
+# equation-level evidence, not AVL code-to-code or wind-tunnel validation.
+
+[case]
+dataset_id = "openbmp.aero.nasa_sp405_rectangular_wing_lift_slope.v1"
+source_class = "public-domain-nasa"
+validation_label = "research"
+report_id = "NASA-SP-405"
+source_title = "Vortex-Lattice Utilization"
+source_url = "https://ntrs.nasa.gov/citations/19760021075"
+source_figure = "Figure 5"
+root_chord_m = 1.0
+tip_chord_m = 1.0
+span_m = 4.0
+sweep_deg = 0.0
+root_le_x_m = 0.0
+moment_reference_x_m = 0.25
+reference_area_m2 = 4.0
+reference_length_m = 1.0
+hinge_chord_fraction = 0.75
+spanwise_panels = 16
+mach = 0.0
+alpha_deg = 4.0
+expected_aspect_ratio = 4.0
+expected_lift_curve_slope_per_rad = 3.6372866208934247
+expected_cl = 0.25393050949331614
+expected_cd_induced = 0.006036719247167906
+expected_aerodynamic_center_x_m = 0.25
+max_relative_error = 1.0e-12
+max_absolute_error = 1.0e-12

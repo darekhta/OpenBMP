@@ -1142,6 +1142,11 @@ impl SampleRng {
 pub enum PropulsionFaultPayload {
     /// Engine commanded off and never restarted.
     HardOff,
+    /// Engine throttle held at a fixed command.
+    Stuck {
+        /// Finite stuck throttle in `[0, 1]`.
+        at_throttle: f64,
+    },
     /// Thrust multiplier fault.
     OverThrust {
         /// Finite non-negative thrust multiplier.
@@ -1172,6 +1177,15 @@ impl PropulsionFaultPayload {
     fn validate(&self) -> Result<(), MonteCarloError> {
         match self {
             Self::HardOff => Ok(()),
+            Self::Stuck { at_throttle } => {
+                if at_throttle.is_finite() && (0.0..=1.0).contains(at_throttle) {
+                    Ok(())
+                } else {
+                    Err(MonteCarloError::InvalidInput {
+                        field: "fault.at_throttle",
+                    })
+                }
+            }
             Self::OverThrust { factor } => {
                 if factor.is_finite() && *factor >= 0.0 {
                     Ok(())
@@ -1219,6 +1233,12 @@ impl PropulsionFaultPayload {
     fn to_toml_inline(&self) -> String {
         match self {
             Self::HardOff => "{ kind = \"hard_off\" }".to_owned(),
+            Self::Stuck { at_throttle } => {
+                format!(
+                    "{{ kind = \"stuck\", at_throttle = {} }}",
+                    toml_f64(*at_throttle)
+                )
+            }
             Self::OverThrust { factor } => {
                 format!(
                     "{{ kind = \"over_thrust\", factor = {} }}",
@@ -3611,9 +3631,50 @@ require_monotonic_time = true
                 fault: PropulsionFaultPayload::HardOff,
             },
             PropulsionFaultTemplate {
-                id: "mc-main-overthrust".to_owned(),
+                id: "mc-main-stuck".to_owned(),
                 engine_id: "main".to_owned(),
                 start_step: 5,
+                probability: 1.0,
+                fault: PropulsionFaultPayload::Stuck { at_throttle: 0.35 },
+            },
+            PropulsionFaultTemplate {
+                id: "mc-main-overthrust".to_owned(),
+                engine_id: "main".to_owned(),
+                start_step: 6,
+                probability: 1.0,
+                fault: PropulsionFaultPayload::OverThrust { factor: 1.1 },
+            },
+            PropulsionFaultTemplate {
+                id: "mc-main-hard-start".to_owned(),
+                engine_id: "main".to_owned(),
+                start_step: 7,
+                probability: 1.0,
+                fault: PropulsionFaultPayload::HardStartOverpressure {
+                    factor: 1.2,
+                    duration_s: 0.05,
+                },
+            },
+            PropulsionFaultTemplate {
+                id: "mc-main-cavitation-loss".to_owned(),
+                engine_id: "main".to_owned(),
+                start_step: 8,
+                probability: 1.0,
+                fault: PropulsionFaultPayload::CavitationThrustLoss { factor: 0.5 },
+            },
+            PropulsionFaultTemplate {
+                id: "mc-main-gimbal-locked".to_owned(),
+                engine_id: "main".to_owned(),
+                start_step: 9,
+                probability: 1.0,
+                fault: PropulsionFaultPayload::GimbalLocked {
+                    pitch_rad: 0.0,
+                    yaw_rad: 0.0,
+                },
+            },
+            PropulsionFaultTemplate {
+                id: "mc-main-inactive-overthrust".to_owned(),
+                engine_id: "main".to_owned(),
+                start_step: 10,
                 probability: 0.0,
                 fault: PropulsionFaultPayload::OverThrust { factor: 1.1 },
             },
@@ -3621,13 +3682,23 @@ require_monotonic_time = true
         .unwrap();
 
         let overlay = library.materialize(0xBEEF, 3, 12);
-        assert_eq!(overlay.rules().len(), 1);
+        assert_eq!(overlay.rules().len(), 6);
         assert_eq!(overlay.rules()[0].id, "mc-main-hardoff");
         let fragment = overlay.to_toml_fragment();
         assert!(fragment.contains("[propulsion.faults]"));
         assert!(fragment.contains("id = \"mc-main-hardoff\""));
         assert!(fragment.contains("fault = { kind = \"hard_off\" }"));
-        assert!(!fragment.contains("mc-main-overthrust"));
+        assert!(fragment.contains(r#"fault = { kind = "stuck", at_throttle = 0.35 }"#));
+        assert!(fragment.contains(r#"fault = { kind = "over_thrust", factor = 1.1 }"#));
+        assert!(fragment.contains(
+            r#"fault = { kind = "hard_start_overpressure", factor = 1.2, duration_s = 0.05 }"#
+        ));
+        assert!(fragment.contains(r#"fault = { kind = "cavitation_thrust_loss", factor = 0.5 }"#));
+        assert!(
+            fragment
+                .contains(r#"fault = { kind = "gimbal_locked", pitch_rad = 0.0, yaw_rad = 0.0 }"#)
+        );
+        assert!(!fragment.contains("mc-main-inactive-overthrust"));
 
         let scenario_toml = format!("{MC_ENGINE_SCENARIO}\n{fragment}");
         let scenario = openbmp_scenario::Scenario::from_toml_str(&scenario_toml).unwrap();
@@ -3637,7 +3708,7 @@ require_monotonic_time = true
             .as_ref()
             .and_then(|propulsion| propulsion.faults.as_ref())
             .unwrap();
-        assert_eq!(faults.rules.len(), 1);
+        assert_eq!(faults.rules.len(), 6);
         assert_eq!(faults.rules[0].id, "mc-main-hardoff");
         assert_eq!(faults.rules[0].engine_id, "main");
         assert_eq!(faults.rules[0].start_step, 4);
@@ -3680,6 +3751,18 @@ require_monotonic_time = true
             }]),
             Err(MonteCarloError::InvalidInput {
                 field: "fault.factor"
+            })
+        ));
+        assert!(matches!(
+            PropulsionFaultLibrary::new(vec![PropulsionFaultTemplate {
+                id: "bad-stuck".to_owned(),
+                engine_id: "main".to_owned(),
+                start_step: 1,
+                probability: 1.0,
+                fault: PropulsionFaultPayload::Stuck { at_throttle: 1.2 },
+            }]),
+            Err(MonteCarloError::InvalidInput {
+                field: "fault.at_throttle"
             })
         ));
         assert!(matches!(

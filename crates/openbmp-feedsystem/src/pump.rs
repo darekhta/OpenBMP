@@ -577,6 +577,143 @@ mod tests {
     }
 
     #[test]
+    fn turbopump_matches_public_topflo_duty_point() {
+        let data: toml::Value = toml::from_str(include_str!(
+            "../../../data/feed_system/public-topflo-pump-duty-point-v1.toml"
+        ))
+        .unwrap();
+        assert_eq!(
+            table("openbmp", &data)["feed_turbopump_public_topflo"]
+                .as_integer()
+                .unwrap(),
+            1
+        );
+
+        let pump = Turbopump::new(TurbopumpConfig {
+            design: TurbopumpDesignPoint {
+                volumetric_flow_m3_per_s: float(table("design", &data), "volumetric_flow_m3_per_s"),
+                pressure_rise_pa: float(table("design", &data), "pressure_rise_pa"),
+                shaft_speed_rad_per_s: float(table("design", &data), "shaft_speed_rad_per_s"),
+                fluid_density_kg_m3: float(table("design", &data), "fluid_density_kg_m3"),
+                efficiency: float(table("design", &data), "efficiency"),
+                required_npsh_m: float(table("design", &data), "required_npsh_m"),
+                specific_speed: float(table("design", &data), "specific_speed"),
+            },
+            map: NormalizedPumpMap {
+                head_coefficients: coefficients(table("map", &data), "head_coefficients"),
+                efficiency_coefficients: coefficients(
+                    table("map", &data),
+                    "efficiency_coefficients",
+                ),
+                cavitation_head_multiplier: float(
+                    table("map", &data),
+                    "cavitation_head_multiplier",
+                ),
+            },
+        })
+        .unwrap();
+        let conversion = table("conversion", &data);
+        let source = table("source_example", &data);
+        let tolerances = table("tolerances", &data);
+        let tolerance = float(tolerances, "absolute");
+
+        for case in data
+            .get("case")
+            .and_then(toml::Value::as_array)
+            .expect("case array")
+        {
+            let case = case.as_table().unwrap();
+            let snapshot = pump
+                .solve(TurbopumpOperatingPoint {
+                    volumetric_flow_m3_per_s: float(case, "volumetric_flow_m3_per_s"),
+                    shaft_speed_rad_per_s: float(case, "shaft_speed_rad_per_s"),
+                    suction_pressure_pa: float(case, "suction_pressure_pa"),
+                    vapor_pressure_pa: float(case, "vapor_pressure_pa"),
+                })
+                .unwrap();
+            let name = string(case, "name");
+
+            assert_abs_diff_eq!(
+                snapshot.flow_coefficient,
+                float(case, "expected_flow_coefficient"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.speed_ratio,
+                float(case, "expected_speed_ratio"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.pressure_rise_pa,
+                float(case, "expected_pressure_rise_pa"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.discharge_pressure_pa,
+                float(case, "expected_discharge_pressure_pa"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.available_npsh_m,
+                float(case, "expected_available_npsh_m"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.required_npsh_m,
+                float(case, "expected_required_npsh_m"),
+                epsilon = tolerance
+            );
+            assert_eq!(
+                snapshot.cavitation,
+                cavitation(string(case, "expected_cavitation")),
+                "case {name}"
+            );
+            assert_abs_diff_eq!(
+                snapshot.efficiency,
+                float(case, "expected_efficiency"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.hydraulic_power_w,
+                float(case, "expected_hydraulic_power_w"),
+                epsilon = tolerance
+            );
+            assert_abs_diff_eq!(
+                snapshot.shaft_power_w,
+                float(case, "expected_shaft_power_w"),
+                epsilon = tolerance
+            );
+
+            let published_head_m = float(source, "selected_head_ft") * float(conversion, "ft_to_m");
+            let published_npsh_m = float(source, "npshr_ft") * float(conversion, "ft_to_m");
+            let published_motor_power_w =
+                float(source, "motor_power_hp") * float(conversion, "hp_to_w");
+            assert_abs_diff_eq!(
+                published_head_m,
+                float(case, "expected_published_head_m"),
+                epsilon = float(tolerances, "published_head_m")
+            );
+            assert_abs_diff_eq!(
+                published_npsh_m,
+                float(case, "expected_published_npsh_m"),
+                epsilon = float(tolerances, "published_npsh_m")
+            );
+            assert_abs_diff_eq!(
+                published_motor_power_w,
+                float(case, "expected_published_motor_power_w"),
+                epsilon = float(tolerances, "published_motor_power_w")
+            );
+            assert_abs_diff_eq!(
+                snapshot.pressure_rise_pa
+                    / (pump.config().design.fluid_density_kg_m3 * STANDARD_GRAVITY_M_S2),
+                published_head_m,
+                epsilon = float(tolerances, "published_head_m")
+            );
+            assert_eq!(snapshot.validation, ValidationStatus::ValidatedToy);
+        }
+    }
+
+    #[test]
     fn turbopump_rejects_invalid_map_and_operating_point() {
         let mut bad = config();
         bad.map.cavitation_head_multiplier = 1.2;

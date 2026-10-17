@@ -3,8 +3,9 @@
 //! Ships:
 //!
 //! * [`BoundaryLayer`] trait + state enum.
-//! * Three transition models: empirical fixed `Re_x_crit`, e^N
-//!   placeholder, and `Re_θ / M_e` engineering correlation.
+//! * Transition models: empirical fixed `Re_x_crit`, e^N
+//!   placeholder, smooth-wall `Re_θ / M_e`, and PANT/Reda rough-wall
+//!   engineering correlations.
 //! * [`ReferenceEnthalpyHeating`] — Eckert reference-enthalpy method
 //!   distributed-heating consumer.
 //!
@@ -110,6 +111,258 @@ impl Default for ReThetaTransition {
     fn default() -> Self {
         Self {
             re_theta_crit: 200.0,
+        }
+    }
+}
+
+const RE_THETA_TRANSITION_COMPLETION_RATIO: f64 = 1.25;
+
+/// Default PANT/Reda rough-wall transition indicator threshold.
+///
+/// The indicator used here is `Re_θ * (T_e / T_w) * (k / θ)`.
+pub const PANT_REDA_ROUGHNESS_CRITICAL_INDICATOR: f64 = 215.0;
+
+impl ReThetaTransition {
+    /// Construct a smooth-wall `Re_θ / M_e` transition model from an
+    /// explicit onset threshold.
+    #[must_use]
+    pub const fn with_critical_ratio(re_theta_crit: f64) -> Self {
+        Self { re_theta_crit }
+    }
+
+    /// Compute the smooth-wall transition indicator `Re_θ / M_e`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError`] if the supplied momentum-thickness
+    /// Reynolds number or edge Mach number is non-finite, negative, or
+    /// otherwise outside the algebraic correlation envelope.
+    pub fn ratio(
+        momentum_thickness_reynolds: f64,
+        edge_mach: f64,
+    ) -> Result<f64, AerothermalError> {
+        if !momentum_thickness_reynolds.is_finite() || !edge_mach.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Re_theta transition inputs are NaN or Inf",
+            });
+        }
+        if momentum_thickness_reynolds < 0.0 || edge_mach <= 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Re_theta transition requires non-negative Re_theta and positive edge Mach",
+            });
+        }
+        Ok(momentum_thickness_reynolds / edge_mach)
+    }
+
+    /// Evaluate laminar/transitional/turbulent state from a local
+    /// Reynolds number, momentum-thickness Reynolds number, and edge
+    /// Mach number.
+    ///
+    /// The transition onset is `Re_θ / M_e == re_theta_crit`; the
+    /// built-in smooth engineering ramp reaches fully turbulent at
+    /// `1.25 * re_theta_crit`. Rough-wall PANT/Reda and e^N stability
+    /// methods are intentionally separate models.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError`] if model or state inputs are
+    /// non-finite, non-positive where required, or outside the
+    /// correlation envelope.
+    pub fn state_from_re_theta(
+        &self,
+        reynolds_x: f64,
+        momentum_thickness_reynolds: f64,
+        edge_mach: f64,
+    ) -> Result<BoundaryLayerState, AerothermalError> {
+        if !self.re_theta_crit.is_finite() || !reynolds_x.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Re_theta transition model input is NaN or Inf",
+            });
+        }
+        if self.re_theta_crit <= 0.0 || reynolds_x <= 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Re_theta transition requires positive critical ratio and local Reynolds number",
+            });
+        }
+
+        let ratio = Self::ratio(momentum_thickness_reynolds, edge_mach)?;
+        if ratio < self.re_theta_crit {
+            Ok(BoundaryLayerState::Laminar { reynolds_x })
+        } else {
+            let complete = self.re_theta_crit * RE_THETA_TRANSITION_COMPLETION_RATIO;
+            if ratio >= complete {
+                Ok(BoundaryLayerState::Turbulent { reynolds_x })
+            } else {
+                Ok(BoundaryLayerState::Transitional {
+                    intermittency: ((ratio - self.re_theta_crit) / (complete - self.re_theta_crit))
+                        .clamp(0.0, 1.0),
+                    reynolds_x,
+                })
+            }
+        }
+    }
+}
+
+/// Combined smooth-wall plus PANT/Reda rough-wall transition selector.
+///
+/// Smooth-wall onset is still controlled by [`ReThetaTransition`]. If
+/// `roughness_height_m > 0`, the rough-wall indicator
+/// `Re_θ * (T_e / T_w) * (k / θ)` is evaluated as a second onset path. The
+/// larger normalized indicator controls the same deterministic linear ramp
+/// from onset to fully turbulent at `1.25` times threshold.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PantRedaRoughnessTransition {
+    /// Smooth-wall transition model.
+    pub smooth: ReThetaTransition,
+    /// Equivalent roughness height `k` in meters.
+    pub roughness_height_m: f64,
+    /// Critical PANT/Reda roughness indicator for transition onset.
+    pub roughness_critical_indicator: f64,
+}
+
+impl Default for PantRedaRoughnessTransition {
+    fn default() -> Self {
+        Self {
+            smooth: ReThetaTransition::default(),
+            roughness_height_m: 0.0,
+            roughness_critical_indicator: PANT_REDA_ROUGHNESS_CRITICAL_INDICATOR,
+        }
+    }
+}
+
+impl PantRedaRoughnessTransition {
+    /// Construct a PANT/Reda selector with default thresholds and a supplied
+    /// roughness height.
+    #[must_use]
+    pub const fn with_roughness_height(roughness_height_m: f64) -> Self {
+        Self {
+            smooth: ReThetaTransition::with_critical_ratio(200.0),
+            roughness_height_m,
+            roughness_critical_indicator: PANT_REDA_ROUGHNESS_CRITICAL_INDICATOR,
+        }
+    }
+
+    /// Construct a PANT/Reda selector from explicit smooth-wall and rough-wall
+    /// onset thresholds.
+    #[must_use]
+    pub const fn with_thresholds(
+        smooth_re_theta_crit: f64,
+        roughness_height_m: f64,
+        roughness_critical_indicator: f64,
+    ) -> Self {
+        Self {
+            smooth: ReThetaTransition::with_critical_ratio(smooth_re_theta_crit),
+            roughness_height_m,
+            roughness_critical_indicator,
+        }
+    }
+
+    /// Compute the PANT/Reda rough-wall indicator
+    /// `Re_θ * (T_e / T_w) * (k / θ)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError`] if any input is non-finite, if `Re_θ` or
+    /// roughness height is negative, or if momentum thickness / temperatures
+    /// are non-positive.
+    pub fn roughness_indicator(
+        momentum_thickness_reynolds: f64,
+        momentum_thickness_m: f64,
+        roughness_height_m: f64,
+        edge_temperature_k: f64,
+        wall_temperature_k: f64,
+    ) -> Result<f64, AerothermalError> {
+        if !momentum_thickness_reynolds.is_finite()
+            || !momentum_thickness_m.is_finite()
+            || !roughness_height_m.is_finite()
+            || !edge_temperature_k.is_finite()
+            || !wall_temperature_k.is_finite()
+        {
+            return Err(AerothermalError::NonFinite {
+                reason: "PANT/Reda transition inputs are NaN or Inf",
+            });
+        }
+        if momentum_thickness_reynolds < 0.0
+            || momentum_thickness_m <= 0.0
+            || roughness_height_m < 0.0
+            || edge_temperature_k <= 0.0
+            || wall_temperature_k <= 0.0
+        {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "PANT/Reda transition requires non-negative Re_theta/roughness and positive theta/temperatures",
+            });
+        }
+        Ok(momentum_thickness_reynolds
+            * (edge_temperature_k / wall_temperature_k)
+            * (roughness_height_m / momentum_thickness_m))
+    }
+
+    /// Evaluate laminar/transitional/turbulent state from smooth-wall and
+    /// rough-wall transition indicators.
+    ///
+    /// If roughness height is zero, this path is equivalent to
+    /// [`ReThetaTransition::state_from_re_theta`] and does not require valid
+    /// momentum-thickness or temperature inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError`] if model thresholds or supplied state
+    /// inputs are non-finite, non-positive where required, or outside the
+    /// correlation envelope.
+    #[allow(clippy::too_many_arguments)]
+    pub fn state_from_boundary_layer(
+        &self,
+        reynolds_x: f64,
+        momentum_thickness_reynolds: f64,
+        edge_mach: f64,
+        momentum_thickness_m: f64,
+        edge_temperature_k: f64,
+        wall_temperature_k: f64,
+    ) -> Result<BoundaryLayerState, AerothermalError> {
+        if !self.smooth.re_theta_crit.is_finite()
+            || !self.roughness_height_m.is_finite()
+            || !self.roughness_critical_indicator.is_finite()
+            || !reynolds_x.is_finite()
+        {
+            return Err(AerothermalError::NonFinite {
+                reason: "PANT/Reda transition model input is NaN or Inf",
+            });
+        }
+        if self.smooth.re_theta_crit <= 0.0
+            || self.roughness_height_m < 0.0
+            || self.roughness_critical_indicator <= 0.0
+            || reynolds_x <= 0.0
+        {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "PANT/Reda transition requires positive thresholds/local Reynolds and non-negative roughness",
+            });
+        }
+
+        let smooth_ratio = ReThetaTransition::ratio(momentum_thickness_reynolds, edge_mach)?
+            / self.smooth.re_theta_crit;
+        let roughness_ratio = if self.roughness_height_m > 0.0 {
+            Self::roughness_indicator(
+                momentum_thickness_reynolds,
+                momentum_thickness_m,
+                self.roughness_height_m,
+                edge_temperature_k,
+                wall_temperature_k,
+            )? / self.roughness_critical_indicator
+        } else {
+            0.0
+        };
+        let governing_ratio = smooth_ratio.max(roughness_ratio);
+        if governing_ratio < 1.0 {
+            Ok(BoundaryLayerState::Laminar { reynolds_x })
+        } else if governing_ratio >= RE_THETA_TRANSITION_COMPLETION_RATIO {
+            Ok(BoundaryLayerState::Turbulent { reynolds_x })
+        } else {
+            Ok(BoundaryLayerState::Transitional {
+                intermittency: ((governing_ratio - 1.0)
+                    / (RE_THETA_TRANSITION_COMPLETION_RATIO - 1.0))
+                    .clamp(0.0, 1.0),
+                reynolds_x,
+            })
         }
     }
 }
@@ -317,6 +570,309 @@ mod tests {
             BoundaryLayerState::Laminar { .. } | BoundaryLayerState::Turbulent { .. } => f64::NAN,
         };
         assert!((intermittency - 0.5).abs() < 0.1);
+    }
+
+    #[test]
+    fn re_theta_transition_uses_mach_normalized_onset() {
+        let model = ReThetaTransition::with_critical_ratio(200.0);
+        assert_eq!(ReThetaTransition::ratio(1_000.0, 5.0).unwrap(), 200.0);
+
+        let below = model.state_from_re_theta(1.0e6, 990.0, 5.0).unwrap();
+        assert!(matches!(below, BoundaryLayerState::Laminar { .. }));
+
+        let onset = model.state_from_re_theta(1.0e6, 1_000.0, 5.0).unwrap();
+        assert!(matches!(
+            onset,
+            BoundaryLayerState::Transitional {
+                intermittency,
+                ..
+            } if intermittency == 0.0
+        ));
+    }
+
+    #[test]
+    fn re_theta_transition_blends_to_turbulent() {
+        let model = ReThetaTransition::with_critical_ratio(200.0);
+        let mid = model.state_from_re_theta(1.0e6, 1_125.0, 5.0).unwrap();
+        let intermittency = match mid {
+            BoundaryLayerState::Transitional { intermittency, .. } => intermittency,
+            BoundaryLayerState::Laminar { .. } | BoundaryLayerState::Turbulent { .. } => f64::NAN,
+        };
+        assert!((intermittency - 0.5).abs() <= f64::EPSILON);
+
+        let complete = model.state_from_re_theta(1.0e6, 1_250.0, 5.0).unwrap();
+        assert!(matches!(complete, BoundaryLayerState::Turbulent { .. }));
+    }
+
+    #[test]
+    fn re_theta_transition_heating_is_continuous_at_ramp_endpoints() {
+        let model = ReThetaTransition::with_critical_ratio(200.0);
+        let heating = ReferenceEnthalpyHeating { x_m: 0.5 };
+        let context = ctx(1.0e-4, 5_000.0, 1000.0);
+
+        let onset = model.state_from_re_theta(1.0e6, 1_000.0, 5.0).unwrap();
+        let onset_flux = heating.distributed(&context, onset).unwrap();
+        let laminar_flux = heating
+            .distributed(&context, BoundaryLayerState::Laminar { reynolds_x: 1.0e6 })
+            .unwrap();
+        assert!((onset_flux.q_w_m2 - laminar_flux.q_w_m2).abs() <= 1.0e-9);
+
+        let complete = model.state_from_re_theta(1.0e6, 1_250.0, 5.0).unwrap();
+        let complete_flux = heating.distributed(&context, complete).unwrap();
+        let turbulent_flux = heating
+            .distributed(
+                &context,
+                BoundaryLayerState::Turbulent { reynolds_x: 1.0e6 },
+            )
+            .unwrap();
+        assert!((complete_flux.q_w_m2 - turbulent_flux.q_w_m2).abs() <= 1.0e-9);
+    }
+
+    #[test]
+    fn re_theta_transition_rejects_invalid_inputs() {
+        let model = ReThetaTransition::default();
+        assert!(matches!(
+            ReThetaTransition::ratio(f64::NAN, 5.0),
+            Err(AerothermalError::NonFinite { .. })
+        ));
+        assert!(matches!(
+            ReThetaTransition::ratio(1_000.0, 0.0),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            model.state_from_re_theta(0.0, 1_000.0, 5.0),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            ReThetaTransition::with_critical_ratio(-1.0).state_from_re_theta(1.0e6, 1_000.0, 5.0),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+    }
+
+    fn fixture_value(fixture: &str, key: &str) -> f64 {
+        fixture
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once('=')?;
+                if name.trim() == key {
+                    value.trim().parse::<f64>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| panic!("missing transition fixture value {key}"))
+    }
+
+    fn transition_fixture_value(key: &str) -> f64 {
+        fixture_value(
+            include_str!("../../../data/aerothermal/transition/pant-reda-thresholds-v1.toml"),
+            key,
+        )
+    }
+
+    fn sharp_cone_fixture_value(key: &str) -> f64 {
+        fixture_value(
+            include_str!("../../../data/aerothermal/transition/sharp-cone-transition-v1.toml"),
+            key,
+        )
+    }
+
+    fn sharp_cone_re_theta(unit_reynolds_per_m: f64, x_m: f64, coefficient: f64) -> f64 {
+        coefficient * (unit_reynolds_per_m * x_m).sqrt()
+    }
+
+    #[test]
+    fn re_theta_transition_matches_sharp_cone_location_fixture() {
+        let edge_mach = sharp_cone_fixture_value("edge_mach");
+        let unit_reynolds_per_m = sharp_cone_fixture_value("unit_reynolds_per_m");
+        let coefficient = sharp_cone_fixture_value("momentum_thickness_coefficient");
+        let critical_ratio = sharp_cone_fixture_value("smooth_re_theta_crit");
+        let completion_ratio = sharp_cone_fixture_value("completion_ratio");
+        let reference_x_m = sharp_cone_fixture_value("reference_transition_x_m");
+        let completion_x_m = sharp_cone_fixture_value("reference_completion_x_m");
+        let tolerance_x_m = sharp_cone_fixture_value("tolerance_x_m");
+        let model = ReThetaTransition::with_critical_ratio(critical_ratio);
+        let reconstructed_x_m =
+            (critical_ratio * edge_mach / coefficient).powi(2) / unit_reynolds_per_m;
+        let reconstructed_completion_x_m =
+            (critical_ratio * completion_ratio * edge_mach / coefficient).powi(2)
+                / unit_reynolds_per_m;
+
+        assert!((reconstructed_x_m - reference_x_m).abs() <= tolerance_x_m);
+        assert!((reconstructed_completion_x_m - completion_x_m).abs() <= tolerance_x_m);
+
+        let below_x_m = reference_x_m - tolerance_x_m;
+        let below = model
+            .state_from_re_theta(
+                unit_reynolds_per_m * below_x_m,
+                sharp_cone_re_theta(unit_reynolds_per_m, below_x_m, coefficient),
+                edge_mach,
+            )
+            .unwrap();
+        assert!(matches!(below, BoundaryLayerState::Laminar { .. }));
+
+        let onset = model
+            .state_from_re_theta(
+                unit_reynolds_per_m * reference_x_m,
+                sharp_cone_re_theta(unit_reynolds_per_m, reference_x_m, coefficient),
+                edge_mach,
+            )
+            .unwrap();
+        assert!(matches!(
+            onset,
+            BoundaryLayerState::Transitional {
+                intermittency,
+                ..
+            } if intermittency.abs() <= 1.0e-12
+        ));
+
+        let complete = model
+            .state_from_re_theta(
+                unit_reynolds_per_m * completion_x_m,
+                sharp_cone_re_theta(unit_reynolds_per_m, completion_x_m, coefficient),
+                edge_mach,
+            )
+            .unwrap();
+        assert!(matches!(complete, BoundaryLayerState::Turbulent { .. }));
+    }
+
+    #[test]
+    fn pant_reda_roughness_indicator_matches_fixture_threshold() {
+        let re_theta = transition_fixture_value("synthetic_onset_re_theta");
+        let theta_m = transition_fixture_value("synthetic_momentum_thickness_m");
+        let roughness_m = transition_fixture_value("synthetic_roughness_height_m");
+        let edge_t = transition_fixture_value("synthetic_edge_temperature_k");
+        let wall_t = transition_fixture_value("synthetic_wall_temperature_k");
+
+        assert_eq!(
+            transition_fixture_value("pant_reda_roughness_critical_indicator"),
+            PANT_REDA_ROUGHNESS_CRITICAL_INDICATOR
+        );
+        assert_eq!(
+            PantRedaRoughnessTransition::roughness_indicator(
+                re_theta,
+                theta_m,
+                roughness_m,
+                edge_t,
+                wall_t
+            )
+            .unwrap(),
+            PANT_REDA_ROUGHNESS_CRITICAL_INDICATOR
+        );
+    }
+
+    #[test]
+    fn pant_reda_roughness_transition_can_trigger_before_smooth_wall() {
+        let model = PantRedaRoughnessTransition::with_thresholds(
+            200.0,
+            0.000_1,
+            PANT_REDA_ROUGHNESS_CRITICAL_INDICATOR,
+        );
+
+        let below = model
+            .state_from_boundary_layer(1.0e6, 990.0, 10.0, 0.001, 2_150.0, 1_000.0)
+            .unwrap();
+        assert!(matches!(below, BoundaryLayerState::Laminar { .. }));
+
+        let onset = model
+            .state_from_boundary_layer(1.0e6, 1_000.0, 10.0, 0.001, 2_150.0, 1_000.0)
+            .unwrap();
+        assert!(matches!(
+            onset,
+            BoundaryLayerState::Transitional {
+                intermittency,
+                ..
+            } if intermittency == 0.0
+        ));
+
+        let mid = model
+            .state_from_boundary_layer(1.0e6, 1_125.0, 10.0, 0.001, 2_150.0, 1_000.0)
+            .unwrap();
+        let intermittency = match mid {
+            BoundaryLayerState::Transitional { intermittency, .. } => intermittency,
+            BoundaryLayerState::Laminar { .. } | BoundaryLayerState::Turbulent { .. } => f64::NAN,
+        };
+        assert!((intermittency - 0.5).abs() <= f64::EPSILON);
+
+        let complete = model
+            .state_from_boundary_layer(1.0e6, 1_250.0, 10.0, 0.001, 2_150.0, 1_000.0)
+            .unwrap();
+        assert!(matches!(complete, BoundaryLayerState::Turbulent { .. }));
+    }
+
+    #[test]
+    fn pant_reda_zero_roughness_matches_smooth_wall_transition() {
+        let model = PantRedaRoughnessTransition::default();
+        let smooth = ReThetaTransition::default()
+            .state_from_re_theta(1.0e6, 1_125.0, 5.0)
+            .unwrap();
+        let combined = model
+            .state_from_boundary_layer(1.0e6, 1_125.0, 5.0, f64::NAN, 0.0, 0.0)
+            .unwrap();
+        assert_eq!(combined, smooth);
+    }
+
+    #[test]
+    fn pant_reda_transition_heating_is_continuous_at_ramp_endpoints() {
+        let model = PantRedaRoughnessTransition::with_roughness_height(0.000_1);
+        let heating = ReferenceEnthalpyHeating { x_m: 0.5 };
+        let context = ctx(1.0e-4, 5_000.0, 1000.0);
+
+        let onset = model
+            .state_from_boundary_layer(1.0e6, 1_000.0, 10.0, 0.001, 2_150.0, 1_000.0)
+            .unwrap();
+        let onset_flux = heating.distributed(&context, onset).unwrap();
+        let laminar_flux = heating
+            .distributed(&context, BoundaryLayerState::Laminar { reynolds_x: 1.0e6 })
+            .unwrap();
+        assert!((onset_flux.q_w_m2 - laminar_flux.q_w_m2).abs() <= 1.0e-9);
+
+        let complete = model
+            .state_from_boundary_layer(1.0e6, 1_250.0, 10.0, 0.001, 2_150.0, 1_000.0)
+            .unwrap();
+        let complete_flux = heating.distributed(&context, complete).unwrap();
+        let turbulent_flux = heating
+            .distributed(
+                &context,
+                BoundaryLayerState::Turbulent { reynolds_x: 1.0e6 },
+            )
+            .unwrap();
+        assert!((complete_flux.q_w_m2 - turbulent_flux.q_w_m2).abs() <= 1.0e-9);
+    }
+
+    #[test]
+    fn pant_reda_transition_rejects_invalid_inputs() {
+        assert!(matches!(
+            PantRedaRoughnessTransition::roughness_indicator(
+                f64::NAN,
+                0.001,
+                0.000_1,
+                2_150.0,
+                1_000.0
+            ),
+            Err(AerothermalError::NonFinite { .. })
+        ));
+        assert!(matches!(
+            PantRedaRoughnessTransition::roughness_indicator(
+                1_000.0, 0.0, 0.000_1, 2_150.0, 1_000.0
+            ),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            PantRedaRoughnessTransition::with_thresholds(200.0, -1.0, 215.0)
+                .state_from_boundary_layer(1.0e6, 1_000.0, 5.0, 0.001, 2_150.0, 1_000.0),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            PantRedaRoughnessTransition::with_thresholds(200.0, 0.000_1, 0.0)
+                .state_from_boundary_layer(1.0e6, 1_000.0, 5.0, 0.001, 2_150.0, 1_000.0),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            PantRedaRoughnessTransition::with_roughness_height(0.000_1)
+                .state_from_boundary_layer(1.0e6, 1_000.0, 5.0, 0.0, 2_150.0, 1_000.0),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
     }
 
     #[test]

@@ -1,0 +1,38 @@
+schema_version = 1
+dataset_id = "openbmp.gnc.load_relief_alpha_beta.v1"
+
+[tolerances]
+alpha_abs_rad = 1.0e-12
+beta_abs_rad = 1.0e-12
+qbar_abs_pa = 1.0e-9
+
+[[alpha_beta_cases]]
+id = "identity_body_axes_crosswind"
+velocity_eci_m_s = [100.0, 5.0, 10.0]
+wind_eci_m_s = [10.0, -1.0, 2.0]
+density_kg_m3 = 1.2
+expected_alpha_rad = 0.08865588186743746
+expected_beta_rad = 0.06656816377582381
+expected_qbar_pa = 4920.0
+
+[[alpha_beta_cases]]
+id = "identity_body_axes_negative_sideslip"
+velocity_eci_m_s = [205.0, -7.0, 20.0]
+wind_eci_m_s = [5.0, 0.0, -2.0]
+density_kg_m3 = 0.8
+expected_alpha_rad = 0.10955952677394434
+expected_beta_rad = -0.034985718828525754
+expected_qbar_pa = 16213.2
+
+[qalpha_limiter_case]
+density_kg_m3 = 1.0
+speed_m_s = 220.0
+alpha_samples_rad = [-0.18, -0.09, 0.0, 0.11, 0.22]
+
+[qalpha_limiter_case.params]
+a0 = 1.0
+a1 = 0.2
+g_alpha_max = 0.75
+g_acc = 0.0
+blend_schedule = [[0.0, 0.0], [1.0, 1.0]]
+q_alpha_limit_pa_rad = 1200.0

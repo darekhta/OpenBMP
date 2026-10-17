@@ -1,0 +1,32 @@
+# Synthetic first VLM-fin substrate lift/hinge trend fixture.
+#
+# This fixture pins OpenBMP's first attached-flow fin lifting-surface substrate.
+# It is not AVL, wind-tunnel, or flight validation data.
+
+[case]
+dataset_id = "openbmp.aero.vlm_fin_lift_hinge_trend.v1"
+source_class = "synthetic-openbmp"
+validation_label = "checked"
+root_chord_m = 0.30
+tip_chord_m = 0.15
+span_m = 0.20
+sweep_deg = 20.0
+root_le_x_m = 2.1
+moment_reference_x_m = 1.25
+reference_area_m2 = 0.031415926535897934
+reference_length_m = 0.2
+hinge_chord_fraction = 0.70
+spanwise_panels = 8
+mach = 0.3
+alpha_deg = 5.0
+positive_deflection_deg = 5.0
+negative_deflection_deg = -5.0
+expected_lift_curve_slope_per_rad = 2.014274692331738
+expected_cl_alpha = 0.17577862710392303
+expected_cm_alpha = -0.8267896085097781
+expected_hinge_alpha = -0.008898792997136105
+expected_cl_positive_deflection = 0.24703225955029967
+expected_hinge_positive_deflection = -0.012506008139733923
+expected_cl_negative_deflection = 0.10452499465754637
+expected_hinge_negative_deflection = -0.005291577854538286
+max_relative_error = 1.0e-12

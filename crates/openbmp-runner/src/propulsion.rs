@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use openbmp_fc::topics::PropellantSafingCommand;
 use openbmp_physics::{
     IdealStagingBudgetAnalysis, StageMassProperties, StagingBudgetAnalysis, StagingBudgetInput,
 };
@@ -17,9 +18,39 @@ use openbmp_scenario::{
     ResolvedFile, ScenarioDocument, StagingAnalysisMode,
 };
 use openbmp_thermochem::{ThermochemDeck, ThermochemQuery, ThermochemTable};
-use openbmp_vehicle::{EnginePropellantBinding, FeedMode, PropellantBudget};
+use openbmp_vehicle::{
+    EnginePropellantBinding, FeedMode, PropellantBudget, PropellantBudgetReport,
+};
 
 use crate::error::RunnerError;
+
+/// Apply FC SAFE propellant-system intent to the budget report before
+/// tank and engine racks consume it.
+pub(crate) fn apply_propellant_safing_to_report(
+    report: &mut PropellantBudgetReport,
+    command: Option<PropellantSafingCommand>,
+) {
+    let Some(command) = command else {
+        return;
+    };
+    if !command.safed {
+        return;
+    }
+
+    if !command.drain_enabled {
+        report.tank_drain_rates_kg_per_s.clear();
+    }
+    if !command.pressurization_enabled {
+        report.pressurization_enabled = false;
+    }
+    if !command.pressurization_enabled || command.isolate_feeds || command.close_engine_valves {
+        let engine_ids: Vec<_> = report.feed_pressure_scales.keys().copied().collect();
+        for engine_id in engine_ids {
+            report.feed_pressure_scales.insert(engine_id, 0.0);
+            report.shutdown_engines.insert(engine_id);
+        }
+    }
+}
 
 /// Load or synthesize the scenario's single solid motor, if present.
 pub(crate) fn load_solid_motor(
@@ -306,5 +337,99 @@ fn build_grain_motor(
                     })?,
             )?)
             .map_err(RunnerError::Motor),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use openbmp_core::{EngineId, SimTime, TankId};
+    use openbmp_vehicle::PropellantBudgetReport;
+
+    use super::*;
+
+    fn engine_id() -> EngineId {
+        EngineId::from_path("vehicle.assembly.engines.main")
+    }
+
+    fn tank_id() -> TankId {
+        TankId::from_path("vehicle.assembly.tanks.fuel")
+    }
+
+    fn safing_command(safed: bool) -> PropellantSafingCommand {
+        PropellantSafingCommand {
+            time: SimTime::ZERO,
+            safed,
+            isolate_feeds: true,
+            close_engine_valves: true,
+            pressurization_enabled: false,
+            drain_enabled: false,
+            dump_enabled: true,
+        }
+    }
+
+    fn budget_report() -> PropellantBudgetReport {
+        let mut tank_drain_rates_kg_per_s = BTreeMap::new();
+        tank_drain_rates_kg_per_s.insert(tank_id(), 2.0);
+        let mut feed_pressure_scales = BTreeMap::new();
+        feed_pressure_scales.insert(engine_id(), 1.0);
+        PropellantBudgetReport {
+            tank_drain_rates_kg_per_s,
+            pressurization_enabled: true,
+            shutdown_engines: BTreeSet::new(),
+            feed_pressure_scales,
+            utilization: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn propellant_safing_report_clamps_feed_and_drain_outputs() {
+        let mut report = budget_report();
+
+        apply_propellant_safing_to_report(&mut report, Some(safing_command(true)));
+
+        assert!(report.tank_drain_rates_kg_per_s.is_empty());
+        assert!(!report.pressurization_enabled);
+        assert!(report.shutdown_engines.contains(&engine_id()));
+        assert_eq!(
+            report.feed_pressure_scales[&engine_id()].to_bits(),
+            0.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn inactive_propellant_safing_report_leaves_budget_outputs_unchanged() {
+        let mut report = budget_report();
+        let expected = report.clone();
+
+        apply_propellant_safing_to_report(&mut report, Some(safing_command(false)));
+
+        assert_eq!(report, expected);
+    }
+
+    #[test]
+    fn propellant_safing_pressurization_disable_fails_feed_closed_without_valve_isolation() {
+        let mut report = budget_report();
+        let command = PropellantSafingCommand {
+            isolate_feeds: false,
+            close_engine_valves: false,
+            drain_enabled: true,
+            ..safing_command(true)
+        };
+
+        apply_propellant_safing_to_report(&mut report, Some(command));
+
+        assert!(!report.pressurization_enabled);
+        assert!(report.shutdown_engines.contains(&engine_id()));
+        assert_eq!(
+            report.feed_pressure_scales[&engine_id()].to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            report.tank_drain_rates_kg_per_s[&tank_id()].to_bits(),
+            2.0_f64.to_bits()
+        );
     }
 }

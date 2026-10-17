@@ -1,0 +1,29 @@
+# Hermite-Simpson brachistochrone closed-form benchmark for WP-07.2 partial.
+#
+# The case evaluates the direct-collocation transcription and time cost on the
+# public closed-form cycloid solution for a frictionless point mass in uniform
+# gravity, restores a perturbed state grid with fixed public cycloid controls
+# through dense SQP, including a free-duration residual solve, and checks a
+# free-control final-time objective run against the public time/residual
+# tolerances. It is not yet a full stationary large-sparse NLP closure.
+
+case       = "brachistochrone-cycloid-closed-form"
+source     = "Public closed-form brachistochrone cycloid equations; see scenarios/trajopt-brachistochrone/provenance.md."
+validation = "research"
+
+[problem]
+endpoint_x_m = 1.0
+endpoint_y_down_m = 1.0
+gravity_m_s2 = 9.80665
+theta_final_rad = 2.4120111439135252
+cycloid_scale_m = 0.5729170375317504
+optimal_time_s = 0.5829950146359862
+segment_count = 32
+constant_tolerance = 1.0e-12
+max_terminal_error_m = 1.0e-12
+max_residual_norm = 1.0e-6
+relative_time_tolerance = 1.0e-4
+dense_sqp_max_residual_norm = 2.0e-5
+dense_sqp_max_solution_delta = 1.0e-3
+free_time_dense_sqp_max_residual_norm = 2.0e-5
+free_time_dense_sqp_relative_time_tolerance = 1.0e-4

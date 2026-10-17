@@ -1,0 +1,13 @@
+openbmp.dol_commit_readiness,1
+readiness_id,dol-commit-readiness-test
+report_card_id,dol-report-card-test
+verification_provenance,runner_6dof_synthetic
+design_profile_digest,sha256:wind
+iload_sha256_hex,sha256:iload
+min_persistence_margin_rad,3.881966011250e-2
+blocked_cola_slot_count,0
+verdict,go,,
+gate,artifact_id,verdict,binding_detail,summary_key,summary_value
+report_card,dol-report-card-test,go,,redesigned_min_margin_rad,2.000000000000e-2
+persistence,sha256:openbmp-dol-persistence-knockdown-v1,go,,min_knocked_down_margin_rad,3.881966011250e-2
+cola,launch_cola_screening,go,,blocked_slot_count,0.000000000000e0

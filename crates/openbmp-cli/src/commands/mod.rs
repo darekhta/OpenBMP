@@ -1,5 +1,6 @@
 //! Subcommand implementations.
 
+pub mod campaign;
 pub mod check;
 pub mod compare_telemetry;
 pub mod conform;
@@ -13,5 +14,6 @@ pub mod provenance;
 pub mod reconstruct;
 pub mod run;
 pub mod sil;
+pub mod sysid;
 pub mod trajopt;
 pub mod verify_order;

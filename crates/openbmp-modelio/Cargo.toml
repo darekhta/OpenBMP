@@ -1,0 +1,20 @@
+[package]
+name                    = "openbmp-modelio"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP external model-ingestion schemas for modal and reduced-order assets."
+
+[dependencies]
+csv       = { workspace = true }
+serde    = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

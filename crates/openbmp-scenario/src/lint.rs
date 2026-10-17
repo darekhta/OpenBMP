@@ -163,6 +163,7 @@ fn check_dimensional_field(
     if is_numeric_4vector(value)
         && !key_has_dimensionless_component_order_suffix(key)
         && !key_has_frame_infix(key)
+        && !is_frame_exempt_4vector(path, key)
     {
         return Err(ScenarioError::MissingFrameSuffix {
             field: path.to_owned(),
@@ -193,7 +194,12 @@ fn is_frame_exempt_3vector(path: &str, key: &str) -> bool {
     matches!(
         (path, key),
         ("$.wind.intensity_m_s", "intensity_m_s") | ("$.wind.length_scale_m", "length_scale_m")
-    ) || (path.starts_with("$.landing_footprint.monte_carlo") && key == "confidence_levels")
+    ) || (path == "$.loads.events.sample_times_s" && key == "sample_times_s")
+        || (path == "$.csi.frequency_grid_rad_s" && key == "frequency_grid_rad_s")
+        || (path.starts_with("$.csi.frozen_plants")
+            && matches!(key, "numerator_coefficients" | "denominator_coefficients"))
+        || (path.starts_with("$.loads.events.forces") && key == "physical_force_n")
+        || (path.starts_with("$.landing_footprint.monte_carlo") && key == "confidence_levels")
         || (path.starts_with("$.vehicle.landing_gear.legs") && key == "strut_axis_body")
         || (path.starts_with("$.vehicle.assembly.effectors") && matches!(key, "direction_body"))
         || (path.starts_with("$.propulsion.feed_network")
@@ -204,6 +210,11 @@ fn is_frame_exempt_3vector(path: &str, key: &str) -> bool {
 fn is_numeric_4vector(value: &toml::Value) -> bool {
     matches!(value, toml::Value::Array(values)
         if values.len() == 4 && values.iter().all(is_numeric_value))
+}
+
+fn is_frame_exempt_4vector(path: &str, key: &str) -> bool {
+    path.starts_with("$.csi.frozen_plants")
+        && matches!(key, "numerator_coefficients" | "denominator_coefficients")
 }
 
 fn is_dimensionless_key(path: &str, key: &str) -> bool {
@@ -248,12 +259,83 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     {
         return true;
     }
+    if path.starts_with("$.vehicle.modes.lateral")
+        && matches!(
+            key,
+            "damping_ratio" | "slope_at_engine" | "slope_at_gyro" | "shape_at_accelerometer"
+        )
+    {
+        return true;
+    }
+    if path.starts_with("$.vehicle.modes.asset")
+        && matches!(key, "frequency_tolerance_fraction" | "mac_min")
+    {
+        return true;
+    }
+    if path.starts_with("$.vehicle.transient") && matches!(key, "beta" | "gamma" | "rho_inf") {
+        return true;
+    }
+    if path.starts_with("$.loads.recovery.stations")
+        && matches!(
+            key,
+            "displacement_coefficients"
+                | "acceleration_coefficients"
+                | "mode_acceleration_coefficients"
+        )
+    {
+        return true;
+    }
+    if path.starts_with("$.loads.events.forces")
+        && matches!(key, "modal_stiffness_scale_1" | "mode_shape_rows_1")
+    {
+        return true;
+    }
+    if path.starts_with("$.propulsion.pogo")
+        && matches!(
+            key,
+            "structural_nyquist_clearance_1" | "feedline_damping_ratio_1"
+        )
+    {
+        return true;
+    }
+    if path.starts_with("$.csi.frozen_plants")
+        && matches!(key, "numerator_coefficients" | "denominator_coefficients")
+    {
+        return true;
+    }
+    if path.starts_with("$.csi.modal_assembly") && matches!(key, "loop_gain" | "loop_gain_scale") {
+        return true;
+    }
+    if path.starts_with("$.csi.filter_insertion")
+        && matches!(
+            key,
+            "mode_index" | "zero_damping_ratio" | "pole_damping_ratio"
+        )
+    {
+        return true;
+    }
 
     // Aerodynamic coefficient UQ bands are dimensionless by definition.
     if path.starts_with("$.aero.uq")
         && matches!(
             key,
             "coefficient_lower" | "coefficient_nominal" | "coefficient_upper"
+        )
+    {
+        return true;
+    }
+
+    // Aero deck draw identifiers are deterministic stream metadata, and
+    // Mach correlation length is dimensionless in Mach-axis units.
+    if path.starts_with("$.aero.deck_draw")
+        && matches!(
+            key,
+            "campaign_seed"
+                | "sample_index"
+                | "dimension_id_base"
+                | "mach_correlation_length"
+                | "alpha_correlation_length_deg"
+                | "beta_correlation_length_deg"
         )
     {
         return true;
@@ -302,6 +384,7 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
             "throttle_unit"
                 | "at_throttle"
                 | "factor"
+                | "damping_ratio"
                 | "min_throttle_unit"
                 | "isp_throttle_falloff"
                 | "oxidizer_fuel_ratio"
@@ -310,19 +393,70 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
-    // Tank-block fields. `initial_fill_fraction` is a
-    // ratio in [0, 1]; `damping_ratio_zeta`, `base_damping_ratio_zeta`,
-    // and `damping_increment_zeta` are dimensionless damping ratios.
+    // Tank-block fields. `initial_fill_fraction` is a ratio in [0, 1];
+    // `mode_count` is a pure count; `damping_ratio_zeta`,
+    // `base_damping_ratio_zeta`, and `damping_increment_zeta` are
+    // dimensionless damping ratios; SAFE dump orifice discharge
+    // coefficient is dimensionless.
     if path.starts_with("$.vehicle.assembly.tanks")
         && matches!(
             key,
             "initial_fill_fraction"
+                | "mode_count"
                 | "damping_ratio_zeta"
                 | "base_damping_ratio_zeta"
                 | "damping_increment_zeta"
                 | "gas_gamma"
+                | "pressurant_heat_capacity_ratio"
+                | "discharge_coefficient"
+                | "pressurant_discharge_coefficient"
         )
     {
+        return true;
+    }
+
+    // External modal-asset validation tolerances are dimensionless.
+    if path.starts_with("$.vehicle.modes.asset")
+        && matches!(key, "frequency_tolerance_fraction" | "mac_min")
+    {
+        return true;
+    }
+
+    // Acoustics DSM fields with no physical unit suffix: acoustic efficiency,
+    // Strouhal shape parameters, cluster counts/correlation, and source-line
+    // weights are dimensionless.
+    if path.starts_with("$.acoustics.dsm")
+        && matches!(
+            key,
+            "acoustic_efficiency"
+                | "peak_strouhal"
+                | "width_decades"
+                | "exit_mach"
+                | "cluster_engine_count"
+                | "cluster_correlation_coefficient"
+                | "weight"
+        )
+    {
+        return true;
+    }
+
+    // Acoustics IOP empirical geometry gain is dimensionless.
+    if path.starts_with("$.acoustics.iop") && key == "duct_geometry_gain" {
+        return true;
+    }
+
+    // Acoustics ascent class selection uses dimensionless Mach.
+    if path.starts_with("$.acoustics.ascent") && key == "mach" {
+        return true;
+    }
+
+    // Acoustics fairing-internal transfer uses dimensionless fill factor.
+    if path.starts_with("$.acoustics.fairing_internal") && key == "fill_factor" {
+        return true;
+    }
+
+    // Acoustics response modal participation is dimensionless.
+    if path.starts_with("$.acoustics.response") && key == "mode_shape_factor" {
         return true;
     }
 
@@ -392,6 +526,12 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     {
         return true;
     }
+    if path.starts_with("$.propulsion.lines") && key == "segment_count" {
+        return true;
+    }
+    if path.starts_with("$.propulsion.lines") && key == "polytropic_exponent" {
+        return true;
+    }
     if path.starts_with("$.propulsion.pogo") && key == "mode_damping_ratio" {
         return true;
     }
@@ -434,7 +574,14 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     if path.starts_with("$.aero.buildup")
         && matches!(
             key,
-            "min" | "max" | "steps" | "fineness" | "count" | "thickness_ratio"
+            "min"
+                | "max"
+                | "steps"
+                | "fineness"
+                | "count"
+                | "thickness_ratio"
+                | "drag_coefficient"
+                | "interference_factor"
         )
     {
         return true;
@@ -489,11 +636,25 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
         return true;
     }
 
-    // Recovery-block fields. `c_d`, `drogue_c_d`, and
-    // `main_c_d` are dimensionless drag coefficients per Knacke
-    // 1992 Chapter 5.
+    // Recovery-block fields. Drag coefficients, fill-shape parameters, opening
+    // force coefficients, and apparent-mass coefficients are dimensionless per
+    // Knacke 1992 Chapter 5.
     if path.starts_with("$.vehicle.assembly.recovery")
-        && matches!(key, "c_d" | "drogue_c_d" | "main_c_d")
+        && matches!(
+            key,
+            "c_d"
+                | "drogue_c_d"
+                | "main_c_d"
+                | "fill_constant_n"
+                | "fill_exponent_k"
+                | "opening_force_coeff_c_x"
+                | "apparent_mass_coeff_k_a"
+                | "initial_drag_area_fraction"
+                | "ballistic_parameter_a"
+                | "exponent_j"
+                | "reduction_factors"
+                | "alpha"
+        )
     {
         return true;
     }
@@ -507,6 +668,15 @@ fn is_dimensionless_key(path: &str, key: &str) -> bool {
     // Realtime target factor is dimensionless:
     // simulation seconds per wall-clock second.
     if path.starts_with("$.realtime") && key == "target_rtf" {
+        return true;
+    }
+
+    // Day-of-launch wind metadata. Profile quality and generator member
+    // counts are dimensionless; all physical scalars/vectors in this block
+    // carry explicit unit/frame suffixes.
+    if path.starts_with("$.day_of_launch.wind")
+        && matches!(key, "quality_unit" | "min_quality_unit" | "member_count")
+    {
         return true;
     }
 

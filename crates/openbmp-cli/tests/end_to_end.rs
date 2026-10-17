@@ -22,9 +22,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use openbmp_cli::commands::run;
+use openbmp_cli::{CliError, commands::run};
+use openbmp_rundata::{RunIndex, verdict::VerdictReport};
 use openbmp_testkit::tolerance::ToleranceTable;
+use sha2::{Digest, Sha256};
 use tempfile::{Builder, TempDir};
+
+const STRUCTURAL_ACOUSTICS_SCENARIO_TEMPLATE: &str =
+    include_str!("fixtures/structural-acoustics-rundata.toml");
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -74,6 +79,83 @@ fn stage_scenario(temp_dir: &Path, label: &str) -> PathBuf {
         );
     let staged = temp_dir.join(format!("{label}-scenario.toml"));
     fs::write(&staged, rewritten).expect("write staged scenario");
+    staged
+}
+
+fn stage_acoustics_scenario(temp_dir: &Path, label: &str) -> PathBuf {
+    let staged = stage_scenario(temp_dir, label);
+    let original = fs::read_to_string(&staged).expect("read staged scenario");
+    let workspace = workspace_root();
+    let ascent_deck = workspace.join("data/acoustics/ascent-acoustic-env-v1.toml");
+    let fairing_deck = workspace.join("data/acoustics/fairing-internal-v1.toml");
+    let response_deck = workspace.join("data/acoustics/vibroacoustic-transfer-v1.toml");
+    let ascent_deck_sha256 = sha256_hex(&fs::read(&ascent_deck).expect("read ascent deck"));
+    let fairing_deck_sha256 = sha256_hex(&fs::read(&fairing_deck).expect("read fairing deck"));
+    let response_deck_sha256 = sha256_hex(&fs::read(&response_deck).expect("read response deck"));
+    let acoustics = format!(
+        r#"[acoustics.ascent]
+station_id = "station-a"
+deck_file = {}
+deck_file_sha256 = "{ascent_deck_sha256}"
+class_id = "attached_turbulent"
+
+[[acoustics.ascent.samples]]
+sample_id = "max-q"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[[acoustics.ascent.samples]]
+sample_id = "late-max-q"
+dynamic_pressure_pa = 200000.0
+mach = 0.8
+
+[acoustics.fairing_internal]
+station_id = "payload-a"
+deck_file = {}
+deck_file_sha256 = "{fairing_deck_sha256}"
+class_id = "synthetic_light_fairing"
+fill_factor = 1.0
+
+[acoustics.response]
+station_id = "payload-a"
+source = "fairing_internal"
+deck_file = {}
+deck_file_sha256 = "{response_deck_sha256}"
+class_id = "synthetic_panel_light"
+surface_mass_kg_m2 = 12.0
+area_m2 = 3.0
+mode_shape_factor = 0.5
+"#,
+        toml_literal_path(&ascent_deck),
+        toml_literal_path(&fairing_deck),
+        toml_literal_path(&response_deck),
+    );
+    let rewritten = original
+        .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+        .replace("[telemetry]", &format!("{acoustics}\n[telemetry]"));
+    fs::write(&staged, rewritten).expect("write staged acoustics scenario");
+    staged
+}
+
+fn stage_structural_acoustics_scenario(temp_dir: &Path, label: &str) -> PathBuf {
+    let workspace = workspace_root();
+    let ascent_deck = workspace.join("data/acoustics/ascent-acoustic-env-v1.toml");
+    let fairing_deck = workspace.join("data/acoustics/fairing-internal-v1.toml");
+    let response_deck = workspace.join("data/acoustics/vibroacoustic-transfer-v1.toml");
+    let ascent_deck_sha256 = sha256_hex(&fs::read(&ascent_deck).expect("read ascent deck"));
+    let fairing_deck_sha256 = sha256_hex(&fs::read(&fairing_deck).expect("read fairing deck"));
+    let response_deck_sha256 = sha256_hex(&fs::read(&response_deck).expect("read response deck"));
+    let csv = temp_dir.join(format!("{label}.csv"));
+    let scenario = STRUCTURAL_ACOUSTICS_SCENARIO_TEMPLATE
+        .replace("@ASCENT_DECK@", &toml_literal_path(&ascent_deck))
+        .replace("@ASCENT_DECK_SHA256@", &ascent_deck_sha256)
+        .replace("@FAIRING_DECK@", &toml_literal_path(&fairing_deck))
+        .replace("@FAIRING_DECK_SHA256@", &fairing_deck_sha256)
+        .replace("@RESPONSE_DECK@", &toml_literal_path(&response_deck))
+        .replace("@RESPONSE_DECK_SHA256@", &response_deck_sha256)
+        .replace("@OUTPUT_CSV@", &toml_literal_path(&csv));
+    let staged = temp_dir.join(format!("{label}-scenario.toml"));
+    fs::write(&staged, scenario).expect("write staged structural acoustics scenario");
     staged
 }
 
@@ -185,6 +267,276 @@ fn output_overrides_replace_declared_paths_and_add_missing_kinds() {
     );
 }
 
+#[test]
+fn run_data_indexes_are_emitted_for_real_run() {
+    let temp = tempdir_for("openbmp_e2e_rundata");
+    let staged = stage_scenario(temp.path(), "rundata");
+    let index_jsonl = temp.path().join("run-index.jsonl");
+    let index_parquet = temp.path().join("run-index.parquet");
+    let options = run::RunDataOptions::new(
+        Some(index_jsonl.clone()),
+        Some(index_parquet.clone()),
+        "openbmp-e2e-code".to_owned(),
+        None,
+        None,
+        None,
+    );
+
+    let report = run::run_with_options(&staged, &run::OutputOverrides::default(), &options)
+        .expect("run with run-data outputs");
+
+    let record_report = report
+        .run_record
+        .as_ref()
+        .expect("run record report should be present");
+    assert!(index_jsonl.exists(), "JSONL run index should be written");
+    assert!(
+        index_parquet.exists(),
+        "Parquet run index mirror should be written"
+    );
+    assert!(report.written.contains(&index_jsonl));
+    assert!(report.written.contains(&index_parquet));
+
+    let jsonl = fs::read(&index_jsonl).expect("read JSONL run index");
+    assert_eq!(sha256_hex(&jsonl), record_report.record_sha256_hex);
+    let index = RunIndex::from_jsonl_bytes(&jsonl).expect("parse JSONL run index");
+    assert_eq!(index.records().len(), 1);
+
+    let record = &index.records()[0];
+    assert_eq!(record.run_id, record_report.run_id);
+    assert_eq!(record.code_id, "openbmp-e2e-code");
+    assert!(!record.channel_digests.is_empty());
+    assert!(
+        record
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.role == "scenario")
+    );
+    assert!(
+        record
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.role == "telemetry_csv")
+    );
+    assert!(
+        record
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.role == "telemetry_parquet")
+    );
+
+    let parquet = fs::read(&index_parquet).expect("read Parquet run index");
+    assert_eq!(
+        parquet,
+        index
+            .to_parquet_bytes()
+            .expect("deterministic Parquet mirror")
+    );
+}
+
+#[test]
+fn run_data_indexes_acoustics_p95_50_artifacts() {
+    let temp = tempdir_for("openbmp_e2e_rundata_acoustics");
+    let staged = stage_acoustics_scenario(temp.path(), "acoustics-rundata");
+    let index_jsonl = temp.path().join("run-index.jsonl");
+    let options = run::RunDataOptions::new(
+        Some(index_jsonl.clone()),
+        None,
+        "openbmp-e2e-code".to_owned(),
+        None,
+        None,
+        None,
+    );
+
+    let report = run::run_with_options(&staged, &run::OutputOverrides::default(), &options)
+        .expect("run acoustics scenario with run-data outputs");
+
+    assert!(index_jsonl.exists(), "JSONL run index should be written");
+    assert!(report.written.contains(&index_jsonl));
+    let jsonl = fs::read(&index_jsonl).expect("read JSONL run index");
+    let index = RunIndex::from_jsonl_bytes(&jsonl).expect("parse JSONL run index");
+    let record = &index.records()[0];
+    let expected_roles = [
+        "acoustics_ascent_p95_50_environment_csv",
+        "acoustics_ascent_p95_50_wilks_sizing_csv",
+        "acoustics_fairing_internal_p95_50_environment_csv",
+        "acoustics_fairing_internal_p95_50_sample_trace_csv",
+        "acoustics_fairing_internal_p95_50_wilks_sizing_csv",
+        "acoustics_response_loads_handoff_csv",
+        "acoustics_response_p95_50_acceleration_psd_csv",
+        "acoustics_response_p95_50_modal_force_psd_csv",
+        "acoustics_response_p95_50_sample_trace_csv",
+        "acoustics_response_p95_50_wilks_sizing_csv",
+    ];
+    assert_eq!(
+        record
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.role.starts_with("acoustics_"))
+            .count(),
+        expected_roles.len()
+    );
+
+    for role in expected_roles {
+        let artifact = record
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.role == role)
+            .unwrap_or_else(|| panic!("missing artifact role {role}"));
+        let path = PathBuf::from(&artifact.path);
+        assert!(
+            path.starts_with(temp.path().join("artifacts")),
+            "artifact should be stored under the run-data artifact root"
+        );
+        assert!(path.exists(), "artifact file should exist for role {role}");
+        assert!(report.written.contains(&path));
+        let bytes = fs::read(&path).expect("read acoustics run-data artifact");
+        assert_eq!(sha256_hex(&bytes), artifact.sha256_hex);
+        let text = std::str::from_utf8(&bytes).expect("acoustics artifact should be UTF-8 CSV");
+        assert!(text.lines().count() >= 2);
+        if role == "acoustics_fairing_internal_p95_50_sample_trace_csv" {
+            assert!(text.contains("fill_factor"));
+            assert!(text.contains("synthetic_light_fairing"));
+        }
+        if role == "acoustics_response_p95_50_sample_trace_csv" {
+            assert!(text.contains("surface_mass_kg_m2"));
+            assert!(text.contains("synthetic_panel_light"));
+        }
+    }
+}
+
+#[test]
+fn run_data_indexes_structural_acoustics_artifact() {
+    let temp = tempdir_for("openbmp_e2e_rundata_structural_acoustics");
+    let staged = stage_structural_acoustics_scenario(temp.path(), "structural-acoustics-rundata");
+    let index_jsonl = temp.path().join("run-index.jsonl");
+    let options = run::RunDataOptions::new(
+        Some(index_jsonl.clone()),
+        None,
+        "openbmp-e2e-code".to_owned(),
+        None,
+        None,
+        None,
+    );
+
+    let report = run::run_with_options(&staged, &run::OutputOverrides::default(), &options)
+        .expect("run structural acoustics scenario with run-data outputs");
+
+    assert!(index_jsonl.exists(), "JSONL run index should be written");
+    assert!(report.written.contains(&index_jsonl));
+    let jsonl = fs::read(&index_jsonl).expect("read JSONL run index");
+    let index = RunIndex::from_jsonl_bytes(&jsonl).expect("parse JSONL run index");
+    let record = &index.records()[0];
+    for (role, expected_header) in [
+        (
+            "structural_acoustics_first_bending_response_csv",
+            "modal_acceleration_psd_m2_s4_per_hz",
+        ),
+        (
+            "structural_acoustics_first_bending_line_load_recovery_csv",
+            "band_equivalent_reaction_moment_mean_square_n2_m2",
+        ),
+    ] {
+        let artifact = record
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.role == role)
+            .unwrap_or_else(|| panic!("{role} artifact role should be indexed"));
+        let path = PathBuf::from(&artifact.path);
+        assert!(
+            path.starts_with(temp.path().join("artifacts")),
+            "artifact should be stored under the run-data artifact root"
+        );
+        assert!(path.exists(), "structural acoustics artifact should exist");
+        assert!(report.written.contains(&path));
+        let bytes = fs::read(&path).expect("read structural acoustics run-data artifact");
+        assert_eq!(sha256_hex(&bytes), artifact.sha256_hex);
+        let csv =
+            std::str::from_utf8(&bytes).expect("structural acoustics artifact should be UTF-8 CSV");
+        assert!(csv.contains(expected_header));
+        assert!(csv.lines().count() >= 2);
+    }
+}
+
+#[test]
+fn verdict_report_is_emitted_for_real_run() {
+    let temp = tempdir_for("openbmp_e2e_verdict");
+    let staged = stage_scenario(temp.path(), "verdict");
+    let rules = temp.path().join("verdict-rules.toml");
+    let verdict_json = temp.path().join("verdict-report.json");
+    fs::write(
+        &rules,
+        r#"
+            [[rules]]
+            kind = "limit"
+            id = "position-z-max"
+            channel = "position_z_m"
+            metric = "max"
+            max = 1000.0
+
+            [[rules]]
+            kind = "monotonic"
+            id = "velocity-z-decreasing"
+            channel = "velocity_z_m_s"
+            direction = "decreasing"
+        "#,
+    )
+    .expect("write verdict rules");
+    let options = run::RunDataOptions::new(
+        None,
+        None,
+        "openbmp-e2e-code".to_owned(),
+        Some(rules),
+        Some(verdict_json.clone()),
+        None,
+    );
+
+    let report = run::run_with_options(&staged, &run::OutputOverrides::default(), &options)
+        .expect("run with verdict report");
+
+    let verdict = report
+        .verdict_report
+        .as_ref()
+        .expect("verdict report summary should be present");
+    assert!(verdict.passed);
+    assert_eq!(verdict.verdict_count, 2);
+    assert!(verdict_json.exists(), "verdict JSON should be written");
+    assert!(report.written.contains(&verdict_json));
+
+    let json = fs::read(&verdict_json).expect("read verdict report");
+    let parsed: VerdictReport = serde_json::from_slice(&json).expect("parse verdict report");
+    assert!(parsed.passed());
+    assert_eq!(parsed.verdicts.len(), 2);
+    assert_eq!(json, parsed.to_json_bytes().expect("stable verdict bytes"));
+}
+
+#[test]
+fn verdict_flags_fail_closed_when_output_is_missing() {
+    let temp = tempdir_for("openbmp_e2e_verdict_flags");
+    let rules = temp.path().join("rules.toml");
+    fs::write(
+        &rules,
+        "[[rules]]\nkind = 'limit'\nid = 'x'\nchannel = 'x'\nmetric = 'max'\nmax = 1.0\n",
+    )
+    .expect("write rules");
+    let options = run::RunDataOptions::new(
+        None,
+        None,
+        "openbmp-e2e-code".to_owned(),
+        Some(rules),
+        None,
+        None,
+    );
+
+    let err = run::run_with_options(
+        &temp.path().join("missing-scenario.toml"),
+        &run::OutputOverrides::default(),
+        &options,
+    )
+    .unwrap_err();
+    assert!(matches!(err, CliError::RunDataConfig { .. }));
+}
+
 // ---------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------
@@ -240,4 +592,15 @@ fn tempdir_for(label: &str) -> TempDir {
         .prefix(&format!("{label}-"))
         .tempdir()
         .expect("tempdir must construct")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }

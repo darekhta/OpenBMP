@@ -1,0 +1,53 @@
+openbmp.acoustics_dsm_absorption_deck = 1
+
+[meta]
+dataset_id = "openbmp.acoustics.dsm_air_absorption_atmospheres.v1"
+source_class = "synthetic-openbmp-atmosphere-profiles"
+source_title = "Synthetic DSM atmosphere-specific one-third-octave air absorption deck"
+provenance = "OpenBMP synthetic fixture for deterministic named-atmosphere DSM absorption profile selection; not an ISO 9613, ANSI, or production atmospheric attenuation model."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[[profiles]]
+profile_id = "standard_sea_level"
+description = "Synthetic standard sea-level absorption profile, 288.15 K, 101325 Pa, 50 percent RH."
+temperature_k = 288.15
+static_pressure_pa = 101325.0
+relative_humidity = 0.50
+center_hz = [
+  20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0,
+  125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 630.0,
+  800.0, 1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0,
+  4000.0, 5000.0, 6300.0, 8000.0, 10000.0, 12500.0, 16000.0,
+  20000.0,
+]
+db_per_m = [
+  0.00001, 0.00001, 0.00001, 0.00002, 0.00002, 0.00003,
+  0.00004, 0.00005, 0.00007, 0.00009, 0.00012, 0.00016,
+  0.00022, 0.00030, 0.00042, 0.00060, 0.00085, 0.00120,
+  0.00170, 0.00240, 0.00340, 0.00480, 0.00680, 0.00950,
+  0.01300, 0.01800, 0.02500, 0.03500, 0.04800, 0.06500,
+  0.08500,
+]
+
+[[profiles]]
+profile_id = "humid_pad_303k_70rh"
+description = "Synthetic warm humid pad absorption profile, 303 K, 100900 Pa, 70 percent RH."
+temperature_k = 303.0
+static_pressure_pa = 100900.0
+relative_humidity = 0.70
+center_hz = [
+  20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0,
+  125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 630.0,
+  800.0, 1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0,
+  4000.0, 5000.0, 6300.0, 8000.0, 10000.0, 12500.0, 16000.0,
+  20000.0,
+]
+db_per_m = [
+  0.00001, 0.00001, 0.00002, 0.00002, 0.00003, 0.00004,
+  0.00005, 0.00007, 0.00010, 0.00013, 0.00017, 0.00023,
+  0.00032, 0.00044, 0.00062, 0.00088, 0.00125, 0.00176,
+  0.00248, 0.00350, 0.00495, 0.00695, 0.00985, 0.01375,
+  0.01885, 0.02610, 0.03625, 0.05075, 0.06960, 0.09425,
+  0.12325,
+]

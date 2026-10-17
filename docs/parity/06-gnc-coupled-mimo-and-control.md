@@ -85,7 +85,7 @@ already an optional dependency behind the `mpc` feature.
 
 ### 2.1 Control allocation — `crates/openbmp-fc/src/allocation.rs`
 
-Two allocators behind the `ControlAllocator` enum:
+Two legacy allocators sit behind the `ControlAllocator` enum:
 
 - `PrioritisedRedistributedAllocator` — body-axis priority permutation +
   per-effector axis assignment; proportional split `uᵢ = τ_a · Lᵢ / ΣL` with
@@ -93,23 +93,46 @@ Two allocators behind the `ControlAllocator` enum:
 - `WeightedPseudoInverseAllocator` — per-axis `uᵢ = τ_axis · Lᵢ² / Σ Lⱼ²` (the
   weighted-pseudo-inverse special case with `W = diag(1/Lᵢ²)`), with a deterministic
   active-set redistribution pass (`allocate_axis_weighted_pseudo_inverse`).
+- `EffectivenessMatrix`, `EffectorBounds`, `WlsActiveSetAllocator`, and
+  `WlsAllocationOutput` now expose the first dense-`B` bounded-WLS substrate;
+  `DenseWlsControlAllocator` makes it mixer-facing for fixed `[roll, pitch, yaw]`
+  virtual rows. The path supports arbitrary coupled effector columns,
+  asymmetric position bounds, per-tick rate tightening from `u_prev` and `dt_s`,
+  deterministic active-set iteration, active-at-bound flags, virtual residuals,
+  attainability, phase-gated fixed-zero columns, and fail-closed
+  finite/dimension/bounds validation (`REQ-GNC-001` / `V-GNC-001`).
 
 **Critical limitation (the Tier-0 baseline to lift):** the module docstring states it
-explicitly — *"`direct_torque` effectors only: each effector contributes to exactly one
-body axis"*, and *"inter-axis priority is reported but does not change the outcome on a
-single-axis-effector scenario."* The `per_axis: [Vec<(EffectorId, f64)>; 3]` storage **is
-the diagonal-`B` special case**: there is no dense `B` matrix, no shared-effector coupling,
-no rate bounds (only symmetric box bounds, `max == −min` enforced at construction). A
-multi-engine cluster sharing pitch+yaw+roll cannot be expressed.
+explicitly that the legacy path is still the single-axis `direct_torque` surface, and
+the diagonal special case is still preserved for existing scenarios. Schema-v3
+`[fc.autopilot_allocation] kind = "dense_wls"` can now declare
+`dense_effectors` in fixed `[roll, pitch, yaw]` row order, the runner constructs
+the stateful dense allocator from declared effector limits, and `mixer.rs` routes
+its `EffectorCommandSet` output. The dense-`B` path is cross-checked against
+QCAT `wls_alloc`-derived ADMIRE and synthetic TVC vectors, carries the
+no-target B-matrix schema tripwire, and is treated as implemented for WP-06.1.
+The remaining GNC gap is above the allocator: the controllers, estimator, and
+reconfiguration layers still assume diagonal/per-axis behavior until WP-06.2+.
 
 ### 2.2 Controllers
 
 - `crates/openbmp-fc/src/lqr.rs` — `solve_lqr_rate_loop` solves a **scalar 2-state**
   per-axis DARE (state `z = [ω−ω_ref, ∫(ω−ω_ref)]`, `A=[[1,0],[dt,1]]`, `B=[dt/J,0]`) by a
   **structure-preserving doubling algorithm** (`solve_dare_2x2_doubling`, Anderson 1978 / Chu
-  et al. 2004), fully unrolled scalar arithmetic. The docstring bakes in *"the
-  moment-of-inertia matrix is diagonal"*; products of inertia and cross-axis coupling cannot
-  be represented. `closed_loop_pole_magnitudes` is a diagnostic.
+  et al. 2004), fully unrolled scalar arithmetic. The module now also exposes
+  the first WP-06.2-a dense coupled-plant oracle:
+  `solve_dare_nxn_doubling`, `solve_dare_nxn_doubling_with_options`,
+  `dense_dare_residual_norm`, and `CoupledLqrSolution`. That path validates
+  bounded row-major dimensions, finite matrix entries, SPD `Q`/`R`,
+  deterministic Cholesky/LU solves, residual/iteration bounds, bit-stability,
+  a scalar plus coupled three-state/two-input tolerance table, and fail-closed
+  behavior for an uncontrolled unstable mode (`REQ-GNC-002` / `V-GNC-002`).
+  The module also exposes the WP-06.2-b LQG dual-DARE observer helper
+  `solve_lqg_observer_nxn_dual_dare` and `CoupledLqgObserverSolution`, checked
+  against SciPy `solve_discrete_are` toy references (`REQ-GNC-003` /
+  `V-GNC-003`). The active runtime `RateLoopKind::Lqr` still consumes scalar
+  per-axis gains unless the off-default scheduled-gain / bending-filter paths
+  are explicitly installed.
 - `crates/openbmp-fc/src/indi.rs` — INDI rate loop (Smeur 2016) with **diagonal `G_eff`**
   and the per-axis SISO assumption stated in its anti-scope; composition with L1 is rejected
   at load; multi-body assemblies are rejected at load.
@@ -158,11 +181,14 @@ multi-engine cluster sharing pitch+yaw+roll cannot be expressed.
   gain schedules and `B`-matrix I-loads.**
 - `crates/openbmp-fc/src/mixer.rs` — phase-gated authority + actuator-channel map; routes
   per-engine `gimbal_pitch_rad`/`gimbal_yaw_rad` (`EngineDemand`, `EffectorCommandSet` in
-  `crates/openbmp-msgs/src/lib.rs`, `MAX_EFFECTOR_COMMANDS = 16`).
+  `crates/openbmp-msgs/src/lib.rs`, `MAX_EFFECTOR_COMMANDS = 128`) and consumes
+  `actuator.effector_availability` to suppress unavailable effector columns before dense
+  allocation.
 
 **Net:** every controller and allocator currently assumes diagonal inertia / per-axis
-decoupling; the coupled-MIMO, dense-`B`, load-relief, tight-nav, and reconfiguration layers
-do not exist yet. The infrastructure (tables registry, scheduler, voter/FDIR primitives,
+decoupling; the coupled-MIMO, dense-`B`, load-relief, and TVC-gimbal availability mask
+substrates now exist, while tight-nav and full FDIR reconfiguration layers do not. The
+infrastructure (tables registry, scheduler, voter/FDIR primitives,
 `EngineDemand` gimbal fields, Clarabel hook, SR-UKF/UD Cholesky machinery) is in place to
 host them without breaking the portability lock.
 
@@ -444,7 +470,7 @@ pub struct LoadReliefParams {
     pub g_alpha_max: f64,            // load-min alpha gain
     pub g_acc: f64,                  // lateral-accelerometer gain
     pub blend_schedule: Vec<(f64, f64)>, // (schedule_value, k) ramp, k∈[0,1]
-    pub q_alpha_limit: f64,          // structural-load ceiling (Pa·rad)
+    pub q_alpha_limit_pa_rad: f64,   // structural-load ceiling (Pa·rad)
 }
 pub struct AlphaEstimate { pub alpha_rad: f64, pub beta_rad: f64, pub qbar_pa: f64 }
 
@@ -488,12 +514,18 @@ pub struct BiquadSection { pub b: [f64;3], pub a: [f64;3] } // a[0]=1
 pub fn prewarped_tustin_notch(
     omega_n: f64, zeta_n: f64, omega_d: f64, zeta_d: f64,
     omega_mode: f64, dt_s: f64,
-) -> BiquadSection;
+) -> Result<BiquadSection, &'static str>;
 
-pub struct BendingFilterTable {
-    pub sections: Vec<BiquadSection>,
-    pub mode_freqs_rad: Vec<f64>,       // for dispersion-scheduled re-discretization
+pub struct BendingFilterSectionSpec {
+    pub mode_frequency_rad_s: f64,
+    pub zero_frequency_rad_s: f64,
+    pub zero_damping_ratio: f64,
+    pub pole_frequency_rad_s: f64,
+    pub pole_damping_ratio: f64,
 }
+
+pub struct BendingFilterNode { pub schedule_value: f64, pub sections: Vec<BendingFilterSectionSpec> }
+pub struct BendingFilterTable { pub nodes: Vec<BendingFilterNode> }
 impl Table for BendingFilterTable { /* validate stable poles |z|<1 */ }
 ```
 
@@ -575,14 +607,75 @@ from the measurement-update Jacobian). The existing `Mekf` (6-state) is promoted
   automatically redistributes across the remaining cluster. Re-trim absorbs the lost axial
   thrust + the off-CG moment of remaining engines as a new bias in the allocator/integrator.
   If the **attainable-moment set** no longer contains the demand (`v` outside `B·[u_min,u_max]`),
-  raise a **degraded-mode flag** (new `FDIR_BIT_ALLOCATION_INFEASIBLE`). The per-axis selector
-  *cannot* do this; the dense `B` is the enabler.
+  raise a **degraded-mode flag** (`FDIR_BIT_ALLOCATION_INFEASIBLE`). The per-axis selector
+  *cannot* do this; the dense `B` is the enabler. The current substrate already marks saturated
+  dense allocation output as allocation-infeasible in FDIR after availability masking and maps that
+  signal into the commander's `health.degraded` region with configurable confirmation counters
+  (`REQ-GNC-007` / `V-GNC-007`). The mixer also treats `VehicleStatus.safe_state_requested`
+  as an engine-demand override and publishes zero-throttle shutdown commands even without a fresh
+  autopilot engine demand (`REQ-GNC-008` / `V-GNC-008`) plus a
+  `propulsion.propellant_safing_cmd` intent topic for feed isolation, valve closure,
+  pressurization disable, and drain disable (`REQ-GNC-010` / `V-GNC-010`). The runner now
+  consumes that intent in configured feed-network valve commands and propellant-budget
+  feed/drain outputs (`REQ-GNC-011` / `V-GNC-011`) and propagates SAFE pressurization-disable
+  intent into the simplified propellant-budget report (`REQ-GNC-016` / `V-GNC-016`). The autopilot
+  now turns SAFE into a target-free latched entry-attitude hold, suppressing normal
+  guidance/trajectory/load-relief references while damping rates and emitting zero-throttle shutdown
+  demand (`REQ-GNC-012` /
+  `V-GNC-012`). A focused FC pipeline test now validates non-allocation FDIR → commander SAFE →
+  autopilot SAFE hold → mixer shutdown/safing handoff on one bus (`REQ-GNC-013` /
+  `V-GNC-013`). A focused `FcRunner` test now validates that the runner-facing accessors surface
+  SAFE status, SAFE hold, shutdown engine demand, propellant safing intent, and per-engine shutdown
+  commands after an injected non-allocation FDIR trip (`REQ-GNC-014` / `V-GNC-014`). A clipped
+  rigid-body TVC session now validates that a HAL-portable mission `request_safe_state` event
+  drives all nine engines to zero-thrust Shutdown, keeps the rigid-body state finite/bounded, and
+  reaches end time (`REQ-GNC-015` / `V-GNC-015`). Failed-engine snapshots now also publish failed
+  engine ids through `EffectorAvailability`, and the mixer shuts those engines down while
+  redistributing scalar throttle over the remaining phase-authorized engines with a 1.0 clamp
+  (`REQ-GNC-017` / `V-GNC-017`). Scalar fan-out can now also apply calibrated per-failed-engine
+  survivor gimbal trim biases from `[[fc.engine_out_trim]]` after throttle retrim
+  (`REQ-GNC-022` / `V-GNC-022`). SAFE drain-disable intent now also reaches the runner tank rack:
+  declared tank drains, propellant-budget drains, and RCS feed drains are ignored once active SAFE
+  latches drains disabled (`REQ-GNC-018` / `V-GNC-018`). SAFE pressurization-disable intent now
+  also fails feed pressure closed in the propellant-budget report even without feed isolation or
+  valve-close requests (`REQ-GNC-019` / `V-GNC-019`). SAFE now also carries a distinct dump intent
+  and the runner opens scenario-declared constant-rate tank dump paths while ordinary drains stay
+  disabled (`REQ-GNC-020` / `V-GNC-020`). Tanks can also declare a pressure-coupled
+  `safe_dump_orifice`, and `TankRack` computes live ullage-pressure orifice flow when SAFE dump is
+  active (`REQ-GNC-021` / `V-GNC-021`). Tanks can now also declare a choked ullage-gas
+  `safe_dump_vent` that reduces the next-step pressure available to that liquid orifice
+  (`REQ-GNC-023` / `V-GNC-023`) and can opt into an adiabatic ullage-gas thermal model
+  for that vent (`REQ-GNC-025` / `V-GNC-025`). SAFE dump orifices and vents can now also
+  declare deterministic backpressure ramps for time-varying downstream pressure
+  (`REQ-GNC-026` / `V-GNC-026`), and SAFE dump vents can opt into a wall-relaxed
+  adiabatic thermal model with required wall-temperature/tau validation
+  (`REQ-GNC-027` / `V-GNC-027`). SAFE dump orifices and vents can also source
+  runtime backpressure from the current ambient atmosphere sample
+  (`REQ-GNC-028` / `V-GNC-028`). Tanks can also declare an opt-in finite-volume
+  pressurant hardware substrate that feeds later pressure-coupled SAFE dump
+  orifice flow unless SAFE disables pressurization (`REQ-GNC-029` / `V-GNC-029`).
+  Scalar fan-out can now also derive an optional
+  `EngineOutTrimTable` from declared engine mount geometry and max thrust via
+  `[fc.engine_out_trim_auto]` (`REQ-GNC-024` / `V-GNC-024`). Flight-calibrated integrator
+  bias estimation plus cryogenic phase-change, flight-calibrated regulator/bottle
+  thermal coupling, plume-coupled vent backpressure, and production pressurant
+  hardware validation remain open.
 - **Abort-to-SAFE:** a monotonic guarded state machine `NOMINAL → DEGRADED → SAFE` (new bits +
   the commander's existing `MissionStateMachine`), entered on rate divergence, structural-load
   exceedance, double-sensor fault, or attitude-unrecoverable, commanding **thrust termination
-  / attitude-hold / propellant-safe** — implemented as a guarded transition table with
-  confirmation timers. **It never commands a ground aimpoint, an alternate target, or a
-  redirect-to-impact** (§6).
+  / attitude-hold / propellant-safe**. Confirmation timers and the engine thrust-termination
+  command substrate and propellant-safing intent topic are implemented, the runner consumes that
+  safing intent in feed/budget paths, the autopilot has a target-free SAFE attitude-hold substrate,
+  focused FC and `FcRunner` pipeline tests validate FDIR-to-hold/shutdown/safing handoff, a clipped
+  rigid-body TVC run validates scenario-driven SAFE shutdown/recovery (`REQ-GNC-015` /
+  `V-GNC-015`), the runner budget report consumes SAFE pressurization-disable intent
+  (`REQ-GNC-016` / `V-GNC-016`), and the testkit compile-fail tripwire proves the public
+  `RequestSafeState` action cannot carry a ground aimpoint (`REQ-GNC-009` / `V-GNC-009`).
+  The propellant-safe path now has configured, pressure-coupled, thermally coupled, and ambient-
+  backpressure SAFE dump substrates plus an opt-in finite-volume pressurization substrate; plume-
+  coupled vent backpressure, cryogenic phase-change, and production regulator/bottle validation
+  remain open. **It never commands a ground aimpoint, an alternate target, or a redirect-to-impact**
+  (§6).
 
 ```rust
 /// Allocation feasibility w.r.t. the attainable moment set after a
@@ -671,7 +764,7 @@ TOML under `tests/expected/` with each WP.
 | `n×n` DARE/CARE vs python-control `dlqr`/SLICOT on a random stabilizable `(A,B,Q,R)` bank | code-to-code + residual | T2 | DARE residual `‖A'PA−P−A'PB(R+B'PB)⁻¹B'PA+Q‖ < 1e-10`; gains match to machine tol | `validated-toy` |
 | Bending/slosh closed-loop margins vs analytic free-free beam + pendulum slosh (known `ω_j`, `ζ_j`) | MMS + linear Nichols/Nyquist | T2/T3 | gain margin `≥ 6 dB`, phase margin `≥ 30°` **at every schedule node AND interior point** | `validated-toy` |
 | α/β estimator vs analytic relative-velocity geometry under modeled wind | MMS | T3 | `α̂` error `< 1e-9 rad` on the noise-free manufactured case | `validated-toy` |
-| Load-relief `q·α` reduction: Dryden/von-Kármán gust through max-Q, drift-min (`k=0`) vs blended (`k=1`) in the live SIL | qualitative trend | T3 | blended **reduces peak `q·α`** with the expected attitude-error increase, matching the SLS AAS 14-038 blended-vs-nonblended trend | `research` (qualitative) |
+| Load-relief `q·α` reduction: Dryden/von-Kármán gust through max-Q, drift-min (`k=0`) vs blended (`k=1`) in the live SIL | qualitative trend | T3 | blended **reduces peak `q·α`** with the expected pitch-command trade, matching the SLS AAS 14-038 blended-vs-nonblended trend | `research` (qualitative) |
 | MEKF covariance reset vs Markley 2023 (JGCD 46(10)) + brute-force MC of attitude-error distribution + analytic TRIAD/QUEST static two-vector | analytic + MC | T4 | reproduce published reset-Jacobian behavior; TRIAD/QUEST match to `1e-9` | `research` |
 | Tight GNSS/INS vs RTKLIB observables from published broadcast ephemeris (IGS/CDDIS RINEX nav) on a synthetic ascent | code-to-code | T4 | position/velocity error **bounded with `<4` sats**; per-satellite gating rejects an injected outlier/spoof **while the 6-D block gate (the known OpenBMP failure mode) does not** | `research` |
 | Engine-out reconfiguration: scripted single-engine-loss injection in the live SIL | scenario integration | T4 | WLS redistributes across remaining engines; attitude held within margin; if attainable-moment set no longer contains demand → FDIR raises DEGRADED and (if uncontainable) transitions to SAFE | `validated-toy` |
@@ -750,6 +843,24 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
   multi-engine TVC cluster sharing pitch/yaw/roll and an RCS quad with redundant roll allocate
   correctly. Structural enabler for engine-out reconfiguration (WP-06.4-b). Keep the per-axis
   allocator as the diagonal special case.
+- **status:** implemented — `EffectivenessMatrix`, `EffectorBounds`,
+  `WlsActiveSetAllocator`, `WlsAllocationOutput`, and `DenseWlsControlAllocator`
+  now provide an FC-portable dense-`B` WLS path with coupled rows/columns,
+  rate-tightened asymmetric bounds, phase-gated fixed-zero columns, deterministic
+  active-set tests, no-default-features coverage, schema-v3
+  `[fc.autopilot_allocation] kind = "dense_wls"` parsing, runner construction
+  from `dense_effectors`, mixer `EffectorCommandSet` routing, and unchanged legacy
+  diagonal allocator dispatch (`REQ-GNC-001` / `V-GNC-001`). `data/gnc/
+  qcat-wls-allocation-tolerance-v1.toml` now covers QCAT `wls_alloc`-derived
+  ADMIRE and synthetic 3-engine TVC tolerance cases, including active-set signs
+  and iteration counts, and the dense B-matrix schema rejects target/range/
+  aimpoint vocabulary. The WP-specific FC dependency tripwire, FC lint tripwires,
+  runner telemetry byte-preservation check, and allocator end-to-end byte-stability
+  check are now part of `V-GNC-001`. The local §2 merge sweep is green for
+  workspace build, workspace clippy, full workspace cargo test, GNC provenance,
+  scenario provenance, parity docs, requirements traceability, and supply-chain
+  tools; `cargo nextest` was not installed locally, so
+  `cargo test --workspace --all-features --locked` is the local test substitute.
 - **fidelity_tier:** T1
 - **depends_on:** []
 - **new_crates:** none
@@ -765,13 +876,20 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
     goldens byte-identical.
   - code-to-code vs QCAT `wls_alloc` on the ADMIRE `B` and a synthetic 3-engine TVC cluster
     matches to `≤1e-9` on the attainable region **and reports the identical active set** at the
-    saturation boundary (tolerance table).
+    saturation boundary (tolerance table). **Implemented:** the tolerance table lives at
+    `data/gnc/qcat-wls-allocation-tolerance-v1.toml` and is enforced by
+    `dense_wls_allocator_matches_qcat_admire_and_synthetic_tolerance_tables`.
   - deterministic across reruns (bit-identical, `to_bits()` test); warm-start convergence
     bounded (`iterations ≤ N`).
-  - no new forbidden FC edge; `fc_dependency_tripwire` + `fc_lints` green; all §2 gates green.
+  - no new forbidden FC edge; `fc_dependency_tripwire` + `fc_lints` green; the
+    runner telemetry byte-preservation and allocator E2E byte-stability checks are
+    green in `V-GNC-001`. Workspace build/clippy/test, provenance, traceability,
+    parity-doc, and supply-chain gates are green in the local merge sweep, with
+    `cargo test` substituted for unavailable local `cargo nextest`.
 - **validation_label:** `validated-toy`
-- **dual_use_note:** `B` carries only gimbal/thruster geometry; add a tripwire asserting the
-  B-matrix I-load schema has no range/target field.
+- **dual_use_note:** `B` carries only gimbal/thruster geometry; the parser regression
+  `fc_autopilot_allocation_dense_wls_rejects_targeting_vocabulary` asserts the
+  B-matrix I-load schema has no range/target/aimpoint field.
 - **est_effort:** 1–2 weeks
 - **parity_ceiling:** does NOT validate against a real vehicle's flight `B` matrix (proprietary);
   ADMIRE/synthetic clusters only.
@@ -783,6 +901,18 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
 - **goal:** Generalize the scalar 2-state DARE to an `n×n` coupled-plant LQR so a vehicle with
   products of inertia / gyroscopic cross-coupling flies stably; provide the in-repo
   verification oracle for the offline gain pipeline.
+- **status:** implemented — `solve_dare_nxn_doubling`,
+  `solve_dare_nxn_doubling_with_options`, `dense_dare_residual_norm`, and
+  `CoupledLqrSolution` now provide the FC-portable dense DARE/LQR oracle, and
+  `CoupledGainNode` provides the validated table target for offline gains
+  (`REQ-GNC-002` / `V-GNC-002`). The solver is deterministic, bounded, validates
+  SPD `Q`/`R`, matches `data/gnc/coupled-lqr-dare-tolerance-v1.toml` generated
+  with python-control `dlqr`/SciPy `solve_discrete_are`, and fails closed on an
+  uncontrolled unstable mode. The local §2 merge sweep is green for this slice:
+  workspace build, workspace clippy, full workspace cargo test, GNC/scenario
+  provenance, traceability, parity-doc validation, cargo deny, cargo audit,
+  cargo machete, and formatting all pass; local `cargo nextest` is unavailable,
+  so the full workspace cargo test is the recorded substitute.
 - **fidelity_tier:** T2
 - **depends_on:** [WP-06.1]
 - **new_crates:** none
@@ -794,9 +924,13 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
 - **acceptance:**
   - off by default; goldens byte-identical.
   - DARE residual `< 1e-10` and gains match python-control `dlqr`/SLICOT to machine tol on a
-    random stabilizable `(A,B,Q,R)` bank (tolerance table).
+    random stabilizable `(A,B,Q,R)` bank (tolerance table). **Implemented:** the
+    current table is a scalar plus coupled toy bank generated with
+    python-control `dlqr` / SciPy `solve_discrete_are`.
   - bit-stable across reruns; converges within bounded iterations; fails closed on
-    non-stabilizable input.
+    non-stabilizable input. **Implemented:** covered by
+    `coupled_lqr_dense_solver_matches_tolerance_table` and
+    `coupled_lqr_dense_solver_fails_closed_on_uncontrolled_unstable_mode`.
   - all §2 gates green.
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line (gains carry flight-condition node tag only); tripwire on the
@@ -810,6 +944,19 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
 
 - **goal:** Schedule the coupled gains along the ascent (Mach/`q̄`/mass/time) with bumpless
   transfer, and add the LQG observer for unmeasured (flex) states with LTR.
+- **status:** implemented (2026-06-26) — `tables.rs` exposes `GainScheduleTable`,
+  `ScheduleVariable`, and `GainInterp` for strictly sorted scalar scheduled
+  `CoupledGainNode` entries with optional all-or-none observer gains;
+  `schedule.rs` exposes `ScheduledController`, gain interpolation,
+  conservative closed-loop row-sum and SISO gain/phase margin sweeps, and
+  least-squares bumpless integral-state reset; `lqr.rs` exposes the dual-DARE
+  LQG observer gain helper (`REQ-GNC-003` / `V-GNC-003`). The
+  `data/gnc/gain-schedule-lqg-tolerance-v1.toml` fixture checks node/interior
+  interpolation, `>=6 dB`/`>=30 deg` SISO margins, conservative row-sum
+  stability, bumpless command continuity, and SciPy dual-DARE observer
+  covariance/gain agreement. This is validated-toy method evidence only, not a
+  real vehicle schedule or MIMO robustness certification. `V-GNC-003` focused
+  gates and the batch §2 merge sweep are green.
 - **fidelity_tier:** T2
 - **depends_on:** [WP-06.2-a]
 - **new_crates:** none
@@ -822,8 +969,12 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
   - off by default; goldens byte-identical.
   - linear eigenvalue/margin check passes (`≥6 dB`/`≥30°`) **at every schedule node and a swept
     grid of interior points** (tolerance table); no bump at boundary transitions (integral
-    reset verified).
-  - all §2 gates green.
+    reset verified). **Implemented:** the toy fixture covers nodes plus an interior point
+    with SISO gain/phase margins, conservative row-sum stability, and command-continuity
+    checks.
+  - all §2 gates green. **Implemented:** focused `V-GNC-003` gates, workspace
+    build/clippy/test, formatting, traceability, parity-doc, provenance, and
+    supply-chain hygiene gates are green in the 2026-06-26 batch sweep.
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line; schedule columns carry no target — tripwire on the schedule
   table schema.
@@ -836,19 +987,36 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
 
 - **goal:** Co-designed (offline) bending/slosh notch + phase/gain-stabilization filter array,
   imported as a table, with pole/zero scheduling against mode-frequency dispersion.
+- **status:** implemented (2026-06-26) — discrete prewarped-Tustin section
+  generation, physical-parameter table scheduling, stable-pole fail-closed validation, and
+  analytic bending/slosh margin tolerance evidence are implemented; off-default FC runtime
+  gyro/sensor-chain insertion is implemented; `V-GNC-004` focused gates and the batch §2
+  merge sweep are green.
 - **fidelity_tier:** T2/T3
 - **depends_on:** [WP-06.2-b]
 - **new_crates:** none
 - **touched:** `crates/openbmp-fc/src/filters.rs`, `crates/openbmp-fc/src/tables.rs`
-  (`BendingFilterTable`).
+  (`BendingFilterTable`), `crates/openbmp-fc/src/csi.rs`, `crates/openbmp-fc/src/autopilot.rs`,
+  `data/gnc/bending-filter-tustin-tolerance-v1.toml`.
 - **approach:** §3.6 — `prewarped_tustin_notch`, `BendingFilterTable`, gyro/sensor-chain
   insertion; schedule pole/zero frequencies, never raw taps.
 - **acceptance:**
-  - off by default; goldens byte-identical.
+  - off by default; goldens byte-identical. **Implemented:** no runtime insertion path is
+    active by default unless `AutopilotParams::bending_filter` is installed; the workspace
+    batch test sweep is green.
   - closed-loop margins vs analytic free-free beam + pendulum slosh (MMS, known `ω_j`/`ζ_j`)
-    meet `≥6 dB`/`≥30°` at nodes and interior points (tolerance table).
+    meet `≥6 dB`/`≥30°` at nodes and interior points (tolerance table). **Implemented:** the
+    current toy table covers node/interior physical-parameter
+    interpolation, mode-frequency attenuation (`≥18 dB`), and filtered analytic
+    bending-plus-slosh modal margins (`≥6 dB`/`≥30°`) at both nodes and an interior point.
   - filter sections validated stable (`|z|<1`) at load; fail-closed on unstable poles.
-  - all §2 gates green.
+    **Implemented:** `BiquadSection::has_stable_poles`, `prewarped_tustin_notch`, and
+    `BendingFilterTable` validation reject invalid/unstable sections before activation; the
+    autopilot runtime rejects unsupported live schedule variables and invalid regenerated
+    sections.
+  - all §2 gates green. **Implemented:** focused `V-GNC-004` gates, workspace
+    build/clippy/test, formatting, traceability, parity-doc, provenance, and
+    supply-chain hygiene gates are green in the 2026-06-26 batch sweep.
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line.
 - **est_effort:** 1–2 weeks
@@ -860,26 +1028,47 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
 
 - **goal:** Blended drift-minimum / load-minimum ascent control through max-Q with an α/β
   estimator and a `q·α` (structural-load) limiter, plus a gyro blender.
+- **status:** implemented (2026-06-26) — `loadrelief.rs` now exposes the FC-portable
+  alpha/beta estimator, validated load-relief blend schedule, structural `q·α` limiter, and
+  offline-weighted gyro blender; the autopilot has an off-default
+  `AutopilotParams::load_relief` insertion path that consumes position, environment, and
+  optional modeled-wind topics before the attitude loop; `openbmp-msgs` adds an append-only
+  `estimator.wind` topic and the runner FC bridge publishes modeled ECI wind. The scenario
+  v3 `[fc.autopilot_params.load_relief]` block validates the I-load and rejects
+  target/aimpoint vocabulary; focused controller-SIL Dryden/von-Kármán envelopes prove
+  post-response peak `q·α` reduction versus drift-minimum with nonzero pitch-command trade.
 - **fidelity_tier:** T3
 - **depends_on:** [WP-06.2-c]
 - **new_crates:** none
 - **touched:** new `crates/openbmp-fc/src/loadrelief.rs`, `crates/openbmp-fc/src/autopilot.rs`
-  (insert load-relief term), `crates/openbmp-fc/src/nav_metrics.rs` (reuse `q̄`),
-  `crates/openbmp-msgs/src/lib.rs` (wind topic from FC-bridge).
+  (insert load-relief term), `crates/openbmp-msgs/src/lib.rs` (wind topic from FC-bridge),
+  `crates/openbmp-scenario/src/document.rs`, `crates/openbmp-scenario/src/scenario.rs`,
+  `crates/openbmp-runner/src/fc.rs`, `crates/openbmp-runner/src/fc_bridge.rs`,
+  `crates/openbmp-runner/src/point_mass.rs`, `crates/openbmp-runner/src/rigid_body.rs`,
+  `docs/scenario-format.md`, `data/gnc/load-relief-alpha-beta-tolerance-v1.toml`.
 - **approach:** §3.5 — `estimate_alpha_beta`, `LoadReliefParams`, blend schedule `k(t)`,
   `q·α` ceiling, `GyroBlender`. Wind/density via FC-bridge topics.
 - **acceptance:**
-  - off by default; goldens byte-identical.
+  - off by default; goldens byte-identical. **Implemented:** default
+    `AutopilotParams::load_relief = None` leaves the actuator command unchanged; the runtime
+    pitch correction appears only when the option is installed, and the scenario block is
+    v3-only/off-default.
   - α/β estimator matches analytic relative-velocity geometry to `<1e-9 rad` on the noise-free
-    MMS case (tolerance table).
+    MMS case (tolerance table). **Implemented:** the checked toy fixture covers alpha, beta,
+    and qbar geometry with `1e-12 rad` angle tolerances.
   - live-SIL Dryden/von-Kármán gust through max-Q: blended (`k=1`) reduces peak `q·α` vs
-    drift-min (`k=0`) with the expected attitude-error increase (qualitative trend vs AAS
-    14-038).
-  - all §2 gates green.
+    drift-min (`k=0`) with the expected pitch-command trade (qualitative trend vs AAS
+    14-038). **Implemented:** the focused controller-SIL test runs deterministic Dryden and
+    von-Kármán envelopes through the live autopilot job and a bounded response model; enabling
+    load relief reduces post-response peak `q·α` by at least 20% against drift-minimum and
+    requires nonzero pitch command. This is trend evidence, not vehicle-calibrated telemetry.
+  - all §2 gates green. **Focused status:** `V-GNC-005` gates are green for FC, scenario,
+    message, and runner surfaces; the workspace-wide §2 merge sweep remains the CI authority at
+    the next batch boundary.
 - **validation_label:** `validated-toy` (estimator) / `research` (qualitative trend)
 - **dual_use_note:** **load-relief stays structural-load/drift-minimizing — refuse any variant
   parameterized by a ground aimpoint;** the `q·α` ceiling is a structural limit, not a target.
-  Add a tripwire on `LoadReliefParams`.
+  The parser tripwire rejects target/aimpoint vocabulary in the scenario I-load block.
 - **est_effort:** 2 weeks
 - **parity_ceiling:** matches a published *trend*, not a vehicle's `q·α` telemetry; gains rest on
   generic aero (doc `03`).
@@ -891,21 +1080,100 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
 - **goal:** Model the TVC actuator (2nd-order + rate/position limits + load-torque) and the TWD
   reaction, and compensate with INDI/INCA + pseudo-control hedging coupled to the dense-`B`
   allocator.
+- **status:** partial (2026-06-26) — controller-side dense-INCA and pseudo-control hedging
+  primitives are present behind the existing `indi` feature, and `openbmp-propulsion::tvc`
+  now exposes the second-order TVC plant substrate with rate/position limits, external
+  load-torque feedback, and `-J * delta_ddot` TWD inertial reaction reporting. `LiquidEngine`
+  can opt into that plant and use the plant-delivered pitch/yaw angles for thrust-vector
+  rotation while exposing the current actuator state and last TVC reaction step, and v3
+  `[[vehicle.assembly.engines]]` blocks may opt into that plant through `tvc_actuator`.
+  `data/gnc/tvc-twd-inca-tolerance-v1.toml` records the closed-form TVC step,
+  load-torque reaction, and dense-INCA residual RMS tolerances used by the focused tests.
+  `DenseIncaController` reuses the FC-local dense WLS allocator to solve the `B_eff`
+  increment equation, reports requested/achieved increments and pseudo-control deficit, and
+  `PseudoControlHedger` integrates only available pseudo-control. The FC runtime path now carries
+  scalar INDI desired/measured angular-acceleration pseudo-control on
+  `autopilot.pseudo_control_cmd`, the mixer can route that topic into a feature-gated
+  `DenseIncaControlAllocator`, and v3 `kind = "dense_inca"` allocation blocks build through the
+  runner under the `indi` feature. Dense INCA now shows effective-authority recovery against a
+  deterministic TWD-like reaction series relative to a no-compensation baseline, structural
+  reaction live-SIL proves the opt-in TWD-style reaction perturbs a synthetic TVC probe
+  trajectory, and a feature-gated scalar INDI runner regression reduces live reaction-induced
+  body-rate residual RMS below 75% of the PID residual on the shortened TVC probe. A
+  feature-gated dense-INCA runner regression now allocates physical engine-gimbal dense aliases
+  on that powered TVC probe and proves live structural-reaction body-rate residual RMS drops
+  below 75% of the PID residual. The FC dictionary now also carries
+  `actuator.effector_availability`, the mixer removes unavailable effector ids from phase
+  authority before dense allocation, and the direct runner publishes failed physical engine
+  pitch/yaw gimbal aliases into that topic; a shortened dense-INCA TVC probe proves a scripted
+  engine hard-off reaches the failed state while the run survives to end time. Full engine-out
+  retrim, degraded-mode flagging, abort-to-SAFE transitions, and flight-calibrated TVC authority
+  remain open.
 - **fidelity_tier:** T3
 - **depends_on:** [WP-06.1, WP-06.3-a]
 - **new_crates:** none
-- **touched:** `crates/openbmp-fc/src/indi.rs` (dense-`B_eff` INCA bridge + PCH),
-  `crates/openbmp-fc/src/allocation.rs` (incremental allocation entry point). TWD/actuator
-  *plant* is sim-side (docs `01`/`05`).
+- **touched:** `crates/openbmp-propulsion/src/tvc.rs` (second-order TVC plant + load torque +
+  TWD reaction substrate), `crates/openbmp-propulsion/src/engine.rs` (optional `LiquidEngine`
+  TVC plant runtime path), `crates/openbmp-scenario/src/document.rs` / `scenario.rs` (v3
+  `tvc_actuator` I-load parsing and validation), `crates/openbmp-runner/src/engines.rs`
+  (runner construction), `crates/openbmp-runner/src/fc.rs` / `fc_bridge.rs` (topic registration
+  and dense allocator construction), `crates/openbmp-msgs/src/lib.rs` (pseudo-control and
+  effector-availability topics), `crates/openbmp-fc/src/autopilot.rs` / `mixer.rs` /
+  `step.rs` / `indi.rs` (scalar INDI diagnostics, pseudo-control publication,
+  effector-availability publication/consumption, dense-INCA allocation bridge, and PCH), reusing
+  `crates/openbmp-fc/src/allocation.rs` dense WLS primitives,
+  `crates/openbmp-runner/tests/structural_reaction.rs` (scalar INDI and dense-INCA live
+  residual regressions),
+  `data/gnc/tvc-twd-inca-tolerance-v1.toml` and `data/gnc/provenance.md`.
 - **approach:** §3.7 — INCA against `B_eff`, PCH term, filtered angular-accel estimate;
   lift the current INDI/L1 composition ban only where characterized.
 - **acceptance:**
-  - off by default; goldens byte-identical.
+  - off by default; goldens byte-identical. **Partial:** the new helpers are feature-gated under
+    `indi`, the propulsion TVC plant remains opt-in, and existing scenarios do not declare
+    `tvc_actuator`, so default simulations remain unchanged.
+  - TVC actuator plant includes second-order bandwidth, rate/position limits, load torque, and
+    TWD inertial reaction. **Partial:** `openbmp-propulsion::tvc` has focused tests for the
+    closed-form unloaded step response, load-torque deflection reduction plus reaction torque
+    reporting, rate/position limiting, and fail-closed invalid inputs. `LiquidEngine` has focused
+    tests proving the optional plant shapes delivered thrust and that load torque changes the
+    thrust vector while reporting reaction torque. Scenario tests prove the v3 engine
+    `tvc_actuator` block parses, v2 rejects it as reserved, and invalid actuator parameters fail
+    closed; a runner construction test proves the block enables the optional TVC plant. The TVC
+    step and load-torque tests now compare against the provenance-recorded tolerance table.
   - INDI/INCA cancels an injected TWD reaction in the live SIL (effective-authority recovery vs
     no-compensation baseline), tolerance table on the residual angular-accel tracking error.
+    **Partial:** a focused unit test cancels a synthetic matched TWD-like angular-acceleration
+    reaction through the dense allocator; another focused test shows >90% residual RMS reduction
+    on a deterministic slowly varying TWD-like reaction series versus a no-compensation baseline
+    and matches the provenance-recorded compensated/uncompensated RMS values. `V-STRUCT-002`
+    proves the structural reaction opt-in creates a nonzero attitude-rate history delta in a live
+    synthetic TVC probe, and the feature-gated
+    `scalar_indi_rate_loop_reduces_live_structural_reaction_residual` runner regression proves
+    the scalar INDI runtime loop reduces live reaction-induced body-rate residual RMS below 75%
+    of the PID residual. Feature-gated FC/schema/runner construction tests prove
+    `autopilot.pseudo_control_cmd` is published/registered, `dense_inca` schema blocks validate,
+    the runner builds `DenseIncaControlAllocator`, and the mixer consumes pseudo-control instead
+    of semantic actuator demand for that allocator. The runner now accepts physical engine-gimbal
+    dense aliases (`<engine_id>.gimbal_pitch` / `<engine_id>.gimbal_yaw`), inherits engine
+    gimbal bounds/rate limits for those columns, and merges dense alias commands back into the
+    gated `EngineCommandSet` without dropping throttle or ignition state. `MAX_EFFECTOR_COMMANDS`
+    is sized for a 9-engine dual-axis TVC cluster, and the mixer now fails closed on effector
+    command overflow. The feature-gated
+    `dense_inca_runtime_reduces_live_structural_reaction_residual` runner regression allocates
+    dense-INCA columns across the powered TVC probe's physical engine gimbals and reduces live
+    structural-reaction body-rate residual RMS below 75% of the PID residual. The adjacent
+    WP-06.4-c degraded-mode substrate now maps saturated post-availability dense allocation to
+    `FDIR_BIT_ALLOCATION_INFEASIBLE` and commander's `health.degraded` region (`REQ-GNC-007`).
+    Commander-side confirmation counters now gate degraded and SAFE health-region transitions.
+    Full engine-out retrim, SAFE transition validation, and flight-calibrated TVC authority remain
+    open.
   - PCH prevents integrator wind-up against a rate-limited actuator (bounded integral state
-    under saturation).
-  - all §2 gates green.
+    under saturation). **Partial:** focused tests prove pseudo-control deficit reporting under a
+    rate-limited actuator and bounded hedged integration when requested pseudo-control is fully
+    unavailable.
+  - all §2 gates green. **Focused status:** `V-GNC-006` propulsion + runner + FC substrate gates
+    are green for the feature slice; workspace-wide §2 remains deferred to the next batch
+    boundary.
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line (vehicle-intrinsic authority).
 - **est_effort:** 2–3 weeks
@@ -975,21 +1243,149 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
   degraded-mode flag when the attainable-moment set no longer contains the demand; and provide
   a forward-only abort ladder `NOMINAL → DEGRADED → SAFE` commanding thrust-off / attitude-hold
   / propellant-safe.
+- **status:** partial (2026-06-26) — the failed-engine TVC-gimbal availability path from
+  WP-06.3-b now feeds a degraded-mode substrate: the mixer reports saturated
+  `EffectorCommandSet` output when availability removes a dense column and the remaining
+  authority cannot attain demand, FDIR latches `FDIR_BIT_ALLOCATION_INFEASIBLE` from that topic,
+  and commander maps allocation-infeasible-only trips into `health.degraded` while keeping
+  `safe_state_requested` false. Commander-side `fdir_degraded_confirm_ticks` and
+  `fdir_safe_confirm_ticks` counters gate degraded and SAFE transitions while defaulting to one
+  tick for current behavior (`REQ-GNC-007` / `V-GNC-007`). The mixer now also converts
+  `safe_state_requested` into zero-throttle, zero-gimbal, ignite-false, shutdown-true
+  `EngineDemand` and per-engine `EngineCommandSet` output even when no fresh engine demand
+  arrived in that tick (`REQ-GNC-008` / `V-GNC-008`). The
+  `ballistic_state_compile_fail` testkit harness now also rejects a `RequestSafeState`
+  construction carrying `ground_aimpoint_eci_m`, keeping the SAFE action vocabulary
+  non-targeting (`REQ-GNC-009` / `V-GNC-009`). The shared message dictionary and mixer now
+  publish `PropellantSafingCommand` on `propulsion.propellant_safing_cmd`, carrying
+  feed-isolation, valve-closure, pressurization-disable, and drain-disable intent through
+  FC step output and runner registration (`REQ-GNC-010` / `V-GNC-010`). The runner now consumes
+  that latest safing command in point-mass and rigid-body propellant-budget paths, latches
+  configured feed networks closed, clears tank drain rates when drains are disabled, and forces
+  propellant-budgeted engine feed scales to zero with shutdown requests (`REQ-GNC-011` /
+  `V-GNC-011`). The vehicle-side budget report now carries `pressurization_enabled`, defaults it
+  true for normal budget evaluation, and the runner SAFE clamp flips it false when active SAFE
+  intent disables pressurization (`REQ-GNC-016` / `V-GNC-016`). The autopilot now latches the
+  attitude measured at SAFE entry as an internal target-free hold reference, suppresses normal
+  guidance/trajectory/load-relief corrections while SAFE is active, exposes
+  `AutopilotStatus.safe_attitude_hold_active`, and publishes zero-throttle shutdown demand
+  (`REQ-GNC-012` / `V-GNC-012`). A focused commander/autopilot/mixer pipeline test
+  proves non-allocation FDIR trips reach SAFE hold, propellant safing, and per-engine shutdown
+  commands on one FC bus (`REQ-GNC-013` / `V-GNC-013`). A focused `FcRunner` integration test proves
+  those outputs are visible through the runner accessors used by `FcBridge` after a previous-tick
+  non-allocation FDIR trip (`REQ-GNC-014` / `V-GNC-014`). A focused rigid-body `Session`
+  integration test clips the Phalcon-9 TVC probe, injects a mission `request_safe_state` event,
+  verifies pre-SAFE thrust, post-SAFE zero-thrust Shutdown across all nine engines, bounded finite
+  rigid-body state, and clean end-time completion (`REQ-GNC-015` / `V-GNC-015`). Failed-engine
+  snapshots now also publish failed engine ids through `EffectorAvailability`; the mixer consumes
+  that FC-portable engine availability list, commands unavailable engines shutdown/zero, retrims
+  scalar throttle over the remaining phase-authorized engines by total-authorized/available, and
+  clamps the redistributed throttle to 1.0 (`REQ-GNC-017` / `V-GNC-017`). Scalar fan-out can now
+  also apply calibrated per-failed-engine survivor gimbal trim biases from `[[fc.engine_out_trim]]`
+  after throttle retrim (`REQ-GNC-022` / `V-GNC-022`). SAFE drain-disable intent
+  now also reaches `TankRack`, which latches drain paths disabled and ignores declared, budget, and
+  RCS feed drains while inactive safing leaves them enabled (`REQ-GNC-018` / `V-GNC-018`).
+  SAFE pressurization-disable intent now also fails all reported engine feed-pressure scales closed
+  with shutdown requests even when feed isolation and valve closure are not requested
+  (`REQ-GNC-019` / `V-GNC-019`). SAFE now also publishes a distinct `dump_enabled` intent,
+  schema-v3 tanks can declare `safe_dump_rate_kg_per_s`, and `TankRack` applies only that
+  configured dump rate when SAFE dump is active and ordinary drains are disabled (`REQ-GNC-020` /
+  `V-GNC-020`). Tanks can also declare a pressure-coupled `safe_dump_orifice`, and `TankRack`
+  adds live ullage-pressure orifice flow to the configured fixed dump rate while SAFE dump is
+  active (`REQ-GNC-021` / `V-GNC-021`). Tanks can now also declare a choked
+  ullage-gas `safe_dump_vent` that reduces the next-step pressure available to the liquid
+  dump orifice when SAFE dump is active (`REQ-GNC-023` / `V-GNC-023`) and can opt into an
+  adiabatic ullage-gas thermal model for that vent (`REQ-GNC-025` / `V-GNC-025`). SAFE dump
+  orifices and vents can now also declare deterministic backpressure ramps for time-varying
+  downstream pressure (`REQ-GNC-026` / `V-GNC-026`), and SAFE dump vents can opt into a
+  wall-relaxed adiabatic thermal model with required wall-temperature/tau validation
+  (`REQ-GNC-027` / `V-GNC-027`). SAFE dump orifices and vents can also source
+  runtime backpressure from the current ambient atmosphere sample
+  (`REQ-GNC-028` / `V-GNC-028`). Tanks can also declare an opt-in finite-volume
+  pressurant hardware substrate that feeds later pressure-coupled SAFE dump
+  orifice flow unless SAFE disables pressurization (`REQ-GNC-029` / `V-GNC-029`).
+  Scalar fan-out can now also derive an
+  optional `EngineOutTrimTable` from declared engine mount geometry and max thrust via
+  `[fc.engine_out_trim_auto]` (`REQ-GNC-024` / `V-GNC-024`). Flight-calibrated integrator bias
+  estimation plus cryogenic phase-change, flight-calibrated regulator/bottle
+  thermal coupling, plume-coupled vent backpressure, and production pressurant
+  hardware validation remain open.
 - **fidelity_tier:** T4
 - **depends_on:** [WP-06.1, WP-06.3-b]
 - **new_crates:** none
-- **touched:** new `crates/openbmp-fc/src/reconfig.rs`, `crates/openbmp-fc/src/fdir.rs`
-  (`FDIR_BIT_ALLOCATION_INFEASIBLE`), `crates/openbmp-fc/src/commander.rs` (abort ladder),
-  `crates/openbmp-testkit/tests/ballistic_state_compile_fail.rs` (extend).
+- **touched:** `crates/openbmp-fc/src/mixer.rs` (post-availability dense saturation evidence),
+  `crates/openbmp-fc/src/fdir.rs` (`FDIR_BIT_ALLOCATION_INFEASIBLE`),
+  `crates/openbmp-fc/src/commander.rs` (`health.degraded` mapping), and
+  `crates/openbmp-runner/src/fc.rs` (test helper canonical health-region states). The mixer
+  also owns the current SAFE thrust-termination command override, and
+  `crates/openbmp-testkit/tests/ballistic_state_compile_fail.rs` owns the no-ground-redirect
+  compile-fail tripwire. `crates/openbmp-msgs/src/lib.rs`, `crates/openbmp-fc/src/step.rs`,
+  and `crates/openbmp-runner/src/fc.rs` carry the current propellant-safing intent topic, while
+  `crates/openbmp-runner/src/fc_bridge.rs`, `crates/openbmp-runner/src/feed_network.rs`,
+  `crates/openbmp-runner/src/point_mass.rs`, `crates/openbmp-runner/src/propulsion.rs`, and
+  `crates/openbmp-runner/src/rigid_body.rs` consume it in runner feed/budget safing paths.
+  `crates/openbmp-vehicle/src/propellant_budget.rs` carries the simplified budget-report
+  pressurization-enable diagnostic consumed by the runner SAFE clamp.
+  `crates/openbmp-msgs/src/lib.rs` and `crates/openbmp-fc/src/autopilot.rs` carry the SAFE
+  attitude-hold diagnostic and latched-entry-reference substrate; `crates/openbmp-fc/src/commander.rs`
+  now carries the focused FC SAFE pipeline validation; `crates/openbmp-runner/src/fc.rs` carries the
+  focused runner-facing SAFE output validation; `crates/openbmp-runner/tests/session_equivalence.rs`
+  carries the focused rigid-body mission SAFE shutdown/recovery validation. `crates/openbmp-msgs/src/lib.rs`,
+  `crates/openbmp-fc/src/mixer.rs`, and `crates/openbmp-runner/src/fc_bridge.rs` carry the
+  FC-portable failed-engine availability and scalar engine-out retrim substrate. `crates/openbmp-runner/src/tanks.rs`,
+  `crates/openbmp-runner/src/point_mass.rs`, and `crates/openbmp-runner/src/rigid_body.rs` carry
+  the tank-rack SAFE drain-disable latch. `crates/openbmp-runner/src/propulsion.rs` carries the
+  simplified pressurization-disable feed fail-closed path. `crates/openbmp-fc/src/mixer.rs`,
+  `crates/openbmp-scenario/src/document.rs`, and `crates/openbmp-runner/src/fc.rs` carry the
+  calibrated `[[fc.engine_out_trim]]` scalar fan-out trim-bias table and
+  `[fc.engine_out_trim_auto]` geometry-derived trim table substrate, while
+  `crates/openbmp-runner/src/tanks.rs` and `crates/openbmp-scenario/src/document.rs` carry the
+  SAFE dump rate, pressure-coupled liquid orifice, choked ullage-gas vent, opt-in adiabatic and
+  wall-relaxed ullage-gas vent thermal substrates, deterministic SAFE dump backpressure ramps,
+  ambient-atmosphere backpressure handoff, and finite-volume tank pressurization substrate.
+  `crates/openbmp-runner/src/point_mass.rs` and `crates/openbmp-runner/src/rigid_body.rs` now hand
+  current ambient atmosphere pressure to `TankRack` only for SAFE dump paths that request ambient
+  backpressure. Future completion still needs flight-calibrated integrator bias estimation plus
+  cryogenic phase-change, flight-calibrated regulator/bottle thermal coupling, plume-coupled vent
+  backpressure, and production pressurant hardware validation.
 - **approach:** §3.9 — `moment_demand_attainable`, `B`-column drop + WLS re-solve, re-trim
   bias absorption, `AbortLadder` guarded transition table with confirmation timers.
 - **acceptance:**
   - off by default; goldens byte-identical.
   - scripted single-engine-loss injection in the live SIL: WLS redistributes; attitude held
     within margin; if demand becomes unattainable → DEGRADED, and uncontainable → SAFE
-    (thrust-off/attitude-hold), with confirmation timers verified.
+    (thrust-off/attitude-hold), with confirmation timers verified. **Partial:** focused FC tests
+    prove post-availability dense-allocation saturation is produced when remaining authority is
+    insufficient, FDIR latches `FDIR_BIT_ALLOCATION_INFEASIBLE` from that saturation signal, and
+    commander publishes `health.degraded` without requesting SAFE for allocation-infeasible-only
+    trips; additional commander tests prove two-tick confirmation delays both DEGRADED and SAFE
+    transitions until the configured count is met. A focused mixer test proves SAFE status
+    publishes thrust-termination engine demand and per-engine shutdown commands without waiting
+    for a fresh autopilot engine demand, and now also proves propellant-safing intent is
+    published on the FC bus. Focused FC/scenario/runner tests prove `[[fc.engine_out_trim]]`
+    applies calibrated survivor gimbal biases after scalar throttle retrim, is v3-gated, rejects
+    invalid engine references/self-targeting, and translates scenario ids into the FC table.
+    Focused runner tests prove active safing commands close configured
+    feed valves, clear budget tank drains, zero propellant-budget feed scales, and request
+    engine shutdown while inactive commands leave budget outputs unchanged; the same budget clamp
+    now also proves SAFE pressurization-disable intent flips the simplified budget report's
+    `pressurization_enabled` flag false while normal budget evaluation defaults it true. Focused
+    tank-rack tests prove SAFE dump intent opens configured constant-rate dump paths,
+    pressure-coupled ullage liquid-orifice paths, and choked ullage-gas vent paths while ordinary
+    drains remain disabled, and focused scenario tests prove `safe_dump_rate_kg_per_s`,
+    `safe_dump_orifice`, and `safe_dump_vent` validation. A focused
+    autopilot test proves SAFE entry ignores a conflicting normal guidance reference, advertises
+    `safe_attitude_hold_active`, emits zero-throttle shutdown demand, and commands correction when
+    the vehicle drifts away from the latched entry attitude. A focused FC pipeline test proves a
+    non-allocation FDIR trip drives commander SAFE request, autopilot SAFE hold, mixer propellant
+    safing, and per-engine shutdown output on a shared bus. A focused `FcRunner` test proves the
+    same SAFE status/hold/shutdown/safing outputs are visible through runner accessors after an
+    injected previous-tick non-allocation FDIR trip. A focused rigid-body `Session` test proves a
+    mission `request_safe_state` event shuts down the live nine-engine TVC cluster to exactly zero
+    thrust while the rigid-body state remains valid/bounded and the run reaches end time.
   - abort ladder is monotonic and guarded; **no transition carries a target**; the
-    ballistic-state compile-fail tripwire is extended and green.
+    ballistic-state compile-fail tripwire is extended to reject SAFE ground-aimpoint vocabulary
+    and green.
   - all §2 gates green.
 - **validation_label:** `validated-toy`
 - **dual_use_note:** **SAFE state only — thrust termination / attitude-hold / propellant-safe;
@@ -1003,6 +1399,34 @@ introduces a new crate; all land in `openbmp-fc` behind off-by-default scenario 
 
 ### WP-06.4-d — Offline H∞/μ-synthesized scheduled controller import
 
+- **status:** partial and traced by `REQ-GNC-030` / `V-GNC-030`,
+  `REQ-GNC-031` / `V-GNC-031`, `REQ-GNC-032` / `V-GNC-032`, and
+  `REQ-GNC-033` / `V-GNC-033`.
+  `openbmp-fc::tables` now exposes `RobustControllerNode` and
+  `RobustControllerTable` for provenance-pinned reduced discrete state-space
+  controller imports with bounded dimensions, strictly sorted scalar schedule
+  nodes, finite row-major `A_c/B_c/C_c/D_c` matrices, SHA-256 source-digest
+  validation, target-vocabulary rejection, and two-buffer table activation.
+  `openbmp-fc::schedule` now exposes `ImportedRobustController`,
+  `RobustControllerMatrices`, `ImportedRobustControllerStep`, and
+  `interpolate_robust_controller_table` to clamp/interpolate scheduled matrices,
+  validate runtime measurements, compute `u[k] = C_c x_c[k] + D_c y[k]`, and
+  advance `x_c[k+1] = A_c x_c[k] + B_c y[k]` in locked row-major order.
+  Schema-v3 `[fc.robust_controller]` now declares `iload_file` plus optional
+  `iload_file_sha256`, resolves the file through `Scenario::resolved_files`, and
+  fails closed on schema-v2 use or SHA mismatch. The runner-side FC bridge now
+  passes resolved scenario files into `FcRunner::new_with_resolved_files`; when a
+  robust-controller I-load is present, `FcRunner` rechecks the optional SHA pin,
+  parses the `[robust_controller]` / `[[robust_controller.nodes]]` TOML envelope,
+  converts it into `RobustControllerTable`, validates it, and declares it in the
+  FC table registry at boot. `openbmp-fc::schedule` now also exposes
+  `SisoStateSpaceRef`, `siso_state_space_loop_margins`, and
+  `sweep_imported_robust_controller_siso_margins` for deterministic public/toy
+  SISO frequency-response margin sweeps over imported robust-controller schedules,
+  backed by `data/gnc/robust-controller-siso-margin-tolerance-v1.toml`. This does
+  not yet claim closed-loop robust-controller measurement mapping, command mixing,
+  external H∞/μ synthesis reproduction, MIMO μ-margin validation, or real vehicle
+  robust-control tuning.
 - **goal:** Import an offline (Python/MATLAB) H∞/μ-synthesized, balanced-reduced
   `(A,B,C,D)` controller as a provenance-pinned table I-load and run only the linear controller
   in the loop, for robust stability against bending/slosh/aero/actuator uncertainty.

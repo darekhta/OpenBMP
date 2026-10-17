@@ -12,14 +12,15 @@ use std::sync::{Arc, Mutex};
 use nalgebra::Vector3;
 use openbmp_aero::{knudsen_number, mean_free_path_m};
 use openbmp_aerothermal::{
-    AerothermalContext, BackwallCondition, DepthResolvedCharringAblator, FayRiddell,
-    HeatTransferModel, OneDThermalToy, SuttonGraves, ToyAblator, ToyMaterial, WallCatalysis,
+    AerothermalContext, AerothermalError, BackwallCondition, DepthResolvedCharringAblator,
+    FayRiddell, HeatTransferModel, OneDThermalToy, SuttonGraves, TauberSuttonRadiative, ToyAblator,
+    ToyMaterial, WallCatalysis,
 };
 use openbmp_core::{ModelId, ValidationStatus};
 use openbmp_physics::AtmosphereModel;
 use openbmp_scenario::{
     AerothermalAblationConfig, AerothermalBackwallConfig, AerothermalConfig,
-    AerothermalThermalToyConfig, ScenarioDocument,
+    AerothermalElectronDensityProxyConfig, AerothermalThermalToyConfig, ScenarioDocument,
 };
 use openbmp_sim::{EnvironmentSample, ForceContext, ForceModel, ModelEvalError};
 use openbmp_state::{PointMassState, RigidBodyState};
@@ -71,6 +72,8 @@ pub struct LiveAerothermalOutput {
     /// diagnostics. For the currently wired engineering correlations
     /// this matches `recovery_temperature_k`.
     pub stagnation_temperature_k: f64,
+    /// Live electron number density proxy for plasma-blackout coupling (1/m^3).
+    pub electron_number_density_m3: f64,
     /// Knudsen number based on nose radius.
     pub knudsen: f64,
     /// Current wall/surface temperature (K).
@@ -148,6 +151,7 @@ impl StagnationHeatingForceAdapter {
             output.h_aw_j_kg,
             output.recovery_temperature_k,
             output.stagnation_temperature_k,
+            output.electron_number_density_m3,
             output.knudsen,
             output.wall_temperature_k,
             output.backwall_temperature_k,
@@ -347,8 +351,11 @@ impl LiveAerothermalDriver {
 
         if airspeed_m_s <= 0.0 || sample.speed_of_sound_m_s <= 0.0 || sample.density_kg_m3 <= 0.0 {
             self.mass_feedback.set_mass_loss_kg_s(0.0);
+            let electron_number_density_m3 =
+                electron_number_density_from_proxy(&self.config, sample.temperature_k);
             self.output = LiveAerothermalOutput {
                 stagnation_temperature_k: sample.temperature_k,
+                electron_number_density_m3,
                 knudsen,
                 wall_temperature_k,
                 backwall_temperature_k,
@@ -361,8 +368,11 @@ impl LiveAerothermalDriver {
         let mach = airspeed_m_s / sample.speed_of_sound_m_s;
         if self.config.stagnation_kind == "fay_riddell" && mach <= 1.0 {
             self.mass_feedback.set_mass_loss_kg_s(0.0);
+            let electron_number_density_m3 =
+                electron_number_density_from_proxy(&self.config, sample.temperature_k);
             self.output = LiveAerothermalOutput {
                 stagnation_temperature_k: sample.temperature_k,
+                electron_number_density_m3,
                 knudsen,
                 wall_temperature_k,
                 backwall_temperature_k,
@@ -380,7 +390,7 @@ impl LiveAerothermalDriver {
             wall_temperature_k,
             wall_catalysis: wall_catalysis(&self.config.wall_catalysis),
         };
-        let heating = match self.config.stagnation_kind.as_str() {
+        let mut heating = match self.config.stagnation_kind.as_str() {
             "sutton_graves" => {
                 SuttonGraves::default().stagnation_with_wall_enthalpy_correction(&ctx)?
             }
@@ -401,6 +411,22 @@ impl LiveAerothermalDriver {
                 });
             }
         };
+        if let Some(radiative) = &self.config.radiative {
+            let q_rad = match radiative.kind.as_str() {
+                "tauber_sutton_earth_air" => TauberSuttonRadiative::earth_air().stagnation(&ctx)?,
+                other => {
+                    return Err(RunnerError::UnsupportedScenario {
+                        what: format!("unsupported aerothermal.radiative.kind `{other}`"),
+                    });
+                }
+            };
+            heating.q_rad_w_m2 += q_rad.q_rad_w_m2;
+            if !heating.q_rad_w_m2.is_finite() {
+                return Err(RunnerError::Aerothermal(AerothermalError::NonFinite {
+                    reason: "live aerothermal radiative heat flux non-finite",
+                }));
+            }
+        }
 
         let q_in_w_m2 = (heating.q_conv_w_m2 + heating.q_rad_w_m2).max(0.0);
         if let Some(thermal) = &mut self.thermal
@@ -443,6 +469,8 @@ impl LiveAerothermalDriver {
         } else {
             0.0
         };
+        let electron_number_density_m3 =
+            electron_number_density_from_proxy(&self.config, heating.recovery_temperature_k);
         self.mass_feedback.set_mass_loss_kg_s(mass_loss_kg_s);
         self.output = LiveAerothermalOutput {
             q_conv_w_m2: heating.q_conv_w_m2,
@@ -450,6 +478,7 @@ impl LiveAerothermalDriver {
             h_aw_j_kg: heating.h_aw_j_kg,
             recovery_temperature_k: heating.recovery_temperature_k,
             stagnation_temperature_k: heating.recovery_temperature_k,
+            electron_number_density_m3,
             knudsen,
             wall_temperature_k,
             backwall_temperature_k,
@@ -460,6 +489,27 @@ impl LiveAerothermalDriver {
         self.sink.set_output(self.output);
         Ok(&self.output)
     }
+}
+
+fn electron_number_density_from_proxy(config: &AerothermalConfig, temperature_k: f64) -> f64 {
+    config.electron_density_proxy.as_ref().map_or(0.0, |proxy| {
+        electron_number_density_proxy_value(proxy, temperature_k)
+    })
+}
+
+fn electron_number_density_proxy_value(
+    proxy: &AerothermalElectronDensityProxyConfig,
+    temperature_k: f64,
+) -> f64 {
+    if !temperature_k.is_finite() || temperature_k <= proxy.activation_temperature_k {
+        return 0.0;
+    }
+    let fraction = (temperature_k - proxy.activation_temperature_k)
+        / (proxy.reference_temperature_k - proxy.activation_temperature_k);
+    let density = proxy.reference_electron_number_density_m3 * fraction.max(0.0);
+    proxy
+        .max_electron_number_density_m3
+        .map_or(density, |max_density| density.min(max_density))
 }
 
 /// Gather source-tagged UQ declared by `[aerothermal.uq]`.
@@ -613,6 +663,7 @@ fn ablator_material(name: &str) -> ToyAblator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openbmp_core::SimTime;
     use openbmp_scenario::Scenario;
 
     const AEROTHERMAL_UQ_SCENARIO: &str = r#"
@@ -678,6 +729,64 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const AEROTHERMAL_RADIATIVE_SCENARIO: &str = r#"
+openbmp.scenario = 3
+
+[meta]
+name = "aerothermal-radiative-test"
+description = "Synthetic Tauber-Sutton radiative runtime smoke test."
+validation = "checked"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 1
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 80000.0]
+initial_velocity_eci_m_s = [11000.0, 0.0, -100.0]
+
+[vehicle.assembly]
+id = "aerothermal-radiative-test"
+
+[[vehicle.assembly.bodies]]
+id = "capsule"
+geometry = { kind = "cylinder", length_m = 1.0, diameter_m = 1.0 }
+dry_mass_kg = 100.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "piecewise_exponential"
+wind = "none"
+
+[atmosphere]
+kind = "piecewise_exponential"
+
+[aerothermal]
+stagnation_kind = "sutton_graves"
+nose_radius_m = 0.5
+wall_temperature_k = 1500.0
+wall_catalysis = "fully_catalytic"
+
+[aerothermal.radiative]
+kind = "tauber_sutton_earth_air"
+
+[forces]
+models = ["gravity", "aerothermal_diagnostics"]
+
+[telemetry]
+output.csv = "out/aerothermal-radiative-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#;
+
     #[test]
     fn aerothermal_upstream_uq_budget_reads_declared_q_conv_band() {
         let scenario = Scenario::from_toml_str(AEROTHERMAL_UQ_SCENARIO).unwrap();
@@ -697,5 +806,65 @@ require_monotonic_time = true
             openbmp_uq::CredibilityLevel::L2
         );
         assert!((budget.sources[0].one_sigma - 200000.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn aerothermal_radiative_absent_keeps_q_rad_zero() {
+        let scenario = Scenario::from_toml_str(AEROTHERMAL_UQ_SCENARIO).unwrap();
+        let mut driver = LiveAerothermalDriver::maybe_new(&scenario.document)
+            .unwrap()
+            .unwrap();
+        let output = driver
+            .evaluate_common(70_000.0, 11_000.0, SimTime::ZERO, 0.0)
+            .unwrap();
+
+        assert!(output.q_conv_w_m2 > 0.0);
+        assert_eq!(output.q_rad_w_m2.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn aerothermal_radiative_tauber_sutton_emits_q_rad_when_enabled() {
+        let scenario = Scenario::from_toml_str(AEROTHERMAL_RADIATIVE_SCENARIO).unwrap();
+        let mut driver = LiveAerothermalDriver::maybe_new(&scenario.document)
+            .unwrap()
+            .unwrap();
+        let output = driver
+            .evaluate_common(70_000.0, 11_000.0, SimTime::ZERO, 0.0)
+            .unwrap();
+
+        assert!(output.q_conv_w_m2 > 0.0);
+        assert!(output.q_rad_w_m2 > 0.0);
+    }
+
+    #[test]
+    fn aerothermal_radiative_rejects_unknown_kind() {
+        let toml =
+            AEROTHERMAL_RADIATIVE_SCENARIO.replace("tauber_sutton_earth_air", "synthetic_fit");
+        assert!(Scenario::from_toml_str(&toml).is_err());
+    }
+
+    #[test]
+    fn electron_density_proxy_interpolates_and_caps() {
+        let proxy = AerothermalElectronDensityProxyConfig {
+            source_id: "synthetic-entry-density.v1".to_owned(),
+            evidence: "unit test".to_owned(),
+            activation_temperature_k: 1500.0,
+            reference_temperature_k: 3000.0,
+            reference_electron_number_density_m3: 6.0e16,
+            max_electron_number_density_m3: Some(1.0e17),
+        };
+
+        assert_eq!(
+            electron_number_density_proxy_value(&proxy, 1400.0).to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            electron_number_density_proxy_value(&proxy, 2250.0).to_bits(),
+            3.0e16_f64.to_bits()
+        );
+        assert_eq!(
+            electron_number_density_proxy_value(&proxy, 4500.0).to_bits(),
+            1.0e17_f64.to_bits()
+        );
     }
 }

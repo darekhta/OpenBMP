@@ -1,0 +1,72 @@
+openbmp.scenario = 3
+
+[meta]
+name = "day-of-launch-spliced-wind-cli"
+description = "Synthetic day-of-launch spliced wind CLI fixture."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 0.1
+seed = 0x1919
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 1000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "dol-cli-test"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "none"
+wind = "none"
+
+[day_of_launch.wind]
+kind = "spliced"
+
+[day_of_launch.wind.splice]
+lower_profile_id = "balloon-1"
+upper_profile_id = "profiler-1"
+overlap_lower_altitude_m = 1000.0
+overlap_upper_altitude_m = 2000.0
+
+[[day_of_launch.wind.profiles]]
+id = "balloon-1"
+source = "balloon"
+released_at_s = -18000.0
+provenance_id = "synthetic-balloon"
+provenance_uri = "data/wind/synthetic-balloon-family-v1.toml"
+samples = [
+  { altitude_m = 0.0, wind_ned_m_s = [5.0, 3.0, -2.0], quality_unit = 1.0 },
+  { altitude_m = 1000.0, wind_ned_m_s = [7.0, 5.0, -3.0], quality_unit = 1.0 },
+  { altitude_m = 2000.0, wind_ned_m_s = [9.0, 7.0, -4.0], quality_unit = 1.0 },
+]
+
+[[day_of_launch.wind.profiles]]
+id = "profiler-1"
+source = "doppler_profiler"
+released_at_s = -3600.0
+provenance_id = "synthetic-profiler"
+provenance_uri = "data/wind/synthetic-balloon-family-v1.toml"
+samples = [
+  { altitude_m = 1000.0, wind_ned_m_s = [8.0, 6.0, -3.5], quality_unit = 0.95 },
+  { altitude_m = 2000.0, wind_ned_m_s = [10.0, 8.0, -4.5], quality_unit = 0.95 },
+  { altitude_m = 3000.0, wind_ned_m_s = [12.0, 10.0, -5.0], quality_unit = 0.95 },
+]
+
+[telemetry]
+output.csv = "out/day-of-launch-spliced-wind-cli.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true

@@ -37,6 +37,7 @@ use openbmp_propulsion::{
     ClusterLayout as PropulsionClusterLayout, EngineCluster, EngineFault, EngineLimits,
     EngineModel, EngineState, LiquidEngine, LiquidEngineCStarEfficiencyBand, LiquidEngineNozzle,
     LiquidEnginePerformance, LiquidEngineThermochemistry, NozzleSeparationCriterion,
+    TvcActuatorParams,
 };
 use openbmp_scenario::{
     ClusterLayoutConfig, EngineConfig, EngineFaultConfig, EngineKindConfig,
@@ -560,6 +561,15 @@ impl EngineRack {
                     thrust_body: snap.thrust_body,
                     mass_flow_kg_per_s: snap.mass_flow_kg_per_s,
                     consumed_kg: snap.consumed_kg,
+                    gimbal_pitch_rad: snap.gimbal_pitch_rad,
+                    gimbal_yaw_rad: snap.gimbal_yaw_rad,
+                    gimbal_pitch_rate_rad_s: snap.gimbal_pitch_rate_rad_s,
+                    gimbal_yaw_rate_rad_s: snap.gimbal_yaw_rate_rad_s,
+                    tvc_pitch_load_torque_n_m: snap.tvc_pitch_load_torque_n_m,
+                    tvc_yaw_load_torque_n_m: snap.tvc_yaw_load_torque_n_m,
+                    tvc_pitch_inertial_reaction_torque_n_m: snap
+                        .tvc_pitch_inertial_reaction_torque_n_m,
+                    tvc_yaw_inertial_reaction_torque_n_m: snap.tvc_yaw_inertial_reaction_torque_n_m,
                     lifecycle_state_index: engine_state_index(snap.state),
                 },
             );
@@ -610,8 +620,14 @@ struct BuiltEngine {
 #[derive(Debug)]
 struct BuiltLiquidPerformance {
     performance: LiquidEnginePerformance,
+    mass_flow_c_star_n: f64,
     liquid_plume: crate::plume::LiquidPlumeEngine,
     upstream_uq_source: UncertaintySource,
+}
+
+pub(crate) struct ResolvedLiquidEnginePerformance {
+    pub(crate) performance: LiquidEnginePerformance,
+    pub(crate) mass_flow_c_star_n: f64,
 }
 
 /// Engine resolver: scenario `EngineConfig` → `LiquidEngine` plus optional
@@ -675,6 +691,20 @@ fn build_engine(
         reason: err.to_string(),
     })?
     .with_restart_policy(config.limits.restartable);
+    if let Some(tvc_actuator) = &config.tvc_actuator {
+        engine = engine
+            .with_tvc_actuator(TvcActuatorParams {
+                natural_frequency_rad_s: tvc_actuator.natural_frequency_rad_s,
+                damping_ratio: tvc_actuator.damping_ratio,
+                max_angle_rad: config.limits.max_gimbal_rad,
+                max_rate_rad_s: tvc_actuator.max_rate_rad_s,
+                gimbal_inertia_kg_m2: tvc_actuator.gimbal_inertia_kg_m2,
+            })
+            .map_err(|err| RunnerError::Engine {
+                field: format!("vehicle.assembly.engines[{index}].tvc_actuator"),
+                reason: err.to_string(),
+            })?;
+    }
     if let Some(fault_config) = &config.fault {
         let fault = engine_fault_from_config(*fault_config);
         engine
@@ -757,8 +787,11 @@ fn load_liquid_engine_performance(
         reason: err.to_string(),
     })?;
     let nominal_mass_flow_kg_per_s = performance.mass_flow_kg_per_s;
+    let mass_flow_c_star_n =
+        nominal_mass_flow_kg_per_s * state.c_star_m_s * state.c_star_efficiency.nominal;
     Ok(BuiltLiquidPerformance {
         performance,
+        mass_flow_c_star_n,
         liquid_plume: crate::plume::LiquidPlumeEngine {
             chamber_pressure_pa: thermochem.chamber_pressure_pa,
             gamma: state.gamma,
@@ -768,6 +801,20 @@ fn load_liquid_engine_performance(
             separation,
         },
         upstream_uq_source,
+    })
+}
+
+pub(crate) fn resolve_liquid_engine_performance(
+    index: usize,
+    config: &EngineThermochemicalPerformanceConfig,
+    thermochem: &PropulsionThermochemConfig,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<ResolvedLiquidEnginePerformance, RunnerError> {
+    load_liquid_engine_performance(index, config, thermochem, resolved_files).map(|built| {
+        ResolvedLiquidEnginePerformance {
+            performance: built.performance,
+            mass_flow_c_star_n: built.mass_flow_c_star_n,
+        }
     })
 }
 
@@ -896,7 +943,8 @@ mod tests {
     use openbmp_core::{SimTime, StepIndex};
     use openbmp_propulsion::{EngineCluster, EngineCommand, EngineLimits};
     use openbmp_scenario::{
-        EngineLimitsConfig, EngineThermochemicalPerformanceConfig, PropulsionThermochemConfig,
+        EngineLimitsConfig, EngineThermochemicalPerformanceConfig, EngineTvcActuatorConfig,
+        PropulsionThermochemConfig,
     };
     use openbmp_sim::EventId;
     use openbmp_uq::UncertaintyClass;
@@ -1081,6 +1129,34 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_fault_config_maps_documented_payload_taxonomy() {
+        let stuck = engine_fault_from_config(EngineFaultConfig::Stuck { at_throttle: 0.35 });
+        let hard_off = engine_fault_from_config(EngineFaultConfig::HardOff);
+        let over_thrust = engine_fault_from_config(EngineFaultConfig::OverThrust { factor: 1.1 });
+        let gimbal_locked = engine_fault_from_config(EngineFaultConfig::GimbalLocked {
+            pitch_rad: 0.03,
+            yaw_rad: -0.02,
+        });
+
+        assert!(matches!(
+            stuck,
+            EngineFault::Stuck { at_throttle }
+                if at_throttle.to_bits() == 0.35_f64.to_bits()
+        ));
+        assert!(matches!(hard_off, EngineFault::HardOff));
+        assert!(matches!(
+            over_thrust,
+            EngineFault::OverThrust { factor } if factor.to_bits() == 1.1_f64.to_bits()
+        ));
+        assert!(matches!(
+            gimbal_locked,
+            EngineFault::GimbalLocked { pitch_rad, yaw_rad }
+                if pitch_rad.to_bits() == 0.03_f64.to_bits()
+                    && yaw_rad.to_bits() == (-0.02_f64).to_bits()
+        ));
+    }
+
+    #[test]
     fn cavitation_fault_injects_once_when_event_matches() {
         let (mut rack, id) = one_engine_rack();
         rack.cavitation_faults.push(CavitationEngineFault {
@@ -1125,6 +1201,47 @@ mod tests {
     }
 
     #[test]
+    fn build_engine_enables_configured_tvc_actuator() {
+        let config = EngineConfig {
+            id: "engine_a".to_owned(),
+            mounted_to: None,
+            kind: EngineKindConfig::LiquidEngine,
+            mount_point_body_m: [0.0, 0.0, 0.0],
+            limits: test_limits_config(),
+            tvc_actuator: Some(EngineTvcActuatorConfig {
+                natural_frequency_rad_s: 20.0,
+                damping_ratio: 0.5,
+                max_rate_rad_s: f64::INFINITY,
+                gimbal_inertia_kg_m2: 2.0,
+            }),
+            propellant: None,
+            fault: None,
+            thermochemical_performance: None,
+        };
+        let mut engine = build_engine(0, &config, None, &BTreeMap::new())
+            .unwrap()
+            .engine;
+
+        assert!(engine.tvc_actuator_state().is_some());
+        engine
+            .apply_command(EngineCommand {
+                throttle_unit: 1.0,
+                gimbal_pitch_rad: 0.05,
+                gimbal_yaw_rad: 0.0,
+                ignite: true,
+                shutdown: false,
+            })
+            .unwrap();
+        let snapshot = engine.step(Duration::from_seconds(0.01)).unwrap();
+        let tvc_step = engine.tvc_last_step().expect("TVC actuator should step");
+
+        assert!(tvc_step.pitch.angle_rad > 0.0);
+        assert!(tvc_step.pitch.angle_rad < 0.05);
+        assert!(snapshot.thrust_body.x > 0.0);
+        assert!(snapshot.thrust_body.x < 1000.0 * 0.05_f64.sin());
+    }
+
+    #[test]
     fn build_engine_applies_thermochemical_performance() {
         let bytes = include_bytes!("../tests/fixtures/thermochem/synthetic-grain.toml").to_vec();
         let mut resolved_files = BTreeMap::new();
@@ -1154,6 +1271,7 @@ mod tests {
             kind: EngineKindConfig::LiquidEngine,
             mount_point_body_m: [0.0, 0.0, 0.0],
             limits: test_limits_config(),
+            tvc_actuator: None,
             propellant: None,
             fault: None,
             thermochemical_performance: Some(performance_config),

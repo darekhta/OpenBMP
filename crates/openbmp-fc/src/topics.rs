@@ -55,8 +55,16 @@ mod tests {
                 <EnvironmentEstimate as Topic>::INDEX,
             ),
             (
+                <WindEstimate as Topic>::NAME,
+                <WindEstimate as Topic>::INDEX,
+            ),
+            (
                 <PropellantState as Topic>::NAME,
                 <PropellantState as Topic>::INDEX,
+            ),
+            (
+                <PropellantSafingCommand as Topic>::NAME,
+                <PropellantSafingCommand as Topic>::INDEX,
             ),
             (
                 <EstimatorStatus as Topic>::NAME,
@@ -118,6 +126,14 @@ mod tests {
             (
                 <ActuatorCommand as Topic>::NAME,
                 <ActuatorCommand as Topic>::INDEX,
+            ),
+            (
+                <PseudoControlCommand as Topic>::NAME,
+                <PseudoControlCommand as Topic>::INDEX,
+            ),
+            (
+                <EffectorAvailability as Topic>::NAME,
+                <EffectorAvailability as Topic>::INDEX,
             ),
             (
                 <AutopilotStatus as Topic>::NAME,

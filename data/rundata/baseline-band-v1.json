@@ -1,0 +1,1 @@
+{"schema_version":"openbmp.rundata.band.v1","family_id":"drop-family","sample_count":3,"bands":[{"channel":"altitude_m","metric":"final","sample_count":3,"median":20.0,"mad":10.0,"lower_percentile":0.0,"upper_percentile":1.0,"percentile_lower":10.0,"percentile_upper":30.0,"mad_lower":0.0,"mad_upper":40.0}]}

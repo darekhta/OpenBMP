@@ -15,6 +15,10 @@ use std::path::{Path, PathBuf};
 use arrow::array::{BooleanArray, Float64Array};
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
+use openbmp_rundata::export3d::{
+    TelemetryBodyTrackSpec, generate_czml, generate_gltf_json, scene_export_from_telemetry_table,
+    validate_czml_export, validate_gltf_export,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::{Builder, TempDir};
 
@@ -223,6 +227,60 @@ fn initial_formation_scenario_runs_initial_lanes_and_relative_marker() {
     assert!(
         marker.iter().any(|value| *value),
         "relative-distance marker should observe initially active lanes: {marker:?}"
+    );
+}
+
+#[test]
+fn initial_formation_runner_telemetry_exports_scene_tracks() {
+    let scenario_path = workspace_root().join("scenarios/multi-body/initial-formation.toml");
+    let scenario =
+        openbmp_scenario::Scenario::from_file(&scenario_path).expect("scenario must parse");
+    let outcome = openbmp_runner::run(&scenario).expect("scenario must run");
+    let scene = scene_export_from_telemetry_table(
+        &outcome.table,
+        &[
+            TelemetryBodyTrackSpec::primary("primary").unwrap(),
+            TelemetryBodyTrackSpec::separated("observer").unwrap(),
+        ],
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("runner telemetry must export as 3D scene");
+
+    assert_eq!(scene.tracks.len(), 2);
+    let observer = scene
+        .tracks
+        .iter()
+        .find(|track| track.body_id == "observer")
+        .expect("observer track present");
+    assert!(
+        observer
+            .samples
+            .iter()
+            .any(|sample| (sample.position_eci_m[1] - 0.3).abs() < 1.0e-12),
+        "observer lane should retain runner propagation in the export: {:?}",
+        observer.samples
+    );
+    assert!(
+        observer
+            .samples
+            .iter()
+            .all(|sample| sample.quaternion_body_to_eci_xyzw.is_some()),
+        "observer attitude channels should be exported"
+    );
+
+    let czml = generate_czml(&scene).expect("czml generation");
+    validate_czml_export(&czml).expect("czml validates");
+    let gltf = generate_gltf_json(&scene).expect("gltf generation");
+    validate_gltf_export(&gltf).expect("gltf validates");
+    let value: serde_json::Value = serde_json::from_slice(&gltf).expect("parse gltf");
+    assert_eq!(
+        value["animations"][0]["channels"]
+            .as_array()
+            .expect("animation channels")
+            .len(),
+        4,
+        "primary and observer should each export translation and rotation channels"
     );
 }
 

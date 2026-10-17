@@ -508,7 +508,9 @@ pub fn scenario_atmosphere_kind(document: &ScenarioDocument) -> &str {
 mod tests {
     use super::*;
     use openbmp_core::Position3;
-    use openbmp_physics::{LocalGeodeticOrigin, WGS84_A_M, WGS84_OMEGA_RAD_S};
+    use openbmp_physics::{
+        LocalGeodeticOrigin, WGS84_A_M, WGS84_J2, WGS84_MU_M3_S2, WGS84_OMEGA_RAD_S,
+    };
     use openbmp_scenario::Scenario;
 
     fn zero_gravity() -> RuntimeGravity {
@@ -643,7 +645,7 @@ mod tests {
 
     #[test]
     fn environment_sample_reports_tesseral_gravity() {
-        let scenario = Scenario::from_toml_str(
+        let scenario_toml = format!(
             r#"
 openbmp.scenario = 3
 
@@ -669,18 +671,18 @@ id = "tesseral-environment-test"
 
 [[vehicle.assembly.bodies]]
 id = "mass"
-geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 1.0 }}
 dry_mass_kg = 1.0
 dry_cg_body_m = [0.0, 0.0, 0.0]
 
 [environment]
 frame_profile = "wgs84-uniform-rotation"
 gravity = "tesseral"
-mu_m3_s2 = 3.986004418e14
-r_e_m = 6378137.0
+mu_m3_s2 = {mu_m3_s2}
+r_e_m = {r_e_m}
 tesseral_degree = 2
 tesseral_order = 2
-tesseral_c20 = -1.082626683e-3
+tesseral_c20 = {tesseral_c20}
 tesseral_c21 = 2.0e-7
 tesseral_s21 = -3.0e-7
 tesseral_c22 = 1.0e-7
@@ -698,8 +700,11 @@ output.csv = "out/tesseral-environment-test.csv"
 require_finite_state = true
 require_monotonic_time = true
 "#,
-        )
-        .unwrap();
+            mu_m3_s2 = WGS84_MU_M3_S2,
+            r_e_m = WGS84_A_M,
+            tesseral_c20 = -WGS84_J2,
+        );
+        let scenario = Scenario::from_toml_str(&scenario_toml).unwrap();
         let frame = FrameContext::wgs84_uniform_rotation(None);
         let environment =
             RuntimeEnvironment::from_document(&scenario.document, &BTreeMap::new(), &frame)

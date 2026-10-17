@@ -1,0 +1,35 @@
+[package]
+name                    = "openbmp-rundata"
+version.workspace       = true
+edition.workspace       = true
+rust-version.workspace  = true
+license.workspace       = true
+repository.workspace    = true
+authors.workspace       = true
+description             = "OpenBMP deterministic run-data records and append-only run indexes."
+
+[features]
+default      = []
+openmct-host = []
+
+[[example]]
+name              = "openmct_replay_server"
+path              = "examples/openmct_replay_server.rs"
+required-features = ["openmct-host"]
+
+[dependencies]
+arrow             = { workspace = true }
+openbmp-core      = { workspace = true }
+openbmp-telemetry = { workspace = true }
+parquet           = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+sha2              = { workspace = true }
+thiserror         = { workspace = true }
+toml              = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

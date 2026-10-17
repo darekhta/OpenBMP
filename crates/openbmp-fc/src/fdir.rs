@@ -11,8 +11,8 @@ use crate::glrt::{StepOutcome, WindowedMeanShiftGlrt};
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
 use crate::topics::{
-    ActuatorCommand, AttitudeEstimate, AutopilotStatus, EstimatorLaneSelection, EstimatorStatus,
-    FailsafeFlags, FdirGlrtDiagnostic, FdirStatus,
+    ActuatorCommand, AttitudeEstimate, AutopilotStatus, EffectorCommandSet, EstimatorLaneSelection,
+    EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic, FdirStatus,
 };
 use std::vec::Vec;
 
@@ -50,6 +50,9 @@ pub const FDIR_BIT_DEADLINE_SLIP: u64 = 1 << 13;
 /// Fault-tree bit: estimator attitude state is under-observable or
 /// covariance-conditioned beyond the configured monitor.
 pub const FDIR_BIT_ESTIMATOR_UNDER_OBSERVABLE: u64 = 1 << 14;
+/// Fault-tree bit: control allocation could not attain the requested
+/// virtual control after phase/availability masking.
+pub const FDIR_BIT_ALLOCATION_INFEASIBLE: u64 = 1 << 15;
 
 /// Detector family.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -375,6 +378,12 @@ impl Job for FdirJob {
             current_mask |= FDIR_BIT_AUTOPILOT_SATURATION;
             non_innovation_mask |= FDIR_BIT_AUTOPILOT_SATURATION;
         }
+        if let Ok(Some((effectors, _))) = ctx.bus.latest::<EffectorCommandSet>()
+            && effectors.saturated
+        {
+            current_mask |= FDIR_BIT_ALLOCATION_INFEASIBLE;
+            non_innovation_mask |= FDIR_BIT_ALLOCATION_INFEASIBLE;
+        }
         if let Ok(Some((autopilot, _))) = ctx.bus.latest::<AutopilotStatus>()
             && autopilot.differential_flatness_reference_suppressed
         {
@@ -564,6 +573,7 @@ mod tests {
         bus.register::<AttitudeEstimate>().unwrap();
         bus.register::<FailsafeFlags>().unwrap();
         bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<EffectorCommandSet>().unwrap();
         bus.register::<AutopilotStatus>().unwrap();
         bus.register::<FdirStatus>().unwrap();
         bus
@@ -609,6 +619,7 @@ mod tests {
         bus.publish(AutopilotStatus {
             differential_flatness_active: true,
             differential_flatness_reference_suppressed: true,
+            safe_attitude_hold_active: false,
         })
         .unwrap();
         let mut job = FdirJob::new(FdirParams {
@@ -623,6 +634,25 @@ mod tests {
             status.tripped_mask & FDIR_BIT_AUTOPILOT_REFERENCE_SUPPRESSED,
             0
         );
+    }
+
+    #[test]
+    fn allocation_infeasible_status_trips_fdir_bit() {
+        let bus = bus_with_fdir_topics();
+        bus.publish(EffectorCommandSet {
+            saturated: true,
+            ..EffectorCommandSet::default()
+        })
+        .unwrap();
+        let mut job = FdirJob::new(FdirParams {
+            detector_kind: DetectorKind::WindowedMeanShiftGlrt,
+            ..FdirParams::default()
+        });
+
+        let status = run_once(&mut job, &bus);
+
+        assert!(status.triggered);
+        assert_ne!(status.tripped_mask & FDIR_BIT_ALLOCATION_INFEASIBLE, 0);
     }
 
     #[test]

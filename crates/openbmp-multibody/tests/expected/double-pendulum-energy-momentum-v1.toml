@@ -20,6 +20,27 @@ expected_revolute_generalized_momentum = [
   -0.15,
 ]
 
+[integration]
+horizon_s = 10000.0
+step_s = 1.0
+initial_q = [
+  0.35,
+  -0.4,
+]
+initial_qd = [
+  0.00001,
+  -0.000007,
+]
+root_qd = [
+  0.0,
+  0.0,
+  0.0,
+  0.2,
+  0.0,
+  0.0,
+]
+
 [tolerances]
 kinetic_energy_abs = 1.0e-12
 generalized_momentum_max_abs = 1.0e-12
+energy_drift_rel = 1.0e-6

@@ -15,10 +15,15 @@ std     = [
     "openbmp-physics/std",
     "postcard/use-std",
 ]
+aero    = ["std", "dep:openbmp-aero", "openbmp-aero/std"]
+sqp     = ["std", "dep:clarabel", "dep:openbmp-convex", "openbmp-convex/conic"]
 
 [dependencies]
+openbmp-aero    = { version = "0.0.1", path = "../openbmp-aero", default-features = false, optional = true }
 openbmp-core    = { version = "0.0.1", path = "../openbmp-core", default-features = false }
+openbmp-convex  = { version = "0.0.1", path = "../openbmp-convex", default-features = false, optional = true }
 openbmp-physics = { version = "0.0.1", path = "../openbmp-physics", default-features = false, features = ["std"] }
+clarabel        = { workspace = true, optional = true }
 postcard        = { workspace = true }
 serde           = { workspace = true }
 thiserror       = { workspace = true }

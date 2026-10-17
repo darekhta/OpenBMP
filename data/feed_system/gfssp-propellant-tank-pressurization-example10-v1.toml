@@ -1,0 +1,222 @@
+openbmp.feed_system_gfssp_pressurization_example10 = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.gfssp_pressurization_example10.v1"
+source_class = "public-nasa-gfssp-manual-digitized-worked-example"
+source_title = "GFSSP Version 6 Example 10 pressurization of a propellant tank"
+source_url = "https://www.nasa.gov/wp-content/uploads/2024/04/gfssp-v6-usermanual.pdf?emrc=67b605705809e"
+source_hash_sha256 = "340f4b208a4814d776ef020df7167304dd74c09d641fb006d352b958cad4bc8c"
+provenance = "Manual extraction from GFSSP Version 6 User's Manual section 6.10 plus plot digitization of Figure 136: five-node tank pressurization setup, run duration/time step, pressure/temperature/volume boundary values, tank-bottom and ullage pressure-history samples, and narrative trends from Figures 136 and 137."
+license_or_terms = "NASA public technical manual"
+validation = "research-digitized"
+
+[conversion]
+psi_to_pa = 6894.757293168
+ft3_to_m3 = 0.028316846592
+deg_f_to_k_offset = 255.37222222222223
+
+[case]
+run_duration_s = 200.0
+time_step_s = 0.1
+pressurant = "helium"
+propellant = "oxygen"
+pressurant_inlet_pressure_pa = 655001.94285096
+pressurant_inlet_temperature_k = 322.0388888888889
+initial_ullage_pressure_pa = 461948.738642256
+initial_ullage_temperature_k = 108.70555555555552
+initial_ullage_volume_m3 = 0.7079211648
+initial_propellant_volume_m3 = 13.4505021312
+engine_inlet_pressure_pa = 344737.8646584
+
+[manual_inputs]
+pressurant_inlet_pressure_psia = 95.0
+pressurant_inlet_temperature_deg_f = 120.0
+initial_ullage_pressure_psia = 67.0
+initial_ullage_temperature_deg_f = -264.0
+initial_ullage_volume_ft3 = 25.0
+initial_propellant_volume_ft3 = 475.0
+engine_inlet_pressure_psia = 50.0
+
+[pressure_trend]
+figure = "136"
+ullage_initial_rise = true
+ullage_slow_decline_after_initial_rise = true
+tank_bottom_initially_above_ullage = true
+tank_bottom_converges_toward_ullage = true
+gravitational_head_decreases_as_propellant_drains = true
+
+[temperature_trend]
+figure = "137"
+ullage_rise_first_60_s_deg_f = 192.0
+ullage_declines_after_first_60_s = true
+tank_wall_rise_over_run_deg_f = 32.0
+tank_wall_warming_damped_by_propellant_heat_sink = true
+
+[pressure_digitization]
+figure = "136"
+render_dpi = 300.0
+pdf_page = 234
+plot_x_min_s = 0.0
+plot_x_max_s = 200.0
+plot_y_min_psia = 60.0
+plot_y_max_psia = 100.0
+absolute_time_uncertainty_s = 1.0
+absolute_pressure_uncertainty_psia = 0.75
+absolute_pressure_uncertainty_pa = 5171.067969876
+method = "Manual axis calibration from the 300 dpi rendered PDF page; sample points taken at visible time-grid locations from the tank-bottom and ullage curves. The t=0 row comes from the stated model initial condition, not from the nearly vertical startup transient in the plot."
+
+[residual_gate]
+absolute_pressure_tolerance_pa = 5171.067969876
+absolute_time_tolerance_s = 1.0
+expected_reference_max_abs_pressure_error_pa = 0.0
+expected_reference_rms_pressure_error_pa = 0.0
+expected_reference_within_tolerance = true
+
+[reduced_model]
+model = "startup_ramp_plus_power_law_ullage_and_hydrostatic_head"
+validation = "research-calibrated"
+fit_objective = "minimize the maximum absolute pressure-channel residual against the 300 dpi digitized Figure 136 pressure samples"
+initial_time_s = 0.0
+startup_time_s = 5.0
+final_time_s = 200.0
+initial_tank_bottom_pressure_psia = 74.76
+initial_ullage_pressure_psia = 67.0
+startup_tank_bottom_pressure_psia = 98.7602408449
+startup_ullage_pressure_psia = 91.1819985773
+final_tank_bottom_pressure_psia = 88.8702211555
+final_ullage_pressure_psia = 88.773072747
+initial_tank_bottom_pressure_pa = 515452.05523683998
+initial_ullage_pressure_pa = 461948.738642256
+startup_tank_bottom_pressure_pa = 680927.89084060723
+startup_ullage_pressure_pa = 628677.74969625042
+final_tank_bottom_pressure_pa = 612738.60545736621
+final_ullage_pressure_pa = 612068.79075855878
+ullage_decay_exponent = 1.90459
+hydrostatic_head_decay_exponent = 1.02588
+max_abs_pressure_error_bound_pa = 400.0
+rms_pressure_error_bound_pa = 240.0
+expected_within_tolerance = true
+
+[finite_volume_model]
+model = "ideal_gas_ullage_finite_volume_with_compressible_pressurant_inflow"
+validation = "research-calibrated"
+fit_objective = "calibrate effective inlet area, heat transfer, and propellant outflow against the 300 dpi digitized Figure 136 pressure samples while preserving ideal-gas mass/energy balance and hydrostatic tank-bottom pressure"
+pressurant_gas_constant_j_per_kg_k = 2077.1
+pressurant_heat_capacity_ratio = 1.666
+pressurant_flow_area_m2 = 0.00021774226204229454
+pressurant_discharge_coefficient = 1.0
+ullage_heat_transfer_w_per_k = 136.77914855813484
+tank_wall_temperature_k = 338.6682360724835
+propellant_density_kg_m3 = 1141.0
+tank_cross_section_area_m2 = 2.812963606977273
+propellant_outflow_volume_rate_m3_s = 0.0664105680805444
+gravity_m_s2 = 9.80665
+expected_initial_ullage_gas_mass_kg = 1.4483367035048635
+expected_final_ullage_temperature_k = 318.6488131612312
+expected_final_propellant_volume_m3 = 0.16838851509112146
+max_abs_pressure_error_bound_pa = 4000.0
+rms_pressure_error_bound_pa = 2300.0
+expected_within_tolerance = true
+
+[limits]
+quantitative_time_history_claimed = true
+digitized_curve_claimed = true
+residual_gate_claimed = true
+reduced_model_residual_closure_claimed = true
+physics_model_residual_closure_claimed = true
+
+[[pressure_sample]]
+time_s = 0.0
+tank_bottom_pressure_psia = 74.76
+ullage_pressure_psia = 67.0
+tank_bottom_pressure_pa = 515452.05523683998
+ullage_pressure_pa = 461948.738642256
+source = "manual_setup"
+
+[[pressure_sample]]
+time_s = 5.0
+tank_bottom_pressure_psia = 98.7602408449
+ullage_pressure_psia = 91.1819985773
+tank_bottom_pressure_pa = 680927.89084060723
+ullage_pressure_pa = 628677.74969625042
+source = "figure_136_digitized"
+
+[[pressure_sample]]
+time_s = 20.0
+tank_bottom_pressure_psia = 97.8488854825
+ullage_pressure_psia = 90.8469055375
+tank_bottom_pressure_pa = 674644.31680932688
+ullage_pressure_pa = 626367.36451629736
+source = "figure_136_digitized"
+
+[[pressure_sample]]
+time_s = 40.0
+tank_bottom_pressure_psia = 96.5882494873
+ullage_pressure_psia = 90.4141461145
+tank_bottom_pressure_pa = 665952.53758729214
+ullage_pressure_pa = 623383.59332815558
+source = "figure_136_digitized"
+
+[[pressure_sample]]
+time_s = 60.0
+tank_bottom_pressure_psia = 95.4216431415
+ullage_pressure_psia = 90.0291445225
+tank_bottom_pressure_pa = 657909.06997576472
+ullage_pressure_pa = 620729.10079423501
+source = "figure_136_digitized"
+
+[[pressure_sample]]
+time_s = 80.0
+tank_bottom_pressure_psia = 94.3300760043
+ullage_pressure_psia = 89.7192492632
+tank_bottom_pressure_pa = 650382.97949608474
+ullage_pressure_pa = 618592.44819492858
+source = "figure_136_digitized"
+
+[[pressure_sample]]
+time_s = 100.0
+tank_bottom_pressure_psia = 93.2915727053
+ullage_pressure_psia = 89.4679695983
+tank_bottom_pressure_pa = 643222.75130141852
+ullage_pressure_pa = 616859.93589310104
+source = "figure_136_digitized"
+
+[[pressure_sample]]
+time_s = 120.0
+tank_bottom_pressure_psia = 92.3304708321
+ullage_pressure_psia = 89.2508143322
+tank_bottom_pressure_pa = 636596.18715134554
+ullage_pressure_pa = 615362.70303841413
+source = "figure_136_digitized"
+
+[[pressure_sample]]
+time_s = 140.0
+tank_bottom_pressure_psia = 91.3870017062
+ullage_pressure_psia = 89.0836047774
+tank_bottom_pressure_pa = 630091.19651462452
+ullage_pressure_pa = 614209.83374058595
+source = "figure_136_digitized"
+
+[[pressure_sample]]
+time_s = 160.0
+tank_bottom_pressure_psia = 90.5110636864
+ullage_pressure_psia = 88.9460481486
+tank_bottom_pressure_pa = 624051.81646441016
+ullage_pressure_pa = 613261.41417111259
+source = "figure_136_digitized"
+
+[[pressure_sample]]
+time_s = 180.0
+tank_bottom_pressure_psia = 89.6804040976
+ullage_pressure_psia = 88.8565060861
+tank_bottom_pressure_pa = 618324.62020561099
+ullage_pressure_pa = 612644.04338216246
+source = "figure_136_digitized"
+
+[[pressure_sample]]
+time_s = 200.0
+tank_bottom_pressure_psia = 88.8702211555
+ullage_pressure_psia = 88.773072747
+tank_bottom_pressure_pa = 612738.60545736621
+ullage_pressure_pa = 612068.79075855878
+source = "figure_136_digitized"

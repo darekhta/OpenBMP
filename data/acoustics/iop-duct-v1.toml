@@ -1,0 +1,26 @@
+[openbmp]
+acoustics_iop_duct_deck = 1
+
+[meta]
+dataset_id = "openbmp.acoustics.iop_duct.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic ignition-overpressure duct/trench deck"
+provenance = "Repository-local deterministic fixture for IOP duct/trench parser and runner wiring."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[[classes]]
+class_id = "open_pad"
+description = "Open pad synthetic IOP duct baseline"
+volume_m3 = 120.0
+exit_area_m2 = 6.0
+discharge_velocity_m_s = 40.0
+geometry_gain = 1.5
+
+[[classes]]
+class_id = "long_trench"
+description = "Long trench synthetic IOP duct case"
+volume_m3 = 300.0
+exit_area_m2 = 9.0
+discharge_velocity_m_s = 35.0
+geometry_gain = 2.2

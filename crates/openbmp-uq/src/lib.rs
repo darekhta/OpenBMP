@@ -921,6 +921,134 @@ impl CorrelatedErrorBudget {
     }
 }
 
+/// Roache-style three-grid convergence estimate for one scalar quantity.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct GridConvergence {
+    /// Observed order of convergence.
+    pub observed_order: f64,
+    /// Fine-grid relative GCI estimate.
+    pub relative_gci_fine: f64,
+    /// Fine-grid absolute one-sigma surrogate in the scalar quantity's units.
+    pub absolute_gci_fine: f64,
+    /// Refinement ratio between adjacent grids.
+    pub refinement_ratio: f64,
+    /// Safety factor applied to the GCI estimate.
+    pub safety_factor: f64,
+}
+
+impl GridConvergence {
+    /// Default safety factor for a three-grid GCI study.
+    pub const THREE_GRID_SAFETY_FACTOR: f64 = 1.25;
+
+    /// Estimate observed order and fine-grid GCI from three monotone grids.
+    ///
+    /// `fine`, `medium`, and `coarse` are scalar results ordered by grid
+    /// resolution. `refinement_ratio` is the constant adjacent grid refinement
+    /// ratio `h_coarse / h_medium = h_medium / h_fine`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UqError`] when inputs are non-finite, the refinement ratio or
+    /// safety factor is outside its positive envelope, the fine result is zero,
+    /// the three-grid sequence is not strictly monotone, or the observed order
+    /// / GCI estimate is non-finite or non-positive.
+    pub fn from_three_grids(
+        fine: f64,
+        medium: f64,
+        coarse: f64,
+        refinement_ratio: f64,
+    ) -> Result<Self, UqError> {
+        Self::from_three_grids_with_safety_factor(
+            fine,
+            medium,
+            coarse,
+            refinement_ratio,
+            Self::THREE_GRID_SAFETY_FACTOR,
+        )
+    }
+
+    /// Estimate observed order and fine-grid GCI with an explicit safety factor.
+    ///
+    /// # Errors
+    ///
+    /// Same validation as [`Self::from_three_grids`].
+    pub fn from_three_grids_with_safety_factor(
+        fine: f64,
+        medium: f64,
+        coarse: f64,
+        refinement_ratio: f64,
+        safety_factor: f64,
+    ) -> Result<Self, UqError> {
+        if !(fine.is_finite()
+            && medium.is_finite()
+            && coarse.is_finite()
+            && refinement_ratio.is_finite()
+            && safety_factor.is_finite())
+        {
+            return Err(UqError::InvalidInput {
+                field: "grid_convergence.inputs",
+            });
+        }
+        if refinement_ratio <= 1.0 {
+            return Err(UqError::InvalidInput {
+                field: "grid_convergence.refinement_ratio",
+            });
+        }
+        if safety_factor <= 0.0 {
+            return Err(UqError::InvalidInput {
+                field: "grid_convergence.safety_factor",
+            });
+        }
+        if fine == 0.0 {
+            return Err(UqError::InvalidInput {
+                field: "grid_convergence.fine",
+            });
+        }
+        let fine_medium = medium - fine;
+        let medium_coarse = coarse - medium;
+        if !(fine_medium.is_finite()
+            && medium_coarse.is_finite()
+            && fine_medium != 0.0
+            && medium_coarse != 0.0
+            && fine_medium.signum() == medium_coarse.signum())
+        {
+            return Err(UqError::InvalidInput {
+                field: "grid_convergence.monotone_triplet",
+            });
+        }
+        let observed_order = ln_f64((medium_coarse / fine_medium).abs()) / ln_f64(refinement_ratio);
+        if !(observed_order.is_finite() && observed_order > 0.0) {
+            return Err(UqError::InvalidInput {
+                field: "grid_convergence.observed_order",
+            });
+        }
+        let denominator = powf_f64(refinement_ratio, observed_order) - 1.0;
+        if !(denominator.is_finite() && denominator > 0.0) {
+            return Err(UqError::InvalidInput {
+                field: "grid_convergence.denominator",
+            });
+        }
+        let relative_gci_fine = safety_factor * (fine_medium / fine).abs() / denominator;
+        let absolute_gci_fine = relative_gci_fine * fine.abs();
+        if !(relative_gci_fine.is_finite()
+            && relative_gci_fine >= 0.0
+            && absolute_gci_fine.is_finite()
+            && absolute_gci_fine >= 0.0)
+        {
+            return Err(UqError::NonFinite {
+                field: "grid_convergence.gci_fine",
+            });
+        }
+        Ok(Self {
+            observed_order,
+            relative_gci_fine,
+            absolute_gci_fine,
+            refinement_ratio,
+            safety_factor,
+        })
+    }
+}
+
 /// Probability-box envelope over nested conditional scalar CDFs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProbabilityBox {
@@ -1343,6 +1471,28 @@ fn sqrt_f64(value: f64) -> f64 {
     }
 }
 
+fn ln_f64(value: f64) -> f64 {
+    #[cfg(feature = "std")]
+    {
+        value.ln()
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        num_traits::Float::ln(value)
+    }
+}
+
+fn powf_f64(base: f64, exponent: f64) -> f64 {
+    #[cfg(feature = "std")]
+    {
+        base.powf(exponent)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        num_traits::Float::powf(base, exponent)
+    }
+}
+
 fn jacobi_min_eigenvalue(dimension: usize, mut matrix: Vec<f64>) -> Result<f64, UqError> {
     if dimension == 1 {
         return matrix
@@ -1491,6 +1641,41 @@ mod tests {
         };
         let aggregate = budget.aggregate_one_sigma().unwrap();
         assert!((aggregate - 37.0_f64.sqrt()).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn grid_convergence_recovers_manufactured_order_and_gci() {
+        let exact = 1.0;
+        let ratio: f64 = 2.0;
+        let observed_order: f64 = 2.0;
+        let error = 0.01;
+        let fine = exact + error;
+        let medium = exact + error * ratio.powf(observed_order);
+        let coarse = exact + error * ratio.powf(2.0 * observed_order);
+
+        let gci = GridConvergence::from_three_grids(fine, medium, coarse, ratio).unwrap();
+        let expected_relative = GridConvergence::THREE_GRID_SAFETY_FACTOR
+            * ((medium - fine) / fine).abs()
+            / (ratio.powf(observed_order) - 1.0);
+        assert!((gci.observed_order - observed_order).abs() < 1.0e-12);
+        assert!((gci.relative_gci_fine - expected_relative).abs() < 1.0e-15);
+        assert!((gci.absolute_gci_fine - expected_relative * fine.abs()).abs() < 1.0e-15);
+    }
+
+    #[test]
+    fn grid_convergence_rejects_invalid_triplets() {
+        assert!(matches!(
+            GridConvergence::from_three_grids(1.0, 1.25, 1.5, 1.0),
+            Err(UqError::InvalidInput { .. }),
+        ));
+        assert!(matches!(
+            GridConvergence::from_three_grids(1.0, 1.1, 1.05, 2.0),
+            Err(UqError::InvalidInput { .. }),
+        ));
+        assert!(matches!(
+            GridConvergence::from_three_grids(0.0, 0.1, 0.2, 2.0),
+            Err(UqError::InvalidInput { .. }),
+        ));
     }
 
     #[test]

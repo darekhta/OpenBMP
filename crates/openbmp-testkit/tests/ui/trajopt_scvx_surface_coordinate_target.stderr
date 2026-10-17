@@ -1,0 +1,31 @@
+error[E0560]: struct `ScvxTerminalStateTarget` has no field named `target_latitude_rad`
+ --> tests/ui/trajopt_scvx_surface_coordinate_target.rs:7:9
+  |
+7 |         target_latitude_rad: 0.0,
+  |         ^^^^^^^^^^^^^^^^^^^ `ScvxTerminalStateTarget` does not have this field
+  |
+  = note: all struct fields are already assigned
+
+error[E0560]: struct `ScvxTerminalStateTarget` has no field named `target_longitude_rad`
+ --> tests/ui/trajopt_scvx_surface_coordinate_target.rs:8:9
+  |
+8 |         target_longitude_rad: 0.0,
+  |         ^^^^^^^^^^^^^^^^^^^^ `ScvxTerminalStateTarget` does not have this field
+  |
+  = note: all struct fields are already assigned
+
+error[E0560]: struct `ScvxTerminalStateTarget` has no field named `range_m`
+ --> tests/ui/trajopt_scvx_surface_coordinate_target.rs:9:9
+  |
+9 |         range_m: 0.0,
+  |         ^^^^^^^ `ScvxTerminalStateTarget` does not have this field
+  |
+  = note: all struct fields are already assigned
+
+error[E0560]: struct `ScvxTerminalStateTarget` has no field named `aimpoint_eci_m`
+  --> tests/ui/trajopt_scvx_surface_coordinate_target.rs:10:9
+   |
+10 |         aimpoint_eci_m: [0.0, 0.0, 0.0],
+   |         ^^^^^^^^^^^^^^ `ScvxTerminalStateTarget` does not have this field
+   |
+   = note: all struct fields are already assigned

@@ -1,0 +1,15 @@
+# Synthetic exact-set fixture for the WP-03.1 local-inclination BVH
+# shadowing regression. See data/aero/provenance.md.
+
+[case]
+dataset_id = "openbmp.aero.panel_wedge_cavity_shadow.v1"
+source_class = "synthetic-openbmp"
+validation_label = "checked"
+mach = 12.0
+alpha_deg = 0.0
+beta_deg = 0.0
+dynamic_pressure_pa = 100.0
+cp_max = 2.0
+expected_occluded_triangle_indices = [12]
+expected_sign_only_force_x_n = -3300.0
+expected_bvh_shadowed_force_x_n = -3200.0

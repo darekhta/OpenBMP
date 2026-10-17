@@ -1,0 +1,62 @@
+schema_version = 1
+dataset_id = "openbmp.gnc.tvc_twd_inca.v1"
+
+[tolerances]
+tvc_angle_abs_rad = 1.0e-14
+tvc_rate_abs_rad_s = 1.0e-14
+tvc_reaction_abs_n_m = 1.0e-12
+inca_rms_abs_rad_s2 = 1.0e-14
+inca_max_compensated_rms_ratio = 0.10
+
+[tvc_step_response]
+natural_frequency_rad_s = 20.0
+damping_ratio = 0.5
+max_angle_rad = 0.1
+max_rate_rad_s = "inf"
+gimbal_inertia_kg_m2 = 2.0
+command_pitch_rad = 0.05
+command_yaw_rad = 0.0
+load_pitch_n_m = 0.0
+load_yaw_n_m = 0.0
+dt_s = 0.01
+expected_pitch_angle_rad = 0.00093346222532630918
+expected_pitch_rate_rad_s = 0.18006400247621818
+
+[tvc_load_torque]
+natural_frequency_rad_s = 20.0
+damping_ratio = 0.5
+max_angle_rad = 0.1
+max_rate_rad_s = "inf"
+gimbal_inertia_kg_m2 = 2.0
+command_pitch_rad = 0.08
+command_yaw_rad = 0.0
+load_pitch_n_m = 10.0
+load_yaw_n_m = 0.0
+dt_s = 0.02
+expected_unloaded_pitch_angle_rad = 0.0055530394648290599
+expected_loaded_pitch_angle_rad = 0.0046853770484495127
+expected_loaded_reaction_torque_n_m = -43.332521695187808
+
+[inca_recovery_series]
+rows = 2
+effectors = 2
+dt_s = 0.02
+samples = 260
+discard_samples = 20
+b_row_major = [1.0, 0.35, -0.20, 0.90]
+u_min = [-5.0, -5.0]
+u_max = [5.0, 5.0]
+rate_limit = [1000.0, 1000.0]
+disturbance_envelope_decay_per_s = 0.35
+pitch_sine_amplitude = 0.30
+pitch_sine_frequency_rad_s = 2.4
+pitch_cosine_amplitude = 0.08
+pitch_cosine_frequency_rad_s = 0.7
+yaw_cosine_amplitude = -0.24
+yaw_cosine_frequency_rad_s = 1.8
+yaw_sine_amplitude = 0.05
+yaw_sine_frequency_rad_s = 3.1
+expected_rms_samples = 239
+expected_uncompensated_rms_rad_s2 = 0.13665587681685196
+expected_compensated_rms_rad_s2 = 0.0054445891330277604
+expected_compensated_rms_ratio = 0.039841602570262473

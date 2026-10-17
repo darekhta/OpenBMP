@@ -1,0 +1,59 @@
+openbmp.acoustics_sp8072_axial_spectrum_curve = 1
+
+[meta]
+dataset_id = "openbmp.acoustics.sp8072_figure13_axial_spectrum.v1"
+source_manifest_id = "openbmp.acoustics.sp8072_source.v1"
+source_manifest_file = "data/acoustics/sp8072-source-v1.toml"
+source_figure_id = "figure_13"
+source_pdf_sha256 = "84f1483c2c8477810186e98765ea99e4b7f7cc71e0a47eb8f86977d3b02aabf8"
+digitization_method = "coarse manual digitization from the pinned NASA SP-8072 PDF Figure 13 raster; values are rounded visual samples for parser/integration evidence, not a production acoustic calibration"
+license_or_terms = "Public NASA Technical Reports Server document"
+validation = "coarse-public-digitization"
+
+[[points]]
+modified_axial_strouhal = 0.05
+relative_power_db = -20.0
+
+[[points]]
+modified_axial_strouhal = 0.10
+relative_power_db = -17.0
+
+[[points]]
+modified_axial_strouhal = 0.20
+relative_power_db = -14.0
+
+[[points]]
+modified_axial_strouhal = 0.50
+relative_power_db = -10.0
+
+[[points]]
+modified_axial_strouhal = 1.00
+relative_power_db = -7.0
+
+[[points]]
+modified_axial_strouhal = 2.00
+relative_power_db = -6.5
+
+[[points]]
+modified_axial_strouhal = 3.00
+relative_power_db = -8.0
+
+[[points]]
+modified_axial_strouhal = 5.00
+relative_power_db = -12.0
+
+[[points]]
+modified_axial_strouhal = 10.00
+relative_power_db = -20.0
+
+[[points]]
+modified_axial_strouhal = 20.00
+relative_power_db = -28.0
+
+[[points]]
+modified_axial_strouhal = 50.00
+relative_power_db = -37.0
+
+[[points]]
+modified_axial_strouhal = 100.00
+relative_power_db = -40.0

@@ -1,0 +1,14 @@
+schema = "openbmp.aerothermal.sharp_cone_transition.v1"
+dataset_id = "sharp-cone-re-theta-transition-location-v1"
+validation_label = "validated-toy"
+provenance = "WP-04.1-b sharp-cone transition-location fixture. It reconstructs the smooth-wall Re_theta/M_e onset station from a laminar cone momentum-thickness law and the OpenBMP engineering transition threshold; it is a method fixture, not a flight or wind-tunnel correlation."
+
+edge_mach = 6.0
+unit_reynolds_per_m = 10000000.0
+momentum_thickness_coefficient = 0.664
+smooth_re_theta_crit = 200.0
+completion_ratio = 1.25
+
+reference_transition_x_m = 0.32660763536072
+reference_completion_x_m = 0.510324430251125
+tolerance_x_m = 0.0032660763536072

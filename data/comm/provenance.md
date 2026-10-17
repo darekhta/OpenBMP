@@ -174,3 +174,53 @@ safety_review:
   decision: accepted
   notes: "Synthetic packet-effect fixture; no waveform, modem, coding-standard, RF hardware, network scheduling, or operational communications claim."
 ```
+
+```yaml
+dataset_id: openbmp.comm.plasma_blackout.v1
+files:
+  - data/comm/plasma-blackout-v1.toml
+source_class: synthetic-openbmp
+source_title: "Synthetic plasma blackout electron-density profile"
+source_authors: "OpenBMP contributors"
+source_url: "repository-local analytic fixture"
+license_or_terms: "OpenBMP project synthetic data"
+retrieved_utc: "2026-06-18"
+source_hash_sha256: "not applicable: repository-local synthetic derivation"
+transformation:
+  method: "hand-authored electron-number-density samples selected from the engineering plasma-frequency relation f_p = 8.98 sqrt(n_e), with n_e in electrons per cubic metre"
+  script: "test-only profile parser and plasma-blackout model in crates/openbmp-runner/src/comm.rs and crates/openbmp-comm/src/lib.rs"
+verification:
+  method: "parse the TOML table, validate monotone time samples, interpolate electron density, and verify threshold/ramp attenuation from PlasmaBlackoutModel"
+  test: "cargo test -p openbmp-comm plasma_blackout --locked && cargo test -p openbmp-runner --lib blackout --locked"
+  tolerance: "absolute frequency and attenuation tolerances recorded in [tolerances]"
+validation_status: validated-toy
+safety_review:
+  reviewer: "OpenBMP maintainers"
+  decision: accepted
+  notes: "Synthetic plasma-frequency regression fixture; not a RAM-C reconstruction, real re-entry flowfield, RF propagation validation, or operational blackout prediction."
+```
+
+```yaml
+dataset_id: openbmp.comm.tracking_instrument.v1
+files:
+  - data/comm/tracking-instrument-v1.toml
+source_class: synthetic-openbmp
+source_title: "Synthetic ground tracking instrument noise model"
+source_authors: "OpenBMP contributors"
+source_url: "repository-local analytic fixture"
+license_or_terms: "OpenBMP project synthetic data"
+retrieved_utc: "2026-06-19"
+source_hash_sha256: "not applicable: repository-local synthetic derivation"
+transformation:
+  method: "hand-authored white-noise standard deviations plus first-order Gauss-Markov stationary standard deviations and time constants for deterministic tracking observable regression"
+  script: "test-only tracking instrument parser, deterministic white-noise model, and Gauss-Markov bias-state model in crates/openbmp-runner/src/comm.rs and crates/openbmp-comm/src/lib.rs"
+verification:
+  method: "parse the TOML table, validate non-negative standard deviations and positive enabled Gauss-Markov time constants, then verify deterministic seeded range/range-rate/angle noise and elapsed-time bias-state advancement"
+  test: "cargo test -p openbmp-comm tracking --locked && cargo test -p openbmp-runner --lib tracking_observable --locked"
+  tolerance: "absolute measurement tolerances recorded in [tolerances]"
+validation_status: validated-toy
+safety_review:
+  reviewer: "OpenBMP maintainers"
+  decision: accepted
+  notes: "Synthetic tracking regression fixture; not a real radar, optical, Doppler, TDRSS, DSN, BET, or CRLB validation source."
+```

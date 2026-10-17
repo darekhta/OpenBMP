@@ -4,28 +4,42 @@
 //! fail-closed, allocation-free primitives for half-space gap evaluation,
 //! compliant normal forces, regularized Coulomb friction, explicit
 //! sub-step stability checks, scalar stops/backlash/latches, anchored
-//! stiction/rest helpers, and contact-energy accounting. It does not depend
-//! on `openbmp-sim`, `openbmp-runner`, or `openbmp-fc`; higher layers opt in
-//! by adapting these primitives into force accumulators.
+//! stiction/rest helpers, scalar/dense Constraint Force Equation helpers,
+//! concrete loop-closure geometry rows, and contact-energy accounting. It does
+//! not depend on `openbmp-sim`,
+//! `openbmp-runner`, or `openbmp-fc`; higher layers opt in by adapting these
+//! primitives into force accumulators.
 //!
 //! The initial tier intentionally covers point/sphere contact against a
-//! plane plus scalar mechanism constraints. Higher layers now adapt these
-//! primitives into runner half-space contact and landing-gear footpads; terrain
-//! decks and implicit contact solvers remain later work packages.
+//! plane plus scalar mechanism constraints and CFE row solves. Higher
+//! layers now adapt these primitives into runner half-space contact and
+//! landing-gear footpads; terrain decks and full loop-constraint integration
+//! remain later work packages.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 pub mod backlash;
+pub mod cfe;
 pub mod error;
 pub mod latch;
+pub mod loop_geometry;
 pub mod mechanism;
 pub mod stiction;
 pub mod stop;
 
 pub use backlash::{BacklashFlank, BacklashGap, BacklashResponse};
+pub use cfe::{
+    BaumgarteCfeConfig, DenseCfeSolutionSummary, DenseCfeSolveBuffers, DenseCfeSystem,
+    ScalarCfeConstraint, ScalarCfeSolution, TreeCfeLoopSolutionSummary, TreeCfeLoopSolveBuffers,
+    TreeCfeLoopSystem, solve_dense_baumgarte_cfe, solve_scalar_baumgarte_cfe,
+    solve_tree_loop_baumgarte_cfe,
+};
 pub use error::ContactError;
 pub use latch::{LatchState, LatchTransition, LatchWindow, MonotoneLatch};
+pub use loop_geometry::{
+    PlanarFourBarCfeRow, PlanarFourBarLoop, PlanarFourBarOutputAngleSolutions,
+};
 pub use mechanism::{
     ScalarMechanismElement, ScalarMechanismResponse, evaluate_scalar_mechanism,
     scalar_mechanism_latch_count,

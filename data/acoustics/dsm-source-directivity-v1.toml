@@ -1,0 +1,158 @@
+openbmp.acoustics_dsm_deck = 1
+
+[meta]
+dataset_id = "openbmp.acoustics.dsm_source_directivity.v1"
+source_class = "synthetic-openbmp"
+source_title = "Synthetic DSM source allocation and directivity deck"
+provenance = "OpenBMP synthetic fixture for deterministic DSM deck parsing; not a transcription of NASA SP-8072 curves."
+license_or_terms = "OpenBMP project synthetic data"
+validation = "validated-toy"
+
+[[source_allocation]]
+axial_m = 0.0
+power_fraction = 0.2
+
+[[source_allocation]]
+axial_m = 10.0
+power_fraction = 0.5
+
+[[source_allocation]]
+axial_m = 20.0
+power_fraction = 0.3
+
+[directivity]
+center_hz = [
+  20.0,
+  25.0,
+  31.5,
+  40.0,
+  50.0,
+  63.0,
+  80.0,
+  100.0,
+  125.0,
+  160.0,
+  200.0,
+  250.0,
+  315.0,
+  400.0,
+  500.0,
+  630.0,
+  800.0,
+  1000.0,
+  1250.0,
+  1600.0,
+  2000.0,
+  2500.0,
+  3150.0,
+  4000.0,
+  5000.0,
+  6300.0,
+  8000.0,
+  10000.0,
+  12500.0,
+  16000.0,
+  20000.0,
+]
+angles_deg = [0.0, 90.0, 180.0]
+rows_db = [
+  [
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+    -3.0,
+  ],
+  [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+  ],
+  [
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+    -6.0,
+  ],
+]

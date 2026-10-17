@@ -1,0 +1,7 @@
+[in_family_false_alarm_rate]
+min = 0.0
+max = 0.21
+
+[out_of_family_detection_rate]
+min = 0.9
+max = 1.0

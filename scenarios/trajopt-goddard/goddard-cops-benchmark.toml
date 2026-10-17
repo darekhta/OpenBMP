@@ -1,0 +1,39 @@
+# Goddard rocket benchmark fixture for WP-07.3 partial LGR evidence.
+#
+# This pins the public COPS dimensionless Goddard maximum-altitude model and a
+# YAPSS-documented singular-arc diagnostic. The LGR evidence currently
+# validates the fixture, dynamics, singular-arc relation, fixed-mesh
+# starting-reference residual accounting, residual-localized split-refinement
+# seeding, fixed-mesh plus split-refined terminal-objective handoff, and an
+# explicit published-band gap audit; it is not full Goddard solver closure.
+
+case       = "goddard-cops-max-altitude"
+source     = "COPS/Argonne Goddard Rocket benchmark; see scenarios/trajopt-goddard/provenance.md."
+singular_source = "YAPSS Goddard Rocket example singular-arc path constraint; see scenarios/trajopt-goddard/provenance.md."
+validation = "research"
+
+[problem]
+initial_altitude = 1.0
+initial_velocity = 0.0
+initial_mass = 1.0
+minimum_mass = 0.6
+maximum_thrust = 3.5
+exhaust_velocity = 0.5
+drag_coefficient = 310.0
+drag_altitude_scale = 500.0
+initial_gravity = 1.0
+sample_final_time = 1.0
+published_final_time = 0.073
+published_final_time_tolerance = 1.0e-3
+published_final_altitude = 1.01283
+published_final_altitude_tolerance = 5.0e-5
+published_max_constraint_violation = 1.0e-8
+segment_count = 12
+lgr_collocation_count = 4
+constant_tolerance = 1.0e-12
+max_boundary_residual_norm = 1.0e-10
+min_seed_dynamics_residual_norm = 0.05
+max_seed_dynamics_residual_norm = 1.0
+max_singular_arc_residual = 1.0e-10
+terminal_objective_min_altitude_gain = 1.0e-3
+terminal_objective_max_equality_residual_norm = 1.0e-1

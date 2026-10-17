@@ -24,6 +24,9 @@ review evidence for the host run only; it is not flight qualification.
 
 OpenBMP now exposes native command/telemetry dictionary JSON and an
 experimental XTCE-like export from the stable `openbmp-msgs` topic table.
+The telemetry crate also has an off-by-default experimental export feature
+for CCSDS-shaped frame streams and XTCE-shaped channel dictionaries generated
+from `TelemetrySchema`; those artifacts embed non-conformance labels.
 It also exposes a portable `ModelPort` abstraction, an FMI co-simulation
 adapter boundary, and a restricted stored-entry `.fmu` archive reader used by a
 deterministic toy co-simulation equivalence test. The host-only `openbmp-fmi`

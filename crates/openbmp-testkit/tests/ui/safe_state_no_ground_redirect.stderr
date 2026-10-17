@@ -1,0 +1,7 @@
+error[E0559]: variant `MissionAction::RequestSafeState` has no field named `ground_aimpoint_eci_m`
+ --> tests/ui/safe_state_no_ground_redirect.rs:6:9
+  |
+6 |         ground_aimpoint_eci_m: [0.0, 0.0, 0.0],
+  |         ^^^^^^^^^^^^^^^^^^^^^ `MissionAction::RequestSafeState` does not have this field
+  |
+  = note: all struct fields are already assigned

@@ -23,8 +23,8 @@ use openbmp_bridge::{
 };
 use openbmp_core::{SimTime, StepIndex};
 use openbmp_fc::topics::{
-    BarometerSample, EffectorCommandSet, EngineCommandSet, GnssSample, ImuIncrementWindow,
-    ImuInertialIncrement, ImuSample, MagnetometerSample, StarTrackerSample,
+    AirDataSample, BarometerSample, EffectorCommandSet, EngineCommandSet, GnssSample,
+    ImuIncrementWindow, ImuInertialIncrement, ImuSample, MagnetometerSample, StarTrackerSample,
 };
 use openbmp_fc::{ControllerError, FcStepInput, FcStepOutput, FlightController, fc_step};
 
@@ -1261,6 +1261,38 @@ pub fn fc_step_input_from_sensor_packet(sensor: &SensorPacket) -> FcStepInput {
             healthy: true,
         });
     }
+    if let (
+        Some(static_pressure_pa),
+        Some(impact_pressure_pa),
+        Some(mach),
+        Some(calibrated_airspeed_m_s),
+        Some(true_airspeed_m_s),
+        Some(angle_of_attack_rad),
+        Some(sideslip_rad),
+        Some(pressure_altitude_m),
+    ) = (
+        sensor.airdata_static_pressure_pa,
+        sensor.airdata_impact_pressure_pa,
+        sensor.airdata_mach,
+        sensor.airdata_calibrated_airspeed_m_s,
+        sensor.airdata_true_airspeed_m_s,
+        sensor.airdata_angle_of_attack_rad,
+        sensor.airdata_sideslip_rad,
+        sensor.airdata_pressure_altitude_m,
+    ) {
+        input = input.with_airdata(AirDataSample {
+            time,
+            static_pressure_pa,
+            impact_pressure_pa,
+            mach,
+            calibrated_airspeed_m_s,
+            true_airspeed_m_s,
+            angle_of_attack_rad,
+            sideslip_rad,
+            pressure_altitude_m,
+            healthy: true,
+        });
+    }
     if let (Some(position_eci_m), Some(velocity_eci_m_s), Some(position_bias_eci_m)) = (
         sensor.gnss_position_eci_m,
         sensor.gnss_velocity_eci_m_s,
@@ -1394,6 +1426,10 @@ mod tests {
     };
     use openbmp_fc::{FlightControllerBuilder, Job, JobContext};
 
+    const FULL_SENSOR_PAYLOAD_CAPACITY: usize = 512;
+    const FULL_SENSOR_FRAME_CAPACITY: usize = 512;
+    const TWO_FULL_SENSOR_FRAMES_CAPACITY: usize = 768;
+
     struct PacketStepJob;
 
     impl Job for PacketStepJob {
@@ -1410,6 +1446,10 @@ mod tests {
                 .bus
                 .latest::<BarometerSample>()?
                 .expect("PIL shim should publish barometer before dispatch");
+            let (airdata, _) = ctx
+                .bus
+                .latest::<AirDataSample>()?
+                .expect("PIL shim should publish airdata before dispatch");
             let (gnss, _) = ctx
                 .bus
                 .latest::<GnssSample>()?
@@ -1424,6 +1464,8 @@ mod tests {
                 .expect("PIL shim should publish star tracker before dispatch");
 
             assert_eq!(baro.pressure_pa, 91_250.0);
+            assert_eq!(airdata.mach, 0.15);
+            assert_eq!(airdata.pressure_altitude_m, 1_100.0);
             assert_eq!(gnss.position_eci_m.x, 10.0);
             assert_eq!(mag.field_body_nt.x, 1_000.0);
             assert_eq!(star.q_eci_to_body_xyzw, [0.0, 0.1, 0.2, 0.97]);
@@ -1474,6 +1516,7 @@ mod tests {
         fc.bus().register::<ImuSample>().unwrap();
         fc.bus().register::<ImuIncrementWindow>().unwrap();
         fc.bus().register::<BarometerSample>().unwrap();
+        fc.bus().register::<AirDataSample>().unwrap();
         fc.bus().register::<GnssSample>().unwrap();
         fc.bus().register::<MagnetometerSample>().unwrap();
         fc.bus().register::<StarTrackerSample>().unwrap();
@@ -1504,6 +1547,14 @@ mod tests {
             mag_hard_iron_body_nt: Some([1.0, 2.0, 3.0]),
             baro_pressure_pa: Some(91_250.0),
             baro_bias_pa: Some(12.0),
+            airdata_static_pressure_pa: Some(88_500.0),
+            airdata_impact_pressure_pa: Some(1_250.0),
+            airdata_mach: Some(0.15),
+            airdata_calibrated_airspeed_m_s: Some(51.0),
+            airdata_true_airspeed_m_s: Some(52.0),
+            airdata_angle_of_attack_rad: Some(0.02),
+            airdata_sideslip_rad: Some(-0.01),
+            airdata_pressure_altitude_m: Some(1_100.0),
             star_tracker_attitude_eci_to_body_xyzw: Some([0.0, 0.1, 0.2, 0.97]),
             ..SensorPacket::default()
         }
@@ -1629,7 +1680,7 @@ mod tests {
     fn pil_mailbox_steps_loaded_sensor_payload() {
         let mut fc = controller_for_packet_step();
         let payload = encode(&full_sensor_packet()).unwrap();
-        let mut mailbox: PilMailbox<256, 256> = PilMailbox::new();
+        let mut mailbox: PilMailbox<FULL_SENSOR_PAYLOAD_CAPACITY, 256> = PilMailbox::new();
 
         mailbox.load_sensor_payload(&payload).unwrap();
         let status = step_mailbox(&mut fc, &mut mailbox);
@@ -1649,7 +1700,7 @@ mod tests {
     fn pil_mailbox_fails_closed_on_small_command_storage() {
         let mut fc = controller_for_packet_step();
         let payload = encode(&full_sensor_packet()).unwrap();
-        let mut mailbox: PilMailbox<256, 1> = PilMailbox::new();
+        let mut mailbox: PilMailbox<FULL_SENSOR_PAYLOAD_CAPACITY, 1> = PilMailbox::new();
 
         mailbox.load_sensor_payload(&payload).unwrap();
         let status = mailbox.step(&mut fc);
@@ -1860,7 +1911,7 @@ mod tests {
             written_frame: Vec::new(),
             fail_write: false,
         };
-        let mut input_storage = [0u8; 256];
+        let mut input_storage = [0u8; FULL_SENSOR_FRAME_CAPACITY];
         let mut output_storage = [0u8; 256];
 
         let step =
@@ -1882,8 +1933,8 @@ mod tests {
         let sensor_payload = encode(&full_sensor_packet()).unwrap();
         let sensor_frame = frame(&sensor_payload);
         let mut io = MockByteIo::new(vec![sensor_frame[..3].to_vec(), sensor_frame[3..].to_vec()]);
-        let mut pump: PilFramePump<256, 256> = PilFramePump::new();
-        let mut read_storage = [0u8; 256];
+        let mut pump: PilFramePump<FULL_SENSOR_FRAME_CAPACITY, 256> = PilFramePump::new();
+        let mut read_storage = [0u8; FULL_SENSOR_FRAME_CAPACITY];
 
         let first_status =
             poll_byte_stream_endpoint_once(&mut fc, &mut io, &mut pump, &mut read_storage).unwrap();
@@ -1921,8 +1972,8 @@ mod tests {
         let sensor_frame = frame(&sensor_payload);
         let mut io = MockByteIo::new(vec![sensor_frame]);
         io.fail_write = true;
-        let mut pump: PilFramePump<256, 256> = PilFramePump::new();
-        let mut read_storage = [0u8; 256];
+        let mut pump: PilFramePump<FULL_SENSOR_FRAME_CAPACITY, 256> = PilFramePump::new();
+        let mut read_storage = [0u8; FULL_SENSOR_FRAME_CAPACITY];
 
         let err = poll_byte_stream_endpoint_once(&mut fc, &mut io, &mut pump, &mut read_storage)
             .expect_err("write failure should be reported");
@@ -1965,7 +2016,7 @@ mod tests {
 
     #[test]
     fn pil_firmware_mailbox_entry_steps_loaded_payload() {
-        let mut firmware: PilFirmware<256, 256, 256, 256, 64> =
+        let mut firmware: PilFirmware<FULL_SENSOR_PAYLOAD_CAPACITY, 256, 256, 256, 64> =
             PilFirmware::new(controller_for_packet_step());
         let payload = encode(&full_sensor_packet()).unwrap();
 
@@ -1982,8 +2033,13 @@ mod tests {
 
     #[test]
     fn pil_firmware_byte_poll_uses_internal_read_storage() {
-        let mut firmware: PilFirmware<256, 256, 256, 256, 256> =
-            PilFirmware::new(controller_for_packet_step());
+        let mut firmware: PilFirmware<
+            FULL_SENSOR_PAYLOAD_CAPACITY,
+            256,
+            FULL_SENSOR_FRAME_CAPACITY,
+            256,
+            FULL_SENSOR_FRAME_CAPACITY,
+        > = PilFirmware::new(controller_for_packet_step());
         let sensor_frame = frame(&encode(&full_sensor_packet()).unwrap());
         let split_at = 6;
         let mut io = MockByteIo::new(vec![
@@ -2098,7 +2154,7 @@ mod tests {
             written_frame: Vec::new(),
             fail_write: true,
         };
-        let mut input_storage = [0u8; 256];
+        let mut input_storage = [0u8; FULL_SENSOR_FRAME_CAPACITY];
         let mut output_storage = [0u8; 256];
 
         let err =
@@ -2116,7 +2172,7 @@ mod tests {
         let mut fc = controller_for_packet_step();
         let sensor_payload = encode(&full_sensor_packet()).unwrap();
         let sensor_frame = frame(&sensor_payload);
-        let mut pump: PilFramePump<256, 256> = PilFramePump::new();
+        let mut pump: PilFramePump<FULL_SENSOR_FRAME_CAPACITY, 256> = PilFramePump::new();
         let split_at = 3;
 
         assert_eq!(pump.ingest(&sensor_frame[..split_at]).unwrap(), split_at);
@@ -2153,7 +2209,7 @@ mod tests {
         let mut fc = controller_for_packet_step();
         let sensor_payload = encode(&full_sensor_packet()).unwrap();
         let sensor_frame = frame(&sensor_payload);
-        let mut pump: PilFramePump<256, 256> = PilFramePump::new();
+        let mut pump: PilFramePump<FULL_SENSOR_FRAME_CAPACITY, 256> = PilFramePump::new();
 
         pump.ingest(&sensor_frame).unwrap();
         let status = pump.try_step(&mut fc).unwrap();
@@ -2194,7 +2250,7 @@ mod tests {
         let second_frame = frame(&encode(&second_packet).unwrap());
         let mut stream = first_frame.clone();
         stream.extend_from_slice(&second_frame);
-        let mut pump: PilFramePump<512, 256> = PilFramePump::new();
+        let mut pump: PilFramePump<TWO_FULL_SENSOR_FRAMES_CAPACITY, 256> = PilFramePump::new();
 
         pump.ingest(&stream).unwrap();
         let first_status = pump.try_step(&mut fc).unwrap();

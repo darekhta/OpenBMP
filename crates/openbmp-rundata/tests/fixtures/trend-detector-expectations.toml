@@ -1,0 +1,8 @@
+# Deterministic WP-21.4 trend-detector fixture.
+
+[page_hinkley_step]
+expected_first_drift_ordinal = 5
+expected_detection_delay_points = 0
+
+[flat_series]
+expected_false_alarm_count = 0

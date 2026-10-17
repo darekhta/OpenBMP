@@ -10,10 +10,9 @@ description             = "OpenBMP deterministic plume similarity primitives."
 
 [features]
 default = ["std"]
-std     = ["openbmp-core/std", "openbmp-propulsion/std", "thiserror/std"]
+std     = ["openbmp-propulsion/std", "thiserror/std"]
 
 [dependencies]
-openbmp-core       = { version = "0.0.1", path = "../openbmp-core", default-features = false }
 openbmp-propulsion = { version = "0.0.1", path = "../openbmp-propulsion", default-features = false }
 thiserror          = { version = "2.0.18", default-features = false }
 

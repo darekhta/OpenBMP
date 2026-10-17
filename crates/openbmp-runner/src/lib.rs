@@ -26,6 +26,7 @@
 
 pub mod error;
 
+pub mod acoustics;
 pub mod aero;
 pub mod aero_effector_match;
 pub mod aerothermal;
@@ -35,6 +36,7 @@ pub mod atmosphere;
 pub mod celestial;
 pub mod comm;
 pub mod contact;
+pub mod csi;
 pub mod determinism;
 pub mod effectors;
 pub mod engines;
@@ -44,6 +46,7 @@ pub mod fc_bridge;
 pub mod feed_network;
 pub mod footprint;
 pub mod frames;
+pub mod ground;
 pub mod integrator;
 pub mod landing_gear;
 pub mod mission;
@@ -64,7 +67,7 @@ pub mod wind;
 
 use std::collections::BTreeMap;
 
-use openbmp_scenario::{ResolvedFile, Scenario, ScenarioDocument};
+use openbmp_scenario::{RecoveryConfig, ResolvedFile, Scenario, ScenarioDocument};
 use openbmp_sim::{MissionAction, PhaseId, RegionId, StopReason};
 use openbmp_telemetry::TelemetryTable;
 use openbmp_uq::CorrelatedErrorBudget;
@@ -97,7 +100,73 @@ pub(crate) fn default_active_force_models(document: &ScenarioDocument) -> Vec<St
     {
         models.push("recovery_drag".to_owned());
     }
+    if document
+        .vehicle
+        .assembly
+        .recovery
+        .iter()
+        .any(|recovery| !recovery.risers.is_empty())
+        && !models.iter().any(|model| model == "recovery_riser_force")
+    {
+        models.push("recovery_riser_force".to_owned());
+    }
+    if document
+        .vehicle
+        .assembly
+        .recovery
+        .iter()
+        .any(recovery_has_mortar_sequence)
+        && !models
+            .iter()
+            .any(|model| model == "recovery_sequence_force")
+    {
+        models.push("recovery_sequence_force".to_owned());
+    }
     models
+}
+
+pub(crate) fn force_breakdown_model_universe(document: &ScenarioDocument) -> Vec<String> {
+    let mut models = document.force_model_universe();
+    if !document.vehicle.assembly.tanks.is_empty()
+        && !models.iter().any(|model| model == "tank_reaction")
+    {
+        models.push("tank_reaction".to_owned());
+    }
+    if !document.vehicle.assembly.recovery.is_empty()
+        && !models.iter().any(|model| model == "recovery_drag")
+    {
+        models.push("recovery_drag".to_owned());
+    }
+    if document
+        .vehicle
+        .assembly
+        .recovery
+        .iter()
+        .any(|recovery| !recovery.risers.is_empty())
+        && !models.iter().any(|model| model == "recovery_riser_force")
+    {
+        models.push("recovery_riser_force".to_owned());
+    }
+    if document
+        .vehicle
+        .assembly
+        .recovery
+        .iter()
+        .any(recovery_has_mortar_sequence)
+        && !models
+            .iter()
+            .any(|model| model == "recovery_sequence_force")
+    {
+        models.push("recovery_sequence_force".to_owned());
+    }
+    models
+}
+
+fn recovery_has_mortar_sequence(recovery: &RecoveryConfig) -> bool {
+    recovery
+        .sequence
+        .as_ref()
+        .is_some_and(|sequence| sequence.mortar_pack_mass_kg.is_some())
 }
 
 pub(crate) fn active_model_label(document: &ScenarioDocument, phase: Option<u64>) -> String {
@@ -271,6 +340,18 @@ pub struct RunOutcome {
     pub afts: Option<afts::AftsRunReport>,
     /// Optional communications pass-table artifact for `[comm]` scenarios.
     pub comm: Option<comm::CommRunReport>,
+    /// Optional acoustics environment artifact for `[acoustics]` scenarios.
+    pub acoustics: Option<acoustics::AcousticsRunReport>,
+    /// Optional structural consumption of an acoustic modal-force handoff.
+    pub structural_acoustics: Option<structural::StructuralAcousticLoadsReport>,
+    /// Optional declared structural event-force envelope report.
+    pub structural_events: Option<structural::StructuralEventLoadsReport>,
+    /// Optional structural POGO margin report for `[propulsion.pogo]`.
+    pub pogo: Option<pogo::PogoRunReport>,
+    /// Optional control-structure-interaction margin report for `[csi]`.
+    pub csi: Option<csi::CsiRunReport>,
+    /// Optional ground-side countdown report for `[countdown]`.
+    pub countdown: Option<ground::GroundCountdownRunReport>,
     /// Source-tagged upstream UQ budget gathered while resolving runner decks.
     pub upstream_uq: CorrelatedErrorBudget,
 }

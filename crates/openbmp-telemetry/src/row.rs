@@ -49,12 +49,18 @@ impl TelemetryRow {
         channel: &TelemetryChannel<T>,
         value: T,
     ) -> Result<(), TelemetryError> {
-        let id = channel.id();
+        self.insert_value(channel.id(), value.into_value())
+    }
+
+    pub(crate) fn insert_value(
+        &mut self,
+        id: ChannelId,
+        value: TelemetryValue,
+    ) -> Result<(), TelemetryError> {
         if self.values.contains_key(&id) {
             return Err(TelemetryError::DuplicateRowValue { id: id.value() });
         }
-        self.values
-            .insert(id, value.into_value().require_valid_for(id)?);
+        self.values.insert(id, value.require_valid_for(id)?);
         Ok(())
     }
 

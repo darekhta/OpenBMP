@@ -1,0 +1,22 @@
+openbmp.acoustics_sp8072_directivity_curve = 1
+
+[meta]
+dataset_id = "openbmp.acoustics.sp8072_figure10_directivity.v1"
+source_manifest_id = "openbmp.acoustics.sp8072_source.v1"
+source_manifest_file = "data/acoustics/sp8072-source-v1.toml"
+source_figure_id = "figure_10"
+source_pdf_sha256 = "84f1483c2c8477810186e98765ea99e4b7f7cc71e0a47eb8f86977d3b02aabf8"
+digitization_method = "coarse manual digitization from the pinned NASA SP-8072 PDF Figure 10 raster; values are rounded visual samples for parser/runtime directivity evidence, not a production acoustic calibration"
+license_or_terms = "Public NASA Technical Reports Server document"
+validation = "coarse-public-digitization"
+
+[curve]
+strouhal = [0.004, 0.0125, 0.04, 0.125, 0.4]
+angles_deg = [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 140.0, 160.0, 180.0]
+rows_db = [
+  [-2.0, 1.0, 3.5, 5.0, 4.5, 0.0, -6.5, -10.5, -13.0, -15.0, -17.0],
+  [-1.0, 2.0, 4.5, 5.6, 4.7, 0.5, -5.5, -9.5, -12.0, -14.0, -16.0],
+  [0.0, 3.0, 5.0, 5.2, 4.5, 1.0, -4.5, -8.0, -10.5, -13.0, -15.0],
+  [1.2, 4.2, 5.8, 5.0, 4.2, 1.5, -3.5, -6.5, -9.5, -12.0, -14.0],
+  [4.0, 8.0, 6.0, 4.2, 2.5, -1.0, -4.0, -6.5, -9.0, -11.0, -13.0],
+]

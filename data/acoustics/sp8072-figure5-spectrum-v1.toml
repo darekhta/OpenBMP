@@ -1,0 +1,83 @@
+openbmp.acoustics_sp8072_spectrum_curve = 1
+
+[meta]
+dataset_id = "openbmp.acoustics.sp8072_figure5_spectrum.v1"
+source_manifest_id = "openbmp.acoustics.sp8072_source.v1"
+source_manifest_file = "data/acoustics/sp8072-source-v1.toml"
+source_figure_id = "figure_5"
+source_pdf_sha256 = "84f1483c2c8477810186e98765ea99e4b7f7cc71e0a47eb8f86977d3b02aabf8"
+digitization_method = "coarse manual digitization from the pinned NASA SP-8072 PDF Figure 5 raster; values are rounded visual samples for parser/runtime spectrum evidence, not a production acoustic calibration"
+license_or_terms = "Public NASA Technical Reports Server document"
+validation = "coarse-public-digitization"
+
+[[points]]
+strouhal = 0.002
+relative_power_db = 0.0
+
+[[points]]
+strouhal = 0.003
+relative_power_db = 3.0
+
+[[points]]
+strouhal = 0.005
+relative_power_db = 6.5
+
+[[points]]
+strouhal = 0.008
+relative_power_db = 9.0
+
+[[points]]
+strouhal = 0.0125
+relative_power_db = 10.8
+
+[[points]]
+strouhal = 0.020
+relative_power_db = 11.5
+
+[[points]]
+strouhal = 0.030
+relative_power_db = 11.2
+
+[[points]]
+strouhal = 0.050
+relative_power_db = 9.2
+
+[[points]]
+strouhal = 0.080
+relative_power_db = 6.5
+
+[[points]]
+strouhal = 0.125
+relative_power_db = 4.0
+
+[[points]]
+strouhal = 0.200
+relative_power_db = 1.0
+
+[[points]]
+strouhal = 0.300
+relative_power_db = -2.0
+
+[[points]]
+strouhal = 0.500
+relative_power_db = -7.0
+
+[[points]]
+strouhal = 0.800
+relative_power_db = -11.5
+
+[[points]]
+strouhal = 1.250
+relative_power_db = -15.0
+
+[[points]]
+strouhal = 2.000
+relative_power_db = -19.5
+
+[[points]]
+strouhal = 3.000
+relative_power_db = -23.5
+
+[[points]]
+strouhal = 5.000
+relative_power_db = -27.0

@@ -19,6 +19,7 @@ Commands:
   conform            Run one or more scenarios as a fork-runnable conformance smoke suite
   verify-order       Verify integrator observed order and Richardson/GCI behavior
   reconstruct        Run offline reconstruction and filter-consistency evidence commands
+  sysid              Run offline system-identification and model-correlation commands
   trajopt            Run offline trajectory optimization and I-load synthesis commands
   compare-telemetry  Compare a scenario run against external local telemetry CSV / JSON
   footprint-mc       Run offline landing-footprint Monte Carlo post-processing
@@ -26,6 +27,7 @@ Commands:
   check-provenance   Walk a data/scenario tree and verify provenance records
   dict               Export command/telemetry dictionaries
   package            Validate mission package manifests
+  campaign           Plan deterministic run-data campaigns
   run-package        Run a mission package test case through the native SIL path
   sil                Native SIL testbench operations
   migrate            Rewrite scenario documents to newer schema shapes

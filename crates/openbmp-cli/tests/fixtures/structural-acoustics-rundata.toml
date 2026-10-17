@@ -1,0 +1,85 @@
+openbmp.scenario = 3
+
+[meta]
+name = "structural-acoustics-rundata-test"
+description = "Synthetic rigid-body run used to prove structural-acoustic run-data artifact indexing."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.1
+seed = 220647
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 10.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.bending]
+frequency_hz = 125.0
+damping_ratio = 0.02
+modal_mass_kg = 25.0
+slope_at_engine = 0.1
+slope_at_gyro = 0.05
+
+[vehicle.assembly]
+id = "structural-acoustics-rundata-test"
+
+[[vehicle.assembly.bodies]]
+id = "core"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 100.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[mission]
+initial_phase = "coast"
+
+[[mission.phases]]
+id = "coast"
+label = "coast"
+
+[acoustics.ascent]
+station_id = "station-a"
+deck_file = @ASCENT_DECK@
+deck_file_sha256 = "@ASCENT_DECK_SHA256@"
+class_id = "attached_turbulent"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[acoustics.fairing_internal]
+station_id = "payload-a"
+deck_file = @FAIRING_DECK@
+deck_file_sha256 = "@FAIRING_DECK_SHA256@"
+class_id = "synthetic_light_fairing"
+fill_factor = 1.0
+
+[acoustics.response]
+station_id = "payload-a"
+source = "fairing_internal"
+deck_file = @RESPONSE_DECK@
+deck_file_sha256 = "@RESPONSE_DECK_SHA256@"
+class_id = "synthetic_panel_light"
+surface_mass_kg_m2 = 12.0
+area_m2 = 3.0
+mode_shape_factor = 0.5
+
+[telemetry]
+output.csv = @OUTPUT_CSV@
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true

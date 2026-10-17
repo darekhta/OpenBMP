@@ -50,8 +50,9 @@ carries the reference quaternion and an optional reference angular rate.
 ### Method 1 — Pitch program (open-loop)
 
 The simplest academic ascent law: a tabulated pitch angle versus time or versus
-altitude, linearly interpolated. This is the open-loop "tip-over" schedule used
-in sounding-rocket and early-launch pedagogy.
+altitude, linearly interpolated. An optional yaw schedule uses the same time
+grid and defaults to zero yaw when omitted. This is the open-loop "tip-over"
+schedule used in sounding-rocket and early-launch pedagogy.
 
 ```toml
 [fc.ascent_reference]
@@ -59,6 +60,7 @@ method = "pitch_program"
 # pitch (from vertical) vs time; reference only, tracked by the autopilot
 schedule_s   = [0.0, 10.0, 30.0, 60.0]
 pitch_rad    = [0.0, 0.05, 0.20, 0.55]
+yaw_rad      = [0.0, 0.00, 0.01, 0.02] # optional, same length
 ```
 
 ### Method 2 — Gravity turn (zero-lift)
@@ -135,7 +137,8 @@ selector later — see
   mirroring how `attitude_hold` requires `reference_q_xyzw` — else
   `ScenarioError::InvalidFc`.
 - `pitch_program` requires `schedule_s` and `pitch_rad` of equal length ≥ 2,
-  strictly increasing `schedule_s`; reuses `require_*` helpers.
+  strictly increasing `schedule_s`; optional `yaw_rad` must use the same
+  length. Validation reuses `require_*` helpers.
 - `gravity_turn` rejects pitch-program fields and fails at runtime if inertial
   speed is still effectively zero.
 - The explicit-reference cutoff block validates inertial-state fields and

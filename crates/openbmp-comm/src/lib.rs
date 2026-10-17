@@ -13,7 +13,7 @@ use openbmp_core::{DeterministicRng, Vector3};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-/// WGS84 semi-major axis, metres.
+/// WGS84 semi-major axis, metres. Source: NIMA TR 8350.2, table 3.1.
 pub const WGS84_A_M: f64 = 6_378_137.0;
 /// WGS84 flattening.
 pub const WGS84_F: f64 = 1.0 / 298.257_223_563;
@@ -327,6 +327,581 @@ pub struct VisibilitySample {
     pub mask_elevation_rad: f64,
     /// `true` when elevation is above the applied mask.
     pub visible: bool,
+}
+
+/// Vehicle-bound ground tracking instrument model for one measurement stream.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TrackingInstrumentModel {
+    /// Measurement latency applied to the sample time, seconds.
+    latency_s: f64,
+    /// Additive range bias, metres.
+    range_bias_m: f64,
+    /// Additive range-rate bias, metres per second.
+    range_rate_bias_m_s: f64,
+    /// Additive azimuth bias, radians.
+    azimuth_bias_rad: f64,
+    /// Additive elevation bias, radians.
+    elevation_bias_rad: f64,
+    /// Range quantization step, metres; zero disables quantization.
+    range_quantization_m: f64,
+    /// Range-rate quantization step, metres per second; zero disables quantization.
+    range_rate_quantization_m_s: f64,
+    /// Angle quantization step, radians; zero disables quantization.
+    angle_quantization_rad: f64,
+    /// Range white-noise standard deviation, metres.
+    range_noise_stddev_m: f64,
+    /// Range-rate white-noise standard deviation, metres per second.
+    range_rate_noise_stddev_m_s: f64,
+    /// Azimuth white-noise standard deviation, radians.
+    azimuth_noise_stddev_rad: f64,
+    /// Elevation white-noise standard deviation, radians.
+    elevation_noise_stddev_rad: f64,
+    /// Range Gauss-Markov bias stationary standard deviation, metres.
+    range_gauss_markov_stddev_m: f64,
+    /// Range Gauss-Markov bias correlation time, seconds.
+    range_gauss_markov_tau_s: f64,
+    /// Range-rate Gauss-Markov bias stationary standard deviation, metres per second.
+    range_rate_gauss_markov_stddev_m_s: f64,
+    /// Range-rate Gauss-Markov bias correlation time, seconds.
+    range_rate_gauss_markov_tau_s: f64,
+    /// Azimuth Gauss-Markov bias stationary standard deviation, radians.
+    azimuth_gauss_markov_stddev_rad: f64,
+    /// Azimuth Gauss-Markov bias correlation time, seconds.
+    azimuth_gauss_markov_tau_s: f64,
+    /// Elevation Gauss-Markov bias stationary standard deviation, radians.
+    elevation_gauss_markov_stddev_rad: f64,
+    /// Elevation Gauss-Markov bias correlation time, seconds.
+    elevation_gauss_markov_tau_s: f64,
+}
+
+/// Vehicle-bound ground tracking observable input derived from a visibility sample.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackingObservableInput {
+    /// Ground-site id.
+    site_id: String,
+    /// Truth sample time, seconds.
+    time_s: f64,
+    /// Truth slant range, metres.
+    slant_range_m: f64,
+    /// Truth range rate, metres per second.
+    range_rate_m_s: f64,
+    /// Truth azimuth, radians.
+    azimuth_rad: f64,
+    /// Truth elevation, radians.
+    elevation_rad: f64,
+}
+
+/// One ground tracking observable after latency, bias, and quantization.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackingObservable {
+    /// Ground-site id.
+    pub site_id: String,
+    /// Truth sample time, seconds.
+    pub truth_time_s: f64,
+    /// Time tag after declared latency, seconds.
+    pub measurement_time_s: f64,
+    /// Measured range, metres.
+    pub range_m: f64,
+    /// Measured range rate, metres per second.
+    pub range_rate_m_s: f64,
+    /// Measured azimuth, radians.
+    pub azimuth_rad: f64,
+    /// Measured elevation, radians.
+    pub elevation_rad: f64,
+    /// Applied range noise, metres.
+    pub range_noise_m: f64,
+    /// Applied range-rate noise, metres per second.
+    pub range_rate_noise_m_s: f64,
+    /// Applied azimuth noise, radians.
+    pub azimuth_noise_rad: f64,
+    /// Applied elevation noise, radians.
+    pub elevation_noise_rad: f64,
+    /// Applied range Gauss-Markov bias state, metres.
+    pub range_gauss_markov_bias_m: f64,
+    /// Applied range-rate Gauss-Markov bias state, metres per second.
+    pub range_rate_gauss_markov_bias_m_s: f64,
+    /// Applied azimuth Gauss-Markov bias state, radians.
+    pub azimuth_gauss_markov_bias_rad: f64,
+    /// Applied elevation Gauss-Markov bias state, radians.
+    pub elevation_gauss_markov_bias_rad: f64,
+}
+
+/// Deterministic white-noise context for one tracking observable.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TrackingNoiseContext {
+    /// Scenario seed.
+    pub scenario_seed: u64,
+    /// Simulation step.
+    pub step: u64,
+    /// Stable stream id derived from the ground-site id.
+    pub site_stream_id: u64,
+}
+
+/// Deterministic Gauss-Markov bias update context for one tracking stream.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TrackingGaussMarkovContext {
+    /// Scenario seed.
+    pub scenario_seed: u64,
+    /// Simulation step.
+    pub step: u64,
+    /// Stable stream id derived from the ground-site id.
+    pub site_stream_id: u64,
+    /// Elapsed time since the previous bias-state update, seconds.
+    pub dt_s: f64,
+}
+
+/// Tracking instrument Gauss-Markov bias state for one site stream.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct TrackingBiasState {
+    /// Range bias state, metres.
+    pub range_bias_m: f64,
+    /// Range-rate bias state, metres per second.
+    pub range_rate_bias_m_s: f64,
+    /// Azimuth bias state, radians.
+    pub azimuth_bias_rad: f64,
+    /// Elevation bias state, radians.
+    pub elevation_bias_rad: f64,
+}
+
+impl TrackingInstrumentModel {
+    /// Construct a deterministic tracking instrument model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommError`] when latency or quantization fields are negative
+    /// or any field is non-finite.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        latency_s: f64,
+        range_bias_m: f64,
+        range_rate_bias_m_s: f64,
+        azimuth_bias_rad: f64,
+        elevation_bias_rad: f64,
+        range_quantization_m: f64,
+        range_rate_quantization_m_s: f64,
+        angle_quantization_rad: f64,
+    ) -> Result<Self, CommError> {
+        require_non_negative("tracking.latency_s", latency_s)?;
+        require_finite("tracking.range_bias_m", range_bias_m)?;
+        require_finite("tracking.range_rate_bias_m_s", range_rate_bias_m_s)?;
+        require_finite("tracking.azimuth_bias_rad", azimuth_bias_rad)?;
+        require_finite("tracking.elevation_bias_rad", elevation_bias_rad)?;
+        require_non_negative("tracking.range_quantization_m", range_quantization_m)?;
+        require_non_negative(
+            "tracking.range_rate_quantization_m_s",
+            range_rate_quantization_m_s,
+        )?;
+        require_non_negative("tracking.angle_quantization_rad", angle_quantization_rad)?;
+        Ok(Self {
+            latency_s,
+            range_bias_m,
+            range_rate_bias_m_s,
+            azimuth_bias_rad,
+            elevation_bias_rad,
+            range_quantization_m,
+            range_rate_quantization_m_s,
+            angle_quantization_rad,
+            range_noise_stddev_m: 0.0,
+            range_rate_noise_stddev_m_s: 0.0,
+            azimuth_noise_stddev_rad: 0.0,
+            elevation_noise_stddev_rad: 0.0,
+            range_gauss_markov_stddev_m: 0.0,
+            range_gauss_markov_tau_s: 0.0,
+            range_rate_gauss_markov_stddev_m_s: 0.0,
+            range_rate_gauss_markov_tau_s: 0.0,
+            azimuth_gauss_markov_stddev_rad: 0.0,
+            azimuth_gauss_markov_tau_s: 0.0,
+            elevation_gauss_markov_stddev_rad: 0.0,
+            elevation_gauss_markov_tau_s: 0.0,
+        })
+    }
+
+    /// Return a copy with deterministic white-noise standard deviations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommError`] when any standard deviation is negative or
+    /// non-finite.
+    pub fn with_white_noise_stddevs(
+        mut self,
+        range_noise_stddev_m: f64,
+        range_rate_noise_stddev_m_s: f64,
+        azimuth_noise_stddev_rad: f64,
+        elevation_noise_stddev_rad: f64,
+    ) -> Result<Self, CommError> {
+        require_non_negative("tracking.range_noise_stddev_m", range_noise_stddev_m)?;
+        require_non_negative(
+            "tracking.range_rate_noise_stddev_m_s",
+            range_rate_noise_stddev_m_s,
+        )?;
+        require_non_negative(
+            "tracking.azimuth_noise_stddev_rad",
+            azimuth_noise_stddev_rad,
+        )?;
+        require_non_negative(
+            "tracking.elevation_noise_stddev_rad",
+            elevation_noise_stddev_rad,
+        )?;
+        self.range_noise_stddev_m = range_noise_stddev_m;
+        self.range_rate_noise_stddev_m_s = range_rate_noise_stddev_m_s;
+        self.azimuth_noise_stddev_rad = azimuth_noise_stddev_rad;
+        self.elevation_noise_stddev_rad = elevation_noise_stddev_rad;
+        Ok(self)
+    }
+
+    /// Return a copy with first-order Gauss-Markov bias-state parameters.
+    ///
+    /// A zero stationary standard deviation disables that component. Non-zero
+    /// components require a positive correlation time constant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommError`] when a standard deviation is negative/non-finite
+    /// or when a non-zero component has a non-positive/non-finite time
+    /// constant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_gauss_markov_biases(
+        mut self,
+        range_gauss_markov_stddev_m: f64,
+        range_gauss_markov_tau_s: f64,
+        range_rate_gauss_markov_stddev_m_s: f64,
+        range_rate_gauss_markov_tau_s: f64,
+        azimuth_gauss_markov_stddev_rad: f64,
+        azimuth_gauss_markov_tau_s: f64,
+        elevation_gauss_markov_stddev_rad: f64,
+        elevation_gauss_markov_tau_s: f64,
+    ) -> Result<Self, CommError> {
+        validate_gauss_markov_component(
+            "tracking.range_gauss_markov_stddev_m",
+            range_gauss_markov_stddev_m,
+            "tracking.range_gauss_markov_tau_s",
+            range_gauss_markov_tau_s,
+        )?;
+        validate_gauss_markov_component(
+            "tracking.range_rate_gauss_markov_stddev_m_s",
+            range_rate_gauss_markov_stddev_m_s,
+            "tracking.range_rate_gauss_markov_tau_s",
+            range_rate_gauss_markov_tau_s,
+        )?;
+        validate_gauss_markov_component(
+            "tracking.azimuth_gauss_markov_stddev_rad",
+            azimuth_gauss_markov_stddev_rad,
+            "tracking.azimuth_gauss_markov_tau_s",
+            azimuth_gauss_markov_tau_s,
+        )?;
+        validate_gauss_markov_component(
+            "tracking.elevation_gauss_markov_stddev_rad",
+            elevation_gauss_markov_stddev_rad,
+            "tracking.elevation_gauss_markov_tau_s",
+            elevation_gauss_markov_tau_s,
+        )?;
+        self.range_gauss_markov_stddev_m = range_gauss_markov_stddev_m;
+        self.range_gauss_markov_tau_s = range_gauss_markov_tau_s;
+        self.range_rate_gauss_markov_stddev_m_s = range_rate_gauss_markov_stddev_m_s;
+        self.range_rate_gauss_markov_tau_s = range_rate_gauss_markov_tau_s;
+        self.azimuth_gauss_markov_stddev_rad = azimuth_gauss_markov_stddev_rad;
+        self.azimuth_gauss_markov_tau_s = azimuth_gauss_markov_tau_s;
+        self.elevation_gauss_markov_stddev_rad = elevation_gauss_markov_stddev_rad;
+        self.elevation_gauss_markov_tau_s = elevation_gauss_markov_tau_s;
+        Ok(self)
+    }
+
+    /// Measurement latency, seconds.
+    #[must_use]
+    pub const fn latency_s(self) -> f64 {
+        self.latency_s
+    }
+
+    /// Range white-noise standard deviation, metres.
+    #[must_use]
+    pub const fn range_noise_stddev_m(self) -> f64 {
+        self.range_noise_stddev_m
+    }
+
+    /// Range-rate white-noise standard deviation, metres per second.
+    #[must_use]
+    pub const fn range_rate_noise_stddev_m_s(self) -> f64 {
+        self.range_rate_noise_stddev_m_s
+    }
+
+    /// Azimuth white-noise standard deviation, radians.
+    #[must_use]
+    pub const fn azimuth_noise_stddev_rad(self) -> f64 {
+        self.azimuth_noise_stddev_rad
+    }
+
+    /// Elevation white-noise standard deviation, radians.
+    #[must_use]
+    pub const fn elevation_noise_stddev_rad(self) -> f64 {
+        self.elevation_noise_stddev_rad
+    }
+
+    /// Range Gauss-Markov bias stationary standard deviation, metres.
+    #[must_use]
+    pub const fn range_gauss_markov_stddev_m(self) -> f64 {
+        self.range_gauss_markov_stddev_m
+    }
+
+    /// Range Gauss-Markov bias correlation time, seconds.
+    #[must_use]
+    pub const fn range_gauss_markov_tau_s(self) -> f64 {
+        self.range_gauss_markov_tau_s
+    }
+
+    /// Range-rate Gauss-Markov bias stationary standard deviation, metres per second.
+    #[must_use]
+    pub const fn range_rate_gauss_markov_stddev_m_s(self) -> f64 {
+        self.range_rate_gauss_markov_stddev_m_s
+    }
+
+    /// Range-rate Gauss-Markov bias correlation time, seconds.
+    #[must_use]
+    pub const fn range_rate_gauss_markov_tau_s(self) -> f64 {
+        self.range_rate_gauss_markov_tau_s
+    }
+
+    /// Azimuth Gauss-Markov bias stationary standard deviation, radians.
+    #[must_use]
+    pub const fn azimuth_gauss_markov_stddev_rad(self) -> f64 {
+        self.azimuth_gauss_markov_stddev_rad
+    }
+
+    /// Azimuth Gauss-Markov bias correlation time, seconds.
+    #[must_use]
+    pub const fn azimuth_gauss_markov_tau_s(self) -> f64 {
+        self.azimuth_gauss_markov_tau_s
+    }
+
+    /// Elevation Gauss-Markov bias stationary standard deviation, radians.
+    #[must_use]
+    pub const fn elevation_gauss_markov_stddev_rad(self) -> f64 {
+        self.elevation_gauss_markov_stddev_rad
+    }
+
+    /// Elevation Gauss-Markov bias correlation time, seconds.
+    #[must_use]
+    pub const fn elevation_gauss_markov_tau_s(self) -> f64 {
+        self.elevation_gauss_markov_tau_s
+    }
+
+    /// Evaluate one tracking observable from a vehicle-bound visibility sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommError`] when input fields are invalid.
+    pub fn evaluate(self, input: TrackingObservableInput) -> Result<TrackingObservable, CommError> {
+        self.evaluate_with_error_values(input, [0.0; 4], TrackingBiasState::default())
+    }
+
+    /// Evaluate one tracking observable with deterministic white noise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommError`] when input fields are invalid.
+    pub fn evaluate_with_noise(
+        self,
+        input: TrackingObservableInput,
+        context: TrackingNoiseContext,
+    ) -> Result<TrackingObservable, CommError> {
+        let noises = [
+            tracking_noise_sample(context, 0, self.range_noise_stddev_m),
+            tracking_noise_sample(context, 1, self.range_rate_noise_stddev_m_s),
+            tracking_noise_sample(context, 2, self.azimuth_noise_stddev_rad),
+            tracking_noise_sample(context, 3, self.elevation_noise_stddev_rad),
+        ];
+        self.evaluate_with_error_values(input, noises, TrackingBiasState::default())
+    }
+
+    /// Evaluate one tracking observable with deterministic white noise and a
+    /// caller-supplied Gauss-Markov bias state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommError`] when input fields or the bias state are invalid.
+    pub fn evaluate_with_noise_and_bias(
+        self,
+        input: TrackingObservableInput,
+        context: TrackingNoiseContext,
+        bias_state: TrackingBiasState,
+    ) -> Result<TrackingObservable, CommError> {
+        let noises = [
+            tracking_noise_sample(context, 0, self.range_noise_stddev_m),
+            tracking_noise_sample(context, 1, self.range_rate_noise_stddev_m_s),
+            tracking_noise_sample(context, 2, self.azimuth_noise_stddev_rad),
+            tracking_noise_sample(context, 3, self.elevation_noise_stddev_rad),
+        ];
+        self.evaluate_with_error_values(input, noises, bias_state)
+    }
+
+    /// Deterministically sample an initial stationary Gauss-Markov bias state.
+    ///
+    /// Components with zero stationary standard deviation return zero.
+    #[must_use]
+    pub fn sample_initial_gauss_markov_bias(
+        self,
+        context: TrackingNoiseContext,
+    ) -> TrackingBiasState {
+        TrackingBiasState {
+            range_bias_m: tracking_gauss_markov_stationary_sample(
+                context,
+                0,
+                self.range_gauss_markov_stddev_m,
+            ),
+            range_rate_bias_m_s: tracking_gauss_markov_stationary_sample(
+                context,
+                1,
+                self.range_rate_gauss_markov_stddev_m_s,
+            ),
+            azimuth_bias_rad: tracking_gauss_markov_stationary_sample(
+                context,
+                2,
+                self.azimuth_gauss_markov_stddev_rad,
+            ),
+            elevation_bias_rad: tracking_gauss_markov_stationary_sample(
+                context,
+                3,
+                self.elevation_gauss_markov_stddev_rad,
+            ),
+        }
+    }
+
+    /// Advance a Gauss-Markov bias state by one elapsed interval.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommError`] when `dt_s` is negative or non-finite.
+    pub fn advance_gauss_markov_bias(
+        self,
+        previous: TrackingBiasState,
+        context: TrackingGaussMarkovContext,
+    ) -> Result<TrackingBiasState, CommError> {
+        require_non_negative("tracking.gauss_markov.dt_s", context.dt_s)?;
+        require_finite("tracking.range_gauss_markov_bias_m", previous.range_bias_m)?;
+        require_finite(
+            "tracking.range_rate_gauss_markov_bias_m_s",
+            previous.range_rate_bias_m_s,
+        )?;
+        require_finite(
+            "tracking.azimuth_gauss_markov_bias_rad",
+            previous.azimuth_bias_rad,
+        )?;
+        require_finite(
+            "tracking.elevation_gauss_markov_bias_rad",
+            previous.elevation_bias_rad,
+        )?;
+        Ok(TrackingBiasState {
+            range_bias_m: tracking_gauss_markov_step(
+                previous.range_bias_m,
+                context,
+                0,
+                self.range_gauss_markov_stddev_m,
+                self.range_gauss_markov_tau_s,
+            ),
+            range_rate_bias_m_s: tracking_gauss_markov_step(
+                previous.range_rate_bias_m_s,
+                context,
+                1,
+                self.range_rate_gauss_markov_stddev_m_s,
+                self.range_rate_gauss_markov_tau_s,
+            ),
+            azimuth_bias_rad: tracking_gauss_markov_step(
+                previous.azimuth_bias_rad,
+                context,
+                2,
+                self.azimuth_gauss_markov_stddev_rad,
+                self.azimuth_gauss_markov_tau_s,
+            ),
+            elevation_bias_rad: tracking_gauss_markov_step(
+                previous.elevation_bias_rad,
+                context,
+                3,
+                self.elevation_gauss_markov_stddev_rad,
+                self.elevation_gauss_markov_tau_s,
+            ),
+        })
+    }
+
+    fn evaluate_with_error_values(
+        self,
+        input: TrackingObservableInput,
+        noises: [f64; 4],
+        bias_state: TrackingBiasState,
+    ) -> Result<TrackingObservable, CommError> {
+        require_non_empty_str("tracking.site_id", &input.site_id)?;
+        require_non_negative("tracking.time_s", input.time_s)?;
+        require_positive("tracking.slant_range_m", input.slant_range_m)?;
+        require_finite("tracking.range_rate_m_s", input.range_rate_m_s)?;
+        require_finite("tracking.azimuth_rad", input.azimuth_rad)?;
+        require_elevation("tracking.elevation_rad", input.elevation_rad)?;
+        require_finite(
+            "tracking.range_gauss_markov_bias_m",
+            bias_state.range_bias_m,
+        )?;
+        require_finite(
+            "tracking.range_rate_gauss_markov_bias_m_s",
+            bias_state.range_rate_bias_m_s,
+        )?;
+        require_finite(
+            "tracking.azimuth_gauss_markov_bias_rad",
+            bias_state.azimuth_bias_rad,
+        )?;
+        require_finite(
+            "tracking.elevation_gauss_markov_bias_rad",
+            bias_state.elevation_bias_rad,
+        )?;
+        let measurement_time_s = input.time_s + self.latency_s;
+        require_non_negative("tracking.measurement_time_s", measurement_time_s)?;
+        Ok(TrackingObservable {
+            site_id: input.site_id,
+            truth_time_s: input.time_s,
+            measurement_time_s,
+            range_m: quantize(
+                input.slant_range_m + self.range_bias_m + bias_state.range_bias_m + noises[0],
+                self.range_quantization_m,
+            ),
+            range_rate_m_s: quantize(
+                input.range_rate_m_s
+                    + self.range_rate_bias_m_s
+                    + bias_state.range_rate_bias_m_s
+                    + noises[1],
+                self.range_rate_quantization_m_s,
+            ),
+            azimuth_rad: wrap_2pi(quantize(
+                input.azimuth_rad + self.azimuth_bias_rad + bias_state.azimuth_bias_rad + noises[2],
+                self.angle_quantization_rad,
+            )),
+            elevation_rad: quantize(
+                input.elevation_rad
+                    + self.elevation_bias_rad
+                    + bias_state.elevation_bias_rad
+                    + noises[3],
+                self.angle_quantization_rad,
+            ),
+            range_noise_m: noises[0],
+            range_rate_noise_m_s: noises[1],
+            azimuth_noise_rad: noises[2],
+            elevation_noise_rad: noises[3],
+            range_gauss_markov_bias_m: bias_state.range_bias_m,
+            range_rate_gauss_markov_bias_m_s: bias_state.range_rate_bias_m_s,
+            azimuth_gauss_markov_bias_rad: bias_state.azimuth_bias_rad,
+            elevation_gauss_markov_bias_rad: bias_state.elevation_bias_rad,
+        })
+    }
+}
+
+impl TrackingObservableInput {
+    /// Build vehicle-bound tracking input from a ground-site visibility sample.
+    #[must_use]
+    pub fn from_visibility_sample(sample: &VisibilitySample) -> Self {
+        Self {
+            site_id: sample.site_id.clone(),
+            time_s: sample.time_s,
+            slant_range_m: sample.slant_range_m,
+            range_rate_m_s: sample.range_rate_m_s,
+            azimuth_rad: sample.azimuth_rad,
+            elevation_rad: sample.elevation_rad,
+        }
+    }
 }
 
 /// One azimuth/elevation-independent antenna gain sample.
@@ -909,11 +1484,7 @@ impl PlasmaBlackoutModel {
     /// electron density is negative/non-finite.
     pub fn evaluate(self, input: PlasmaBlackoutInput) -> Result<PlasmaBlackoutState, CommError> {
         require_positive("plasma_blackout.frequency_hz", input.frequency_hz)?;
-        require_non_negative(
-            "plasma_blackout.electron_number_density_m3",
-            input.electron_number_density_m3,
-        )?;
-        let plasma_frequency_hz = plasma_frequency_hz(input.electron_number_density_m3);
+        let plasma_frequency_hz = plasma_frequency_hz(input.electron_number_density_m3)?;
         let blackout = input.frequency_hz <= plasma_frequency_hz;
         let attenuation_db = if blackout {
             self.max_attenuation_db
@@ -950,8 +1521,12 @@ impl Default for PlasmaBlackoutModel {
 /// # Errors
 ///
 /// Returns [`CommError`] when electron density is negative/non-finite.
-pub fn plasma_frequency_hz(electron_number_density_m3: f64) -> f64 {
-    PLASMA_FREQUENCY_COEFFICIENT_HZ_M32 * electron_number_density_m3.sqrt()
+pub fn plasma_frequency_hz(electron_number_density_m3: f64) -> Result<f64, CommError> {
+    require_non_negative(
+        "plasma_blackout.electron_number_density_m3",
+        electron_number_density_m3,
+    )?;
+    Ok(PLASMA_FREQUENCY_COEFFICIENT_HZ_M32 * electron_number_density_m3.sqrt())
 }
 
 /// Per-step communications link state.
@@ -1251,6 +1826,25 @@ pub fn link_stream_id_from_id(id: &str) -> Result<u64, CommError> {
     Ok(hash)
 }
 
+/// Stable stream id for a ground tracking site id.
+///
+/// # Errors
+///
+/// Returns [`CommError::Empty`] when `id` is empty after trimming.
+pub fn tracking_site_stream_id_from_id(id: &str) -> Result<u64, CommError> {
+    if id.trim().is_empty() {
+        return Err(CommError::Empty {
+            field: "tracking.site_id",
+        });
+    }
+    let mut hash = FNV_OFFSET_BASIS_64;
+    for byte in id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME_64);
+    }
+    Ok(hash)
+}
+
 /// Evaluate the deterministic engineering link budget and FER.
 ///
 /// # Errors
@@ -1453,6 +2047,93 @@ fn link_packet_rng_seed(context: LinkPacketContext) -> [u8; 32] {
     hasher.update(context.packet_index.to_le_bytes());
     hasher.update([context.direction.seed_byte()]);
     hasher.finalize().into()
+}
+
+fn validate_gauss_markov_component(
+    stddev_field: &'static str,
+    stddev: f64,
+    tau_field: &'static str,
+    tau_s: f64,
+) -> Result<(), CommError> {
+    require_non_negative(stddev_field, stddev)?;
+    if stddev == 0.0 {
+        require_non_negative(tau_field, tau_s)
+    } else {
+        require_positive(tau_field, tau_s)
+    }
+}
+
+fn tracking_noise_sample(context: TrackingNoiseContext, component_id: u32, stddev: f64) -> f64 {
+    if stddev == 0.0 {
+        return 0.0;
+    }
+    let mut rng = DeterministicRng::from_raw_seed(tracking_noise_rng_seed(context, component_id));
+    stddev * standard_normal(&mut rng)
+}
+
+fn tracking_noise_rng_seed(context: TrackingNoiseContext, component_id: u32) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"openbmp.tracking_observable.v1\n");
+    hasher.update(context.scenario_seed.to_le_bytes());
+    hasher.update(context.step.to_le_bytes());
+    hasher.update(context.site_stream_id.to_le_bytes());
+    hasher.update(component_id.to_le_bytes());
+    hasher.finalize().into()
+}
+
+fn tracking_gauss_markov_stationary_sample(
+    context: TrackingNoiseContext,
+    component_id: u32,
+    stddev: f64,
+) -> f64 {
+    if stddev == 0.0 {
+        return 0.0;
+    }
+    let context = TrackingGaussMarkovContext {
+        scenario_seed: context.scenario_seed,
+        step: context.step,
+        site_stream_id: context.site_stream_id,
+        dt_s: 0.0,
+    };
+    let mut rng =
+        DeterministicRng::from_raw_seed(tracking_gauss_markov_rng_seed(context, component_id));
+    stddev * standard_normal(&mut rng)
+}
+
+fn tracking_gauss_markov_step(
+    previous: f64,
+    context: TrackingGaussMarkovContext,
+    component_id: u32,
+    stationary_stddev: f64,
+    tau_s: f64,
+) -> f64 {
+    if stationary_stddev == 0.0 {
+        return 0.0;
+    }
+    let phi = (-context.dt_s / tau_s).exp();
+    let innovation_stddev = stationary_stddev * (1.0 - phi * phi).max(0.0).sqrt();
+    let mut rng =
+        DeterministicRng::from_raw_seed(tracking_gauss_markov_rng_seed(context, component_id));
+    phi * previous + innovation_stddev * standard_normal(&mut rng)
+}
+
+fn tracking_gauss_markov_rng_seed(
+    context: TrackingGaussMarkovContext,
+    component_id: u32,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"openbmp.tracking_gauss_markov.v1\n");
+    hasher.update(context.scenario_seed.to_le_bytes());
+    hasher.update(context.step.to_le_bytes());
+    hasher.update(context.site_stream_id.to_le_bytes());
+    hasher.update(component_id.to_le_bytes());
+    hasher.finalize().into()
+}
+
+fn standard_normal(rng: &mut DeterministicRng) -> f64 {
+    let u1 = uniform01(rng).max(f64::MIN_POSITIVE);
+    let u2 = uniform01(rng);
+    (-2.0 * u1.ln()).sqrt() * (TWO_PI * u2).cos()
 }
 
 fn uniform01(rng: &mut DeterministicRng) -> f64 {
@@ -1674,6 +2355,14 @@ fn require_non_negative(field: &'static str, value: f64) -> Result<(), CommError
     }
 }
 
+fn require_non_empty_str(field: &'static str, value: &str) -> Result<(), CommError> {
+    if value.trim().is_empty() {
+        Err(CommError::Empty { field })
+    } else {
+        Ok(())
+    }
+}
+
 fn require_finite_vector(field: &'static str, value: Vector3<f64>) -> Result<(), CommError> {
     require_finite(field, value.x)?;
     require_finite(field, value.y)?;
@@ -1708,6 +2397,14 @@ fn wrap_pi(value: f64) -> f64 {
 
 fn wrap_2pi(value: f64) -> f64 {
     value.rem_euclid(TWO_PI)
+}
+
+fn quantize(value: f64, step: f64) -> f64 {
+    if step > 0.0 {
+        (value / step).round() * step
+    } else {
+        value
+    }
 }
 
 fn write_csv_field<W: Write>(writer: &mut W, value: &str) -> std::io::Result<()> {
@@ -1878,6 +2575,268 @@ mod tests {
         assert_eq!(digest, repeated);
         assert_eq!(digest.len(), 64);
         assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn plasma_blackout_model_uses_plasma_frequency_threshold_and_ramp() {
+        let target_plasma_frequency_hz = 2.0e9;
+        let density_m3 = (target_plasma_frequency_hz / PLASMA_FREQUENCY_COEFFICIENT_HZ_M32).powi(2);
+        assert_abs_diff_eq!(
+            plasma_frequency_hz(density_m3).unwrap(),
+            target_plasma_frequency_hz,
+            epsilon = 1.0e-6
+        );
+
+        let model = PlasmaBlackoutModel::new(1.0e8, 40.0).unwrap();
+        let at_threshold = model
+            .evaluate(PlasmaBlackoutInput {
+                frequency_hz: target_plasma_frequency_hz,
+                electron_number_density_m3: density_m3,
+            })
+            .unwrap();
+        assert!(at_threshold.blackout);
+        assert_abs_diff_eq!(at_threshold.attenuation_db, 40.0, epsilon = 0.0);
+
+        let in_ramp = model
+            .evaluate(PlasmaBlackoutInput {
+                frequency_hz: target_plasma_frequency_hz + 5.0e7,
+                electron_number_density_m3: density_m3,
+            })
+            .unwrap();
+        assert!(!in_ramp.blackout);
+        assert_abs_diff_eq!(in_ramp.attenuation_db, 20.0, epsilon = 1.0e-12);
+
+        let above_ramp = model
+            .evaluate(PlasmaBlackoutInput {
+                frequency_hz: target_plasma_frequency_hz + 2.0e8,
+                electron_number_density_m3: density_m3,
+            })
+            .unwrap();
+        assert!(!above_ramp.blackout);
+        assert_abs_diff_eq!(above_ramp.attenuation_db, 0.0, epsilon = 0.0);
+
+        assert!(matches!(
+            plasma_frequency_hz(-1.0),
+            Err(CommError::OutOfRange {
+                field: "plasma_blackout.electron_number_density_m3",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn tracking_instrument_model_applies_bias_latency_and_quantization() {
+        let model =
+            TrackingInstrumentModel::new(0.25, 2.4, -0.26, 0.01, -0.02, 1.0, 0.1, 0.001).unwrap();
+        let sample = VisibilitySample {
+            time_s: 10.0,
+            site_id: "site".to_owned(),
+            slant_range_m: 1000.3,
+            range_rate_m_s: 12.34,
+            elevation_rad: 0.52,
+            azimuth_rad: 1.2345,
+            mask_elevation_rad: 0.0,
+            visible: true,
+        };
+
+        let observable = model
+            .evaluate(TrackingObservableInput::from_visibility_sample(&sample))
+            .unwrap();
+
+        assert_eq!(observable.site_id, "site");
+        assert_eq!(observable.truth_time_s.to_bits(), 10.0_f64.to_bits());
+        assert_eq!(observable.measurement_time_s.to_bits(), 10.25_f64.to_bits());
+        assert_abs_diff_eq!(observable.range_m, 1003.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(observable.range_rate_m_s, 12.1, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(observable.azimuth_rad, 1.245, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(observable.elevation_rad, 0.5, epsilon = 1.0e-12);
+        assert_eq!(observable.range_noise_m.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(observable.range_rate_noise_m_s.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(observable.azimuth_noise_rad.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(observable.elevation_noise_rad.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            observable.range_gauss_markov_bias_m.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            observable.range_rate_gauss_markov_bias_m_s.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            observable.azimuth_gauss_markov_bias_rad.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            observable.elevation_gauss_markov_bias_rad.to_bits(),
+            0.0_f64.to_bits()
+        );
+
+        assert!(matches!(
+            TrackingInstrumentModel::new(0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0),
+            Err(CommError::OutOfRange {
+                field: "tracking.range_quantization_m",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn tracking_instrument_model_advances_deterministic_gauss_markov_bias() {
+        let model = TrackingInstrumentModel::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            .unwrap()
+            .with_gauss_markov_biases(2.0, 10.0, 0.2, 20.0, 0.001, 30.0, 0.002, 40.0)
+            .unwrap();
+        let site_stream_id = tracking_site_stream_id_from_id("ksc").unwrap();
+        let noise_context = TrackingNoiseContext {
+            scenario_seed: 42,
+            step: 9,
+            site_stream_id,
+        };
+        let update_context = TrackingGaussMarkovContext {
+            scenario_seed: 42,
+            step: 10,
+            site_stream_id,
+            dt_s: 1.0,
+        };
+        let sample = VisibilitySample {
+            time_s: 10.0,
+            site_id: "ksc".to_owned(),
+            slant_range_m: 1000.0,
+            range_rate_m_s: 12.0,
+            elevation_rad: 0.5,
+            azimuth_rad: 1.25,
+            mask_elevation_rad: 0.0,
+            visible: true,
+        };
+
+        let initial = model.sample_initial_gauss_markov_bias(noise_context);
+        let initial_again = model.sample_initial_gauss_markov_bias(noise_context);
+        let next = model
+            .advance_gauss_markov_bias(initial, update_context)
+            .expect("Gauss-Markov state advances");
+        let next_again = model
+            .advance_gauss_markov_bias(initial, update_context)
+            .expect("Gauss-Markov state repeats");
+        let observable = model
+            .evaluate_with_noise_and_bias(
+                TrackingObservableInput::from_visibility_sample(&sample),
+                noise_context,
+                next,
+            )
+            .expect("Gauss-Markov bias evaluates");
+
+        assert_eq!(initial, initial_again);
+        assert_eq!(next, next_again);
+        assert_ne!(initial.range_bias_m.to_bits(), 0.0_f64.to_bits());
+        assert_ne!(next.range_bias_m.to_bits(), initial.range_bias_m.to_bits());
+        assert_abs_diff_eq!(
+            observable.range_m,
+            1000.0 + next.range_bias_m,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            observable.range_rate_m_s,
+            12.0 + next.range_rate_bias_m_s,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(
+            observable.range_gauss_markov_bias_m.to_bits(),
+            next.range_bias_m.to_bits()
+        );
+
+        assert!(matches!(
+            model.advance_gauss_markov_bias(
+                initial,
+                TrackingGaussMarkovContext {
+                    dt_s: -1.0,
+                    ..update_context
+                },
+            ),
+            Err(CommError::OutOfRange {
+                field: "tracking.gauss_markov.dt_s",
+                ..
+            })
+        ));
+        assert!(matches!(
+            model.with_gauss_markov_biases(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            Err(CommError::OutOfRange {
+                field: "tracking.range_gauss_markov_tau_s",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn tracking_instrument_model_applies_deterministic_white_noise() {
+        let model = TrackingInstrumentModel::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            .unwrap()
+            .with_white_noise_stddevs(1.0, 0.01, 0.001, 0.002)
+            .unwrap();
+        let sample = VisibilitySample {
+            time_s: 10.0,
+            site_id: "ksc".to_owned(),
+            slant_range_m: 1000.0,
+            range_rate_m_s: 12.0,
+            elevation_rad: 0.5,
+            azimuth_rad: 1.25,
+            mask_elevation_rad: 0.0,
+            visible: true,
+        };
+        let context = TrackingNoiseContext {
+            scenario_seed: 42,
+            step: 9,
+            site_stream_id: tracking_site_stream_id_from_id("ksc").unwrap(),
+        };
+
+        let first = model
+            .evaluate_with_noise(
+                TrackingObservableInput::from_visibility_sample(&sample),
+                context,
+            )
+            .expect("tracking noise evaluates");
+        let second = model
+            .evaluate_with_noise(
+                TrackingObservableInput::from_visibility_sample(&sample),
+                context,
+            )
+            .expect("tracking noise repeats");
+        let changed_step = model
+            .evaluate_with_noise(
+                TrackingObservableInput::from_visibility_sample(&sample),
+                TrackingNoiseContext {
+                    step: 10,
+                    ..context
+                },
+            )
+            .expect("tracking noise changes by context");
+
+        assert_eq!(first, second);
+        assert_ne!(first.range_noise_m.to_bits(), 0.0_f64.to_bits());
+        assert_ne!(first.range_rate_noise_m_s.to_bits(), 0.0_f64.to_bits());
+        assert_ne!(first.azimuth_noise_rad.to_bits(), 0.0_f64.to_bits());
+        assert_ne!(first.elevation_noise_rad.to_bits(), 0.0_f64.to_bits());
+        assert_ne!(
+            first.range_noise_m.to_bits(),
+            changed_step.range_noise_m.to_bits()
+        );
+        assert_abs_diff_eq!(
+            first.range_m,
+            1000.0 + first.range_noise_m,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            first.range_rate_m_s,
+            12.0 + first.range_rate_noise_m_s,
+            epsilon = 1.0e-12
+        );
+
+        assert!(matches!(
+            model.with_white_noise_stddevs(-1.0, 0.0, 0.0, 0.0),
+            Err(CommError::OutOfRange {
+                field: "tracking.range_noise_stddev_m",
+                ..
+            })
+        ));
     }
 
     #[test]

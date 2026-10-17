@@ -1,0 +1,37 @@
+# Public-source digitized fixture for the WP-03.2 local-inclination panel
+# skin-friction correction. See data/aero/provenance.md.
+
+[case]
+dataset_id = "openbmp.aero.panel_hb2_forebody_skin_friction_figure12.v1"
+source_class = "public-domain-us-gov"
+validation_label = "research"
+source_id = "AEDC-TDR-64-137 / AD602769"
+figure_id = "Figure 12b"
+reference_diameter_m = 1.0
+body_length_over_diameter = 4.5
+station_segments = 160
+longitude_segments = 192
+gamma = 1.4
+dynamic_pressure_pa = 1000.0
+wall_to_edge_temperature_ratio = 1.0
+transition_reynolds = 5.0e5
+roughness_over_length = 0.0
+max_relative_error = 0.10
+
+[[case.samples]]
+mach = 6.06
+reynolds_diameter = 1.1e6
+expected_total_forebody_ca = 0.565
+digitized_note = "Approximate VKF Mach 6.06 point read from AEDC-TDR-64-137 Figure 12b; Reynolds number is based on centerbody diameter; plot-only source, no tabulated ordinate."
+
+[[case.samples]]
+mach = 7.10
+reynolds_diameter = 1.0e6
+expected_total_forebody_ca = 0.555
+digitized_note = "Approximate VKF Mach 7.07-7.20 point read from AEDC-TDR-64-137 Figure 12b; Reynolds number is based on centerbody diameter; plot-only source, no tabulated ordinate."
+
+[[case.samples]]
+mach = 8.07
+reynolds_diameter = 2.0e6
+expected_total_forebody_ca = 0.585
+digitized_note = "Approximate high-Re VKF Mach 8.07 point read from AEDC-TDR-64-137 Figure 12b; Reynolds number is based on centerbody diameter; plot-only source, no tabulated ordinate."

@@ -13,6 +13,7 @@ use std::path::Path;
 use openbmp_core::EngineId;
 use openbmp_runner::{EngineFault, RunOutcome, Session};
 use openbmp_scenario::Scenario;
+use openbmp_sim::StopReason;
 use openbmp_telemetry::TelemetryTable;
 
 const TVC_PROBE_PATH: &str = concat!(
@@ -29,6 +30,26 @@ const ORBIT_PATH: &str = concat!(
 fn load_tvc_probe() -> Scenario {
     let toml = std::fs::read_to_string(TVC_PROBE_PATH).expect("read scenario");
     let toml = toml.replace("stop_s  = 40.0", "stop_s  = 6.0");
+    let source_dir = Path::new(TVC_PROBE_PATH).parent().map(Path::to_path_buf);
+    Scenario::from_toml_str_with_source_dir(&toml, source_dir).expect("scenario parses")
+}
+
+fn load_tvc_probe_with_safe_request() -> Scenario {
+    let toml = std::fs::read_to_string(TVC_PROBE_PATH).expect("read scenario");
+    let toml = toml.replace("stop_s  = 40.0", "stop_s  = 3.0");
+    let toml = toml.replace(
+        "innovation_threshold   = 25.0",
+        "innovation_threshold   = 1.0e300",
+    );
+    let toml = format!(
+        r#"{toml}
+
+[[mission.events]]
+id = "safe_request"
+trigger = {{ kind = "at_time", time_s = 2.0 }}
+action = {{ kind = "request_safe_state", reason = "integration test safe request" }}
+"#
+    );
     let source_dir = Path::new(TVC_PROBE_PATH).parent().map(Path::to_path_buf);
     Scenario::from_toml_str_with_source_dir(&toml, source_dir).expect("scenario parses")
 }
@@ -149,6 +170,52 @@ fn engine_hard_off_is_terminal_effective_and_deterministic() {
         sha(&faulted_b.table),
         "the same stimulus timeline must reproduce byte-identically"
     );
+}
+
+#[test]
+fn mission_safe_request_shuts_down_rigid_body_tvc_cluster_and_stays_finite() {
+    let mut session =
+        Session::prepare(load_tvc_probe_with_safe_request()).expect("prepare session");
+
+    while session.time_s() < 1.95 {
+        session.step().expect("session step");
+    }
+    let burning_thrust_n: f64 = session
+        .engine_snapshots()
+        .values()
+        .map(|snapshot| snapshot.thrust_body.norm())
+        .sum();
+    assert!(
+        burning_thrust_n > 1.0e6,
+        "TVC probe should be under thrust before the SAFE request"
+    );
+
+    while session.time_s() < 2.5 {
+        session.step().expect("session step");
+    }
+    let safe_snapshots = session.engine_snapshots();
+    assert_eq!(safe_snapshots.len(), 9);
+    assert!(
+        safe_snapshots
+            .values()
+            .all(|snapshot| snapshot.lifecycle_state_index == 3),
+        "SAFE request should command every engine into Shutdown"
+    );
+    let safed_thrust_n: f64 = safe_snapshots
+        .values()
+        .map(|snapshot| snapshot.thrust_body.norm())
+        .sum();
+    assert_eq!(safed_thrust_n.to_bits(), 0.0_f64.to_bits());
+
+    let angular_rate_rad_s = session.state().angular_velocity.vector.norm();
+    assert!(
+        session.state().is_valid(1.0e-9, 1.0e-9) && angular_rate_rad_s < 1.0,
+        "SAFE rigid-body recovery should stay finite and bounded; omega={angular_rate_rad_s:.17e}"
+    );
+
+    let outcome = run_session_to_end(session);
+    assert!(matches!(outcome.stop_reason, StopReason::EndTime { .. }));
+    assert!((outcome.final_time_s - 3.0).abs() <= 1.0e-9);
 }
 
 #[test]

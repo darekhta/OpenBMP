@@ -8,19 +8,25 @@
 use std::collections::BTreeMap;
 
 use openbmp_core::{EngineId, StepIndex};
+use openbmp_fc::topics::PropellantSafingCommand;
 use openbmp_feedsystem::{
     FeedCommand, FeedLegPressures, FeedNetwork, MocLine, MocLineBoundary, MocLineConfig,
-    MocLineState, NormalizedPumpMap, PumpCavitationState, TankValveChamberConfig,
-    TankValveChamberNetwork, ThrottleMixtureController, ThrottleMixtureControllerConfig,
-    ThrottleMixtureControllerState, ThrottleMixtureMeasurement, ThrottleMixtureSetpoint,
-    TransientChamberConfig, TransientChamberState, TransientDualValveFeedNetwork,
-    TransientDualValveFeedNetworkConfig, TransientDualValveFeedNetworkState, Turbopump,
-    TurbopumpConfig, TurbopumpDesignPoint, TurbopumpOperatingPoint, ValveCommandPair,
-    ValveFeedLegConfig,
+    MocLineDownstreamBoundary, MocLineElementConfig, MocLineEndpointBoundaryConditions,
+    MocLineEndpointKind, MocLineGraphTopology, MocLineGraphTopologyConfig,
+    MocLineGraphTopologySnapshot, MocLineJunctionConfig, MocLineJunctionConnection, MocLineState,
+    MocLineTopology, MocLineTopologyConfig, MocLineTopologySnapshot, MocLineUpstreamBoundary,
+    NormalizedPumpMap, PumpCavitationState, TankValveChamberConfig, TankValveChamberNetwork,
+    ThrottleMixtureController, ThrottleMixtureControllerConfig, ThrottleMixtureControllerState,
+    ThrottleMixtureMeasurement, ThrottleMixtureSetpoint, TransientChamberConfig,
+    TransientChamberState, TransientDualValveFeedNetwork, TransientDualValveFeedNetworkConfig,
+    TransientDualValveFeedNetworkState, Turbopump, TurbopumpConfig, TurbopumpDesignPoint,
+    TurbopumpOperatingPoint, ValveCommandPair, ValveFeedLegConfig,
 };
 use openbmp_scenario::{
     PropulsionFeedNetworkConfig, PropulsionFeedNetworkControllerConfig,
-    PropulsionFeedNetworkLineConfig, PropulsionFeedNetworkTurbopumpConfig,
+    PropulsionFeedNetworkLineConfig, PropulsionFeedNetworkTurbopumpConfig, PropulsionLineConfig,
+    PropulsionLineDownstreamBoundaryConfig, PropulsionLineEndpointConfig,
+    PropulsionLineJunctionConfig, PropulsionLineUpstreamBoundaryConfig,
     PropulsionMixtureRatioRunawayRuleConfig, PropulsionThermochemConfig, ResolvedFile,
     ScenarioDocument,
 };
@@ -75,7 +81,9 @@ enum FeedNetworkEntry {
         pump_cavitation: FeedPumpCavitation,
         controller: Option<Box<FeedNetworkControllerRuntime>>,
         oxidizer_line: Option<Box<FeedLineRuntime>>,
+        oxidizer_line_reference: Option<FeedLineReferenceRuntime>,
         fuel_line: Option<Box<FeedLineRuntime>>,
+        fuel_line_reference: Option<FeedLineReferenceRuntime>,
     },
 }
 
@@ -216,6 +224,236 @@ impl FeedLineRuntime {
         }
         Ok(pressure_pa)
     }
+}
+
+#[derive(Debug)]
+struct FeedLineReferenceRuntime {
+    id: String,
+    baseline_downstream_pressure_pa: f64,
+}
+
+impl FeedLineReferenceRuntime {
+    fn new(config: &PropulsionLineConfig) -> Result<Self, RunnerError> {
+        let line_config = MocLineConfig {
+            length_m: config.length_m,
+            wave_speed_m_s: config.wave_speed_m_s,
+            density_kg_m3: config.density_kg_m3,
+            cross_section_area_m2: config.cross_section_area_m2,
+            segment_count: config.segment_count,
+        };
+        line_config.require_valid()?;
+        let baseline_downstream_pressure_pa =
+            line_config.pressure_from_head_pa(config.initial_head_m);
+        if !baseline_downstream_pressure_pa.is_finite() {
+            return Err(openbmp_feedsystem::FeedSystemError::NonFinite {
+                reason: "referenced MOC feed-line baseline pressure is non-finite",
+            }
+            .into());
+        }
+        Ok(Self {
+            id: config.id.clone(),
+            baseline_downstream_pressure_pa,
+        })
+    }
+
+    fn feed_pressure_pa(
+        &self,
+        base_pressure_pa: f64,
+        topology_snapshot: Option<&MocLineTopologySnapshot>,
+    ) -> Result<f64, RunnerError> {
+        let snapshot = topology_snapshot
+            .and_then(|topology_snapshot| topology_snapshot.line(&self.id))
+            .ok_or_else(|| RunnerError::UnsupportedScenario {
+                what: format!(
+                    "standalone MOC line `{}` was referenced before a topology snapshot existed",
+                    self.id
+                ),
+            })?;
+        let pressure_pa = base_pressure_pa + snapshot.downstream_pressure_pa
+            - self.baseline_downstream_pressure_pa;
+        if !pressure_pa.is_finite() {
+            return Err(openbmp_feedsystem::FeedSystemError::NonFinite {
+                reason: "referenced line-coupled feed pressure is non-finite",
+            }
+            .into());
+        }
+        if pressure_pa < 0.0 {
+            return Err(openbmp_feedsystem::FeedSystemError::InvalidParameter {
+                reason: "referenced line-coupled feed pressure became negative",
+            }
+            .into());
+        }
+        Ok(pressure_pa)
+    }
+}
+
+#[cfg(test)]
+fn build_standalone_line_topology(
+    configs: &[PropulsionLineConfig],
+    dt_s: f64,
+) -> Result<Option<StandaloneLineTopologyRuntime>, RunnerError> {
+    build_standalone_line_topology_with_junctions(configs, &[], dt_s)
+}
+
+fn build_standalone_line_topology_with_junctions(
+    configs: &[PropulsionLineConfig],
+    junctions: &[PropulsionLineJunctionConfig],
+    dt_s: f64,
+) -> Result<Option<StandaloneLineTopologyRuntime>, RunnerError> {
+    if configs.is_empty() {
+        return Ok(None);
+    }
+    let elements = configs
+        .iter()
+        .map(standalone_line_element)
+        .collect::<Result<Vec<_>, _>>()?;
+    let topology = if junctions.is_empty() {
+        StandaloneLineTopologyRuntime::Independent(MocLineTopology::new(MocLineTopologyConfig {
+            lines: elements,
+        })?)
+    } else {
+        StandaloneLineTopologyRuntime::Graph(MocLineGraphTopology::new(
+            MocLineGraphTopologyConfig {
+                lines: elements,
+                junctions: junctions
+                    .iter()
+                    .map(standalone_line_junction_config)
+                    .collect(),
+            },
+        )?)
+    };
+    let courant_dt_s = match &topology {
+        StandaloneLineTopologyRuntime::Independent(topology) => topology.courant_dt_s(),
+        StandaloneLineTopologyRuntime::Graph(topology) => topology.courant_dt_s(),
+    };
+    let tolerance = 1.0e-12_f64.max(courant_dt_s.abs() * 1.0e-9);
+    if (dt_s - courant_dt_s).abs() > tolerance {
+        return Err(openbmp_feedsystem::FeedSystemError::InvalidParameter {
+            reason: "standalone MOC line topology Courant time step must match scenario time.dt_s",
+        }
+        .into());
+    }
+    Ok(Some(topology))
+}
+
+fn standalone_line_junction_config(config: &PropulsionLineJunctionConfig) -> MocLineJunctionConfig {
+    MocLineJunctionConfig {
+        id: config.id.clone(),
+        connections: config
+            .connections
+            .iter()
+            .map(|connection| MocLineJunctionConnection {
+                line_id: connection.line_id.clone(),
+                endpoint: standalone_line_endpoint(connection.endpoint),
+            })
+            .collect(),
+    }
+}
+
+fn standalone_line_endpoint(config: PropulsionLineEndpointConfig) -> MocLineEndpointKind {
+    match config {
+        PropulsionLineEndpointConfig::Upstream => MocLineEndpointKind::Upstream,
+        PropulsionLineEndpointConfig::Downstream => MocLineEndpointKind::Downstream,
+    }
+}
+
+fn standalone_line_element(
+    config: &PropulsionLineConfig,
+) -> Result<MocLineElementConfig, RunnerError> {
+    MocLineElementConfig::uniform(
+        config.id.clone(),
+        MocLineConfig {
+            length_m: config.length_m,
+            wave_speed_m_s: config.wave_speed_m_s,
+            density_kg_m3: config.density_kg_m3,
+            cross_section_area_m2: config.cross_section_area_m2,
+            segment_count: config.segment_count,
+        },
+        config.initial_head_m,
+        config.initial_velocity_m_s,
+        MocLineEndpointBoundaryConditions {
+            upstream: standalone_upstream_boundary(&config.upstream),
+            downstream: standalone_downstream_boundary(&config.downstream),
+        },
+    )
+    .map_err(Into::into)
+}
+
+fn standalone_upstream_boundary(
+    config: &PropulsionLineUpstreamBoundaryConfig,
+) -> MocLineUpstreamBoundary {
+    match config {
+        PropulsionLineUpstreamBoundaryConfig::Head { head_m } => {
+            MocLineUpstreamBoundary::Head { head_m: *head_m }
+        }
+        PropulsionLineUpstreamBoundaryConfig::Velocity { velocity_m_s } => {
+            MocLineUpstreamBoundary::Velocity {
+                velocity_m_s: *velocity_m_s,
+            }
+        }
+        PropulsionLineUpstreamBoundaryConfig::GasSource {
+            datum_head_m,
+            gas_reference_volume_m3,
+            gas_precharge_pressure_pa,
+            delivered_liquid_volume_delta_m3,
+            polytropic_exponent,
+        } => MocLineUpstreamBoundary::GasSource {
+            datum_head_m: *datum_head_m,
+            gas_reference_volume_m3: *gas_reference_volume_m3,
+            gas_precharge_pressure_pa: *gas_precharge_pressure_pa,
+            delivered_liquid_volume_delta_m3: *delivered_liquid_volume_delta_m3,
+            polytropic_exponent: *polytropic_exponent,
+        },
+    }
+}
+
+fn standalone_downstream_boundary(
+    config: &PropulsionLineDownstreamBoundaryConfig,
+) -> MocLineDownstreamBoundary {
+    match config {
+        PropulsionLineDownstreamBoundaryConfig::Velocity { velocity_m_s } => {
+            MocLineDownstreamBoundary::Velocity {
+                velocity_m_s: *velocity_m_s,
+            }
+        }
+        PropulsionLineDownstreamBoundaryConfig::Head { head_m } => {
+            MocLineDownstreamBoundary::Head { head_m: *head_m }
+        }
+        PropulsionLineDownstreamBoundaryConfig::Accumulator {
+            reference_head_m,
+            stored_volume_delta_m3,
+            compliance_m3_per_m,
+        } => MocLineDownstreamBoundary::Accumulator {
+            reference_head_m: *reference_head_m,
+            stored_volume_delta_m3: *stored_volume_delta_m3,
+            compliance_m3_per_m: *compliance_m3_per_m,
+        },
+        PropulsionLineDownstreamBoundaryConfig::GasAccumulator {
+            datum_head_m,
+            gas_reference_volume_m3,
+            gas_precharge_pressure_pa,
+            stored_liquid_volume_delta_m3,
+            polytropic_exponent,
+        } => MocLineDownstreamBoundary::GasAccumulator {
+            datum_head_m: *datum_head_m,
+            gas_reference_volume_m3: *gas_reference_volume_m3,
+            gas_precharge_pressure_pa: *gas_precharge_pressure_pa,
+            stored_liquid_volume_delta_m3: *stored_liquid_volume_delta_m3,
+            polytropic_exponent: *polytropic_exponent,
+        },
+    }
+}
+
+fn feed_line_reference_runtime(
+    id: &str,
+    configs: &BTreeMap<&str, &PropulsionLineConfig>,
+) -> Result<FeedLineReferenceRuntime, RunnerError> {
+    let config = configs
+        .get(id)
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!("standalone MOC line `{id}` was referenced but not declared"),
+        })?;
+    FeedLineReferenceRuntime::new(config)
 }
 
 #[derive(Debug)]
@@ -382,7 +620,36 @@ impl FeedNetworkEntry {
         }
     }
 
-    fn feed_scale(&mut self, dt_s: f64, valve_bias: ValveCommandBias) -> Result<f64, RunnerError> {
+    fn apply_propellant_safing_command(&mut self) {
+        match self {
+            Self::TankValveChamber {
+                valve_open_fraction,
+                ..
+            } => {
+                *valve_open_fraction = 0.0;
+            }
+            Self::TransientDualValveChamber {
+                valve_commands,
+                controller,
+                ..
+            } => {
+                *valve_commands = ValveCommandPair {
+                    oxidizer_open_fraction: 0.0,
+                    fuel_open_fraction: 0.0,
+                };
+                if let Some(controller) = controller {
+                    controller.state = ThrottleMixtureControllerState::new(*valve_commands);
+                }
+            }
+        }
+    }
+
+    fn feed_scale(
+        &mut self,
+        dt_s: f64,
+        valve_bias: ValveCommandBias,
+        standalone_line_snapshot: Option<&MocLineTopologySnapshot>,
+    ) -> Result<f64, RunnerError> {
         match self {
             Self::TankValveChamber {
                 network,
@@ -404,7 +671,9 @@ impl FeedNetworkEntry {
                 valve_commands,
                 controller,
                 oxidizer_line,
+                oxidizer_line_reference,
                 fuel_line,
+                fuel_line_reference,
                 ..
             } => {
                 if let Some(controller) = controller {
@@ -417,11 +686,17 @@ impl FeedNetworkEntry {
                 }
                 let oxidizer_pressure_pa = if let Some(line) = oxidizer_line {
                     line.feed_pressure_pa(*base_oxidizer_pressure_pa)?
+                } else if let Some(line_reference) = oxidizer_line_reference {
+                    line_reference
+                        .feed_pressure_pa(*base_oxidizer_pressure_pa, standalone_line_snapshot)?
                 } else {
                     *base_oxidizer_pressure_pa
                 };
                 let fuel_pressure_pa = if let Some(line) = fuel_line {
                     line.feed_pressure_pa(*base_fuel_pressure_pa)?
+                } else if let Some(line_reference) = fuel_line_reference {
+                    line_reference
+                        .feed_pressure_pa(*base_fuel_pressure_pa, standalone_line_snapshot)?
                 } else {
                     *base_fuel_pressure_pa
                 };
@@ -444,11 +719,49 @@ impl FeedNetworkEntry {
     }
 }
 
+#[derive(Debug)]
+enum StandaloneLineTopologyRuntime {
+    Independent(MocLineTopology),
+    Graph(MocLineGraphTopology),
+}
+
+impl StandaloneLineTopologyRuntime {
+    fn line_ids(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        match self {
+            Self::Independent(topology) => Box::new(topology.line_ids()),
+            Self::Graph(topology) => Box::new(topology.line_ids()),
+        }
+    }
+
+    fn step(&mut self) -> Result<MocLineTopologySnapshot, RunnerError> {
+        match self {
+            Self::Independent(topology) => topology.step().map_err(Into::into),
+            Self::Graph(topology) => {
+                let snapshot = topology.step()?;
+                Ok(graph_snapshot_into_line_snapshot(snapshot))
+            }
+        }
+    }
+}
+
+fn graph_snapshot_into_line_snapshot(
+    snapshot: MocLineGraphTopologySnapshot,
+) -> MocLineTopologySnapshot {
+    MocLineTopologySnapshot {
+        lines: snapshot.lines,
+        dt_s: snapshot.dt_s,
+        validation: snapshot.validation,
+    }
+}
+
 /// Runner-side collection of opt-in feed-network overrides.
 #[derive(Debug, Default)]
 pub struct FeedNetworkRack {
     entries: Vec<FeedNetworkEntry>,
+    standalone_lines: Option<StandaloneLineTopologyRuntime>,
+    latest_standalone_line_snapshot: Option<MocLineTopologySnapshot>,
     mixture_ratio_runaway_faults: Vec<MixtureRatioRunawayFaultRuntime>,
+    propellant_safing_active: bool,
 }
 
 impl FeedNetworkRack {
@@ -465,11 +778,22 @@ impl FeedNetworkRack {
         let Some(propulsion) = &document.propulsion else {
             return Ok(Self::default());
         };
-        if propulsion.feed_networks.is_empty() {
+        if propulsion.feed_networks.is_empty()
+            && propulsion.lines.is_empty()
+            && propulsion.line_junctions.is_empty()
+        {
             return Ok(Self::default());
         }
-        let thermochem_constants =
-            load_thermochem_feed_constants(propulsion.thermochem.as_ref(), resolved_files)?;
+        let thermochem_constants = if propulsion.feed_networks.is_empty() {
+            None
+        } else {
+            load_thermochem_feed_constants(propulsion.thermochem.as_ref(), resolved_files)?
+        };
+        let standalone_line_configs: BTreeMap<&str, &PropulsionLineConfig> = propulsion
+            .lines
+            .iter()
+            .map(|config| (config.id.as_str(), config))
+            .collect();
         let mut entries = Vec::with_capacity(propulsion.feed_networks.len());
         for config in &propulsion.feed_networks {
             match config {
@@ -516,7 +840,9 @@ impl FeedNetworkRack {
                     oxidizer_pump,
                     fuel_pump,
                     oxidizer_line,
+                    oxidizer_line_id,
                     fuel_line,
+                    fuel_line_id,
                     chamber_volume_m3,
                     gas_temperature_k,
                     gas_constant_j_per_kg_k,
@@ -552,6 +878,14 @@ impl FeedNetworkRack {
                         .as_ref()
                         .map(|config| FeedLineRuntime::new(config, document.time.dt_s))
                         .map(|runtime| runtime.map(Box::new))
+                        .transpose()?;
+                    let oxidizer_line_reference = oxidizer_line_id
+                        .as_deref()
+                        .map(|id| feed_line_reference_runtime(id, &standalone_line_configs))
+                        .transpose()?;
+                    let fuel_line_reference = fuel_line_id
+                        .as_deref()
+                        .map(|id| feed_line_reference_runtime(id, &standalone_line_configs))
                         .transpose()?;
                     let network =
                         TransientDualValveFeedNetwork::new(TransientDualValveFeedNetworkConfig {
@@ -603,7 +937,9 @@ impl FeedNetworkRack {
                             .map(|runtime| runtime.map(Box::new))
                             .transpose()?,
                         oxidizer_line,
+                        oxidizer_line_reference,
                         fuel_line,
+                        fuel_line_reference,
                     });
                 }
             }
@@ -619,16 +955,24 @@ impl FeedNetworkRack {
                     .collect()
             })
             .unwrap_or_default();
+        let standalone_lines = build_standalone_line_topology_with_junctions(
+            &propulsion.lines,
+            &propulsion.line_junctions,
+            document.time.dt_s,
+        )?;
         Ok(Self {
             entries,
+            standalone_lines,
+            latest_standalone_line_snapshot: None,
             mixture_ratio_runaway_faults,
+            propellant_safing_active: false,
         })
     }
 
     /// `true` when no feed-network overrides were configured.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.standalone_lines.is_none()
     }
 
     /// Current pump-cavitation events exposed by configured feed networks.
@@ -639,6 +983,21 @@ impl FeedNetworkRack {
             entry.append_cavitation_events(&mut events);
         }
         events
+    }
+
+    /// Drive configured feed-network valves to their safed state.
+    pub fn apply_propellant_safing_command(&mut self, command: Option<PropellantSafingCommand>) {
+        let Some(command) = command else {
+            return;
+        };
+        if !command.safed || !(command.close_engine_valves || command.isolate_feeds) {
+            return;
+        }
+
+        self.propellant_safing_active = true;
+        for entry in &mut self.entries {
+            entry.apply_propellant_safing_command();
+        }
     }
 
     /// Override matching feed-pressure scales in the propellant-budget report.
@@ -657,16 +1016,29 @@ impl FeedNetworkRack {
         step: StepIndex,
     ) -> Result<(), RunnerError> {
         let faults = &mut self.mixture_ratio_runaway_faults;
+        if let Some(standalone_lines) = &mut self.standalone_lines {
+            self.latest_standalone_line_snapshot = Some(standalone_lines.step()?);
+        }
         for entry in &mut self.entries {
             let engine_id = entry.engine_id();
+            if self.propellant_safing_active {
+                report.shutdown_engines.insert(engine_id);
+                report.feed_pressure_scales.insert(engine_id, 0.0);
+                continue;
+            }
             if report.shutdown_engines.contains(&engine_id) {
                 report.feed_pressure_scales.insert(engine_id, 0.0);
                 continue;
             }
             let valve_bias = update_mixture_ratio_runaway_bias(faults, engine_id, step, dt_s);
-            report
-                .feed_pressure_scales
-                .insert(engine_id, entry.feed_scale(dt_s, valve_bias)?);
+            report.feed_pressure_scales.insert(
+                engine_id,
+                entry.feed_scale(
+                    dt_s,
+                    valve_bias,
+                    self.latest_standalone_line_snapshot.as_ref(),
+                )?,
+            );
         }
         Ok(())
     }
@@ -680,6 +1052,21 @@ impl FeedNetworkRack {
             .map(|(index, entry)| (entry.engine_id(), index))
             .collect()
     }
+
+    /// Standalone line ids in scenario declaration order.
+    #[must_use]
+    pub fn standalone_line_ids(&self) -> Vec<String> {
+        self.standalone_lines
+            .as_ref()
+            .map(|topology| topology.line_ids().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    /// Latest standalone line topology snapshot, if the rack has stepped it.
+    #[must_use]
+    pub fn latest_standalone_line_snapshot(&self) -> Option<&MocLineTopologySnapshot> {
+        self.latest_standalone_line_snapshot.as_ref()
+    }
 }
 
 #[cfg(test)]
@@ -687,7 +1074,8 @@ impl FeedNetworkRack {
 mod tests {
     use std::{collections::BTreeSet, path::PathBuf};
 
-    use openbmp_core::TankId;
+    use approx::assert_abs_diff_eq;
+    use openbmp_core::{SimTime, TankId};
 
     use super::*;
 
@@ -711,7 +1099,22 @@ mod tests {
                 reference_chamber_pressure_pa,
                 valve_open_fraction: 1.0,
             }],
+            standalone_lines: None,
+            latest_standalone_line_snapshot: None,
             mixture_ratio_runaway_faults: Vec::new(),
+            propellant_safing_active: false,
+        }
+    }
+
+    fn safing_command(safed: bool) -> PropellantSafingCommand {
+        PropellantSafingCommand {
+            time: SimTime::ZERO,
+            safed,
+            isolate_feeds: true,
+            close_engine_valves: true,
+            pressurization_enabled: false,
+            drain_enabled: false,
+            dump_enabled: true,
         }
     }
 
@@ -720,6 +1123,7 @@ mod tests {
         feed_pressure_scales.insert(engine_id(), scale);
         PropellantBudgetReport {
             tank_drain_rates_kg_per_s: BTreeMap::<TankId, f64>::new(),
+            pressurization_enabled: true,
             shutdown_engines: BTreeSet::new(),
             feed_pressure_scales,
             utilization: Vec::new(),
@@ -756,6 +1160,72 @@ mod tests {
             initial_velocity_m_s: 2.0,
             upstream_head_m: 100.0,
             downstream_velocity_m_s: 0.0,
+        }
+    }
+
+    fn standalone_line_config(id: &str) -> PropulsionLineConfig {
+        PropulsionLineConfig {
+            id: id.to_owned(),
+            length_m: 40.0,
+            wave_speed_m_s: 1_000.0,
+            density_kg_m3: 1_000.0,
+            cross_section_area_m2: 0.01,
+            segment_count: 4,
+            initial_head_m: 100.0,
+            initial_velocity_m_s: 2.0,
+            upstream: PropulsionLineUpstreamBoundaryConfig::Head { head_m: 100.0 },
+            downstream: PropulsionLineDownstreamBoundaryConfig::Velocity { velocity_m_s: 0.0 },
+        }
+    }
+
+    fn standalone_gas_accumulator_line_config(id: &str) -> PropulsionLineConfig {
+        let mut config = standalone_line_config(id);
+        config.downstream = PropulsionLineDownstreamBoundaryConfig::GasAccumulator {
+            datum_head_m: 0.0,
+            gas_reference_volume_m3: 0.02,
+            gas_precharge_pressure_pa: 1_000_000.0,
+            stored_liquid_volume_delta_m3: 0.0,
+            polytropic_exponent: 1.2,
+        };
+        config
+    }
+
+    fn standalone_gas_source_line_config(id: &str) -> PropulsionLineConfig {
+        let mut config = standalone_line_config(id);
+        config.upstream = PropulsionLineUpstreamBoundaryConfig::GasSource {
+            datum_head_m: 0.0,
+            gas_reference_volume_m3: 0.02,
+            gas_precharge_pressure_pa: 1_000_000.0,
+            delivered_liquid_volume_delta_m3: 0.0,
+            polytropic_exponent: 1.2,
+        };
+        config
+    }
+
+    fn standalone_graph_branch_line_config(id: &str) -> PropulsionLineConfig {
+        let mut config = standalone_line_config(id);
+        config.initial_velocity_m_s = 0.0;
+        config.downstream = PropulsionLineDownstreamBoundaryConfig::Velocity { velocity_m_s: 0.0 };
+        config
+    }
+
+    fn standalone_graph_junction_config(id: &str) -> PropulsionLineJunctionConfig {
+        PropulsionLineJunctionConfig {
+            id: id.to_owned(),
+            connections: vec![
+                openbmp_scenario::PropulsionLineJunctionConnectionConfig {
+                    line_id: "inlet".to_owned(),
+                    endpoint: PropulsionLineEndpointConfig::Downstream,
+                },
+                openbmp_scenario::PropulsionLineJunctionConnectionConfig {
+                    line_id: "branch-a".to_owned(),
+                    endpoint: PropulsionLineEndpointConfig::Upstream,
+                },
+                openbmp_scenario::PropulsionLineJunctionConnectionConfig {
+                    line_id: "branch-b".to_owned(),
+                    endpoint: PropulsionLineEndpointConfig::Upstream,
+                },
+            ],
         }
     }
 
@@ -840,6 +1310,31 @@ mod tests {
     }
 
     #[test]
+    fn feed_network_safing_closes_tank_valve_chamber() {
+        let mut rack = rack(4.0e6);
+        rack.apply_propellant_safing_command(Some(safing_command(true)));
+        let mut report = report(1.0);
+
+        rack.apply_to_report(&mut report, 0.1, StepIndex::ZERO)
+            .unwrap();
+
+        assert!(report.shutdown_engines.contains(&engine_id()));
+        assert_eq!(
+            report.feed_pressure_scales[&engine_id()].to_bits(),
+            0.0_f64.to_bits()
+        );
+        match &rack.entries[0] {
+            FeedNetworkEntry::TankValveChamber {
+                valve_open_fraction,
+                ..
+            } => assert_eq!(valve_open_fraction.to_bits(), 0.0_f64.to_bits()),
+            FeedNetworkEntry::TransientDualValveChamber { .. } => {
+                panic!("unexpected transient network")
+            }
+        }
+    }
+
+    #[test]
     fn transient_feed_network_advances_chamber_pressure_scale() {
         let mut rack = FeedNetworkRack {
             entries: vec![FeedNetworkEntry::TransientDualValveChamber {
@@ -881,9 +1376,14 @@ mod tests {
                 pump_cavitation: FeedPumpCavitation::default(),
                 controller: None,
                 oxidizer_line: None,
+                oxidizer_line_reference: None,
                 fuel_line: None,
+                fuel_line_reference: None,
             }],
+            standalone_lines: None,
+            latest_standalone_line_snapshot: None,
             mixture_ratio_runaway_faults: Vec::new(),
+            propellant_safing_active: false,
         };
         let mut report = report(1.0);
         rack.apply_to_report(&mut report, 0.01, StepIndex::ZERO)
@@ -956,9 +1456,14 @@ mod tests {
                         .unwrap(),
                 )),
                 oxidizer_line: None,
+                oxidizer_line_reference: None,
                 fuel_line: None,
+                fuel_line_reference: None,
             }],
+            standalone_lines: None,
+            latest_standalone_line_snapshot: None,
             mixture_ratio_runaway_faults: Vec::new(),
+            propellant_safing_active: false,
         };
         let mut report = report(1.0);
         rack.apply_to_report(&mut report, 0.1, StepIndex::ZERO)
@@ -1005,9 +1510,14 @@ mod tests {
                 },
                 controller: None,
                 oxidizer_line: None,
+                oxidizer_line_reference: None,
                 fuel_line: None,
+                fuel_line_reference: None,
             }],
+            standalone_lines: None,
+            latest_standalone_line_snapshot: None,
             mixture_ratio_runaway_faults: Vec::new(),
+            propellant_safing_active: false,
         };
 
         assert_eq!(
@@ -1038,14 +1548,19 @@ mod tests {
                 pump_cavitation: FeedPumpCavitation::default(),
                 controller: None,
                 oxidizer_line: None,
+                oxidizer_line_reference: None,
                 fuel_line: None,
+                fuel_line_reference: None,
             }],
+            standalone_lines: None,
+            latest_standalone_line_snapshot: None,
             mixture_ratio_runaway_faults: vec![MixtureRatioRunawayFaultRuntime {
                 engine_id: engine_id(),
                 start_step: 2,
                 oxidizer_open_fraction_rate_per_s: 0.4,
                 fuel_open_fraction_rate_per_s: -0.2,
             }],
+            propellant_safing_active: false,
         };
         let mut report = report(1.0);
 
@@ -1091,6 +1606,204 @@ mod tests {
     }
 
     #[test]
+    fn standalone_line_topology_runtime_steps_with_rack_tick() {
+        let standalone_lines =
+            build_standalone_line_topology(&[standalone_line_config("oxidizer-main")], 0.01)
+                .unwrap();
+        let mut rack = FeedNetworkRack {
+            entries: Vec::new(),
+            standalone_lines,
+            latest_standalone_line_snapshot: None,
+            mixture_ratio_runaway_faults: Vec::new(),
+            propellant_safing_active: false,
+        };
+
+        assert!(!rack.is_empty());
+        assert_eq!(rack.standalone_line_ids(), vec!["oxidizer-main"]);
+        rack.apply_to_report(&mut report(1.0), 0.01, StepIndex::ZERO)
+            .unwrap();
+
+        let snapshot = rack.latest_standalone_line_snapshot().unwrap();
+        let line_snapshot = snapshot.line("oxidizer-main").unwrap();
+        let expected_pressure_pa = 1_000.0 * 9.806_65 * 100.0 + 1_000.0 * 1_000.0 * 2.0;
+        assert!((line_snapshot.downstream_pressure_pa - expected_pressure_pa).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn standalone_line_topology_runtime_rejects_non_courant_dt() {
+        assert!(build_standalone_line_topology(&[standalone_line_config("line")], 0.02).is_err());
+    }
+
+    #[test]
+    fn standalone_line_topology_runtime_maps_gas_accumulator_boundary() {
+        let standalone_lines = build_standalone_line_topology(
+            &[standalone_gas_accumulator_line_config("gas-main")],
+            0.01,
+        )
+        .unwrap();
+        let mut rack = FeedNetworkRack {
+            entries: Vec::new(),
+            standalone_lines,
+            latest_standalone_line_snapshot: None,
+            mixture_ratio_runaway_faults: Vec::new(),
+            propellant_safing_active: false,
+        };
+
+        rack.apply_to_report(&mut report(1.0), 0.01, StepIndex::ZERO)
+            .unwrap();
+
+        let line_snapshot = rack
+            .latest_standalone_line_snapshot()
+            .and_then(|snapshot| snapshot.line("gas-main"))
+            .unwrap();
+        let precharge_head_m = 1_000_000.0 / (1_000.0 * 9.806_65);
+        assert!(line_snapshot.downstream_head_m > precharge_head_m);
+    }
+
+    #[test]
+    fn standalone_line_topology_runtime_maps_gas_source_boundary() {
+        let standalone_lines = build_standalone_line_topology(
+            &[standalone_gas_source_line_config("source-main")],
+            0.01,
+        )
+        .unwrap();
+        let mut rack = FeedNetworkRack {
+            entries: Vec::new(),
+            standalone_lines,
+            latest_standalone_line_snapshot: None,
+            mixture_ratio_runaway_faults: Vec::new(),
+            propellant_safing_active: false,
+        };
+
+        rack.apply_to_report(&mut report(1.0), 0.01, StepIndex::ZERO)
+            .unwrap();
+
+        let line_snapshot = rack
+            .latest_standalone_line_snapshot()
+            .and_then(|snapshot| snapshot.line("source-main"))
+            .unwrap();
+        let precharge_head_m = 1_000_000.0 / (1_000.0 * 9.806_65);
+        assert!(line_snapshot.state.head_m[0] < precharge_head_m);
+    }
+
+    #[test]
+    fn standalone_line_topology_runtime_maps_junction_graph() {
+        let standalone_lines = build_standalone_line_topology_with_junctions(
+            &[
+                standalone_line_config("inlet"),
+                standalone_graph_branch_line_config("branch-a"),
+                standalone_graph_branch_line_config("branch-b"),
+            ],
+            &[standalone_graph_junction_config("tee")],
+            0.01,
+        )
+        .unwrap();
+        let mut rack = FeedNetworkRack {
+            entries: Vec::new(),
+            standalone_lines,
+            latest_standalone_line_snapshot: None,
+            mixture_ratio_runaway_faults: Vec::new(),
+            propellant_safing_active: false,
+        };
+
+        rack.apply_to_report(&mut report(1.0), 0.01, StepIndex::ZERO)
+            .unwrap();
+
+        let snapshot = rack.latest_standalone_line_snapshot().unwrap();
+        let wave_over_gravity = 1_000.0 / 9.806_65;
+        let expected_head_m = 100.0 + (2.0 * wave_over_gravity) / 3.0;
+        assert_eq!(
+            rack.standalone_line_ids(),
+            vec!["inlet", "branch-a", "branch-b"]
+        );
+        assert_abs_diff_eq!(
+            snapshot.line("inlet").unwrap().downstream_head_m,
+            expected_head_m,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            snapshot.line("branch-a").unwrap().state.velocity_m_s[0],
+            2.0 / 3.0,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            snapshot.line("branch-b").unwrap().state.velocity_m_s[0],
+            2.0 / 3.0,
+            epsilon = 1.0e-12
+        );
+    }
+
+    #[test]
+    fn referenced_standalone_line_couples_transient_feed_pressure() {
+        let standalone_line = standalone_line_config("oxidizer-main");
+        let standalone_lines =
+            build_standalone_line_topology(std::slice::from_ref(&standalone_line), 0.01).unwrap();
+        let mut rack = FeedNetworkRack {
+            entries: vec![FeedNetworkEntry::TransientDualValveChamber {
+                engine_id: engine_id(),
+                network: Box::new(transient_network()),
+                state: TransientDualValveFeedNetworkState {
+                    chamber: TransientChamberState { pressure_pa: 0.0 },
+                },
+                base_oxidizer_pressure_pa: 4.0e6,
+                base_fuel_pressure_pa: 4.0e6,
+                reference_chamber_pressure_pa: 4.0e6,
+                valve_commands: ValveCommandPair {
+                    oxidizer_open_fraction: 1.0,
+                    fuel_open_fraction: 1.0,
+                },
+                pump_cavitation: FeedPumpCavitation::default(),
+                controller: None,
+                oxidizer_line: None,
+                oxidizer_line_reference: Some(
+                    FeedLineReferenceRuntime::new(&standalone_line).unwrap(),
+                ),
+                fuel_line: None,
+                fuel_line_reference: None,
+            }],
+            standalone_lines,
+            latest_standalone_line_snapshot: None,
+            mixture_ratio_runaway_faults: Vec::new(),
+            propellant_safing_active: false,
+        };
+        let mut base_entry = FeedNetworkEntry::TransientDualValveChamber {
+            engine_id: engine_id(),
+            network: Box::new(transient_network()),
+            state: TransientDualValveFeedNetworkState {
+                chamber: TransientChamberState { pressure_pa: 0.0 },
+            },
+            base_oxidizer_pressure_pa: 4.0e6,
+            base_fuel_pressure_pa: 4.0e6,
+            reference_chamber_pressure_pa: 4.0e6,
+            valve_commands: ValveCommandPair {
+                oxidizer_open_fraction: 1.0,
+                fuel_open_fraction: 1.0,
+            },
+            pump_cavitation: FeedPumpCavitation::default(),
+            controller: None,
+            oxidizer_line: None,
+            oxidizer_line_reference: None,
+            fuel_line: None,
+            fuel_line_reference: None,
+        };
+
+        let base_scale = base_entry
+            .feed_scale(0.01, ValveCommandBias::default(), None)
+            .unwrap();
+        let mut report = report(1.0);
+        rack.apply_to_report(&mut report, 0.01, StepIndex::ZERO)
+            .unwrap();
+        let referenced_scale = report.feed_pressure_scales[&engine_id()];
+
+        assert!(referenced_scale > base_scale);
+        assert!(
+            rack.latest_standalone_line_snapshot()
+                .and_then(|snapshot| snapshot.line("oxidizer-main"))
+                .is_some()
+        );
+    }
+
+    #[test]
     fn moc_line_coupled_transient_network_builds_pressure_faster() {
         let mut base_entry = FeedNetworkEntry::TransientDualValveChamber {
             engine_id: engine_id(),
@@ -1108,7 +1821,9 @@ mod tests {
             pump_cavitation: FeedPumpCavitation::default(),
             controller: None,
             oxidizer_line: None,
+            oxidizer_line_reference: None,
             fuel_line: None,
+            fuel_line_reference: None,
         };
         let mut line_entry = FeedNetworkEntry::TransientDualValveChamber {
             engine_id: engine_id(),
@@ -1128,14 +1843,16 @@ mod tests {
             oxidizer_line: Some(Box::new(
                 FeedLineRuntime::new(&line_config(), 0.01).unwrap(),
             )),
+            oxidizer_line_reference: None,
             fuel_line: None,
+            fuel_line_reference: None,
         };
 
         let base_scale = base_entry
-            .feed_scale(0.01, ValveCommandBias::default())
+            .feed_scale(0.01, ValveCommandBias::default(), None)
             .unwrap();
         let line_scale = line_entry
-            .feed_scale(0.01, ValveCommandBias::default())
+            .feed_scale(0.01, ValveCommandBias::default(), None)
             .unwrap();
 
         assert!(line_scale > base_scale);

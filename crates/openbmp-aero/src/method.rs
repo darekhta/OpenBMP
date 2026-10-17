@@ -7,11 +7,16 @@
 //! [`crate::AeroDeck`] and produces body-frame force and moment from
 //! `(mach, alpha_deg, beta_deg, dynamic_pressure_pa)`.
 //!
-//! # Body-frame mapping (Schema-1 reduced)
+//! # Body-frame mapping
 //!
-//! The deck's `(CN, CD, CM)` are the axisymmetric **reduced**
-//! coefficients. The body-frame force / moment composition is the
-//! small-angle / axisymmetric mapping documented in
+//! If a deck carries explicit body-axis six-coefficient tables,
+//! `(CX, CY, CZ, Cl, Cm, Cn)` are composed directly as
+//! `F_body = q · S · (CX, CY, CZ)` and
+//! `M_body = q · S · L · (Cl, Cm, Cn)`.
+//!
+//! Otherwise the deck's `(CN, CD, CM)` are interpreted as axisymmetric
+//! **reduced** coefficients. The body-frame force / moment composition
+//! is the small-angle / axisymmetric mapping documented in
 //! `docs/software-architecture.md#deck-format-in-house-toml`:
 //!
 //! * `CD` opposes the relative wind. In body frame this is
@@ -21,9 +26,7 @@
 //!   longitudinal plane. In body frame this is taken as
 //!   `F_body_z = -CN · q · S` — i.e., the deck designer encodes any
 //!   side-force from non-zero `β` into the deck's CN axis values
-//!   rather than splitting out a separate y-channel. A full
-//!   six-coefficient deck with explicit side force / yaw moment is
-//!   a possible schema extension.
+//!   rather than splitting out a separate y-channel.
 //! * `CM` is the pitching-moment coefficient about body-`ŷ`,
 //!   non-dimensionalised by reference length: `M_body_y = CM · q · S · L`.
 //! * Roll moment is identically zero by axisymmetry. Yaw moment is
@@ -31,7 +34,10 @@
 //!
 //! `q = dynamic_pressure_pa = 0.5 · ρ · V_∞²` is supplied by the
 //! caller from the env / state slice. `S = reference_area_m2` and
-//! `L = reference_length_m` are deck-side reference quantities.
+//! `L = reference_length_m` are deck-side reference quantities. If a
+//! deck carries dynamic derivative tables, `DeckLookup` also adds
+//! `q·S·L·D·(p̂, q̂, r̂)`, where `D` maps body-rate inputs into
+//! `(Cl, Cm, Cn)` and `(p̂, q̂, r̂) = (p, q, r)·L/(2V)`.
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, collections::BTreeMap};
@@ -40,7 +46,9 @@ use std::collections::BTreeMap;
 
 use nalgebra::Vector3;
 
-use crate::deck::{AeroCoefficients, AeroDeck};
+#[cfg(test)]
+use crate::deck::AeroDynamicDerivativeTableSet;
+use crate::deck::{AeroCoefficients, AeroDeck, AeroSixCoefficients};
 use crate::error::AeroError;
 
 // ---------------------------------------------------------------------
@@ -63,6 +71,11 @@ pub struct AeroContext {
     pub beta_deg: f64,
     /// Dynamic pressure `q = 0.5 · ρ · V_∞²` (Pa).
     pub dynamic_pressure_pa: f64,
+    /// Freestream speed magnitude `V_∞` (m/s).
+    pub airspeed_m_s: f64,
+    /// Body-frame angular rates `(p, q, r)` (rad/s) used by optional
+    /// dynamic derivative tables.
+    pub body_angular_rates_rad_s: Vector3<f64>,
     /// Knudsen number based on the method's reference length.
     pub knudsen: f64,
     /// Reynolds number based on the method's reference length.
@@ -114,9 +127,9 @@ impl<T: AeroMethod + ?Sized> AeroMethod for Box<T> {
 
 /// Aerodynamics method backed by a tabulated [`AeroDeck`].
 ///
-/// Composes the deck's reduced `(CN, CD, CM)` into body-frame
-/// `(force, moment)` via the Schema-1 mapping documented at the top
-/// of this module.
+/// Composes explicit six-coefficient decks directly, or reduced
+/// `(CN, CD, CM)` decks via the Schema-1 mapping documented at the top of this
+/// module.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeckLookup {
     deck: AeroDeck,
@@ -154,9 +167,23 @@ impl AeroMethod for DeckLookup {
         // through a higher-level adapter; this method-level
         // entry point keeps a Schema-1-only signature for now.
         let deflections = BTreeMap::<&str, f64>::new();
-        let AeroCoefficients { cn, cd, cm } =
-            self.deck
-                .lookup(ctx.mach, ctx.alpha_deg, ctx.beta_deg, &deflections)?;
+        let six = self
+            .deck
+            .lookup_six(ctx.mach, ctx.alpha_deg, ctx.beta_deg, &deflections)?;
+        let dynamic_derivatives = self.deck.lookup_dynamic_derivatives(
+            ctx.mach,
+            ctx.alpha_deg,
+            ctx.beta_deg,
+            &deflections,
+        )?;
+        let reduced = if six.is_none() {
+            Some(
+                self.deck
+                    .lookup(ctx.mach, ctx.alpha_deg, ctx.beta_deg, &deflections)?,
+            )
+        } else {
+            None
+        };
 
         let q_s = ctx.dynamic_pressure_pa * self.deck.reference_area_m2();
         if !q_s.is_finite() {
@@ -171,13 +198,74 @@ impl AeroMethod for DeckLookup {
             });
         }
 
-        // Schema-1 reduced mapping (small-angle / axisymmetric):
-        //   F_body = q·S · (-CD, 0, -CN)
-        //   M_body = q·S·L · (0, CM, 0)
-        // Locked operand order: deck-side coefficient × q × S
-        // (and × L for the moment).
-        let force_n_body = Vector3::new(-cd * q_s, 0.0, -cn * q_s);
-        let moment_n_m_body = Vector3::new(0.0, cm * q_s_l, 0.0);
+        let (force_n_body, mut moment_n_m_body) = if let Some(AeroSixCoefficients {
+            cx,
+            cy,
+            cz,
+            cl,
+            cm,
+            cn,
+        }) = six
+        {
+            // Explicit body-axis six-coefficient mapping:
+            //   F_body = q·S · (CX, CY, CZ)
+            //   M_body = q·S·L · (Cl, Cm, Cn)
+            (
+                Vector3::new(cx * q_s, cy * q_s, cz * q_s),
+                Vector3::new(cl * q_s_l, cm * q_s_l, cn * q_s_l),
+            )
+        } else {
+            let Some(AeroCoefficients { cn, cd, cm }) = reduced else {
+                return Err(AeroError::MalformedDeck {
+                    reason: "deck lookup did not return reduced or six coefficients",
+                });
+            };
+            // Schema-1 reduced mapping (small-angle / axisymmetric):
+            //   F_body = q·S · (-CD, 0, -CN)
+            //   M_body = q·S·L · (0, CM, 0)
+            // Locked operand order: deck-side coefficient × q × S
+            // (and × L for the moment).
+            (
+                Vector3::new(-cd * q_s, 0.0, -cn * q_s),
+                Vector3::new(0.0, cm * q_s_l, 0.0),
+            )
+        };
+        if let Some(derivatives) = dynamic_derivatives
+            && ctx.dynamic_pressure_pa > 0.0
+        {
+            if !(ctx.body_angular_rates_rad_s.x.is_finite()
+                && ctx.body_angular_rates_rad_s.y.is_finite()
+                && ctx.body_angular_rates_rad_s.z.is_finite())
+            {
+                return Err(AeroError::NonFinite {
+                    reason: "body angular rates are NaN or infinite",
+                });
+            }
+            let rates_norm_sq = ctx.body_angular_rates_rad_s.norm_squared();
+            if rates_norm_sq > 0.0 {
+                if !ctx.airspeed_m_s.is_finite() || ctx.airspeed_m_s <= 0.0 {
+                    return Err(AeroError::InvalidParameter {
+                        reason: "airspeed must be positive when dynamic derivatives are active",
+                    });
+                }
+                let rate_scale = self.deck.reference_length_m() / (2.0 * ctx.airspeed_m_s);
+                let p_hat = ctx.body_angular_rates_rad_s.x * rate_scale;
+                let q_hat = ctx.body_angular_rates_rad_s.y * rate_scale;
+                let r_hat = ctx.body_angular_rates_rad_s.z * rate_scale;
+                moment_n_m_body += q_s_l
+                    * Vector3::new(
+                        derivatives.cl_p * p_hat
+                            + derivatives.cl_q * q_hat
+                            + derivatives.cl_r * r_hat,
+                        derivatives.cm_p * p_hat
+                            + derivatives.cm_q * q_hat
+                            + derivatives.cm_r * r_hat,
+                        derivatives.cn_p * p_hat
+                            + derivatives.cn_q * q_hat
+                            + derivatives.cn_r * r_hat,
+                    );
+            }
+        }
         if !(force_n_body.x.is_finite()
             && force_n_body.y.is_finite()
             && force_n_body.z.is_finite()
@@ -223,6 +311,55 @@ mod tests {
         AeroDeck::new(mach, alpha, beta, cn, cd, cm, 0.196, 0.5).unwrap()
     }
 
+    fn six_fixture_deck() -> AeroDeck {
+        AeroDeck::new(
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![99.0],
+            vec![99.0],
+            vec![99.0],
+            0.196,
+            0.5,
+        )
+        .unwrap()
+        .with_six_coefficient_tables(
+            vec![0.10],
+            vec![-0.20],
+            vec![0.30],
+            vec![-0.010],
+            vec![0.020],
+            vec![-0.030],
+        )
+        .unwrap()
+    }
+
+    fn dynamic_derivative_fixture_deck() -> AeroDeck {
+        AeroDeck::new(
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![0.02],
+            2.0,
+            4.0,
+        )
+        .unwrap()
+        .with_dynamic_derivative_table_set(AeroDynamicDerivativeTableSet {
+            cl_p: vec![-7.0],
+            cl_q: vec![-0.5],
+            cl_r: vec![-0.25],
+            cm_p: vec![-0.1],
+            cm_q: vec![-3.0],
+            cm_r: vec![-0.2],
+            cn_p: vec![-0.3],
+            cn_q: vec![-0.4],
+            cn_r: vec![-5.0],
+        })
+        .unwrap()
+    }
+
     #[test]
     fn zero_dynamic_pressure_yields_zero_force_and_moment() {
         let method = DeckLookup::new(fixture_deck());
@@ -232,6 +369,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: 0.0,
+                airspeed_m_s: 0.0,
+                body_angular_rates_rad_s: Vector3::zeros(),
                 knudsen: 0.0,
                 reynolds_length: 0.0,
             })
@@ -257,6 +396,8 @@ mod tests {
                 alpha_deg: 1.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: q_pa,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: Vector3::zeros(),
                 knudsen: 0.0,
                 reynolds_length: 0.0,
             })
@@ -267,6 +408,69 @@ mod tests {
         assert_abs_diff_eq!(result.moment_n_m_body.x, 0.0);
         assert_abs_diff_eq!(result.moment_n_m_body.y, 0.0 * q_pa * area * length);
         assert_abs_diff_eq!(result.moment_n_m_body.z, 0.0);
+    }
+
+    #[test]
+    fn six_coefficient_deck_lookup_maps_body_axes_directly() {
+        let deck = six_fixture_deck();
+        let area = deck.reference_area_m2();
+        let length = deck.reference_length_m();
+        let method = DeckLookup::new(deck);
+        let q_pa = 1000.0;
+
+        let result = method
+            .aero_force_moment_body(&AeroContext {
+                mach: 0.0,
+                alpha_deg: 0.0,
+                beta_deg: 0.0,
+                dynamic_pressure_pa: q_pa,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: Vector3::zeros(),
+                knudsen: 0.0,
+                reynolds_length: 0.0,
+            })
+            .unwrap();
+
+        assert_abs_diff_eq!(result.force_n_body.x, 0.10 * q_pa * area, epsilon = 1e-12);
+        assert_abs_diff_eq!(result.force_n_body.y, -0.20 * q_pa * area, epsilon = 1e-12);
+        assert_abs_diff_eq!(result.force_n_body.z, 0.30 * q_pa * area, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            result.moment_n_m_body.x,
+            -0.010 * q_pa * area * length,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            result.moment_n_m_body.y,
+            0.020 * q_pa * area * length,
+            epsilon = 1e-12
+        );
+        assert_abs_diff_eq!(
+            result.moment_n_m_body.z,
+            -0.030 * q_pa * area * length,
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn deck_lookup_applies_dynamic_derivative_rate_moments() {
+        let method = DeckLookup::new(dynamic_derivative_fixture_deck());
+        let result = method
+            .aero_force_moment_body(&AeroContext {
+                mach: 0.0,
+                alpha_deg: 0.0,
+                beta_deg: 0.0,
+                dynamic_pressure_pa: 10.0,
+                airspeed_m_s: 20.0,
+                body_angular_rates_rad_s: Vector3::new(2.0, 3.0, 4.0),
+                knudsen: 0.0,
+                reynolds_length: 0.0,
+            })
+            .unwrap();
+
+        assert_eq!(result.force_n_body, Vector3::zeros());
+        assert_abs_diff_eq!(result.moment_n_m_body.x, -132.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(result.moment_n_m_body.y, -78.4, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(result.moment_n_m_body.z, -174.4, epsilon = 1.0e-12);
     }
 
     #[test]
@@ -283,6 +487,8 @@ mod tests {
                 alpha_deg: -1.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: q_pa,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: Vector3::zeros(),
                 knudsen: 0.0,
                 reynolds_length: 0.0,
             })
@@ -293,6 +499,8 @@ mod tests {
                 alpha_deg: 1.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: q_pa,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: Vector3::zeros(),
                 knudsen: 0.0,
                 reynolds_length: 0.0,
             })
@@ -313,6 +521,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: 1000.0,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: Vector3::zeros(),
                 knudsen: 0.0,
                 reynolds_length: 0.0,
             })
@@ -329,6 +539,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: f64::NAN,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: Vector3::zeros(),
                 knudsen: 0.0,
                 reynolds_length: 0.0,
             })
@@ -345,6 +557,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: -1.0,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: Vector3::zeros(),
                 knudsen: 0.0,
                 reynolds_length: 0.0,
             })
@@ -372,6 +586,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: f64::MAX,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: Vector3::zeros(),
                 knudsen: 0.0,
                 reynolds_length: 0.0,
             })
@@ -399,6 +615,8 @@ mod tests {
                 alpha_deg: 0.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: f64::MAX,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: Vector3::zeros(),
                 knudsen: 0.0,
                 reynolds_length: 0.0,
             })
@@ -414,6 +632,8 @@ mod tests {
             alpha_deg: 0.5,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1234.5,
+            airspeed_m_s: 100.0,
+            body_angular_rates_rad_s: Vector3::zeros(),
             knudsen: 0.0,
             reynolds_length: 0.0,
         };

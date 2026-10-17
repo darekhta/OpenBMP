@@ -39,10 +39,10 @@ sha256:           N/A — locally generated; integrity guarded by
 the [`RecoveryModel`] family. The state machine is
 `Stowed → Drogue → Main`, advanced one transition per
 `EventAction::DeployRecovery` firing. Drag follows the closed-form
-`F_drag = -½ ρ |v|² C_D A · v̂` per Knacke 1992 Chapter 5; the
-  academic formulation ignores wind-relative velocity
-(matches the [`DeckDragForceAdapter`] convention) and applies drag
-at the body CG (no moment contribution).
+`F_drag = -½ ρ |v_air|² C_D A · v̂_air` per Knacke 1992 Chapter 5, where
+`v_air` is the runner's shared air-relative velocity sample
+`v_vehicle - v_atmosphere - v_wind`. The force is applied at the body CG
+with no moment contribution.
 
 The drogue and main canopy parameters are textbook ranges for
 solid-fabric round canopies (Knacke 1992 Table 5-1); they are not
@@ -59,9 +59,10 @@ matching the academic two-stage descent profile in Knacke Chapter 9.
 
 ### Known limitations
 
-- **Wind-relative drag.** Recovery drag opposes ECI
-  velocity (matches [`DeckDragForceAdapter`]), not air-relative
-  velocity, so wind effects on parachute drag are not modelled.
+- **Wind-relative drift.** Recovery drag uses air-relative velocity, but this
+  canonical scenario declares `wind = "none"` and therefore remains a
+  no-drift regression. Declared-wind splash-point dispersion is covered by
+  synthetic runner tests, not by this fixture.
 - **Instantaneous deploy.** The recovery model performs a closed-form
   drag-area swap on the firing event with no canopy inflation
   transient (no inflation distance, no opening shock).

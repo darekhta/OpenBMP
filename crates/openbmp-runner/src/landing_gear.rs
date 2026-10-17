@@ -5,26 +5,39 @@
 //! telemetry channels.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 use openbmp_contact::{
-    ContactEnergyAudit, ContactGeometry, ContactPair, HalfSpace, RegularizedCoulombFriction,
-    RestDetector, RestDetectorConfig, RestDetectorState, RestStatus,
+    BacklashGap, ContactEnergyAudit, ContactGeometry, ContactPair, HalfSpace, LatchState,
+    LatchWindow, MonotoneLatch, RegularizedCoulombFriction, RestDetector, RestDetectorConfig,
+    RestDetectorState, RestStatus, ScalarMechanismElement, ScalarStop, evaluate_scalar_mechanism,
+    scalar_mechanism_latch_count,
 };
 use openbmp_core::{BodyId, ChannelId, ModelId, SimTime, ValidationStatus};
 use openbmp_scenario::{
-    ContactGeometryConfig, LandingGearConfig, LandingGearLegConfig, ScenarioDocument,
+    ContactGeometryConfig, ContactMechanismConfig, ContactMechanismKindConfig, LandingGearConfig,
+    LandingGearLegConfig, ScenarioDocument,
 };
 use openbmp_sim::{ForceContext, ForceModel, ModelEvalError, MomentContext, MomentModel};
 use openbmp_state::RigidBodyState;
 use openbmp_telemetry::{ChannelMetadata, TelemetryChannel, TelemetryRow};
-use openbmp_vehicle::{CrushCore, LandingGearLeg, OleoStage};
+use openbmp_vehicle::{
+    CrushCore, LandingGearLeg, LandingGearPrismaticDof, LandingGearPrismaticState, OleoStage,
+};
 
 use crate::RunnerError;
 
 const REST_SPEED_TOLERANCE_M_S: f64 = 1.5e-2;
 const REST_HOLD_SAMPLES: u32 = 8;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LandingGearOwnerAlias {
+    pub(crate) root: BodyId,
+    pub(crate) rot_root_from_body: Matrix3<f64>,
+    pub(crate) translation_root_from_body_m: Vector3<f64>,
+}
 
 /// Runner-owned, cloneable landing-gear runtime.
 #[derive(Clone)]
@@ -42,21 +55,38 @@ impl std::fmt::Debug for LandingGearRuntime {
 }
 
 impl LandingGearRuntime {
-    /// Build from a scenario document. Returns `None` when landing gear is not
-    /// declared.
-    pub(crate) fn maybe_build(document: &ScenarioDocument) -> Result<Option<Self>, RunnerError> {
+    /// Build from a scenario document while rewriting aliased leg owners and
+    /// body-frame geometry into the routed owner frame.
+    pub(crate) fn maybe_build_with_owner_aliases(
+        document: &ScenarioDocument,
+        owner_aliases: &BTreeMap<BodyId, LandingGearOwnerAlias>,
+    ) -> Result<Option<Self>, RunnerError> {
         document
             .vehicle
             .landing_gear
             .as_ref()
-            .map(Self::build)
+            .map(|config| {
+                Self::build_with_owner_aliases(config, document.contact.as_ref(), owner_aliases)
+            })
             .transpose()
     }
 
-    fn build(config: &LandingGearConfig) -> Result<Self, RunnerError> {
+    #[cfg(test)]
+    fn build(
+        config: &LandingGearConfig,
+        contact: Option<&openbmp_scenario::ContactConfig>,
+    ) -> Result<Self, RunnerError> {
+        Self::build_with_owner_aliases(config, contact, &BTreeMap::new())
+    }
+
+    fn build_with_owner_aliases(
+        config: &LandingGearConfig,
+        contact: Option<&openbmp_scenario::ContactConfig>,
+        owner_aliases: &BTreeMap<BodyId, LandingGearOwnerAlias>,
+    ) -> Result<Self, RunnerError> {
         let mut legs = Vec::with_capacity(config.legs.len());
         for leg in &config.legs {
-            legs.push(RuntimeLeg::from_config(leg)?);
+            legs.push(RuntimeLeg::from_config(leg, contact, owner_aliases)?);
         }
         let ground_half_space = HalfSpace::new([0.0, 0.0, 1.0], config.ground_altitude_m)
             .map_err(landing_gear_contact_error)?;
@@ -169,12 +199,19 @@ struct RuntimeLeg {
     id: String,
     owner: BodyId,
     leg: LandingGearLeg,
+    prismatic_dof: Option<LandingGearPrismaticDof>,
+    prismatic_mechanism: Option<LandingGearPrismaticMechanism>,
+    prismatic_mechanism_latch_states: Vec<LatchState>,
     pad_pair: ContactPair,
     crush: Option<CrushCore>,
 }
 
 impl RuntimeLeg {
-    fn from_config(config: &LandingGearLegConfig) -> Result<Self, RunnerError> {
+    fn from_config(
+        config: &LandingGearLegConfig,
+        contact: Option<&openbmp_scenario::ContactConfig>,
+        owner_aliases: &BTreeMap<BodyId, LandingGearOwnerAlias>,
+    ) -> Result<Self, RunnerError> {
         let footpad = match config.footpad {
             ContactGeometryConfig::Point => ContactGeometry::Point,
             ContactGeometryConfig::Sphere => {
@@ -228,9 +265,21 @@ impl RuntimeLeg {
                     config.id
                 ),
             })?;
+        let declared_owner = body_id_from_scenario_text(&config.mounted_to);
+        let alias = owner_aliases.get(&declared_owner);
+        let owner = alias.map_or(declared_owner, |alias| alias.root);
+        let attach_body_m = array_to_vec(config.attach_body_m);
+        let strut_axis_body = array_to_vec(config.strut_axis_body);
+        let (attach_body_m, strut_axis_body) =
+            alias.map_or((attach_body_m, strut_axis_body), |alias| {
+                (
+                    alias.translation_root_from_body_m + alias.rot_root_from_body * attach_body_m,
+                    alias.rot_root_from_body * strut_axis_body,
+                )
+            });
         let leg = LandingGearLeg::new(
-            config.attach_body_m,
-            config.strut_axis_body,
+            vec_to_array(attach_body_m),
+            vec_to_array(strut_axis_body),
             config.free_length_m,
             oleo,
             crush,
@@ -239,10 +288,41 @@ impl RuntimeLeg {
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("invalid vehicle.landing_gear leg `{}`: {err}", config.id),
         })?;
+        let prismatic_dof = config
+            .prismatic_dof
+            .as_ref()
+            .map(|prismatic| {
+                LandingGearPrismaticDof::from_leg(
+                    leg,
+                    prismatic.stroke_max_m,
+                    prismatic.initial_stroke_m,
+                    prismatic.initial_compression_rate_m_s,
+                )
+            })
+            .transpose()
+            .map_err(|err| RunnerError::UnsupportedScenario {
+                what: format!(
+                    "invalid vehicle.landing_gear leg `{}` prismatic_dof: {err}",
+                    config.id
+                ),
+            })?;
+        let prismatic_mechanism = landing_gear_prismatic_mechanism_from_config(config, contact)?;
+        let prismatic_mechanism_latch_states =
+            prismatic_mechanism
+                .as_ref()
+                .map_or_else(Vec::new, |mechanism| {
+                    vec![
+                        LatchState::disengaged();
+                        scalar_mechanism_latch_count(&mechanism.elements)
+                    ]
+                });
         Ok(Self {
             id: config.id.clone(),
-            owner: body_id_from_scenario_text(&config.mounted_to),
+            owner,
             leg,
+            prismatic_dof,
+            prismatic_mechanism,
+            prismatic_mechanism_latch_states,
             pad_pair,
             crush,
         })
@@ -284,12 +364,16 @@ impl RuntimeLeg {
         let compression_rate_m_s = kinematics.penetration_rate_m_s().max(0.0);
 
         if raw_stroke_m <= 0.0 {
+            let prismatic_state = self.prismatic_state(0.0, 0.0)?;
+            let prismatic_mechanism = self.prismatic_mechanism_sample(prismatic_state, mutate)?;
             return Ok(InternalLegSample::zero_with_gap_and_contact_point(
                 self.id.clone(),
                 gap_m,
                 foot_body,
                 kinematics.normal_velocity_m_s,
                 kinematics.tangential_speed_m_s(),
+                prismatic_state,
+                prismatic_mechanism,
             ));
         }
 
@@ -302,6 +386,8 @@ impl RuntimeLeg {
             raw_stroke_m
         };
 
+        let prismatic_state = self.prismatic_state(stroke_m, compression_rate_m_s)?;
+        let prismatic_mechanism = self.prismatic_mechanism_sample(prismatic_state, mutate)?;
         let mut force_n = 0.0;
         let mut elastic_energy_j = 0.0;
         let mut dissipated_power_w = 0.0;
@@ -352,6 +438,11 @@ impl RuntimeLeg {
                 plastic_dissipated_energy_j += response.absorbed_energy_j;
             }
             force_n += crush_force_n;
+        }
+        if let Some(mechanism) = &prismatic_mechanism {
+            force_n += mechanism.compressive_force_n;
+            elastic_energy_j += mechanism.elastic_energy_j;
+            dissipated_power_w += mechanism.damping_power_w;
         }
 
         if !force_n.is_finite() {
@@ -406,8 +497,194 @@ impl RuntimeLeg {
                 plastic_dissipated_energy_j,
                 contact_power_on_vehicle_w,
                 in_contact: contact_force.in_contact,
+                prismatic_state,
+                prismatic_mechanism,
             },
         })
+    }
+
+    fn prismatic_state(
+        &self,
+        stroke_m: f64,
+        compression_rate_m_s: f64,
+    ) -> Result<Option<LandingGearPrismaticState>, ModelEvalError> {
+        self.prismatic_dof
+            .map(|dof| dof.state(stroke_m, compression_rate_m_s))
+            .transpose()
+            .map_err(|err| ModelEvalError::InvalidState {
+                model: LANDING_GEAR_INTERNAL_MODEL_ID,
+                reason: Cow::Owned(err.to_string()),
+            })
+    }
+
+    fn prismatic_mechanism_sample(
+        &mut self,
+        prismatic_state: Option<LandingGearPrismaticState>,
+        mutate: bool,
+    ) -> Result<Option<LandingGearPrismaticMechanismSample>, ModelEvalError> {
+        let Some(mechanism) = &self.prismatic_mechanism else {
+            return Ok(None);
+        };
+        let Some(state) = prismatic_state else {
+            return Ok(None);
+        };
+        let response = if mutate {
+            evaluate_scalar_mechanism(
+                &mechanism.elements,
+                &mut self.prismatic_mechanism_latch_states,
+                state.displacement_m,
+                state.displacement_rate_m_s,
+            )
+        } else {
+            let mut latch_states = self.prismatic_mechanism_latch_states.clone();
+            evaluate_scalar_mechanism(
+                &mechanism.elements,
+                &mut latch_states,
+                state.displacement_m,
+                state.displacement_rate_m_s,
+            )
+        }
+        .map_err(|err| ModelEvalError::InvalidState {
+            model: LANDING_GEAR_INTERNAL_MODEL_ID,
+            reason: Cow::Owned(format!(
+                "landing gear prismatic mechanism {} failed: {err}",
+                mechanism.id
+            )),
+        })?;
+        Ok(Some(LandingGearPrismaticMechanismSample {
+            mechanism_id: mechanism.id.clone(),
+            generalized_force_n: response.generalized_force,
+            compressive_force_n: response.generalized_force.max(0.0),
+            elastic_energy_j: response.elastic_energy_j,
+            damping_power_w: response.damping_power_w,
+            active_stops: response.active_stops,
+            active_backlash_flanks: response.active_backlash_flanks,
+            engaged_latches: response.engaged_latches,
+            just_engaged_latches: response.just_engaged_latches,
+        }))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LandingGearPrismaticMechanism {
+    id: String,
+    elements: Vec<ScalarMechanismElement>,
+}
+
+fn landing_gear_prismatic_mechanism_from_config(
+    config: &LandingGearLegConfig,
+    contact: Option<&openbmp_scenario::ContactConfig>,
+) -> Result<Option<LandingGearPrismaticMechanism>, RunnerError> {
+    let Some(prismatic_dof) = &config.prismatic_dof else {
+        return Ok(None);
+    };
+    let Some(mechanism_id) = &prismatic_dof.mechanism_id else {
+        return Ok(None);
+    };
+    let Some(contact) = contact else {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "landing gear leg `{}` prismatic mechanism `{mechanism_id}` requires a [contact] block",
+                config.id
+            ),
+        });
+    };
+    let mechanism = contact
+        .mechanisms
+        .iter()
+        .find(|mechanism| mechanism.id == *mechanism_id)
+        .ok_or_else(|| RunnerError::UnsupportedScenario {
+            what: format!(
+                "landing gear leg `{}` prismatic mechanism `{mechanism_id}` was not declared",
+                config.id
+            ),
+        })?;
+    if mechanism.coordinate != config.id {
+        return Err(RunnerError::UnsupportedScenario {
+            what: format!(
+                "landing gear leg `{}` prismatic mechanism `{mechanism_id}` coordinate `{}` does not match leg id",
+                config.id, mechanism.coordinate
+            ),
+        });
+    }
+    Ok(Some(LandingGearPrismaticMechanism {
+        id: mechanism.id.clone(),
+        elements: vec![landing_gear_scalar_mechanism_element_from_config(
+            mechanism,
+        )?],
+    }))
+}
+
+fn landing_gear_scalar_mechanism_element_from_config(
+    mechanism: &ContactMechanismConfig,
+) -> Result<ScalarMechanismElement, RunnerError> {
+    let element = match mechanism.kind {
+        ContactMechanismKindConfig::Stop => {
+            let side = mechanism
+                .side
+                .ok_or_else(|| landing_gear_mechanism_config_error(&mechanism.id, "side"))?;
+            let limit = mechanism
+                .limit_rad
+                .ok_or_else(|| landing_gear_mechanism_config_error(&mechanism.id, "limit_rad"))?;
+            let stiffness = mechanism.stiffness_n_m.ok_or_else(|| {
+                landing_gear_mechanism_config_error(&mechanism.id, "stiffness_n_m")
+            })?;
+            ScalarStop::new(
+                limit,
+                side.into(),
+                stiffness,
+                mechanism.damping_n_s_m.unwrap_or(0.0),
+            )
+            .map(ScalarMechanismElement::stop)
+            .map_err(|err| landing_gear_mechanism_contact_error(&mechanism.id, err))?
+        }
+        ContactMechanismKindConfig::Backlash => {
+            let center = mechanism
+                .center_rad
+                .ok_or_else(|| landing_gear_mechanism_config_error(&mechanism.id, "center_rad"))?;
+            let dead_zone_width = mechanism.dead_zone_width_rad.ok_or_else(|| {
+                landing_gear_mechanism_config_error(&mechanism.id, "dead_zone_width_rad")
+            })?;
+            let stiffness = mechanism.stiffness_n_m.ok_or_else(|| {
+                landing_gear_mechanism_config_error(&mechanism.id, "stiffness_n_m")
+            })?;
+            BacklashGap::new(
+                center,
+                dead_zone_width,
+                stiffness,
+                mechanism.damping_n_s_m.unwrap_or(0.0),
+            )
+            .map(ScalarMechanismElement::backlash)
+            .map_err(|err| landing_gear_mechanism_contact_error(&mechanism.id, err))?
+        }
+        ContactMechanismKindConfig::Latch => {
+            let center = mechanism
+                .center_rad
+                .ok_or_else(|| landing_gear_mechanism_config_error(&mechanism.id, "center_rad"))?;
+            let half_width = mechanism.half_width_rad.ok_or_else(|| {
+                landing_gear_mechanism_config_error(&mechanism.id, "half_width_rad")
+            })?;
+            LatchWindow::new(center, half_width)
+                .map(MonotoneLatch::new)
+                .map(ScalarMechanismElement::latch)
+                .map_err(|err| landing_gear_mechanism_contact_error(&mechanism.id, err))?
+        }
+    };
+    Ok(element)
+}
+
+fn landing_gear_mechanism_config_error(id: &str, field: &'static str) -> RunnerError {
+    RunnerError::UnsupportedScenario {
+        what: format!("landing gear prismatic mechanism `{id}` is missing {field}"),
+    }
+}
+
+fn landing_gear_mechanism_contact_error(
+    id: &str,
+    err: openbmp_contact::ContactError,
+) -> RunnerError {
+    RunnerError::UnsupportedScenario {
+        what: format!("landing gear prismatic mechanism `{id}` failed: {err}"),
     }
 }
 
@@ -437,7 +714,7 @@ impl InternalLegSample {
     }
 
     fn zero_with_gap(id: String, gap_m: f64) -> Self {
-        Self::zero_with_gap_and_contact_point(id, gap_m, Vector3::zeros(), 0.0, 0.0)
+        Self::zero_with_gap_and_contact_point(id, gap_m, Vector3::zeros(), 0.0, 0.0, None, None)
     }
 
     fn zero_with_gap_and_contact_point(
@@ -446,6 +723,8 @@ impl InternalLegSample {
         contact_body_m: Vector3<f64>,
         normal_velocity_m_s: f64,
         tangential_speed_m_s: f64,
+        prismatic_state: Option<LandingGearPrismaticState>,
+        prismatic_mechanism: Option<LandingGearPrismaticMechanismSample>,
     ) -> Self {
         Self {
             force_eci_n: Vector3::zeros(),
@@ -467,6 +746,8 @@ impl InternalLegSample {
                 plastic_dissipated_energy_j: 0.0,
                 contact_power_on_vehicle_w: 0.0,
                 in_contact: false,
+                prismatic_state,
+                prismatic_mechanism,
             },
         }
     }
@@ -507,6 +788,33 @@ pub struct LandingGearLegSample {
     pub contact_power_on_vehicle_w: f64,
     /// Whether the footpad is in contact with the ground plane.
     pub in_contact: bool,
+    /// Optional tree-facing prismatic coordinate state for this leg.
+    pub prismatic_state: Option<LandingGearPrismaticState>,
+    /// Optional scalar mechanism response evaluated on the prismatic coordinate.
+    pub prismatic_mechanism: Option<LandingGearPrismaticMechanismSample>,
+}
+
+/// Public prismatic mechanism diagnostic sample.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LandingGearPrismaticMechanismSample {
+    /// Scenario-declared mechanism id.
+    pub mechanism_id: String,
+    /// Raw generalized force conjugate to prismatic displacement.
+    pub generalized_force_n: f64,
+    /// Non-negative part transmitted as an external-normal gear load.
+    pub compressive_force_n: f64,
+    /// Elastic energy stored in active stop/backlash elements.
+    pub elastic_energy_j: f64,
+    /// Instantaneous damping power from active stop/backlash elements.
+    pub damping_power_w: f64,
+    /// Number of active one-sided stops.
+    pub active_stops: u32,
+    /// Number of active backlash flanks.
+    pub active_backlash_flanks: u32,
+    /// Number of latches engaged after this evaluation.
+    pub engaged_latches: u32,
+    /// Number of latches that engaged during this evaluation.
+    pub just_engaged_latches: u32,
 }
 
 /// Body-axis section load recovered from landing-gear leg loads.
@@ -985,7 +1293,13 @@ impl LandingGearTelemetryChannels {
             .map(|gear| {
                 gear.legs
                     .iter()
-                    .map(|leg| LandingGearLegTelemetryChannels::new(&leg.id, alloc))
+                    .map(|leg| {
+                        LandingGearLegTelemetryChannels::new(
+                            &leg.id,
+                            leg.prismatic_dof.is_some(),
+                            alloc,
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()?
@@ -1026,6 +1340,8 @@ impl LandingGearTelemetryChannels {
                     plastic_dissipated_energy_j: 0.0,
                     contact_power_on_vehicle_w: 0.0,
                     in_contact: false,
+                    prismatic_state: None,
+                    prismatic_mechanism: None,
                 });
             channels.insert(row, &sample)?;
         }
@@ -1042,52 +1358,55 @@ struct LandingGearLegTelemetryChannels {
     force: TelemetryChannel<f64>,
     crushed: TelemetryChannel<f64>,
     in_contact: TelemetryChannel<bool>,
+    prismatic: Option<LandingGearLegPrismaticTelemetryChannels>,
 }
 
 impl LandingGearLegTelemetryChannels {
-    fn new<F>(id: &str, alloc: &mut F) -> Result<Self, RunnerError>
+    fn new<F>(id: &str, has_prismatic_dof: bool, alloc: &mut F) -> Result<Self, RunnerError>
     where
         F: FnMut() -> ChannelId,
     {
         let prefix = format!("landing_gear.{id}");
+        let stroke =
+            TelemetryChannel::<f64>::new(alloc(), format!("{prefix}.stroke_m"), "m", None::<&str>)?;
+        let gap =
+            TelemetryChannel::<f64>::new(alloc(), format!("{prefix}.gap_m"), "m", None::<&str>)?;
+        let compression_rate = TelemetryChannel::<f64>::new(
+            alloc(),
+            format!("{prefix}.compression_rate_m_s"),
+            "m/s",
+            None::<&str>,
+        )?;
+        let force =
+            TelemetryChannel::<f64>::new(alloc(), format!("{prefix}.force_n"), "N", None::<&str>)?;
+        let crushed = TelemetryChannel::<f64>::new(
+            alloc(),
+            format!("{prefix}.crushed_m"),
+            "m",
+            None::<&str>,
+        )?;
+        let in_contact = TelemetryChannel::<bool>::new(
+            alloc(),
+            format!("{prefix}.in_contact"),
+            "bool",
+            None::<&str>,
+        )?;
+        let prismatic = if has_prismatic_dof {
+            Some(LandingGearLegPrismaticTelemetryChannels::new(
+                &prefix, alloc,
+            )?)
+        } else {
+            None
+        };
         Ok(Self {
             id: id.to_owned(),
-            stroke: TelemetryChannel::<f64>::new(
-                alloc(),
-                format!("{prefix}.stroke_m"),
-                "m",
-                None::<&str>,
-            )?,
-            gap: TelemetryChannel::<f64>::new(
-                alloc(),
-                format!("{prefix}.gap_m"),
-                "m",
-                None::<&str>,
-            )?,
-            compression_rate: TelemetryChannel::<f64>::new(
-                alloc(),
-                format!("{prefix}.compression_rate_m_s"),
-                "m/s",
-                None::<&str>,
-            )?,
-            force: TelemetryChannel::<f64>::new(
-                alloc(),
-                format!("{prefix}.force_n"),
-                "N",
-                None::<&str>,
-            )?,
-            crushed: TelemetryChannel::<f64>::new(
-                alloc(),
-                format!("{prefix}.crushed_m"),
-                "m",
-                None::<&str>,
-            )?,
-            in_contact: TelemetryChannel::<bool>::new(
-                alloc(),
-                format!("{prefix}.in_contact"),
-                "bool",
-                None::<&str>,
-            )?,
+            stroke,
+            gap,
+            compression_rate,
+            force,
+            crushed,
+            in_contact,
+            prismatic,
         })
     }
 
@@ -1098,6 +1417,9 @@ impl LandingGearLegTelemetryChannels {
         channels.push(self.force.metadata().clone());
         channels.push(self.crushed.metadata().clone());
         channels.push(self.in_contact.metadata().clone());
+        if let Some(prismatic) = &self.prismatic {
+            prismatic.push_metadata(channels);
+        }
     }
 
     fn insert(
@@ -1111,12 +1433,96 @@ impl LandingGearLegTelemetryChannels {
         row.insert(&self.force, sample.force_n)?;
         row.insert(&self.crushed, sample.crushed_m)?;
         row.insert(&self.in_contact, sample.in_contact)?;
+        if let Some(prismatic) = &self.prismatic {
+            prismatic.insert(row, sample.prismatic_state)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct LandingGearLegPrismaticTelemetryChannels {
+    displacement: TelemetryChannel<f64>,
+    displacement_rate: TelemetryChannel<f64>,
+    footpad_body_x: TelemetryChannel<f64>,
+    footpad_body_y: TelemetryChannel<f64>,
+    footpad_body_z: TelemetryChannel<f64>,
+}
+
+impl LandingGearLegPrismaticTelemetryChannels {
+    fn new<F>(prefix: &str, alloc: &mut F) -> Result<Self, RunnerError>
+    where
+        F: FnMut() -> ChannelId,
+    {
+        Ok(Self {
+            displacement: TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("{prefix}.prismatic_displacement_m"),
+                "m",
+                None::<&str>,
+            )?,
+            displacement_rate: TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("{prefix}.prismatic_displacement_rate_m_s"),
+                "m/s",
+                None::<&str>,
+            )?,
+            footpad_body_x: TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("{prefix}.prismatic_footpad_body_x_m"),
+                "m",
+                None::<&str>,
+            )?,
+            footpad_body_y: TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("{prefix}.prismatic_footpad_body_y_m"),
+                "m",
+                None::<&str>,
+            )?,
+            footpad_body_z: TelemetryChannel::<f64>::new(
+                alloc(),
+                format!("{prefix}.prismatic_footpad_body_z_m"),
+                "m",
+                None::<&str>,
+            )?,
+        })
+    }
+
+    fn push_metadata(&self, channels: &mut Vec<ChannelMetadata>) {
+        channels.push(self.displacement.metadata().clone());
+        channels.push(self.displacement_rate.metadata().clone());
+        channels.push(self.footpad_body_x.metadata().clone());
+        channels.push(self.footpad_body_y.metadata().clone());
+        channels.push(self.footpad_body_z.metadata().clone());
+    }
+
+    fn insert(
+        &self,
+        row: &mut TelemetryRow,
+        state: Option<LandingGearPrismaticState>,
+    ) -> Result<(), RunnerError> {
+        let state = state.unwrap_or(LandingGearPrismaticState {
+            stroke_m: 0.0,
+            compression_rate_m_s: 0.0,
+            displacement_m: 0.0,
+            displacement_rate_m_s: 0.0,
+            footpad_center_body_m: [0.0; 3],
+        });
+        row.insert(&self.displacement, state.displacement_m)?;
+        row.insert(&self.displacement_rate, state.displacement_rate_m_s)?;
+        row.insert(&self.footpad_body_x, state.footpad_center_body_m[0])?;
+        row.insert(&self.footpad_body_y, state.footpad_center_body_m[1])?;
+        row.insert(&self.footpad_body_z, state.footpad_center_body_m[2])?;
         Ok(())
     }
 }
 
 fn array_to_vec(value: [f64; 3]) -> Vector3<f64> {
     Vector3::new(value[0], value[1], value[2])
+}
+
+fn vec_to_array(value: Vector3<f64>) -> [f64; 3] {
+    [value.x, value.y, value.z]
 }
 
 fn scale_vec(value: Vector3<f64>, scalar: f64) -> Vector3<f64> {
@@ -1188,10 +1594,11 @@ mod tests {
                         piston_area_m2: 0.01,
                     }),
                     crush: None,
+                    prismatic_dof: None,
                 })
                 .collect(),
         };
-        let runtime = LandingGearRuntime::build(&config).unwrap();
+        let runtime = LandingGearRuntime::build(&config, None).unwrap();
         let state = test_state(0.9, -1.0);
         let eval = runtime
             .force_eval(&state, SimTime::from_seconds(0.0), None)
@@ -1206,6 +1613,79 @@ mod tests {
                 .iter()
                 .all(|sample| sample.in_contact)
         );
+    }
+
+    #[test]
+    fn landing_gear_runtime_applies_owner_alias_transform() {
+        let config = LandingGearConfig {
+            data_file: None,
+            data_file_sha256: None,
+            ground_altitude_m: 0.0,
+            legs: vec![LandingGearLegConfig {
+                id: "payload_leg".to_owned(),
+                mounted_to: "payload".to_owned(),
+                attach_body_m: [1.0, 0.0, 0.0],
+                strut_axis_body: [0.0, 0.0, -1.0],
+                free_length_m: 1.0,
+                footpad: ContactGeometryConfig::Point,
+                footpad_radius_m: None,
+                footpad_friction_coefficient: 0.0,
+                footpad_friction_regularization_speed_m_s: 1.0e-3,
+                oleo: Some(openbmp_scenario::LandingGearOleoConfig {
+                    p0_pa: 100_000.0,
+                    v0_m3: 0.01,
+                    gamma_unit: 1.2,
+                    orifice_c_n_s2_m2: 0.0,
+                    stroke_max_m: 0.2,
+                    piston_area_m2: 0.01,
+                }),
+                crush: None,
+                prismatic_dof: None,
+            }],
+        };
+        let booster = body_id_from_scenario_text("booster");
+        let payload = body_id_from_scenario_text("payload");
+        let aliases = BTreeMap::from([(
+            payload,
+            LandingGearOwnerAlias {
+                root: booster,
+                rot_root_from_body: Matrix3::new(
+                    0.0, -1.0, 0.0, //
+                    1.0, 0.0, 0.0, //
+                    0.0, 0.0, 1.0,
+                ),
+                translation_root_from_body_m: Vector3::new(2.0, 3.0, 0.0),
+            },
+        )]);
+        let runtime =
+            LandingGearRuntime::build_with_owner_aliases(&config, None, &aliases).unwrap();
+        let state = test_state(0.9, -1.0);
+        let eval = runtime
+            .force_eval(&state, SimTime::from_seconds(0.0), Some(booster))
+            .unwrap();
+        let sample = eval.samples.first().unwrap();
+
+        assert!(sample.in_contact);
+        assert!(eval.force_eci_n.z > 0.0);
+        assert_abs_diff_eq!(sample.gap_m, -0.1, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(sample.contact_body_m[0], 2.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(sample.contact_body_m[1], 4.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(sample.contact_body_m[2], -1.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(
+            eval.moment_body_n_m.x,
+            4.0 * eval.force_eci_n.z,
+            epsilon = 1.0e-9
+        );
+        assert_abs_diff_eq!(
+            eval.moment_body_n_m.y,
+            -2.0 * eval.force_eci_n.z,
+            epsilon = 1.0e-9
+        );
+
+        let payload_eval = runtime
+            .force_eval(&state, SimTime::from_seconds(0.0), Some(payload))
+            .unwrap();
+        assert_eq!(payload_eval.force_eci_n.norm().to_bits(), 0.0_f64.to_bits());
     }
 
     #[test]
@@ -1233,9 +1713,10 @@ mod tests {
                     piston_area_m2: 0.01,
                 }),
                 crush: None,
+                prismatic_dof: None,
             }],
         };
-        let runtime = LandingGearRuntime::build(&config).unwrap();
+        let runtime = LandingGearRuntime::build(&config, None).unwrap();
         let mut state = test_state(0.9, -1.0);
         state.velocity.vector.x = 3.0;
         let eval = runtime
@@ -1255,5 +1736,172 @@ mod tests {
         );
         assert_abs_diff_eq!(eval.force_eci_n.x, -0.5 * sample.force_n, epsilon = 1.0e-9);
         assert!(sample.dissipated_power_w > 0.0);
+    }
+
+    #[test]
+    fn landing_gear_runtime_materializes_prismatic_dof_state() {
+        let config = LandingGearConfig {
+            data_file: None,
+            data_file_sha256: None,
+            ground_altitude_m: 0.0,
+            legs: vec![LandingGearLegConfig {
+                id: "leg".to_owned(),
+                mounted_to: "core".to_owned(),
+                attach_body_m: [0.0, 0.0, 0.0],
+                strut_axis_body: [0.0, 0.0, -1.0],
+                free_length_m: 1.0,
+                footpad: ContactGeometryConfig::Sphere,
+                footpad_radius_m: Some(0.05),
+                footpad_friction_coefficient: 0.0,
+                footpad_friction_regularization_speed_m_s: 1.0e-3,
+                oleo: Some(openbmp_scenario::LandingGearOleoConfig {
+                    p0_pa: 100_000.0,
+                    v0_m3: 0.01,
+                    gamma_unit: 1.2,
+                    orifice_c_n_s2_m2: 0.0,
+                    stroke_max_m: 0.4,
+                    piston_area_m2: 0.01,
+                }),
+                crush: None,
+                prismatic_dof: Some(openbmp_scenario::LandingGearPrismaticDofConfig {
+                    stroke_max_m: 0.4,
+                    initial_stroke_m: 0.0,
+                    initial_compression_rate_m_s: 0.0,
+                    mechanism_id: None,
+                }),
+            }],
+        };
+        let runtime = LandingGearRuntime::build(&config, None).unwrap();
+        let state = test_state(0.9, -1.0);
+        let eval = runtime
+            .force_eval(&state, SimTime::from_seconds(0.0), None)
+            .unwrap();
+        let sample = eval.samples.first().unwrap();
+        let prismatic = sample.prismatic_state.expect("prismatic state");
+
+        assert!(sample.in_contact);
+        assert_abs_diff_eq!(sample.stroke_m, 0.15, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(prismatic.stroke_m, sample.stroke_m, epsilon = 0.0);
+        assert_abs_diff_eq!(prismatic.compression_rate_m_s, 1.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(prismatic.displacement_m, 0.85, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(prismatic.displacement_rate_m_s, -1.0, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(prismatic.footpad_center_body_m[0], 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(prismatic.footpad_center_body_m[1], 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(prismatic.footpad_center_body_m[2], -0.85, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn landing_gear_prismatic_mechanism_stop_adds_compressive_load() {
+        let leg = LandingGearLegConfig {
+            id: "leg".to_owned(),
+            mounted_to: "core".to_owned(),
+            attach_body_m: [0.0, 0.0, 0.0],
+            strut_axis_body: [0.0, 0.0, -1.0],
+            free_length_m: 1.0,
+            footpad: ContactGeometryConfig::Sphere,
+            footpad_radius_m: Some(0.05),
+            footpad_friction_coefficient: 0.0,
+            footpad_friction_regularization_speed_m_s: 1.0e-3,
+            oleo: Some(openbmp_scenario::LandingGearOleoConfig {
+                p0_pa: 100_000.0,
+                v0_m3: 0.01,
+                gamma_unit: 1.2,
+                orifice_c_n_s2_m2: 0.0,
+                stroke_max_m: 0.4,
+                piston_area_m2: 0.01,
+            }),
+            crush: None,
+            prismatic_dof: Some(openbmp_scenario::LandingGearPrismaticDofConfig {
+                stroke_max_m: 0.4,
+                initial_stroke_m: 0.0,
+                initial_compression_rate_m_s: 0.0,
+                mechanism_id: None,
+            }),
+        };
+        let baseline_config = LandingGearConfig {
+            data_file: None,
+            data_file_sha256: None,
+            ground_altitude_m: 0.0,
+            legs: vec![leg.clone()],
+        };
+        let mut mechanism_leg = leg;
+        mechanism_leg
+            .prismatic_dof
+            .as_mut()
+            .expect("prismatic dof")
+            .mechanism_id = Some("leg-stop".to_owned());
+        let mechanism_config = LandingGearConfig {
+            data_file: None,
+            data_file_sha256: None,
+            ground_altitude_m: 0.0,
+            legs: vec![mechanism_leg],
+        };
+        let contact = openbmp_scenario::ContactConfig {
+            kind: "half_space".to_owned(),
+            ground_altitude_m: 0.0,
+            geometry: ContactGeometryConfig::Point,
+            radius_m: None,
+            normal_law: openbmp_scenario::ContactNormalLawConfig::KelvinVoigt,
+            stiffness_n_m: Some(1.0),
+            damping_n_s_m: Some(0.0),
+            stiffness_n_m_3_2: None,
+            damping_factor_s_m: None,
+            restitution: None,
+            reference_impact_speed_m_s: None,
+            stability_stiffness_n_m: None,
+            friction_coefficient: 0.0,
+            friction_law: openbmp_scenario::ContactFrictionLawConfig::RegularizedCoulomb,
+            friction_regularization_speed_m_s: None,
+            static_friction_coefficient: None,
+            kinetic_friction_coefficient: None,
+            tangential_stiffness_n_m: None,
+            tangential_damping_n_s_m: None,
+            restick_speed_m_s: None,
+            effective_mass_kg: 1.0,
+            substeps: 1,
+            mechanisms: vec![ContactMechanismConfig {
+                id: "leg-stop".to_owned(),
+                coordinate: "leg".to_owned(),
+                kind: ContactMechanismKindConfig::Stop,
+                side: Some(openbmp_scenario::ContactMechanismStopSideConfig::Lower),
+                limit_rad: Some(0.9),
+                center_rad: None,
+                dead_zone_width_rad: None,
+                half_width_rad: None,
+                stiffness_n_m: Some(1_000.0),
+                damping_n_s_m: Some(0.0),
+            }],
+        };
+        let baseline_runtime = LandingGearRuntime::build(&baseline_config, None).unwrap();
+        let mechanism_runtime =
+            LandingGearRuntime::build(&mechanism_config, Some(&contact)).unwrap();
+        let state = test_state(0.9, -1.0);
+        let mut baseline_eval = baseline_runtime
+            .force_eval(&state, SimTime::from_seconds(0.0), None)
+            .unwrap();
+        let baseline = baseline_eval.samples.remove(0);
+        let mut mechanism_eval = mechanism_runtime
+            .force_eval(&state, SimTime::from_seconds(0.0), None)
+            .unwrap();
+        let mechanism = mechanism_eval.samples.remove(0);
+        let mechanism_sample = mechanism
+            .prismatic_mechanism
+            .as_ref()
+            .expect("mechanism sample");
+
+        assert_abs_diff_eq!(baseline.stroke_m, 0.15, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(mechanism.stroke_m, baseline.stroke_m, epsilon = 0.0);
+        assert_abs_diff_eq!(
+            mechanism_sample.generalized_force_n,
+            50.0,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            mechanism_sample.compressive_force_n,
+            50.0,
+            epsilon = 1.0e-12
+        );
+        assert_eq!(mechanism_sample.active_stops, 1);
+        assert_abs_diff_eq!(mechanism.force_n - baseline.force_n, 50.0, epsilon = 1.0e-9);
     }
 }

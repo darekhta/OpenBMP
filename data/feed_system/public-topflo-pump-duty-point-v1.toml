@@ -1,0 +1,65 @@
+openbmp.feed_turbopump_public_topflo = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.public_topflo_pump_duty_point.v1"
+source_class = "public-manufacturer-catalog"
+source_title = "TOP-FLO Centrifugal Pump Catalog"
+source_url = "https://www.steelobrien.com/wp-content/uploads/2026/03/TOP-FLO-Centrifugal-Pump-Catalog.pdf"
+source_hash_sha256 = "a2f15e4bd33af6c9e6c99d3966b0eacaf31559448f0dc51a9572c6efe997e850"
+provenance = "Manual extraction from the catalog's pump-curve reading example: 75 GPM, 35 ft head, 9 ft NPSHr, and 1.5 hp motor sizing from the plotted selection answer. The example prompt text says 40 ft, but the published answer uses the 35 ft curve-read point; this fixture intentionally follows the answer values."
+license_or_terms = "Public manufacturer catalog; small numeric facts used for validation provenance."
+validation = "research"
+
+[conversion]
+us_gallon_to_m3 = 0.003785411784
+minute_to_s = 60.0
+ft_to_m = 0.3048
+hp_to_w = 745.6998715822702
+rpm_to_rad_per_s = 0.10471975511965977
+
+[source_example]
+flow_gpm = 75.0
+selected_head_ft = 35.0
+npshr_ft = 9.0
+motor_power_hp = 1.5
+shaft_speed_rpm = 1750.0
+
+[design]
+volumetric_flow_m3_per_s = 0.00473176473
+pressure_rise_pa = 104408.1075156
+shaft_speed_rad_per_s = 183.25957145940458
+fluid_density_kg_m3 = 998.0
+efficiency = 0.4416742083470231
+required_npsh_m = 2.7432000000000003
+specific_speed = 0.8
+
+[map]
+head_coefficients = [1.0, 0.0, 0.0]
+efficiency_coefficients = [1.0, 0.0, 0.0]
+cavitation_head_multiplier = 0.25
+
+[tolerances]
+absolute = 1.0e-8
+published_head_m = 1.0e-12
+published_motor_power_w = 1.0e-8
+published_npsh_m = 1.0e-12
+
+[[case]]
+name = "topflo_curve_read_design_point"
+volumetric_flow_m3_per_s = 0.00473176473
+shaft_speed_rad_per_s = 183.25957145940458
+suction_pressure_pa = 29489.799075439998
+vapor_pressure_pa = 2642.0
+expected_flow_coefficient = 1.0
+expected_speed_ratio = 1.0
+expected_pressure_rise_pa = 104408.1075156
+expected_discharge_pressure_pa = 133897.90659104
+expected_available_npsh_m = 2.7432000000000003
+expected_required_npsh_m = 2.7432000000000003
+expected_cavitation = "nominal"
+expected_efficiency = 0.4416742083470231
+expected_hydraulic_power_w = 494.034600668364
+expected_shaft_power_w = 1118.5498073734054
+expected_published_head_m = 10.668000000000001
+expected_published_motor_power_w = 1118.5498073734054
+expected_published_npsh_m = 2.7432000000000003

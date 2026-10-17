@@ -67,6 +67,29 @@ pub enum TelemetryError {
     /// IO failed while writing an archive.
     #[error("telemetry IO error")]
     Io(#[from] std::io::Error),
+    /// A telemetry interop-export field exceeded the fixed binary length
+    /// prefix used by the experimental frame or dictionary artifact.
+    #[error("telemetry export field {field} is too large: {length} bytes")]
+    ExportFieldTooLarge {
+        /// Name of the field that exceeded the export limit.
+        field: &'static str,
+        /// Observed byte length.
+        length: usize,
+    },
+    /// A CCSDS-shaped frame stream failed structural validation.
+    #[error("invalid telemetry frame stream: {reason}")]
+    InvalidFrameStream {
+        /// Static reason for deterministic error reporting.
+        reason: &'static str,
+    },
+    /// A CCSDS-shaped frame stream contained non-UTF-8 schema or text bytes.
+    #[error("invalid UTF-8 in telemetry frame stream field {field}")]
+    InvalidFrameStreamUtf8 {
+        /// Name of the decoded field.
+        field: &'static str,
+        /// UTF-8 decoder source.
+        source: std::str::Utf8Error,
+    },
     /// Arrow failed while building a record batch.
     #[error("arrow error")]
     Arrow(#[from] arrow::error::ArrowError),

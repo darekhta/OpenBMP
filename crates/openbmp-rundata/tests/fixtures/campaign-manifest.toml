@@ -1,0 +1,13 @@
+campaign_id = "drop"
+seeds = [2, 1]
+overlays = ["wind", "nominal"]
+verdict_rules = "rules/drop.toml"
+trend_specs = "trends/drop.toml"
+
+[[scenarios]]
+id = "beta"
+path = "scenarios/beta.toml"
+
+[[scenarios]]
+id = "alpha"
+path = "scenarios/alpha.toml"

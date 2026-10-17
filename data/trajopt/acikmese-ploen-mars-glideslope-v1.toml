@@ -1,0 +1,40 @@
+dataset_id = "acikmese-ploen-mars-glideslope-v1"
+schema_version = 1
+source_class = "published-paper"
+source_title = "Convex Programming Approach to Powered Descent Guidance for Mars Landing"
+source_authors = ["B. Acikmese", "S. R. Ploen"]
+source_venue = "Journal of Guidance, Control, and Dynamics 30(5):1353-1366, 2007"
+source_doi = "10.2514/1.27553"
+source_url = "https://doi.org/10.2514/1.27553"
+notes = "Glideslope-constrained Mars soft-landing case from the published numerical example; coordinates are stored in the paper frame and mapped to OpenBMP local [x, y, up] in the test."
+
+[vehicle]
+initial_mass_kg = 1905.0
+dry_mass_kg = 1505.0
+specific_impulse_s = 225.0
+engine_count = 6
+max_thrust_per_engine_n = 3100.0
+min_throttle_fraction = 0.3
+max_throttle_fraction = 0.8
+engine_cant_angle_deg = 27.0
+
+[environment]
+mars_gravity_m_s2 = 3.7114
+standard_gravity_m_s2 = 9.807
+
+[case]
+time_of_flight_s = 81.0
+horizon_steps = 162
+paper_initial_position_km = [1.5, 0.0, 2.0]
+paper_initial_velocity_m_s = [-75.0, 0.0, 100.0]
+paper_target_position_km = [0.0, 0.0, 0.0]
+paper_target_velocity_m_s = [0.0, 0.0, 0.0]
+glideslope_altitude_angle_deg = 86.0
+
+[expected]
+published_fuel_usage_kg = 399.5
+published_final_mass_kg = 1505.5
+relative_final_mass_tolerance = 0.005
+max_terminal_error_m = 1.0e-5
+max_terminal_error_m_s = 1.0e-5
+max_cone_violation = 1.0e-6

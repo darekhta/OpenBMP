@@ -1,0 +1,55 @@
+# Public NACA Report 1048 equation-level crossflow fixture.
+#
+# This fixture checks the OpenBMP Allen-Perkins-style crossflow normal-force
+# term against the public slender-body crossflow equation shape using the
+# projected body planform area and its centroid:
+# CN_crossflow = C_Dc * (planform_area / reference_area) * |sin(alpha)| * sin(alpha) * |cos(alpha)|.
+# It is equation-level evidence only, not a digitized plot/data-table closure.
+
+openbmp.naca_1048_crossflow_validation = 1
+
+[provenance]
+dataset_id = "openbmp.aero.naca_report_1048_crossflow_equation.v1"
+source_class = "public-domain-naca"
+validation_label = "checked"
+source_title = "NACA Report 1048, A Study of Effects of Viscosity on Flow Over Slender Inclined Bodies of Revolution"
+source_url = "https://ntrs.nasa.gov/citations/19930090962"
+
+[geometry]
+body_diameter_m = 1.0
+body_length_m = 6.0
+reference_area_m2 = 0.7853981633974483
+reference_length_m = 1.0
+surface_roughness_m = 0.0
+
+[geometry.nose]
+kind = "conical"
+half_angle_deg = 5.0
+
+[tolerances]
+max_abs_error = 1.0e-12
+max_relative_error = 1.0e-12
+
+[[samples]]
+id = "m0-alpha5"
+mach = 0.0
+alpha_deg = 5.0
+reynolds_length = 1.0e6
+expected_crossflow_cn = 0.02514242603085598
+expected_cp_m = 3.9956928967219834
+
+[[samples]]
+id = "m2-alpha10"
+mach = 2.0
+alpha_deg = 10.0
+reynolds_length = 4.0e6
+expected_crossflow_cn = 0.10003557926229563
+expected_cp_m = 3.9956928967219834
+
+[[samples]]
+id = "m35-alpha-neg12"
+mach = 3.5
+alpha_deg = -12.0
+reynolds_length = 8.0e6
+expected_crossflow_cn = -0.1445752506695646
+expected_cp_m = 3.9956928967219834

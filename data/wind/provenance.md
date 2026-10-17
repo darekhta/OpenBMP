@@ -65,3 +65,145 @@ safety_review:
     route-planning or optimization capability; it only supplies neutral
     horizontal wind samples to the existing environment bus.
 ```
+
+---
+
+# Provenance - `openbmp.wind.synthetic_balloon_family.v1`
+
+Canonical OpenBMP provenance record for the synthetic day-of-launch
+balloon-family generator deck used by WP-19.1 measured-wind tests and
+scenario examples.
+
+```yaml
+dataset_id:       openbmp.wind.synthetic_balloon_family.v1
+files:
+  - data/wind/synthetic-balloon-family-v1.toml
+  - crates/openbmp-physics/src/wind/measured.rs
+source_class:     synthetic-openbmp-test-fixture
+source_title:     OpenBMP deterministic synthetic balloon-family wind deck
+source_authors:   OpenBMP contributors
+source_id:        WP-19.1 synthetic fixture
+publication_date: 2026-06-25
+source_urls:      []
+license_or_terms: Apache-2.0 OR MIT
+retrieved_utc:    2026-06-25
+transformation:
+  method: >-
+    No external meteorological data are ingested. The TOML deck declares
+    a deterministic seeded generator configuration: altitude grid, base
+    local-NED wind, linear shear, sinusoidal perturbation amplitudes,
+    QC thresholds, and Martin-Graham-style filter cutoff. Generated
+    profiles are synthetic-only and intended for CI, examples, and
+    method-shape validation.
+  command: cargo test -p openbmp-physics measured
+verification:
+  method: >-
+    In-crate tests validate exact QC screens, deterministic splice
+    attribution artifact rendering, first-order filter magnitude response,
+    and seeded synthetic-family repeatability.
+  test: cargo test -p openbmp-physics measured
+  tolerance: exact semantics for QC/splice determinism; 1.0e-6 closed-form
+    magnitude-response agreement.
+validation_status: validated-toy
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Synthetic wind profiles support steering-through-weather method tests.
+    They do not add operational meteorological infrastructure or any
+    impact-surface coupling.
+```
+
+---
+
+# Provenance - `openbmp.wind.dol_load_indicator_surrogate.v1`
+
+Canonical OpenBMP provenance record for the synthetic day-of-launch
+load-indicator surrogate fit deck used by WP-19.3 tests.
+
+```yaml
+dataset_id:       openbmp.wind.dol_load_indicator_surrogate.v1
+files:
+  - data/wind/dol-load-indicator-surrogate-v1.toml
+  - crates/openbmp-trajopt/src/dol.rs
+source_class:     synthetic-openbmp-test-fixture
+source_title:     OpenBMP deterministic DOL load-indicator surrogate fit deck
+source_authors:   OpenBMP contributors
+source_id:        WP-19.3 synthetic fixture
+publication_date: 2026-06-25
+source_urls:      []
+license_or_terms: Apache-2.0 OR MIT
+retrieved_utc:    2026-06-25
+transformation:
+  method: >-
+    No external loads-cycle data are ingested. The TOML deck pins the
+    degraded q-alpha/q-beta/gimbal feature vocabulary, synthetic upstream
+    deck hash, and held-out validation thresholds used by the deterministic
+    least-squares fit in `openbmp-trajopt::dol`.
+  command: cargo test -p openbmp-trajopt load_indicator --locked
+verification:
+  method: >-
+    In-crate tests fit the linear surrogate on a seeded synthetic matrix,
+    validate held-out Pearson correlation and maximum unconservative error,
+    fail closed when the supplied deck hash drifts, and parse this deck as
+    the pinned threshold source.
+  test: cargo test -p openbmp-trajopt load_indicator --locked
+  tolerance: exact deck-hash drift gate; held-out correlation >= 0.95 and
+    maximum unconservative error <= 1.0e-6 N*m for the synthetic matrix.
+validation_status: validated-toy
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Synthetic reduced load indicators support DOL screening method tests.
+    They do not claim certified station loads, operational launch commit
+    authority, or a vehicle-specific loads cycle.
+```
+
+---
+
+# Provenance - `openbmp.wind.dol_persistence_knockdown.v1`
+
+Canonical OpenBMP provenance record for the synthetic day-of-launch wind
+persistence and dispersion knockdown deck used by WP-19.5 tests.
+
+```yaml
+dataset_id:       openbmp.wind.dol_persistence_knockdown.v1
+files:
+  - data/wind/dol-persistence-knockdown-v1.toml
+  - crates/openbmp-trajopt/src/dol.rs
+source_class:     synthetic-openbmp-test-fixture
+source_title:     OpenBMP deterministic DOL persistence knockdown deck
+source_authors:   OpenBMP contributors
+source_id:        WP-19.5 synthetic fixture
+publication_date: 2026-06-25
+source_urls:      []
+license_or_terms: Apache-2.0 OR MIT
+retrieved_utc:    2026-06-25
+transformation:
+  method: >-
+    No external range meteorology or wind-persistence statistics are
+    ingested. The TOML deck pins a deterministic altitude-banded
+    square-root lead-time sigma model, a synthetic sigma multiplier, and
+    three synthetic truth wind-change samples used to exercise the
+    fail-closed RSS knockdown substrate in `openbmp-trajopt::dol`.
+  command: cargo test -p openbmp-trajopt persistence --locked
+verification:
+  method: >-
+    In-crate tests validate the deck schema fields, non-overlapping
+    altitude bands, hand-computed RSS knockdown math, monotone lead-time
+    margin reduction, and synthetic truth samples staying inside the
+    declared sigma envelope.
+  test: cargo test -p openbmp-trajopt persistence --locked
+  tolerance: exact deck-hash/provenance checks; 1.0e-12 hand-computed RSS
+    agreement; synthetic truth samples within the declared 3-sigma
+    envelope.
+validation_status: validated-toy
+safety_review:
+  reviewer: dmitri.arekhta
+  decision: accepted
+  notes: >-
+    Synthetic persistence statistics support DOL commit-decision method
+    tests. They do not claim site-fitted persistence models, range
+    weather operations, launch authority, or a certified loads process.
+```

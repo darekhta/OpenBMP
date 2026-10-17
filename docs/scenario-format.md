@@ -40,6 +40,7 @@ fields over compact syntax.
 | `[contact]` | no | Schema-v3 opt-in compliant half-space contact force |
 | `[telemetry]` | yes | Output files and schema options |
 | `[comm]` | no | Schema-v3 ground-site geometry for telemetry/RF visibility studies |
+| `[acoustics]` | no | Schema-v3 liftoff, IOP, ascent/fairing, and response analysis reports with gated summary telemetry |
 | `[validation]` | yes | Runtime validation rules |
 | `[epoch]` | no | Absolute time metadata |
 | `[frames]` | no | Frame profile and local origins |
@@ -187,6 +188,7 @@ guidance = "ascent_reference"
 method     = "pitch_program" # or "gravity_turn"
 schedule_s = [0.0, 10.0, 30.0]
 pitch_rad  = [0.0, 0.05, 0.20]
+yaw_rad    = [0.0, 0.00, 0.01] # optional for pitch_program
 
 [fc.gain_schedule."mission.phases.powered_ascent"]
 # normal three-loop gains for this phase
@@ -195,9 +197,104 @@ pitch_rad  = [0.0, 0.05, 0.20]
 `guidance = "ascent_reference"` requires `vehicle.kind = "rigid_body"`, a
 declared `powered_ascent` mission phase/state, and a matching gain-schedule
 entry. `pitch_program` requires equal-length `schedule_s` / `pitch_rad` arrays
-with strictly increasing times. `gravity_turn` accepts no schedule fields and
-aligns body `+x` with inertial velocity once motion is established.
+with strictly increasing times; optional `yaw_rad` must use the same length.
+`gravity_turn` accepts no schedule fields and aligns body `+x` with inertial
+velocity once motion is established.
 `explicit_reference` is still reserved and fails closed.
+
+Schema v3 can also replay an optimized offline reference profile through the FC
+guidance boundary:
+
+```toml
+[fc]
+guidance = "optimized_reference"
+
+[fc.optimized_reference]
+active_phase_paths = ["mission.phases.powered_ascent"]
+radial_direction_eci = [1.0, 0.0, 0.0]
+tangential_direction_eci = [0.0, 1.0, 0.0]
+reference_q_xyzw = [0.0, 0.0, 0.0, 1.0]
+
+[[fc.optimized_reference.samples]]
+time_s = 0.0
+radius_m = 6_371_000.0
+speed_m_s = 0.0
+flight_path_angle_rad = 0.0
+
+[[fc.optimized_reference.samples]]
+time_s = 1.0
+radius_m = 6_371_100.0
+speed_m_s = 100.0
+flight_path_angle_rad = 0.05
+```
+
+The block requires at least two strictly increasing samples with positive
+radius, non-negative speed, and `|flight_path_angle_rad| < pi/2`. Instead of
+inline samples, the same block may name a postcard-encoded trajopt I-load file:
+
+```toml
+[fc.optimized_reference]
+iload_file = "optimized-reference.iload"
+iload_file_sha256 = "<optional sha256 hex pin>"
+active_phase_paths = ["mission.phases.powered_ascent"]
+```
+
+Inline `samples` and `iload_file` are mutually exclusive. The runner maps either
+source into the FC-native optimized-reference guidance job; the FC crate still
+does not depend on `openbmp-trajopt`.
+
+Schema v3 can also declare a provenance-pinned imported robust-controller
+I-load source:
+
+```toml
+[fc.robust_controller]
+iload_file = "robust-controller.toml"
+iload_file_sha256 = "<optional sha256 hex pin>"
+```
+
+The scenario loader resolves `iload_file` relative to the scenario directory and
+verifies `iload_file_sha256` when present. The runner materializes the resolved
+file into an active FC robust-controller table at boot. The I-load file uses a
+single `[robust_controller]` envelope with sorted nodes:
+
+```toml
+[robust_controller]
+controller_id = "robust-local-v1"
+source_id = "hinf-reduced-order-local"
+source_sha256_hex = "<source artifact sha256>"
+variable = "dynamic_pressure_pa"
+interp = "linear"
+states = 1
+measurements = 1
+controls = 1
+
+[[robust_controller.nodes]]
+node_id = "qbar-low"
+schedule_value = 10000.0
+flight_condition_tag = "mach_qbar_mass"
+states = 1
+measurements = 1
+controls = 1
+a_row_major = [-0.20]
+b_row_major = [1.0]
+c_row_major = [0.8]
+d_row_major = [0.0]
+
+[[robust_controller.nodes]]
+node_id = "qbar-high"
+schedule_value = 25000.0
+flight_condition_tag = "mach_qbar_mass"
+states = 1
+measurements = 1
+controls = 1
+a_row_major = [-0.35]
+b_row_major = [1.2]
+c_row_major = [0.7]
+d_row_major = [0.05]
+```
+
+This loads and validates the table; closed-loop measurement mapping and command
+mixing are separate GNC integration work.
 
 ## Minimal Example
 
@@ -345,9 +442,15 @@ and `.visible` telemetry channels. `[[comm.antennas]]` may declare
 WP-20.2 gain/body-mask deck files with optional SHA-256 pins; these decks
 are resolved, hashed, parsed from resolved bytes, validated by the runner,
 summarized in `RunOutcome.comm`, and applied to link budgets by rotating the
-vehicle-to-site line of sight into the body frame. `[[comm.links]]` declares
-WP-20.3 free-space link-budget constants plus pinned FER, atmospheric-loss,
-and rain-loss decks; runner paths resolve the decks, compute one `LinkState`
+vehicle-to-site line of sight into the body frame. Body-mask decks may carry
+comm-native `[body_mask].triangles`, or may use the existing
+`openbmp.panel_mesh_aero = 1` panel-mesh deck shape with a `[body_mask]`
+antenna position and sampled directions; the runner derives the mask by direct
+ray casts over a deterministic watertight-mesh BVH and rejects open or
+non-manifold panel meshes fail-closed. `[[comm.links]]` declares WP-20.3 free-space
+link-budget constants plus pinned FER, atmospheric-loss, rain-loss, and
+optional electron-density plasma-blackout sources; runner paths resolve the
+decks or consume the declared live aerothermal proxy, compute one `LinkState`
 per declared link/site sample, and publish
 `comm.link.<link>.free_space_loss_db`, `.c_n0_dbhz`, `.eb_n0_db`,
 `.margin_db`, `.fer`, `.visible`, `.blackout`, `.antenna_gain_dbi`, and
@@ -362,13 +465,31 @@ sensor and command frames in fail-closed mode for drop or bit-flip effects and
 queues delivered frames by step-quantized link latency. `[comm]` can select the
 bridge link by declaration order or by current best visible margin, with an
 optional dB hysteresis deadband for best-margin handover, or by declared
-pass-plan windows. Blackout physics, relay budgets, and per-pass reporting are
-later WP-20 blocks.
+pass-plan windows. `[comm.tracking]` can opt into vehicle-bound ground
+tracking observables for reconstruction; the runner emits visible-site
+range/range-rate/azimuth/elevation measurements in
+`RunOutcome.comm.tracking_observables` with declared latency, bias, and
+quantization plus optional deterministic white noise and first-order
+Gauss-Markov bias states from a pinned instrument deck, exports the same
+measurement stream as deterministic `RunOutcome.comm.tracking_observables_csv`
+bytes, and reports the instrument evidence in `RunOutcome.comm.tracking`.
 
 ```toml
 [comm]
 bridge_link_selection = "first_declared" # optional; "best_margin" or "declared_plan"
 bridge_link_hysteresis_db = 0.0          # optional, best_margin deadband
+
+[comm.tracking]                         # optional
+instrument_deck = "data/comm/tracking-instrument-v1.toml" # optional
+instrument_deck_sha256 = "<64 hex chars>"                  # optional
+latency_s = 0.25
+range_bias_m = 2.0
+range_rate_bias_m_s = -0.1
+azimuth_bias_deg = 0.05
+elevation_bias_deg = -0.02
+range_quantization_m = 1.0
+range_rate_quantization_m_s = 0.1
+angle_quantization_deg = 0.01
 
 [[comm.sites]]
 id = "ksc"
@@ -403,6 +524,11 @@ atmospheric_loss_deck_sha256 = "<64 hex chars>"  # optional
 rain_loss_db = 0.5
 rain_loss_deck = "data/comm/attenuation-loss-v1.toml"
 rain_loss_deck_sha256 = "<64 hex chars>"         # optional
+blackout_electron_density_source = "deck"        # optional: deck or live_aerothermal
+blackout_electron_density_deck = "data/comm/plasma-blackout-v1.toml" # optional
+blackout_electron_density_deck_sha256 = "<64 hex chars>"             # optional
+blackout_ramp_width_hz = 1.0e8        # optional, default 0.0
+blackout_max_attenuation_db = 40.0    # optional, default 60.0
 pointing_loss_db = 0.25
 polarization_loss_db = 0.1
 implementation_loss_db = 0.0
@@ -419,6 +545,24 @@ start_s = 0.0
 end_s = 120.0
 ```
 
+Tracking instrument decks use a `[tracking_instrument]` table:
+
+```toml
+[tracking_instrument]
+range_noise_stddev_m = 0.5
+range_rate_noise_stddev_m_s = 0.02
+azimuth_noise_stddev_deg = 0.001
+elevation_noise_stddev_deg = 0.0015
+range_gauss_markov_stddev_m = 2.0
+range_gauss_markov_tau_s = 10.0
+range_rate_gauss_markov_stddev_m_s = 0.2
+range_rate_gauss_markov_tau_s = 20.0
+azimuth_gauss_markov_stddev_deg = 0.002
+azimuth_gauss_markov_tau_s = 30.0
+elevation_gauss_markov_stddev_deg = 0.003
+elevation_gauss_markov_tau_s = 40.0
+```
+
 `latitude_deg` must be in `[-90, 90]`, `longitude_deg` in `[-180, 180]`,
 and elevation fields in `[-90, 90]`. Terrain-mask `azimuth_deg` values are
 accepted in `[0, 360]` and are interpreted as degrees from north toward east.
@@ -426,7 +570,20 @@ Link `site_id` and `antenna_id` must reference declared comm site and antenna
 ids. Frequency and bit rate must be positive; loss fields must be finite and
 non-negative. Loss decks are optional and additive to the constant loss
 fields. If a `*_loss_deck_sha256` pin is present, the matching deck path must
-also be present. `packet_processing_delay_s` must be finite and non-negative.
+also be present. `blackout_electron_density_source` defaults to `deck`. In
+deck mode, if `blackout_electron_density_deck` is present, the runner expects
+a TOML `[plasma_blackout]` table with strictly increasing
+`[[plasma_blackout.samples]]` entries containing finite non-negative `time_s`
+and `electron_number_density_m3`. The density profile is linearly interpolated
+inside the deck time range and clamped outside it. In `live_aerothermal` mode,
+the link must not declare a deck and the scenario must declare
+`[aerothermal.electron_density_proxy]`; the runner uses the current live
+`aerothermal.electron_number_density_m3` sample. In both modes attenuation is
+added to the vehicle-originating hop using `f_p = 8.98 sqrt(n_e)`, with
+`blackout_max_attenuation_db` applied at/below plasma frequency and a linear
+ramp over `blackout_ramp_width_hz` above it. `blackout_*_sha256` pins require
+the matching deck path, and blackout ramp/attenuation values must be
+non-negative. `packet_processing_delay_s` must be finite and non-negative.
 `bridge_link_selection` defaults to `first_declared`; `best_margin` selects the
 visible, non-blackout declared link with the highest current margin and falls
 back to the first declared link when no link is usable so the bridge still fails
@@ -439,9 +596,26 @@ its margin by more than the declared deadband. Each pass-plan `link_id` must
 reference a declared link, `start_s` must be finite and non-negative, `end_s`
 must be greater than `start_s`, and windows must not overlap.
 `bridge_link_selection = "declared_plan"` requires at least one pass-plan
-window. `[[comm.relays]]` declares GEO relay nodes with `id`, `longitude_deg`,
+window. `[comm.tracking]` is optional; when present, `latency_s`,
+`range_quantization_m`, `range_rate_quantization_m_s`, and
+`angle_quantization_deg` must be finite and non-negative, while bias fields
+must be finite. If `instrument_deck` is present, the runner expects a TOML
+`[tracking_instrument]` table with finite non-negative white-noise standard
+deviations plus finite non-negative first-order Gauss-Markov stationary
+standard deviations and correlation times for range, range-rate, azimuth, and
+elevation. A non-zero Gauss-Markov standard deviation requires a positive
+`*_tau_s`; zero standard deviation disables that component. The matching
+`instrument_deck_sha256` pin requires the deck path. Tracking observables are
+emitted only for visible ground-site samples and are vehicle-bound because
+their inputs come from the runner's primary-body site observations; each record
+includes the applied white-noise values and the current Gauss-Markov bias
+state. The CSV measurement stream uses a fixed header, RFC-4180 escaping for
+site ids, and `"{:.17e}"` formatting for floating-point fields.
+`[[comm.relays]]` declares GEO relay nodes with `id`, `longitude_deg`,
 optional `altitude_m`, optional `min_elevation_deg`, relay-to-ground budget
-constants, and a relay downlink `fer_curve_deck`; `[[comm.links]].relay_id`
+constants, and a relay downlink `fer_curve_deck`; optional
+`[[comm.relays.availability_windows]]` entries with `start_s`/`end_s` gate
+relay availability by time and must not overlap. `[[comm.links]].relay_id`
 references one of those relay ids and makes the runner compose the
 vehicle-to-relay and relay-to-ground budgets into one two-hop `LinkState` using
 bottleneck margin and combined independent-hop FER. The
@@ -453,16 +627,20 @@ evaluates both downlink and uplink deterministic packet streams against the
 latest computed `LinkState` sample and records the gate evidence in
 `RunOutcome.comm.links[*].packet_loss_rate_gate`. `data_loss_timeout_s` must be
 positive when present; the runner records delivered/lost downlink sample counts,
-the first loss, first timeout trigger, and maximum continuous loss gap in
-`RunOutcome.comm.links[*].data_loss_timeout`. Bridge packet-effect selections
+the first loss, first timeout trigger, maximum continuous loss gap, and a
+monitor-side `hold`/`terminate` verdict in
+`RunOutcome.comm.links[*].data_loss_timeout`. Contiguous sampled blackout
+windows are summarized in `RunOutcome.comm.blackout_windows` with link id,
+step/time span, sample count, and visible-sample count. Bridge packet-effect selections
 are summarized in `RunOutcome.comm.bridge_selections` as contiguous link or
 scheduled-gap intervals with step/time spans, sample counts, and sensor/command
 drop or bit-flip counts. Link/gap transitions are summarized in
-`RunOutcome.comm.bridge_handovers`. Sampled visible/non-blackout link passes are
-summarized in `RunOutcome.comm.link_passes` with step/time spans, duration,
-sample count, min/max/mean margin, sampled margin profile, and bridge packet
-drop or bit-flip counts attributed to each pass. Relay declarations consumed by
-a link are summarized in `RunOutcome.comm.links[*].relay`.
+`RunOutcome.comm.bridge_handovers`. Visible/non-blackout link passes are
+summarized in `RunOutcome.comm.link_passes` with sampled step/time spans,
+sampled and interpolated durations, sample count, min/max/mean margin, sampled
+and interpolated margin profiles, and bridge packet drop or bit-flip counts
+attributed to each pass. Relay declarations consumed by a link, including
+declared availability windows, are summarized in `RunOutcome.comm.links[*].relay`.
 
 ### AFTS Containment Rules
 
@@ -876,6 +1054,207 @@ rigid-kernel construction applies the full physical validity checks.
 The rigid-body-only initial-state fields are rejected when
 `kind = "point_mass"`.
 
+### Structural modes and reaction
+
+Rigid-body scenarios may declare legacy first-bending parameters with
+`[vehicle.bending]`. Schema v3 scenarios may instead declare
+declaration-ordered lateral modes under `[vehicle.modes]`; the two blocks are
+mutually exclusive.
+
+```toml
+[vehicle.modes]
+
+[[vehicle.modes.lateral]]
+id = "first"
+frequency_hz = 4.0
+damping_ratio = 0.04
+modal_mass_kg = 5000.0
+slope_at_engine = 0.02
+slope_at_gyro = 0.005
+shape_at_accelerometer = 0.0
+
+[vehicle.reaction]
+enabled = true
+```
+
+Each `[[vehicle.modes.lateral]]` entry requires a unique non-empty `id`,
+positive `frequency_hz` and `modal_mass_kg`, non-negative `damping_ratio`, and
+finite mode-shape values. `[vehicle.reaction]` is v3-only and requires either
+`[vehicle.bending]` or `[vehicle.modes]`. When omitted, structural gyro and
+accelerometer pickup can still be active, but the mode-summed reaction torque
+fed back into rigid-body dynamics remains exactly zero. Set
+`[vehicle.reaction] enabled = true` to opt into the T1 lever-reaction feedback
+path.
+
+Schema v3 `[vehicle.modes]` can alternatively load a provenance-pinned external
+modal asset. Asset-backed modes are mutually exclusive with inline
+`[[vehicle.modes.lateral]]` rows. The first supported asset format is CSV v1
+with the row schema marker `openbmp.modal_asset.csv.v1`; the scenario resolver
+verifies the optional file hash before the runner maps the rows into the same
+structural modal rack.
+
+```toml
+[vehicle.modes]
+
+[vehicle.modes.asset]
+format = "csv_v1"
+file = "data/modal/synthetic-sol103-modal-asset-v1.csv"
+file_sha256 = "6d3f3c621a9340d509cca35f111826ad06cf45bc2ded92027a98b4af3c5f3171"
+frequency_tolerance_fraction = 0.01
+mac_min = 0.9
+```
+
+Asset ingestion fails closed on schema/version mismatch, invalid numeric rows,
+duplicate mode ids, frequency-reference error above
+`frequency_tolerance_fraction`, or source-shape MAC below `mac_min`.
+
+Schema v3 scenarios with `[vehicle.bending]` or `[vehicle.modes]` can also
+byte-lock the structural transient integrator. Omitting `[vehicle.transient]`
+keeps the legacy symplectic-Euler modal step. Declaring the block selects the
+native constant-step `openbmp-structdyn` integrator; `newmark_beta` requires
+explicit `beta` and `gamma`, while `generalized_alpha` requires explicit
+`rho_inf` and derives its `(alpha_m, alpha_f, beta, gamma)` set.
+
+```toml
+[vehicle.transient]
+scheme = "newmark_beta" # legacy_symplectic_euler | newmark_beta | generalized_alpha
+beta = 0.25
+gamma = 0.5
+```
+
+```toml
+[vehicle.transient]
+scheme = "generalized_alpha"
+rho_inf = 0.5
+```
+
+Schema v3 scenarios can also opt into structural line-load recovery. The block
+is off by default, requires `[vehicle.bending]` or `[vehicle.modes]`, and emits
+one telemetry channel per declared station/output as
+`structural.load.<station>.<output>`. Modal coefficient vectors use the locked
+order `[mode0.q_x, mode0.q_y, mode1.q_x, mode1.q_y, ...]`.
+`mode_acceleration` defaults to true and includes the residual correction.
+
+```toml
+[loads.recovery]
+mode_acceleration = true
+
+[[loads.recovery.stations]]
+id = "interstage"
+axial_m = 12.0
+
+[[loads.recovery.stations.outputs]]
+id = "shear_x" # axial_force, shear_x, shear_y, bending_x, bending_y, torsion
+displacement_coefficients = [0.0, 0.0]
+acceleration_coefficients = [10.0, 5.0]
+mode_acceleration_coefficients = [1.5, -0.5] # optional; empty means zeros
+```
+
+Schema v3 scenarios can also declare structural event-force envelopes under
+`[loads.events]`. This requires a structural mode block, evaluates declared
+`step`, `ramp_release`, `rectangular_impulse`, `half_sine_impulse`,
+`dryden_gust`, or `von_karman_gust` event forces, projects `Phi^T F`, stores
+max-absolute modal force envelopes plus CSV bytes in `RunOutcome`, and injects
+the same projected event forces into the live structural rack modal state. Rows
+may also declare a closed `flight_event_kind` (`liftoff_release`,
+`max_q_gust`, `engine_ignition`, `stage_separation`, or `meco`), which is
+validated against compatible profile kinds and copied into the structural event
+report/CSV. Gust profiles use the declared force vector as the peak max-Q load
+and require `gust_length_scale_s`; `dryden_gust` uses an exponential envelope,
+while `von_karman_gust` uses a normalized
+`(1 + (t/L)^2)^(-5/6)` roll-off. Legacy modal stepping also supports optional
+positive `modal_stiffness_scale_1` multipliers for declared event stiffness
+changes; explicit Newmark/generalized-alpha transients apply the same
+multipliers through a per-step variable-stiffness modal system.
+
+```toml
+[loads.events]
+sample_times_s = [0.0, 0.5, 1.0]
+
+[[loads.events.forces]]
+id = "liftoff_release"
+flight_event_kind = "liftoff_release" # optional: liftoff_release | max_q_gust | engine_ignition | stage_separation | meco
+kind = "ramp_release" # step | ramp_release | rectangular_impulse | half_sine_impulse | dryden_gust | von_karman_gust
+start_s = 0.0
+duration_s = 1.0 # required except for kind = "step"
+# gust_length_scale_s = 0.25 # required only for gust kinds
+# modal_stiffness_scale_1 = [0.75, 1.25] # optional modal-coordinate multipliers
+physical_force_n = [8.0, -4.0]
+mode_shape_rows_1 = [[1.0, -1.0], [0.25, 2.0]]
+```
+
+Schema v3 scenarios with `[vehicle.bending]` or `[vehicle.modes]` can also
+declare a control-structure-interaction margin sweep under `[csi]`. The block
+is a typed front door for the FC-portable `openbmp-fc::csi` helpers: it
+declares the sampled frequency grid, required gain/phase margins, and
+exactly one frozen-time plant source. Authors can enter open-loop plants using
+continuous-time numerator/denominator coefficients in ascending powers of `s`,
+or ask the runner to assemble gyro-rate / accelerometer modal plants from the
+active structural modes via `[csi.modal_assembly]`. The rigid-body runner
+evaluates the sweep into `RunOutcome.csi` margin summary and CSV evidence.
+`[csi.filter_insertion]` can also derive a three-axis FC gyro notch from a
+selected structural modal frequency and insert it into the autopilot filter
+table. The current time-domain CSI boundedness evidence is a synthetic
+runner-level SIL check, not cFS/HIL qualification or flight-test validation.
+
+```toml
+[csi]
+frequency_grid_rad_s = [1.0, 4.0, 16.0]
+
+[csi.criteria]
+min_gain_margin_db = 6.0
+min_phase_margin_deg = 30.0
+
+[[csi.frozen_plants]]
+id = "liftoff"
+time_s = 0.0
+numerator_coefficients = [1.0]
+denominator_coefficients = [1.0, 0.6, 0.08]
+
+[[csi.frozen_plants]]
+id = "max_q"
+time_s = 40.0
+numerator_coefficients = [1.2, 0.01]
+denominator_coefficients = [1.0, 0.5, 0.06]
+```
+
+Modal assembly uses `slope_at_engine` as the modal input coupling, then
+`slope_at_gyro` for `sensor = "gyro_rate"` or `shape_at_accelerometer` for
+`sensor = "accelerometer"`.
+
+```toml
+[csi]
+frequency_grid_rad_s = [1.0, 4.0, 16.0]
+
+[csi.criteria]
+min_gain_margin_db = 6.0
+min_phase_margin_deg = 30.0
+
+[csi.modal_assembly]
+sensor = "gyro_rate"
+loop_gain = 2.5
+
+[[csi.modal_assembly.frozen_points]]
+id = "liftoff"
+time_s = 0.0
+
+[[csi.modal_assembly.frozen_points]]
+id = "max_q"
+time_s = 40.0
+loop_gain_scale = 1.25
+```
+
+CSI-designed filter insertion uses the same FC autopilot notch table as
+`[fc.autopilot_params.gyro_notch]`, so the two declarations are mutually
+exclusive.
+
+```toml
+[csi.filter_insertion]
+mode_index = 0
+zero_damping_ratio = 0.02
+pole_damping_ratio = 0.20
+```
+
 ### Landing gear
 
 Schema v3 rigid-body scenarios may opt into a massless landing-gear rack with
@@ -902,6 +1281,15 @@ footpad_friction_coefficient = 0.0
 footpad_friction_regularization_speed_m_s = 0.001
 oleo = { p0_pa = 150000.0, v0_m3 = 0.06, gamma_unit = 1.25, orifice_c_n_s2_m2 = 800000.0, stroke_max_m = 0.55, piston_area_m2 = 0.015 }
 crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }
+prismatic_dof = { stroke_max_m = 0.80, initial_stroke_m = 0.0, initial_compression_rate_m_s = 0.0, mechanism_id = "front_left_stop" }
+
+[[contact.mechanism]]
+id = "front_left_stop"
+coordinate = "front_left"
+kind = "stop"
+side = "lower"
+limit_rad = 0.2
+stiffness_n_m = 1000.0
 ```
 
 Each leg id must be unique, `mounted_to` must name a declared
@@ -917,11 +1305,28 @@ stroke, and piston area must be positive; damping may be zero; and
 `piston_area_m2 * stroke_max_m` must stay below `v0_m3`. Crush force,
 stroke, and elastic stiffness must be positive.
 
+`prismatic_dof` is optional. When present it declares the tree-facing
+compression coordinate contract for the leg without changing the current
+massless landing-gear force model. `stroke_max_m` must be positive and must not
+exceed `free_length_m`; `initial_stroke_m` defaults to zero and must lie inside
+`[0, stroke_max_m]`; `initial_compression_rate_m_s` defaults to zero and must
+be finite. The runner materializes the current prismatic coordinate from the
+live gear stroke as `displacement = free_length_m - stroke_m` and
+`displacement_rate = -compression_rate_m_s`. `mechanism_id` is optional; when
+present it must reference a declared `[[contact.mechanism]]` whose `coordinate`
+equals the landing-gear leg id. The runner evaluates that scalar mechanism on
+the prismatic displacement coordinate and adds only the positive compressive
+part of the generalized force to the external-normal landing-gear load.
+
 The rigid-body runner publishes `force.landing_gear.{x,y,z}_n` plus per-leg
 `landing_gear.<id>.stroke_m`, `.gap_m`, `.compression_rate_m_s`, `.force_n`,
 `.crushed_m`, and `.in_contact`. Referenced gear data files are resolved
 relative to the scenario file and recorded in telemetry metadata under
 `openbmp.scenario_files.vehicle.landing_gear.data_file`. The runner also
+publishes `.prismatic_displacement_m`,
+`.prismatic_displacement_rate_m_s`, and
+`.prismatic_footpad_body_{x,y,z}_m` only for legs declaring
+`prismatic_dof`. The runner also
 emits `RunOutcome.landing_gear` outside canonical telemetry bytes with
 NoContact/Rest/Unsettled classification, final per-leg samples, load/stroke
 maxima, per-pad tangential speed/friction evidence, and a deterministic gear
@@ -1144,6 +1549,57 @@ deck_sha256  = "cd862c2af98a1f28dc86c6e754d311c7a724081ca91b80704ad89b2ec4cb5c27
 Declaring both `deck` and `[aero.buildup]` fails with
 `ScenarioError::AmbiguousAero`.
 
+Schema v3 accepts an opt-in deterministic deck draw under `[aero.deck_draw]`
+for deck-backed or buildup-backed coefficient sources that carry per-node
+sigma tables. The runner applies the draw once at deck-load time; scenarios
+without this block preserve nominal deck behavior.
+
+```toml
+[aero.deck_draw]
+campaign_seed = 42
+sample_index = 7
+dimension_id_base = 200
+mach_correlation_length = 1.5 # optional when the deck declares [uncertainty.correlation].mach_length
+alpha_correlation_length_deg = 4.0 # optional
+beta_correlation_length_deg = 3.0  # optional
+```
+
+The draw uses three deterministic coefficient streams beginning at
+`dimension_id_base` for `CN`, `CD`, and `CM`. If the deck also carries
+`[uncertainty.six_coefficients.*]`, the same draw uses six additional streams
+at `dimension_id_base + 3` through `dimension_id_base + 8` for
+`CX/CY/CZ/Cl/Cm/Cn` and fails closed if the dimension range overflows.
+Deck-declared `[uncertainty.correlation].coefficient` and
+`[uncertainty.correlation].six_coefficient` matrices mix the reduced or
+six-channel residual streams before per-node sigma scaling.
+`mach_correlation_length` is in Mach-axis units; when omitted, the runner uses
+the loaded deck's `[uncertainty.correlation].mach_length` metadata and fails
+closed if neither source is available. `alpha_correlation_length_deg` and
+`beta_correlation_length_deg` are optional degree-valued covariance lengths;
+when omitted, the draw keeps the backward-compatible same-Mach residual sharing
+across the omitted axis. This is a single-sample runner hook; `openbmp mc
+aero-deck-draw-overlays` can materialize per-sample campaign overlay files and
+a manifest fragment for sample-index scheduling, while `openbmp mc
+aero-deck-draw-campaign` generates and executes a native campaign over those
+draws. Both campaign commands accept `--alpha-correlation-length-deg` and
+`--beta-correlation-length-deg`; the campaign runner also accepts `--uq-toml`,
+`--credibility-floor`, and `--credibility-report-md` for sidecar UQ credibility
+gating/reporting.
+
+Schema v3 also accepts an offline aero-database run-matrix asset under
+`[aero.run_matrix]`. The file must be an `openbmp.aerodb_run_matrix = 1` TOML
+document; the scenario layer resolves and pins it, and the runner exposes a
+file-fed helper that parses it through the condition-only `openbmp-aerodb`
+schema. This declaration is not a flight-runtime aerodynamic coefficient source
+and does not launch an external solver. A scenario that uses `[aero]` only for
+this offline asset should keep `"aero"` out of `[forces].models`.
+
+```toml
+[aero.run_matrix]
+file = "data/aero/synthetic-run-matrix.toml"
+file_sha256 = "..." # optional
+```
+
 Schema v3 also accepts an opt-in plume telemetry block under `[aero]`.
 This block is not an aerodynamic coefficient source; it may be declared
 without `deck`, `[aero.buildup]`, or `[aero.method]` only when `aero` is
@@ -1252,8 +1708,9 @@ body-frame moment evaluation; point-mass runs consume only force.
 
 `[aerothermal]` runs inside the runner loop when declared. The driver
 samples the runtime atmosphere at the current state, builds an
-`AerothermalContext`, evaluates Sutton-Graves or Fay-Riddell stagnation
-heating, and emits `aerothermal.*` telemetry. Optional
+`AerothermalContext`, evaluates Sutton-Graves or Fay-Riddell convective
+stagnation heating, optionally adds Tauber-Sutton radiative heating, and emits
+`aerothermal.*` telemetry. Optional
 `[aerothermal.thermal_toy]` and `[aerothermal.ablation]` sub-blocks
 advance one step per kernel tick. `feedback = "mass"` is accepted only
 for `rigid_body` vehicles and feeds the ablation gas mass rate into the
@@ -1265,6 +1722,17 @@ stagnation_kind = "sutton_graves" # or "fay_riddell"
 nose_radius_m = 0.5
 wall_temperature_k = 1500.0
 wall_catalysis = "fully_catalytic" # or "non_catalytic"
+
+[aerothermal.radiative]
+kind = "tauber_sutton_earth_air"
+
+[aerothermal.electron_density_proxy]
+source_id = "synthetic-entry-density.v1"
+evidence = "docs/parity/20-telemetry-rf-links-and-ground-network.md#wp-205"
+activation_temperature_k = 1500.0
+reference_temperature_k = 3000.0
+reference_electron_number_density_m3 = 5.0e16
+max_electron_number_density_m3 = 1.0e18
 
 [aerothermal.ablation]
 virgin_material = "textbook_pica_like"
@@ -1284,13 +1752,425 @@ Telemetry channels include `aerothermal.q_conv_w_m2`,
 `aerothermal.backwall_temperature_k`,
 `aerothermal.recession_depth_m`,
 `aerothermal.gas_mdot_kg_m2_s`, and
-`mass.aerothermal_mass_loss_kg_s`.
+`mass.aerothermal_mass_loss_kg_s`. When
+`[aerothermal.electron_density_proxy]` is declared, telemetry also includes
+`aerothermal.electron_number_density_m3`; this is a declared proxy for comm
+blackout coupling, not a real-gas chemistry validation.
+
+### Free-field DSM acoustics
+
+`[acoustics.dsm]` is an opt-in schema-v3 analysis block. It does not affect
+forces, mass, or controller inputs, and scenarios that omit `[acoustics]`
+allocate no `acoustics.*` telemetry channels. The runner maps the declared
+free-field single-engine or identical-engine cluster DSM inputs into
+`openbmp-acoustics`, emits an
+out-of-band `RunOutcome.acoustics` report with a station spectrum CSV and
+OASPL-vs-height CSV, and adds summary telemetry channels:
+`acoustics.dsm.acoustic_power_w`, `acoustics.dsm.sound_power_level_db`,
+`acoustics.dsm.station_oaspl_db`, and `acoustics.dsm.source_count`. This
+surface can use inline source-line weights, a SHA-pinned Schema-1 `deck_file`
+containing DSM source allocation and directivity rows, or a SHA-pinned
+SP-8072 Figure 12 `source_curve_file` that derives normalized source
+allocation from a declared `exit_mach`, or a SHA-pinned SP-8072 Figure 14
+`apparent_source_curve_file` that places one apparent source per band from
+Strouhal number. Inline, deck-backed, and Figure 12 distributed-source inputs
+can also pair with a SHA-pinned SP-8072 Figure 13
+`axial_spectrum_curve_file`, which applies source-position-dependent
+source-by-band weights. Inline, Figure 12, and Figure 14 source inputs can also
+pair with a SHA-pinned SP-8072 Figure 10 `directivity_curve_file`, which derives
+per-band DSM directivity rows from declared exit diameter and velocity. Any
+source/directivity choice can also use a SHA-pinned SP-8072 Figure 5
+`spectrum_curve_file`, which derives normalized one-third-octave band-power
+fractions from declared exit diameter and velocity. The shipped SP-8072 curve
+decks and runner curve loaders validate their manifest id, source PDF hash, and
+figure id against the pinned NASA SP-8072 source manifest after scenario
+SHA-pin verification, before they are treated as public-source evidence.
+Propagation uses spherical
+spreading plus either the scalar `absorption_db_per_m` expanded uniformly over
+the active band grid or an optional SHA-pinned `absorption_deck_file` with
+per-band `dB/m` coefficients. Absorption decks may expose named atmosphere
+profiles with representative temperature/pressure/humidity metadata; declare
+`absorption_profile_id` to select one, otherwise the deck's default profile is
+used. Optional `pad_path_length_extra_m` adds a declared
+duct/trench/deflector path-length term before spherical spreading and
+absorption. Optional `pad_deflection_origin_axial_m` plus
+`pad_deflection_angle_deg` maps source-line coordinates through a declared
+single-bend plume axis before range/directivity evaluation. A SHA-pinned
+`suppression_deck_file` plus `suppression_class` can apply a per-band negative
+transfer for synthetic pad water-suppression evidence. Optional
+`cluster_engine_count` treats the
+declared exit condition as per engine and applies exact incoherent
+identical-engine acoustic-power scaling. Optional
+`[[acoustics.dsm.cluster_engines]]` entries instead declare lateral engine
+offsets; the runner energy-adds each engine's station spectrum after applying
+its geometric receiver range/directivity, with `receiver_azimuth_deg`
+selecting the receiver bearing in the cluster plane. The cluster geometry path
+can optionally apply a scalar `cluster_correlation_coefficient` cross-pressure
+term and a broadband `cluster_shielding_loss_db` after summation, or a
+SHA-pinned `cluster_interaction_deck_file` plus `cluster_interaction_class`
+for synthetic per-band correlation and shielding. The scalar and deck-backed
+cluster interaction paths are mutually exclusive. The runner does not yet model
+calibrated plume interaction or cluster-specific directivity. The Figure 5,
+Figure 10, Figure 12, Figure 13, and Figure 14 paths are coarse public curve
+fixtures for parser/integration evidence; the absorption, atmosphere-profile,
+suppression, and cluster-interaction deck fixtures are synthetic. Production
+SP-8072 calibration, production/public atmospheric attenuation, pad calibration, and
+worked-example validation remain separate work.
+
+`[acoustics.iop]` is an opt-in schema-v3 ignition-overpressure analysis block.
+It uses source strength from either explicit `gas_generation_rate_n_per_s` plus
+`ramp_duration_s` or a declared liquid-engine `source_engine_id` whose
+start-rate proxy is derived from `limits.max_thrust_n /
+limits.ignition_transient_s`. For source engines with
+`[vehicle.assembly.engines.thermochemical_performance]`, the runner instead
+uses the same thermochemistry-resolved nominal `mdot*c*` source strength
+divided by `limits.ignition_transient_s`, while also reporting the
+thermochemistry-derived max thrust. Duct/trench residence time comes from
+declared volume, exit area, and discharge velocity or from a SHA-pinned
+synthetic `duct_deck_file` plus `duct_class`; propagation uses inverse-square
+receiver decay, optional pressure-amplitude suppression loss, optional
+SHA-pinned synthetic `suppression_deck_file` plus
+`suppression_class`, and lower/upper dB uncertainty bounds. The scalar
+`suppression_loss_db` and deck-selected suppression loss are additive. When
+`source_engine_id` is used, the report also records the first declared
+`[[scenario_script.events]]` `at_time` `engine_command` that targets the
+source engine with `ignite = true`, when such an event exists; during
+point-mass and rigid-body runs it also records the first runtime-observed
+fired source-engine ignite event id, step, and time. Point-mass and rigid-body
+source-engine IOP reports also carry a deterministic runtime source-history CSV
+with step, time, source strength, finite-difference source rate, thrust, and
+mass-flow columns; for thermochemical source engines the runtime source
+strength uses `mass_flow_kg_per_s * effective_cstar_m_s`, otherwise it uses
+thrust magnitude. When the observed finite-difference source-rate peak is
+positive, the report also carries runtime-reconstructed nominal, lower, and
+upper IOP peak pressures plus duration, evaluated with the observed peak source
+rate and the same duct, receiver, suppression, uncertainty, and ramp-duration
+terms as the declared envelope. When present, the runner emits
+`RunOutcome.acoustics.iop` plus
+gated telemetry channels
+`acoustics.iop.peak_overpressure_pa`,
+`acoustics.iop.lower_peak_overpressure_pa`,
+`acoustics.iop.upper_peak_overpressure_pa`, and
+`acoustics.iop.duration_s`. This remains a declared engineering envelope;
+calibrated `d(mdot*c*)/dt` reconstruction, runtime pressure-history
+calibration of the reconstructed command-response history, calibrated
+duct/trench decks, suppression data calibration, and published IOP trend
+validation are separate work.
+
+`[acoustics.ascent]` is an opt-in schema-v3 ascent acoustic environment
+analysis block. It consumes a SHA-pinned Schema-1 ascent acoustic class deck,
+defaults to explicit `class_id` selection, or can use
+`class_selection = "mach_gate"` to select the unique deck class whose Mach gate
+contains each single or trace sample. It evaluates either a declared single
+`dynamic_pressure_pa`/`mach` sample or `[[acoustics.ascent.samples]]` trace
+rows, and emits
+`RunOutcome.acoustics.ascent` with deck SHA-256, dataset id, source class,
+peak-sample metadata, envelope OASPL, uncertainty, deterministic
+one-third-octave envelope spectrum CSV bytes, and deterministic sample trace
+CSV bytes. The runner also gates summary telemetry channels
+`acoustics.ascent.oaspl_db` and `acoustics.ascent.uncertainty_db`. This path is
+synthetic class-deck evidence only. When at least two trace rows are declared,
+the ascent report also carries P95/50 OASPL, tolerance factor, and deterministic
+environment-table CSV bytes derived from the trace sample spectra. Full
+geometry-driven `03` regime/zone selection, published payload-user-guide or MPE
+curves, and flight correlation are separate work.
+
+`[acoustics.fairing_internal]` is an opt-in schema-v3 fairing internal acoustic
+transfer block. It requires `[acoustics.ascent]` in the same scenario, consumes
+that external ascent envelope spectrum, applies a SHA-pinned Schema-1 fairing
+insertion-loss deck plus dimensionless `fill_factor`, and emits
+`RunOutcome.acoustics.fairing_internal` with deck SHA-256, dataset id, source
+class, selected class, fill factor, fill-factor gain, OASPL, uncertainty, and
+deterministic one-third-octave spectrum CSV bytes. The runner also gates
+`acoustics.fairing_internal.oaspl_db`,
+`acoustics.fairing_internal.uncertainty_db`, and
+`acoustics.fairing_internal.fill_factor_gain_db`. This path is synthetic
+transfer-deck evidence only. When the source ascent block has at least two
+trace samples, the fairing report also carries internal P95/50 OASPL,
+tolerance factor, deterministic environment-table CSV bytes, and deterministic
+fairing P95/50 sample-trace CSV bytes from the transferred trace sample
+spectra. Optional `[[acoustics.fairing_internal.samples]]` rows can provide
+per-ascent-sample fairing transfer inputs for those P95/50 calculations: each
+row may declare `sample_id`, may override `class_id`, and must declare
+`fill_factor`. When present, the row count must match the retained ascent
+sample spectra. The top-level fairing fields still drive the envelope fairing
+response and existing single-response reports. Published payload-user-guide/MPE
+curves, payload-zone spatial maps, and flight correlation are separate work.
+
+`[acoustics.response]` is an opt-in schema-v3 vibroacoustic response transfer
+block. It requires `source = "ascent"` with `[acoustics.ascent]`, or
+`source = "fairing_internal"` with `[acoustics.fairing_internal]`, consumes the
+selected one-third-octave SPL spectrum, applies a SHA-pinned Schema-1 response
+transfer deck plus `surface_mass_kg_m2`, `area_m2`, and dimensionless
+`mode_shape_factor`, and emits `RunOutcome.acoustics.response` with deck
+SHA-256, dataset id, source class, selected class, surface-mass gain,
+modal-force participation, integrated acceleration mean-square, integrated
+modal-force mean-square, and deterministic acceleration/modal-force PSD CSV
+bytes. The runner also gates
+`acoustics.response.total_mean_square_acceleration_m2_s4`,
+`acoustics.response.total_mean_square_force_n2`, and
+`acoustics.response.uncertainty_db`. This path is synthetic transfer-deck
+evidence only. The response report also carries deterministic structural loads
+handoff CSV bytes with modal-force PSD, per-band mean-square force, signed
+modal participation, and total mean-square force. In rigid-body scenarios that
+also declare `[vehicle.bending]`, the runner consumes the typed acoustic
+modal-force PSD through the structural rack and records
+`RunOutcome.structural_acoustics` as an out-of-band first-bending random
+response summary with per-band displacement/acceleration CSV bytes plus a
+first-increment engine-station equivalent reaction-moment line-load recovery
+CSV derived from the same first bending mode slope and modal acceleration PSD.
+When the selected source has at least two retained sample spectra, the response report
+also carries a P95/50 tolerance factor, integrated P95/50 mean-square
+acceleration and modal-force values, and deterministic P95/50
+acceleration/modal-force PSD CSV bytes. Optional
+`[[acoustics.response.samples]]` rows can provide per-source-sample response
+inputs for those P95/50 calculations: each row may declare `sample_id`, may
+override `class_id`, and must declare `surface_mass_kg_m2`, `area_m2`, and
+`mode_shape_factor`. When present, the row count must match the retained source
+sample spectra, and the response report emits a deterministic P95/50 sample
+trace CSV recording the paired response inputs and per-sample reductions. The
+top-level response fields still drive the envelope response and existing
+single-response reports. The ascent, fairing-internal, and response P95/50
+report families also carry one-sided Wilks sizing evidence: required sample
+count, achieved confidence, adequacy, and deterministic sizing CSV bytes. When
+`openbmp run` is invoked with run-data output options, nonempty
+ascent/fairing/response P95/50 CSV payloads, fairing and response P95/50 sample
+traces, the response loads handoff CSV, the structural-acoustics first-bending
+response CSV, and the structural-acoustics first-bending line-load recovery CSV
+are written under the run-data artifact root and indexed in the `RunRecord`
+with role labels, paths, and SHA-256 pins.
+`openbmp mc acoustics-ascent-trace` can materialize
+deterministic `[[acoustics.ascent.samples]]` TOML snippets from
+LHS/Sobol/Owen-Sobol designs over declared dynamic-pressure and Mach ranges,
+and `openbmp mc acoustics-response-samples` can materialize deterministic
+`[[acoustics.response.samples]]` snippets over declared surface-mass, area, and
+mode-shape ranges for response-side P95/50 input variation. `openbmp mc
+acoustics-ascent-campaign` can inject generated ascent samples into a base
+scenario, run the normal runner, write the evaluated ascent trace CSV, report
+ascent P95/50/Wilks evidence, and surface downstream fairing-internal and
+response P95/50/Wilks summary values when the base scenario declares those
+blocks. `openbmp mc acoustics-response-campaign` is a response-focused wrapper
+over the same generated ascent-trace path: it requires the base scenario to
+declare `[acoustics.response]`, can optionally append generated
+`[[acoustics.response.samples]]` rows from response-side range flags, preserves
+the same checkpoint/artifact behavior, and reports the response P95/50
+acceleration, modal-force, and Wilks evidence on completion. With
+`--output-artifact-dir`, completed campaigns also write nonempty evaluated
+campaign CSV artifacts such as ascent/fairing P95/50 environment tables,
+response loads handoff and P95/50 PSD tables, response P95/50 sample traces,
+and structural-acoustic CSVs when
+the generated run emits them. The artifact directory also receives
+`manifest.json` with each artifact role, relative path, and SHA-256 pin.
+Generated fairing/response design-variable samplers, full run-data campaign
+aggregation, calibrated SEA-lite/Franken transfer evidence, and broader
+structural `02` stack integration are separate work.
+
+```toml
+[acoustics.iop]
+station_id = "station-a"
+gas_generation_rate_n_per_s = 2400000.0
+ramp_duration_s = 0.25
+# Optional liquid-engine source coupling. When present, omit
+# gas_generation_rate_n_per_s and ramp_duration_s.
+# source_engine_id = "main"
+duct_volume_m3 = 120.0
+duct_exit_area_m2 = 6.0
+duct_discharge_velocity_m_s = 40.0
+duct_geometry_gain = 1.5
+# Optional synthetic duct/trench deck path. When present, omit the four inline
+# duct_* scalars above and declare duct_class.
+# duct_deck_file = "data/acoustics/iop-duct-v1.toml"
+# duct_deck_file_sha256 = "7711a6c472fc5343fda1452626ad7ff41323c8510b6d82d8de6d7b707e807c7e"
+# duct_class = "long_trench"
+# Optional synthetic pressure-amplitude suppression deck. The selected class
+# loss adds to suppression_loss_db.
+# suppression_deck_file = "data/acoustics/iop-suppression-v1.toml"
+# suppression_deck_file_sha256 = "641894d3cd5ac3dbc8529219b47e39deb1c0974121724fb5023f879f98e9ecc7"
+# suppression_class = "water_deluge_nominal"
+receiver_distance_m = 30.0
+suppression_loss_db = 3.0
+uncertainty_minus_db = 2.0
+uncertainty_plus_db = 4.0
+```
+
+```toml
+[acoustics.ascent]
+station_id = "station-a"
+deck_file = "data/acoustics/ascent-acoustic-env-v1.toml"
+deck_file_sha256 = "995283f2f4d9c1134f5fc4cb0e6e857c320137e9544ffc1308f6f0933e83e87b"
+class_id = "attached_turbulent"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+# Optional automatic class mode. When set, omit class_id here and in sample
+# rows; the runner selects the unique deck class whose Mach gate contains each
+# sample.
+# class_selection = "mach_gate"
+#
+# Optional trace mode. When rows are declared, dynamic_pressure_pa and mach
+# above may be omitted; class_id remains the default class for rows without an
+# override. The runner envelopes the sample spectra in band order.
+[[acoustics.ascent.samples]]
+sample_id = "max-q"
+dynamic_pressure_pa = 50000.0
+mach = 0.8
+
+[[acoustics.ascent.samples]]
+sample_id = "late-max-q"
+dynamic_pressure_pa = 200000.0
+mach = 0.8
+
+[acoustics.fairing_internal]
+station_id = "payload-a"
+deck_file = "data/acoustics/fairing-internal-v1.toml"
+deck_file_sha256 = "fbb2dcc426b9d37a93781ef3621dba5a3c7eebc2c56d01f7fcd78e50e0558500"
+class_id = "synthetic_light_fairing"
+fill_factor = 1.0
+
+# Optional fairing P95/50 input rows. When declared, the number of rows must
+# match the retained ascent sample spectra.
+# [[acoustics.fairing_internal.samples]]
+# sample_id = "fairing-open"
+# fill_factor = 0.25
+#
+# [[acoustics.fairing_internal.samples]]
+# sample_id = "fairing-packed"
+# class_id = "synthetic_heavy_fairing"
+# fill_factor = 0.75
+
+[acoustics.response]
+station_id = "payload-a"
+source = "fairing_internal"
+deck_file = "data/acoustics/vibroacoustic-transfer-v1.toml"
+deck_file_sha256 = "9f791c04c67cc1f8ba3d98d25e541ca33cc044c2ff8cfe61f033d9d66ef37be5"
+class_id = "synthetic_panel_light"
+surface_mass_kg_m2 = 12.0
+area_m2 = 3.0
+mode_shape_factor = 0.5
+
+# Optional response P95/50 input rows. When declared, the number of rows must
+# match the retained source sample spectra.
+# [[acoustics.response.samples]]
+# sample_id = "panel-light"
+# surface_mass_kg_m2 = 12.0
+# area_m2 = 3.0
+# mode_shape_factor = 0.5
+#
+# [[acoustics.response.samples]]
+# sample_id = "panel-heavy"
+# class_id = "synthetic_panel_heavy"
+# surface_mass_kg_m2 = 24.0
+# area_m2 = 4.0
+# mode_shape_factor = 0.75
+```
+
+```toml
+[acoustics.dsm]
+station_id = "station-a"
+# Optional deck path. When present, omit [[acoustics.dsm.source_line]].
+# deck_file = "data/acoustics/dsm-source-directivity-v1.toml"
+# deck_file_sha256 = "169a6c35e513aafd8f111e6ba7e0b8d707cd0f1c8b1904eabc056d5d7536fe00"
+# Optional SP-8072 Figure 12 source curve. When present, omit deck_file and
+# [[acoustics.dsm.source_line]], and declare exit_mach.
+# source_curve_file = "data/acoustics/sp8072-figure12-source-power-v1.toml"
+# source_curve_file_sha256 = "d199bebbb4bcd217f03f7a8ad717f875aa33419f7dbb2532e3b04649fb848b62"
+# exit_mach = 1.0
+# Optional SP-8072 Figure 14 apparent-source curve. When present, omit
+# deck_file, source_curve_file, and [[acoustics.dsm.source_line]].
+# apparent_source_curve_file = "data/acoustics/sp8072-figure14-apparent-source-v1.toml"
+# apparent_source_curve_file_sha256 = "5c768b2ce628c07ad2cc8e2a1a6df99e893318ce79757c0675e77bc79f1b6000"
+# Optional SP-8072 Figure 13 axial spectrum curve. May pair with inline
+# [[acoustics.dsm.source_line]], source_curve_file, or deck_file declarations;
+# omit when apparent_source_curve_file is present.
+# axial_spectrum_curve_file = "data/acoustics/sp8072-figure13-axial-spectrum-v1.toml"
+# axial_spectrum_curve_file_sha256 = "41d90c99e53afe77d1d4503d7bf17df627341d4ac26323ec2a32f601faa318da"
+# Optional SP-8072 Figure 10 directivity curve. May pair with inline
+# [[acoustics.dsm.source_line]], source_curve_file, or
+# apparent_source_curve_file; omit when deck_file is present.
+# directivity_curve_file = "data/acoustics/sp8072-figure10-directivity-v1.toml"
+# directivity_curve_file_sha256 = "b374017177dae2cb5028ae7d096d253e9fd300665d05f33dd82d1ce2aaad7894"
+# Optional SP-8072 Figure 5 spectrum curve. May pair with inline source,
+# source_curve_file, or deck_file declarations.
+# spectrum_curve_file = "data/acoustics/sp8072-figure5-spectrum-v1.toml"
+# spectrum_curve_file_sha256 = "0d5c9ed47b94e835562f13e71d3ace4207b5a56b0991bfdbf0b9ebed11bb8b19"
+# Optional per-band air-absorption deck. When present, it overrides the scalar
+# absorption_db_per_m fallback.
+# absorption_deck_file = "data/acoustics/dsm-air-absorption-v1.toml"
+# absorption_deck_file_sha256 = "cda1136c9a9f935ac576fbe06671f00d8e0d1ed56bbb5d9c2cd42dc34847af48"
+# Optional named profile from the absorption deck.
+# absorption_profile_id = "humid_pad_303k_70rh"
+# Optional per-band pad suppression deck. When present, select one class.
+# suppression_deck_file = "data/acoustics/pad-suppression-v1.toml"
+# suppression_deck_file_sha256 = "4888aeb8dde08333638d7d1127d864ea544a1a2ab78e4eabd95ad3d0b42cf932"
+# suppression_class = "water_nominal"
+receiver_axial_m = 5.0
+receiver_radial_m = 30.0
+receiver_azimuth_deg = 0.0
+mass_flow_kg_s = 10.0
+# Optional identical-engine cluster multiplier; exit fields are per engine.
+# cluster_engine_count = 4
+# Optional cluster interaction correction. Requires cluster_engine_count or
+# [[acoustics.dsm.cluster_engines]].
+# cluster_correlation_coefficient = 0.0
+# cluster_shielding_loss_db = 0.0
+# Optional per-band cluster interaction deck. Use this instead of scalar
+# cluster_correlation_coefficient/cluster_shielding_loss_db.
+# cluster_interaction_deck_file = "data/acoustics/pad-cluster-interaction-v1.toml"
+# cluster_interaction_deck_file_sha256 = "301aaf420d9231834a89962184b8e57e9a3117a704f556f61a4eb1ab0c836b37"
+# cluster_interaction_class = "coherent_shielded"
+exit_velocity_m_s = 2000.0
+exit_diameter_m = 1.0
+acoustic_efficiency = 0.01
+peak_strouhal = 0.2
+width_decades = 0.5
+ambient_impedance_pa_s_m = 408.0
+absorption_db_per_m = 0.001
+# Optional duct/trench/deflector path-length term.
+# pad_path_length_extra_m = 5.0
+# Optional single-bend plume-axis deflection toward the receiver radial plane.
+# pad_deflection_origin_axial_m = 0.0
+# pad_deflection_angle_deg = 90.0
+
+# Optional geometric cluster. Use this instead of cluster_engine_count.
+# [[acoustics.dsm.cluster_engines]]
+# id = "center"
+# offset_x_m = 0.0
+# offset_y_m = 0.0
+#
+# [[acoustics.dsm.cluster_engines]]
+# id = "near"
+# offset_x_m = 10.0
+# offset_y_m = 0.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 0.0
+weight = 1.0
+
+[[acoustics.dsm.source_line]]
+axial_m = 10.0
+weight = 2.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 0.0
+vehicle_height_m = 0.0
+
+[[acoustics.dsm.liftoff_steps]]
+time_s = 1.0
+vehicle_height_m = 50.0
+```
 
 Two deck formats are supported. **Schema 1** is the three-axis
 `(mach, alpha, beta) → (CN, CD, CM)` deck documented in
 [`software-architecture.md § Deck Format`](software-architecture.md#deck-format-in-house-toml).
 **Schema 2** extends Schema 1 with optional control-effector
 axes; see [Schema-2 aero decks](#schema-2-aero-decks) below.
+Both deck schemas may also carry optional row-major
+`[dynamic_derivatives.<moment>_<rate>]` tables for non-dimensional rate
+derivative lookup, where `<moment>` is `cl`, `cm`, or `cn` and `<rate>` is
+`p`, `q`, or `r`. Missing tables default to zero, so legacy
+`cm_q`/`cn_r`/`cl_p` decks remain valid. Rigid-body `DeckLookup` moment
+evaluation consumes them when angular-rate state is available; point-mass/no-rate
+evaluations keep zero-rate behavior.
 For external decks, the schema discriminator lives inside the deck file
 itself (`openbmp.aero_deck = 1` or `= 2`).
 When `[multi_body]` is declared and `forces.models` includes `"aero"`,
@@ -1304,6 +2184,7 @@ Inline buildup form:
 [aero]
 
 [aero.buildup]
+datcom = true # optional; default false
 body_diameter_m = 0.197
 body_length_m = 2.34
 surface_roughness_m = 6.0e-5
@@ -1329,6 +2210,12 @@ tip_chord_m = 0.12
 span_m = 0.16
 thickness_ratio = 0.06
 sweep_rad = 0.52
+
+[aero.buildup.protuberances] # optional; requires datcom = true
+count = 2
+frontal_area_m2 = 1.2e-4
+drag_coefficient = 1.15
+interference_factor = 1.0 # optional; default 1.0
 ```
 
 The buildup uses Sutherland viscosity from the sampled reference
@@ -1338,6 +2225,14 @@ base drag and boattail/flare effects, and produces a fixed
 consume the baked deck axially at `alpha = beta = 0`; rigid-body
 vehicles resolve velocity into the body frame and query the alpha/beta
 axes before rotating the reduced force back to ECI.
+When `datcom = true`, the bake uses the opt-in `DatcomComponentBuildup`
+path with DATCOM-style area-rule forebody wave drag, fin/body carryover,
+slender-body crossflow, optional equivalent protuberance drag, and bounded
+principal `Cm_q`/`Cn_r`/`Cl_p` dynamic-derivative tables consumed by the
+rigid-body deck moment path. The deck format can also carry the full
+`Cl/Cm/Cn` by `p/q/r` derivative matrix for external calibrated decks. The
+default `datcom = false` path preserves the legacy linear buildup and rejects
+`[aero.buildup.protuberances]`.
 
 ### Motor reference
 
@@ -1484,6 +2379,79 @@ use the public `checkhwm14` height-profile case shown above. Use
 non-`none` `environment.wind` therefore requires the structured
 `[wind]` block; leaving `environment.wind = "none"` lets a structured
 `[wind]` block opt into the active model.
+
+### Day-of-launch wind block
+
+`[day_of_launch.wind]` is a v3-only offline declaration for measured,
+spliced, or synthetic day-of-launch wind inputs. It does not change the
+default runner wind model by itself. `openbmp trajopt dol-redesign` consumes
+validated `kind = "spliced"` declarations to produce deterministic DOL
+I-load updates. The `trajopt dol-verify-run` and `trajopt dol-verify-sil`
+commands can bind those updated I-load bytes to verifier telemetry/report-card
+artifacts, and `openbmp-trajopt::dol` includes a synthetic RSS persistence
+knockdown substrate, a synthetic geometric launch-COLA screening substrate,
+and a `trajopt dol-commit-readiness` file-fed CLI latch over those reports;
+operational LCC/scenario integration remains separate DOL work.
+
+```toml
+openbmp.scenario = 3
+
+[day_of_launch.wind]
+kind = "spliced" # measured | spliced | synthetic_family
+
+[day_of_launch.wind.qc]
+min_altitude_m = 0.0
+max_altitude_m = 20_000.0
+max_gap_m = 2_000.0
+max_shear_per_s = 0.02
+max_speed_m_s = 100.0
+min_quality_unit = 0.8
+max_staleness_s = 18_000.0
+
+[day_of_launch.wind.filter]
+cutoff_wavelength_m = 2_000.0
+
+[day_of_launch.wind.splice]
+lower_profile_id = "balloon-1"
+upper_profile_id = "profiler-1"
+overlap_lower_altitude_m = 1_000.0
+overlap_upper_altitude_m = 2_000.0
+
+[[day_of_launch.wind.profiles]]
+id = "balloon-1"
+source = "balloon"
+released_at_s = -18_000.0
+provenance_id = "synthetic-balloon"
+provenance_uri = "data/wind/synthetic-balloon-family-v1.toml"
+samples = [
+  { altitude_m = 0.0, wind_ned_m_s = [5.0, 0.0, 0.0], quality_unit = 1.0 },
+  { altitude_m = 1_000.0, wind_ned_m_s = [7.0, 1.0, 0.0], quality_unit = 1.0 },
+  { altitude_m = 2_000.0, wind_ned_m_s = [9.0, 1.5, 0.0], quality_unit = 1.0 },
+]
+```
+
+`kind = "measured"` requires one or more `[[day_of_launch.wind.profiles]]`
+rows and rejects `splice` and `synthetic_family`. `kind = "spliced"`
+requires at least two profiles plus `[day_of_launch.wind.splice]`; splice
+profile ids must reference declared profile rows and the overlap band must be
+strictly increasing. `kind = "synthetic_family"` requires
+`[day_of_launch.wind.synthetic_family]` and rejects inline profiles:
+
+```toml
+[day_of_launch.wind]
+kind = "synthetic_family"
+
+[day_of_launch.wind.synthetic_family]
+seed = 12345
+member_count = 16
+released_at_s = -18_000.0
+altitude_min_m = 0.0
+altitude_max_m = 20_000.0
+altitude_step_m = 500.0
+base_wind_ned_m_s = [4.0, -2.0, 0.0]
+shear_ned_per_s = [0.0012, 0.0004, 0.0]
+amplitude_ned_m_s = [6.0, 3.0, 0.4]
+```
 
 ### Atmosphere block
 
@@ -2542,6 +3510,29 @@ possible extensions.
 | `min_throttle_unit` | — | optional; finite in `[0, 1]`; non-zero commands below the floor clamp up |
 | `isp_throttle_falloff` | — | optional; finite in `[0, 1)`; linear low-throttle Isp derate |
 
+#### TVC actuator dynamics
+
+Schema v3 engines may opt into the second-order TVC actuator plant with a
+`tvc_actuator` inline table. The position limit remains
+`limits.max_gimbal_rad`; the actuator block supplies bandwidth, rate, and
+reflected-inertia parameters. If omitted, the engine uses the legacy gimbal
+slew latch.
+
+```toml
+[[vehicle.assembly.engines]]
+id                 = "main"
+kind               = { kind = "liquid_engine" }
+mount_point_body_m = [0.0, 0.0, 0.0]
+limits             = { max_thrust_n = 5000.0, isp_s = 250.0,
+                       ignition_transient_s = 0.1,
+                       shutdown_transient_s = 0.1,
+                       max_gimbal_rad = 0.087 }
+tvc_actuator       = { natural_frequency_rad_s = 20.0,
+                       damping_ratio = 0.5,
+                       max_rate_rad_s = 1.0,
+                       gimbal_inertia_kg_m2 = 2.0 }
+```
+
 #### Propellant budget and feed coupling
 
 An engine may declare a `propellant` sub-table that binds its mass flow to one
@@ -2703,12 +3694,78 @@ oxidizer_line = {
 }
 ```
 
+Standalone line topologies can be declared with `[[propulsion.lines]]`. These
+lines use the same fixed-grid MOC primitive and may be referenced by transient
+feed-network legs through `oxidizer_line_id = "..."` and/or
+`fuel_line_id = "..."`. The runner builds one named topology, requires every
+declared line to share the scenario Courant step
+`time.dt_s = length_m / segment_count / wave_speed_m_s`, advances the topology
+once per feed-network rack tick, and applies each referenced line's downstream
+pressure perturbation around that leg's tank-plus-pump feed pressure before the
+valve/chamber step. Line ids must be unique, and a leg may declare either an
+inline `*_line = { ... }` block or a `*_line_id`, not both.
+
+```toml
+[[propulsion.lines]]
+id = "oxidizer-main"
+length_m = 40.0
+wave_speed_m_s = 1000.0
+density_kg_m3 = 810.0
+cross_section_area_m2 = 0.01
+segment_count = 4
+initial_head_m = 100.0
+initial_velocity_m_s = 2.0
+upstream = { kind = "head", head_m = 100.0 }
+downstream = { kind = "accumulator",
+               reference_head_m = 100.0,
+               stored_volume_delta_m3 = 0.0,
+               compliance_m3_per_m = 0.00001 }
+```
+
+`upstream.kind` may be `head`, `velocity`, or `gas_source`. `downstream.kind`
+may be `velocity`, `head`, `accumulator`, or `gas_accumulator`; linear
+accumulator compliance must be positive, and gas source/accumulator boundaries
+require positive `gas_reference_volume_m3`, `gas_precharge_pressure_pa`,
+`polytropic_exponent`, and remaining gas volume.
+
+Standalone line endpoints may be joined with zero-storage
+`[[propulsion.line_junctions]]` declarations. Each junction connects at least
+two unique line endpoints, all referenced line ids must exist, and an endpoint
+may belong to only one junction. Connected endpoints solve a common junction
+head with zero net signed flow; the per-line `upstream` / `downstream` boundary
+fields remain the terminal defaults for endpoints not connected to a junction.
+
+```toml
+[[propulsion.line_junctions]]
+id = "tee"
+connections = [
+  { line_id = "inlet-main", endpoint = "downstream" },
+  { line_id = "branch-a", endpoint = "upstream" },
+  { line_id = "branch-b", endpoint = "upstream" },
+]
+```
+
+```toml
+[[propulsion.feed_network]]
+kind = "transient_dual_valve_chamber"
+engine_id = "main"
+# ... tank, valve, chamber, and command fields as above ...
+oxidizer_line_id = "oxidizer-main"
+```
+
 `[propulsion.pogo]` runs the reduced feed-half POGO stability primitive at
 runner startup. The block is optional and has no effect when omitted. It
 couples one longitudinal structural mode to a first-order feed response,
 attenuates the open-loop gain with accumulator compliance, and can fail the
 run at build time when `require_stable = true` and the reduced verdict is
-unstable.
+unstable. Configured runs also populate `RunOutcome.pogo` with the reduced
+feed snapshot, a closed-loop eigenvalue/RHP report, a structural
+sampled-Nyquist margin report, an optional pump-dispersion worst-corner report,
+an optional lumped feedline-coupled eigen report, and deterministic
+structural-margin CSV bytes. The sampled structural Nyquist clearance
+threshold defaults to `0.1`; set
+`require_structural_nyquist_clearance = true` to reject a run when the sampled
+loop is at or below that declared clearance.
 
 ```toml
 [propulsion.pogo]
@@ -2719,7 +3776,45 @@ feed_time_constant_s = 0.02
 mass_flow_gain_time_s = 0.004
 cavitation_compliance_m3_per_pa = 0.000000001
 accumulator_compliance_m3_per_pa = 0.0
+structural_nyquist_clearance_1 = 0.1
+require_structural_nyquist_clearance = false
 require_stable = true
+```
+
+Optional pump Cb/Mb dispersion boxes declare finite min/max bounds around the
+nominal `cavitation_compliance_m3_per_pa` and `mass_flow_gain_time_s` scalars.
+The block must carry a provenance pointer to a repository `provenance.md`
+record; the runner carries that pointer into `RunOutcome.pogo`.
+
+```toml
+[propulsion.pogo.dispersion_box]
+provenance = "data/feed_system/provenance.md#openbmp.feed_system.generic_pogo_stability.v1"
+cavitation_compliance_min_m3_per_pa = 0.0000000005
+cavitation_compliance_max_m3_per_pa = 0.000000004
+mass_flow_gain_time_min_s = 0.002
+mass_flow_gain_time_max_s = 0.006
+```
+
+Optional feedline adapters reference standalone `[[propulsion.lines]]` rows by
+id and map their length, wave speed, density, and cross-section into
+`RunOutcome.pogo.feedline_coupled`.
+
+```toml
+[[propulsion.lines]]
+id = "oxidizer-main"
+length_m = 100.0
+wave_speed_m_s = 1000.0
+density_kg_m3 = 1000.0
+cross_section_area_m2 = 0.01
+segment_count = 1
+initial_head_m = 100.0
+initial_velocity_m_s = 2.0
+upstream = { kind = "head", head_m = 100.0 }
+downstream = { kind = "velocity", velocity_m_s = 0.0 }
+
+[propulsion.pogo.feedline]
+line_ids = ["oxidizer-main"]
+feedline_damping_ratio_1 = 0.02
 ```
 
 Rigid-body scenarios with a `[vehicle.bending]` first-mode block can use that
@@ -2733,6 +3828,8 @@ feed_time_constant_s = 0.02
 mass_flow_gain_time_s = 0.004
 cavitation_compliance_m3_per_pa = 0.000000001
 accumulator_compliance_m3_per_pa = 0.0
+structural_nyquist_clearance_1 = 0.1
+require_structural_nyquist_clearance = false
 require_stable = true
 ```
 
@@ -2933,7 +4030,12 @@ geometry                 = { kind = "cylinder", radius_m = 0.5, height_m = 1.5 }
 propellant               = { density_kg_m3 = 1000.0, label = "water_textbook" }
 initial_fill_fraction    = 0.7
 moving_mass              = { kind = "equivalent_pendulum", damping_ratio_zeta = 0.005, freefall_restoring = { kind = "capillary_surface_wave", surface_tension_n_m = 0.072, damping_ratio_zeta = 1.0 } }
+ullage                   = { initial_pressure_pa = 2000000.0, gas_gamma = 1.4 }
+pressurization           = { initial_ullage_temperature_k = 300.0, pressurant_inlet_pressure_pa = 5000000.0, pressurant_inlet_temperature_k = 320.0, pressurant_gas_constant_j_per_kg_k = 287.0, pressurant_heat_capacity_ratio = 1.4, pressurant_flow_area_m2 = 1.0e-4, pressurant_discharge_coefficient = 0.8, ullage_heat_transfer_w_per_k = 10.0, tank_wall_temperature_k = 315.0, tank_cross_section_area_m2 = 1.0, gravity_m_s2 = 9.80665 }
 drain_rate_kg_per_s      = 0.0
+safe_dump_rate_kg_per_s  = 0.0
+safe_dump_orifice        = { discharge_coefficient = 0.8, area_m2 = 1.0e-5, backpressure_ramp = { start_time_s = 0.0, end_time_s = 1.0, start_pressure_pa = 101325.0, end_pressure_pa = 150000.0 } }
+safe_dump_vent           = { discharge_coefficient = 0.8, area_m2 = 1.0e-3, gas_temperature_k = 300.0, gas_specific_gas_constant_j_kg_k = 287.0, thermal_model = "adiabatic_wall_relaxation", wall_temperature_k = 320.0, wall_thermal_relaxation_tau_s = 0.5, backpressure_source = "ambient_atmosphere", backpressure_pa = 101325.0 }
 initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] }
 ```
 
@@ -2961,6 +4063,9 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
     term `ω_cap² = (σ / ρ) · k³ · tanh(kh)`, where `k = 1.841 / radius`;
   - `equivalent_spring_mass { damping_ratio_zeta }` — translational
     alternative;
+  - `abramson_multi_mass { damping_ratio_zeta, mode_count? }` —
+    mass-correct Abramson/Dodge cylindrical fixed-mass plus N slosh-mass
+    analog. `mode_count` defaults to `3` and is bounded to `1..=8`;
   - `baffled_pendulum { base_damping_ratio_zeta }` — pendulum +
     `baffle_model.damping_increment_zeta`.
 
@@ -2971,15 +4076,64 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
   per Abramson Eq 7-46 simplified.
 - `ullage = { initial_pressure_pa, gas_gamma }` — pressurant state required
   when an engine bound to this tank selects `feed = "blowdown"`.
+- `pressurization = { initial_ullage_temperature_k,
+  pressurant_inlet_pressure_pa, pressurant_inlet_temperature_k,
+  pressurant_gas_constant_j_per_kg_k, pressurant_heat_capacity_ratio,
+  pressurant_flow_area_m2, pressurant_discharge_coefficient,
+  ullage_heat_transfer_w_per_k, tank_wall_temperature_k,
+  tank_cross_section_area_m2, gravity_m_s2 }` — opt-in finite-volume
+  ideal-gas pressurant hardware substrate. It requires `ullage`, uses the
+  existing `openbmp-feedsystem` lumped pressurization model, advances with the
+  current tank outflow volume rate, and supplies a previous-step/current-rack
+  ullage pressure override to pressure-coupled `safe_dump_orifice` flow when
+  SAFE dump is active. An active SAFE command with
+  `pressurization_enabled = false` latches this path disabled. It cannot be
+  co-declared with `safe_dump_vent` because both models own ullage gas state.
+  This is a
+  research/toy substrate; it is not a production cryogenic phase-change,
+  regulator/bottle certification, or flight-calibrated pressurant-hardware
+  model.
 - `drain_rate_kg_per_s` — drain is decoupled from
   engine propellant budgets. Defaults to `0.0` (no scenario drain); engine
   coupling adds its own deterministic one-step-lag drain rate.
+- `safe_dump_rate_kg_per_s` — separate SAFE dump path, consumed only when
+  the flight controller's propellant-safing command requests dump. Defaults
+  to `0.0` and does not reopen ordinary drain paths.
+- `safe_dump_orifice = { discharge_coefficient, area_m2, backpressure_pa?,
+  backpressure_source?, backpressure_ramp? }` — pressure-coupled SAFE dump path,
+  consumed only when the flight controller's propellant-safing command requests
+  dump. It requires `ullage`, computes the live pressure from the isentropic
+  ullage volume ratio, applies an incompressible orifice law, and adds to
+  `safe_dump_rate_kg_per_s`. `backpressure_pa` defaults to `0.0`.
+  `backpressure_source` defaults to `"configured"`; `"ambient_atmosphere"` uses
+  the runner environment sample's current atmosphere pressure. Optional
+  `backpressure_ramp = { start_time_s, end_time_s, start_pressure_pa,
+  end_pressure_pa }` overrides `backpressure_pa` at runtime using deterministic
+  clamped linear interpolation over scenario elapsed time and is mutually
+  exclusive with `backpressure_source = "ambient_atmosphere"`.
+- `safe_dump_vent = { discharge_coefficient, area_m2, gas_temperature_k,
+  gas_specific_gas_constant_j_kg_k, thermal_model?, backpressure_pa?,
+  backpressure_source?, wall_temperature_k?, wall_thermal_relaxation_tau_s?,
+  backpressure_ramp? }` — choked ullage-gas vent path, consumed only when the
+  flight controller's propellant-safing command requests dump. It requires
+  `ullage`, computes the initial gas mass from the ideal-gas relation, applies
+  deterministic choked/subcritical orifice mass flow, and reduces the pressure
+  available to `safe_dump_orifice` on later steps. `thermal_model` defaults to
+  `"fixed_temperature"`; `"adiabatic_ullage"` updates gas temperature and
+  pressure with an isentropic ullage-gas relation as gas mass and ullage volume
+  change; `"adiabatic_wall_relaxation"` applies that post-vent adiabatic update
+  and then relaxes the gas temperature toward `wall_temperature_k` over
+  `wall_thermal_relaxation_tau_s`. `backpressure_pa` defaults to `0.0`, and
+  `backpressure_source` has the same `"configured"`/`"ambient_atmosphere"`
+  semantics as the orifice field. Optional `backpressure_ramp` has the same
+  shape and runtime interpolation semantics as the orifice ramp and is mutually
+  exclusive with `backpressure_source = "ambient_atmosphere"`.
 - `initial_slosh = { angles_rad: [θ_x, θ_y], rates_rad_s: [θ̇_x,
   θ̇_y] }` — initial slosh perturbation for `equivalent_pendulum`
   and `baffled_pendulum`.
 - `initial_slosh = { displacement_body_m: [x, y], velocity_body_m_s:
   [ẋ, ẏ] }` — initial slosh perturbation for
-  `equivalent_spring_mass`.
+  `equivalent_spring_mass` and the first mode of `abramson_multi_mass`.
 
 #### Cross-block validation
 
@@ -2995,9 +4149,31 @@ initial_slosh            = { angles_rad = [0.05, 0.0], rates_rad_s = [0.0, 0.0] 
   rejected unless `moving_mass.kind = "baffled_pendulum"`.
 - `ullage` requires `initial_fill_fraction < 1.0`; blowdown engine bindings
   reject tanks without `ullage`.
-- `drain_rate_kg_per_s × time.dt_s` must not exceed the initial tank
-  fluid mass; single-step emptying is rejected rather than
-  silently clamping away the moving-mass dynamics.
+- `pressurization` requires `ullage`, positive finite pressure/temperature/gas
+  constants/flow area/cross-section/gravity fields, heat-capacity ratio greater
+  than `1`, `pressurant_discharge_coefficient` in `(0, 1]`, and non-negative
+  `ullage_heat_transfer_w_per_k`. It is rejected when `safe_dump_vent` is also
+  declared.
+- `safe_dump_orifice` requires `ullage`, `discharge_coefficient` in `(0, 1]`,
+  positive `area_m2`, non-negative `backpressure_pa`, and any
+  `backpressure_ramp` to have non-negative pressures, non-negative
+  `start_time_s`, and `end_time_s > start_time_s`. `backpressure_source =
+  "ambient_atmosphere"` is rejected when `backpressure_ramp` is declared.
+- `safe_dump_vent` requires `ullage`, `discharge_coefficient` in `(0, 1]`,
+  positive `area_m2`, positive `gas_temperature_k`, positive
+  `gas_specific_gas_constant_j_kg_k`, non-negative `backpressure_pa`, and an
+  initial vent flow that cannot empty the ullage gas in one `time.dt_s` step.
+  `thermal_model` must be `fixed_temperature`, `adiabatic_ullage`, or
+  `adiabatic_wall_relaxation`; the wall-relaxed model also requires positive
+  finite `wall_temperature_k` and `wall_thermal_relaxation_tau_s`, while those
+  wall fields are rejected for the other models. Any `backpressure_ramp` obeys
+  the same validation as the orifice ramp and is rejected with
+  `backpressure_source = "ambient_atmosphere"`.
+- `drain_rate_kg_per_s × time.dt_s` and
+  the initial combined SAFE dump rate (`safe_dump_rate_kg_per_s` plus
+  `safe_dump_orifice` at initial ullage pressure) multiplied by `time.dt_s`
+  must not exceed the initial tank fluid mass; single-step emptying is rejected
+  rather than silently clamping away the moving-mass dynamics.
 
 #### Determinism
 
@@ -3280,15 +4456,25 @@ ideal ΔV. `structural_coefficient` must lie in `(0, 1)`, and all masses and
 ### Recovery and descent
 
 `[[vehicle.assembly.recovery]]` declares recovery devices driven by the
-runner-side recovery rack. Recovery is force-only: the
-kernel applies drag at the body center of gravity, with no recovery
-mass contribution and no recovery moment.
+runner-side recovery rack. The baseline recovery path applies drag at the body
+center of gravity with no recovery moment; inflating parachutes can also opt
+into scalar apparent mass as an added mass/rate contribution.
 
 ```toml
 [[vehicle.assembly.recovery]]
 id         = "dual_chute"
 mounted_to = "lower"
 kind       = { kind = "drogue_main", drogue_c_d = 1.0, drogue_area_m2 = 0.5, main_c_d = 1.5, main_area_m2 = 4.0 }
+drogue_inflation = { fill_time_s = 0.5, opening_force_coeff_c_x = 1.1, growth = "polynomial", exponent_j = 1.0 }
+main_inflation   = { fill_time_s = 1.5, opening_force_coeff_c_x = 1.3, growth = "polynomial", exponent_j = 2.0, apparent_mass_coeff_k_a = 0.65 }
+sequence = { snatch_delta_v_m_s = 12.0, snatch_effective_mass_kg = 220.0, pack_drag_load_n = 350.0, mortar_pack_mass_kg = 8.0, mortar_pack_velocity_body_m_s = [0.0, 0.0, 18.0] }
+risers = [{ id = "main_riser", unstretched_length_m = 10.0, axial_rigidity_n = 20000.0, damping_n_s_m = 50.0, vehicle_attach_body_m = [0.0, 0.5, -1.0], canopy_attach_body_m = [0.0, 0.0, 0.0] }]
+
+[[vehicle.assembly.recovery]]
+id         = "main_chute"
+mounted_to = "lower"
+kind       = { kind = "parachute_drag", c_d = 1.5, area_inflated_m2 = 8.0 }
+inflation  = { fill_time_s = 1.0, opening_force_coeff_c_x = 1.2, growth = "polynomial", exponent_j = 2.0, apparent_mass_coeff_k_a = 0.65 }
 
 [[mission.events]]
 id      = "evt_apogee"
@@ -3311,6 +4497,103 @@ The runner publishes zero drag while a device is stowed.
 When `[multi_body]` is declared, every recovery device must set
 `mounted_to` to a declared body. After separation, only that body's
 lane receives the recovery drag.
+
+Schema v3 single-stage `parachute_drag` devices can opt into an `inflation`
+inline table. Two-stage `drogue_main` devices can opt into
+`drogue_inflation` and/or `main_inflation` tables; the active stage selects its
+own fill clock and optional load/apparent-mass parameters. The fill duration is
+either declared directly with `fill_time_s` or derived from Knacke-style
+line-stretch inputs:
+`fill_constant_n`, `nominal_diameter_m`, `line_stretch_speed_m_s`, and optional
+`fill_exponent_k` (default `1.0`). The explicit and derived fill-time forms are
+mutually exclusive. `growth` is `"polynomial"` or `"exponential"`,
+`exponent_j` controls polynomial `tau^j` growth, `alpha` controls exponential
+growth, and `initial_drag_area_fraction` defaults to `0.0`. The runner starts
+the fill clock when `deploy` fires and publishes the effective ramped area
+through `recovery.<id>.drag_area_m2`; scenarios without an inflation table keep
+the legacy instantaneous area swap. Inflating parachutes also publish an
+infinite-mass opening-load diagnostic from `opening_force_coeff_c_x`. Optional
+`apparent_mass_coeff_k_a` on a single-stage or active staged profile enables
+scalar apparent mass
+`m_a = k_a * rho * (pi/6) * D_p^3`; point-mass and rigid-body mass paths add
+`m_a`, and the recovery force adapter applies `-(dm_a/dt) * v_air`. Here
+`v_air` is the shared environment air-relative velocity
+`vehicle_velocity_eci_m_s - atmosphere_velocity_eci_m_s - wind_eci_m_s`, so
+declared `[wind]` affects recovery drag without a recovery-specific
+`velocity_source` field.
+For polynomial growth, `inflation.pflanz`, `drogue_inflation.pflanz`, or
+`main_inflation.pflanz` optionally adds Pflanz `X1(A, j)` finite-mass peak-load
+reduction either inline:
+`{ ballistic_parameter_a = [...], exponent_j = [...], reduction_factors = [...] }`,
+or from a resolved SHA-pinned TOML deck:
+`{ file = "data/recovery/pflanz-x1-synthetic-v1.toml", file_sha256 = "2d679136f9f123eced753fbbbb3f6b67432be2530462b5ab2366cb239737546c" }`.
+The file and inline forms are mutually exclusive.
+
+Schema v3 parachute recovery rows with declared `risers` may also declare a
+deployment `sequence` diagnostic block:
+
+```toml
+sequence = { snatch_delta_v_m_s = 12.0, snatch_effective_mass_kg = 220.0, pack_drag_load_n = 350.0, mortar_pack_mass_kg = 8.0, mortar_pack_velocity_body_m_s = [0.0, 0.0, 18.0] }
+```
+
+`snatch_delta_v_m_s` is the non-negative relative velocity term `delta_v` at
+line stretch, `snatch_effective_mass_kg` is the positive effective decelerated
+mass `m_e`, and `pack_drag_load_n` is an optional non-negative pack-drag term
+that defaults to zero. The runner derives the equivalent line stiffness from
+the declared risers as `sum(EA/L0)` and publishes the Knacke-style estimate
+`F_snatch = delta_v * sqrt(k_line * m_e) + F_drag,pack` after the recovery
+device is deployed.
+
+If `mortar_pack_mass_kg` and `mortar_pack_velocity_body_m_s` are declared
+together, the runner treats the pack velocity as the pack ejection velocity in
+body axes and applies the equal-and-opposite vehicle reaction impulse
+`-m_pack * v_pack` as a constant force over the next kernel tick after an
+accepted deployment command. The direct recovery telemetry records the impulse
+and equivalent force in body axes, and the force breakdown records the same
+load as `force.recovery_sequence_force.*`. The two mortar fields must be
+declared as a pair. This sequence surface still does not advance bag-strip
+kinematics or apply the snatch load itself to the vehicle force stack.
+
+Schema v3 parachute recovery rows can also declare `risers`, an array of
+slack-taut Kelvin-Voigt line elements reserved for snatch, attach-load, and
+future two-body coupling. Each riser requires a local `id`,
+`unstretched_length_m` (`L0`), effective `axial_rigidity_n` (`EA`),
+non-negative `damping_n_s_m`, `vehicle_attach_body_m`, and
+`canopy_attach_body_m`. A riser may also declare
+`canopy_velocity_body_m_s = [vx, vy, vz]` to advance that canopy/pack endpoint
+at constant body-frame velocity while the recovery device is deployed; omitted
+velocity defaults to zero. If `canopy_mass_kg` is present, that same velocity is
+the initial endpoint velocity and the runner force-integrates the canopy/pack
+endpoint from the line force after slack-taut engagement; `canopy_mass_kg` must
+be positive. A recovery row may instead declare a shared translated canopy/pack
+state with
+`riser_canopy = { initial_position_body_m = [x, y, z], initial_velocity_body_m_s = [vx, vy, vz], mass_kg = m }`.
+When `riser_canopy` is present, each `canopy_attach_body_m` is a fixed offset
+from the shared canopy origin, all declared risers feed their summed line force
+into the one shared mass, and per-riser `canopy_velocity_body_m_s` /
+`canopy_mass_kg` fields are rejected. The shared `mass_kg` must be positive;
+the shared velocity defaults to zero when omitted. The vehicle-layer element evaluates
+`T = max(0, EA/L0 * delta + c * delta_dot)` with exactly zero force while
+`length < L0`, exposes a fixed-tick slack-to-taut crossing locator for linearly
+moving endpoints, and exposes the attach-point moment helper `r x F`. The runner
+evaluates declared risers in body coordinates while the recovery device is
+deployed, advances prescribed-velocity endpoints on each rack step when no mass
+is declared, force-integrates mass-declared endpoints from the line force, can
+force-integrate all risers through one shared translated canopy state, and
+publishes aggregate tension, force, moment, and elastic-energy diagnostics; the
+rigid-body recovery-riser moment adapter consumes the
+aggregate force and moment snapshot, shifts the moment to the live CG, and
+contributes the result as the `recovery_riser` moment component. The
+recovery-riser force adapter also consumes the aggregate body-frame force as a separate
+`recovery_riser_force` force component: point-mass scenarios treat the body
+frame as aligned with ECI, while rigid-body scenarios rotate it through the
+live attitude. For live runner snapshots with declared risers, the rack also
+adds the device's aerodynamic `C_D A` drag load into the riser force/moment
+totals at the declared attach geometry and marks the snapshot so
+`recovery_drag` skips that same scalar drag term. For multiple declared risers,
+the drag handoff is distributed across per-riser attach points by declared-line
+tension; if all declared risers are slack, the fallback is an equal split in
+declaration order.
 
 #### Event compatibility
 
@@ -3340,18 +4623,106 @@ markers:
 | `recovery.<id>.phase_index` | int64 | 1 | `0 = Stowed`, `1 = Drogue`, `2 = Main` |
 | `recovery.<id>.drag_area_m2` | float64 | m^2 | Current effective drag area |
 
-The recovery force adapter sums deployed `C_D A` terms in
-scenario-declared recovery order and short-circuits before atmosphere
-sampling when the sum is zero, preserving legacy byte-stability for
-scenarios with no recovery devices.
+When a row declares `inflation`, `drogue_inflation`, or `main_inflation`, the
+runner allocates these additional channels for that device only. For
+`drogue_main`, the values describe the currently active inflating stage.
+
+| Channel | Type | Units | Notes |
+|---|---|---|---|
+| `recovery.<id>.inflation_progress` | float64 | 1 | Fill progress, clamped to `[0, 1]` |
+| `recovery.<id>.inflation_complete` | bool | bool | `true` after the declared fill time has elapsed |
+| `recovery.<id>.opening_dynamic_pressure_pa` | float64 | Pa | Dynamic pressure used by the infinite-mass load diagnostic |
+| `recovery.<id>.opening_load_n` | float64 | N | Current infinite-mass opening-load diagnostic |
+| `recovery.<id>.opening_peak_load_n` | float64 | N | Full-area infinite-mass peak opening-load diagnostic |
+
+When any declared inflation table carries `apparent_mass_coeff_k_a`, the runner
+allocates these additional channels for that device:
+
+| Channel | Type | Units | Notes |
+|---|---|---|---|
+| `recovery.<id>.apparent_mass_kg` | float64 | kg | Scalar canopy apparent mass |
+| `recovery.<id>.apparent_mass_rate_kg_s` | float64 | kg/s | Scalar apparent-mass growth rate |
+
+When any declared inflation table carries `pflanz`, the runner allocates these
+additional diagnostic channels for that device:
+
+| Channel | Type | Units | Notes |
+|---|---|---|---|
+| `recovery.<id>.opening_ballistic_parameter_a` | float64 | 1 | Runtime Pflanz ballistic parameter |
+| `recovery.<id>.opening_pflanz_reduction_factor_x1` | float64 | 1 | Interpolated finite-mass reduction factor |
+| `recovery.<id>.opening_finite_mass_peak_load_n` | float64 | N | Full-area finite-mass peak opening-load diagnostic |
+
+When a recovery row declares `sequence`, the runner allocates these additional
+diagnostic channels for that device:
+
+| Channel | Type | Units | Notes |
+|---|---|---|---|
+| `recovery.<id>.snatch_delta_v_m_s` | float64 | m/s | Declared relative velocity term |
+| `recovery.<id>.snatch_stiffness_n_m` | float64 | N/m | Equivalent riser stiffness `sum(EA/L0)` |
+| `recovery.<id>.snatch_effective_mass_kg` | float64 | kg | Declared effective decelerated mass |
+| `recovery.<id>.snatch_pack_drag_load_n` | float64 | N | Declared pack-drag load term |
+| `recovery.<id>.snatch_peak_load_n` | float64 | N | `delta_v * sqrt(k_line * m_e) + F_drag,pack` |
+
+When the `sequence` block also declares mortar pack mass and velocity, the
+runner allocates these one-tick impulse channels:
+
+| Channel | Type | Units | Notes |
+|---|---|---|---|
+| `recovery.<id>.mortar_impulse_body_x_n_s` | float64 | N*s | Vehicle reaction impulse, body X |
+| `recovery.<id>.mortar_impulse_body_y_n_s` | float64 | N*s | Vehicle reaction impulse, body Y |
+| `recovery.<id>.mortar_impulse_body_z_n_s` | float64 | N*s | Vehicle reaction impulse, body Z |
+| `recovery.<id>.mortar_force_body_x_n` | float64 | N | One-tick equivalent force, body X |
+| `recovery.<id>.mortar_force_body_y_n` | float64 | N | One-tick equivalent force, body Y |
+| `recovery.<id>.mortar_force_body_z_n` | float64 | N | One-tick equivalent force, body Z |
+
+When a recovery row declares one or more `risers`, the runner allocates these
+aggregate diagnostic channels for that device:
+
+| Channel | Type | Units | Notes |
+|---|---|---|---|
+| `recovery.<id>.riser_tension_sum_n` | float64 | N | Sum of declared riser tensions |
+| `recovery.<id>.riser_tension_max_n` | float64 | N | Maximum declared riser tension |
+| `recovery.<id>.riser_force_body_x_n` | float64 | N | Aggregate anchor force, body X |
+| `recovery.<id>.riser_force_body_y_n` | float64 | N | Aggregate anchor force, body Y |
+| `recovery.<id>.riser_force_body_z_n` | float64 | N | Aggregate anchor force, body Z |
+| `recovery.<id>.riser_moment_body_x_n_m` | float64 | N*m | Aggregate attach-point moment, body X |
+| `recovery.<id>.riser_moment_body_y_n_m` | float64 | N*m | Aggregate attach-point moment, body Y |
+| `recovery.<id>.riser_moment_body_z_n_m` | float64 | N*m | Aggregate attach-point moment, body Z |
+| `recovery.<id>.riser_elastic_energy_j` | float64 | J | Sum of elastic potential energy in declared risers |
+
+The force breakdown also allocates `force.recovery_riser_force.x_n`,
+`.y_n`, and `.z_n` when any recovery row declares risers. It allocates
+`force.recovery_sequence_force.x_n`, `.y_n`, and `.z_n` when any sequence block
+declares mortar pack mass and velocity.
+
+The recovery force adapter sums deployed `C_D A` terms and apparent-mass-rate
+terms in scenario-declared recovery order. It skips a device's scalar `C_D A`
+drag term when that snapshot has transmitted the same load through declared
+risers, avoiding double-counting between `recovery_drag` and
+`recovery_riser_force`. It short-circuits before atmosphere sampling when both
+sums are zero; if only apparent-mass rate is active, it applies the
+`-(dm_a/dt) * v_air` term without a density query.
 
 #### Limitations
 
-- Drag opposes ECI velocity, matching the existing axial-drag adapter.
-  Wind-relative parachute drag is not modelled.
-- Canopy inflation transients are not modelled; recovery
-  state changes are instantaneous at the rack tick.
-- Recovery devices do not contribute mass or moments.
+- Drag opposes air-relative velocity expressed in ECI components, matching
+  the existing axial-drag adapter; wind-relative recovery drag comes from the
+  shared environment sample, not a recovery-specific switch.
+- Production or digitized real Pflanz table calibration and real-table
+  integrated Pflanz validation remain future recovery-parity work.
+- `sequence` currently covers the snatch-load estimate and a discrete
+  one-tick mortar reaction impulse. Bag-strip/line-stretch state,
+  force-applied snatch transients, reefing/disreef stages, and cutter-time
+  dispersions remain future recovery-parity work.
+- Declared risers are validated, publish runner diagnostics, and contribute a
+  separate aggregate line-force component plus a rigid-body moment component;
+  for live snapshots they partially replace the scalar aerodynamic `C_D A`
+  drag term with a line-transmitted attach load. This is still not a full
+  two-body canopy/vehicle model: the handoff uses declared static line shares,
+  and the runner's current shared canopy path is a translated point-mass state,
+  not a 6-DOF canopy body in the multibody tree or a two-body solve. Scalar
+  apparent mass contributes only through the opt-in mass and force-rate paths
+  above.
 
 The canonical example ships at
 [`scenarios/parachute-recovery/parachute-descent.toml`](../scenarios/parachute-recovery/parachute-descent.toml).
@@ -3478,16 +4849,19 @@ API. This mode supports `jettison_stage` and `jettison_bodies`, and applies the
 declared welded translation/orientation, dry descendant mass-property
 aggregation, separation delta-v, angular-rate tip-off, lower attitude offset,
 and mass-property COM-offset semantics after the welded release. Setting it to
-`"articulated_gimbal_root"` is a single-gimbal root-state handoff mode: it
-requires `primary_body_id` and exactly one `[[multi_body.gimbal_joint]]` whose
-`body_id` matches `primary_body_id`, rejects initial lanes, separation
-declarations, and landing controllers, and after each fixed-step RK4 tick
-replaces the primary rigid state with the projected root state from that
-articulated gimbal forecast. Once the first authoritative root handoff has
-occurred, the next pre-step articulated seed carries the prior forecast's
-internal joint coordinates and rates forward while refreshing the root slots
-from the authoritative rigid state. This mode does not cover multiple declared
-gimbals.
+`"articulated_gimbal_root"` is a primary-body articulated-gimbal root-state
+handoff mode: it requires `primary_body_id` and one or more
+`[[multi_body.gimbal_joint]]` declarations whose `body_id` matches
+`primary_body_id`, rejects initial lanes, separation declarations, and landing
+controllers, and after each fixed-step RK4 tick replaces the primary rigid
+state with the projected root state from the articulated gimbal forecast. For
+multiple gimbals, the runner builds one coupled free-flyer tree with all
+declared primary-body gimbal children and uses that coupled root forecast for
+the handoff. Once the first authoritative root handoff has occurred, the next
+pre-step articulated seed carries the prior forecast's internal joint
+coordinates and rates forward while refreshing the root slots from the
+authoritative rigid state. CFE-constrained root handoff remains limited to the
+single-gimbal path.
 
 Each `[[multi_body.separation]]` entry binds to a mission event by id
 and declares the two `vehicle.assembly.bodies[*].id` values that
@@ -3611,6 +4985,7 @@ engine_inertia_body_kg_m2  = [[9.0, 0.0, 0.0], [0.0, 17.0, 0.0], [0.0, 0.0, 14.0
 thrust_application_body_m  = [0.2, 0.0, -0.4]
 neutral_thrust_body        = [0.0, 0.0, 1.0]
 mechanism_id               = "center-pitch-stop" # optional [contact] scalar mechanism
+mechanism_axis             = "primary"           # optional: primary | secondary
 initial_angle_rad          = 0.0
 initial_rate_rad_s         = 0.0
 ```
@@ -3633,9 +5008,24 @@ chosen axis.
 `mechanism_id` is optional. When present, it must name a
 `[[contact.mechanism]]` entry whose `coordinate` equals this gimbal
 `engine_id`; the rigid runner evaluates that scalar stop/backlash/latch
-mechanism against the primary gimbal coordinate and rate, then injects the
-resulting generalized force into the primary articulated joint. For a two-axis
-gimbal this first binding applies to the primary axis only.
+mechanism against the selected gimbal coordinate and rate, then injects the
+resulting generalized force into that articulated joint. `mechanism_axis`
+defaults to `primary`; `secondary` is valid only when `mechanism_id` is present
+and the gimbal declares `secondary_axis_body`. In single-gimbal
+`articulated_gimbal_root` authority mode, the same mechanism force participates
+in the authoritative root forecast and already-engaged monotone latch state is
+carried with the articulated internal state. When a later delivered live gimbal
+deflection changes after an authoritative handoff, the runner refreshes the
+articulated coordinate before mechanism evaluation, using delivered TVC
+gimbal angle/rate snapshots directly for standard-axis gimbals, live thrust
+direction for powered nonstandard-axis layouts, and a snapshot-derived unit
+thrust direction for zero-thrust nonstandard-axis layouts. A latch centered on
+that live deflection can therefore engage even without thrust. Kernel-facing TVC
+load-torque snapshots are projected onto the declared gimbal axes as generalized
+joint force during articulated derivative/forecast evaluation, and TVC
+inertial-reaction snapshots are applied as a root-body external moment. Validated
+full tail-wags-dog benchmark closure and coupled-acceleration term closure remain
+future work.
 `secondary_axis_body` is optional. When present, the parser treats the
 declaration as a two-axis articulated gimbal shadow: `axis_body`,
 `secondary_axis_body`, and `neutral_thrust_body` must be mutually orthogonal,
@@ -3652,6 +5042,104 @@ the held live engine snapshot and projects the forecast root slots back into a
 rigid-state shape for future propagation handoff checks. The current rigid
 force/moment path remains authoritative until the WP-01.2 propagation handoff
 lands.
+
+Scenarios may declare row-space CFE loop-constraint fixtures for the
+multibody/contact assembly boundary:
+
+```toml
+[[multi_body.cfe_loop]]
+loop_id = "gear-side-brace-x"
+position_residual = 0.0
+velocity_residual_per_s = 0.0
+velocity_bias_acceleration_per_s2 = 0.0 # optional
+
+[[multi_body.cfe_loop.jacobian_entry]]
+generalized_velocity_index = 6
+jacobian_value = 1.0
+
+[[multi_body.cfe_loop.jacobian_entry]]
+generalized_velocity_index = 7
+jacobian_value = -0.25
+```
+
+Each `[[multi_body.cfe_loop]]` entry declares one scalar loop row. `loop_id`
+must be unique. `position_residual`, `velocity_residual_per_s`, and
+`velocity_bias_acceleration_per_s2` are row-native residual and bias terms;
+their physical units depend on the concrete loop coordinate model. The
+`[[multi_body.cfe_loop.jacobian_entry]]` rows form a sparse Jacobian row by
+generalized-velocity column index. Column indices must be unique within one loop
+row, each `jacobian_value` must be finite, and the assembled row must have
+non-zero finite norm. The rigid runner currently consumes these rows only for a
+single scenario-declared articulated gimbal shadow: it validates each column
+against that tree's generalized-velocity dimension, assembles
+`G*qdd_free + Gdot*qdot` and `G*H(q)^-1*G^T`, solves the Baumgarte CFE system,
+and injects the projected generalized force into the non-authoritative shadow
+derivative and forecast. Rigid-body telemetry includes one channel triplet per
+declared loop:
+`multi_body.cfe_loop.<loop_id>.lagrange_multiplier`,
+`multi_body.cfe_loop.<loop_id>.stabilized_acceleration_per_s2`, and
+`multi_body.cfe_loop.<loop_id>.acceleration_residual_per_s2`, with `loop_id`
+sanitized by the normal telemetry suffix rules. If
+`[multi_body].propagation_authority = "articulated_gimbal_root"`, the same
+CFE-constrained forecast is the guarded single-gimbal root handoff source.
+Concrete scenario-declared vehicle loop-closure wiring beyond the current
+articulated-gimbal shadow path, broader tree-joint authority, full
+rigid-kernel replacement, and published CFE/ADAMS benchmark scenarios remain
+future work.
+
+For the currently supported articulated-gimbal CFE path, scenarios may also
+declare a concrete coordinate lock instead of a precomputed row-space fixture:
+
+```toml
+[[multi_body.cfe_gimbal_lock]]
+loop_id = "main-engine-primary-lock"
+engine_id = "main_engine"
+axis = "primary"                 # optional, defaults to "primary"; "secondary" requires a two-axis gimbal
+locked_angle_rad = 0.0
+velocity_bias_acceleration_per_s2 = 0.0 # optional
+```
+
+Each `[[multi_body.cfe_gimbal_lock]]` entry references one
+`[[multi_body.gimbal_joint]]` by `engine_id`. The parser validates finite lock
+targets and velocity-bias accelerations, a unique `loop_id` across row-space
+and concrete CFE declarations, a known articulated gimbal engine, and secondary
+axis use only on two-axis gimbals. During runner evaluation the lock materializes
+to one CFE row from the live articulated state: position residual
+`q_axis - locked_angle_rad`, velocity residual `qd_axis`, and a unit Jacobian
+entry in the selected generalized-velocity slot. It uses the same solve,
+projection, telemetry, and guarded `articulated_gimbal_root` handoff path as
+`[[multi_body.cfe_loop]]`.
+
+Two-axis articulated gimbal shadows may also declare a concrete planar
+four-bar or side-brace row:
+
+```toml
+[[multi_body.cfe_planar_four_bar]]
+loop_id = "main-engine-four-bar"
+engine_id = "main_engine"
+input_axis = "secondary" # optional default
+output_axis = "primary"  # optional default
+ground_pivot_a_m = [0.0, 0.0]
+ground_pivot_d_m = [1.0, 0.0]
+input_link_m = 0.5
+coupler_link_m = 1.0
+output_link_m = 0.5
+velocity_bias_acceleration_per_s2 = 0.0 # optional
+```
+
+Each `[[multi_body.cfe_planar_four_bar]]` entry references one two-axis
+`[[multi_body.gimbal_joint]]` by `engine_id`. `loop_id` shares the same CFE
+namespace and telemetry suffix checks as row-space loops and gimbal locks.
+`input_axis` and `output_axis` must be distinct, and the fixed pivots plus link
+lengths must pass the `openbmp-contact::PlanarFourBarLoop` reachability check.
+During runner evaluation the helper materializes the row from the live selected
+gimbal coordinates and rates: position residual is the moving-endpoint distance
+minus `coupler_link_m`, velocity residual is `J * qd`, and the two-column
+Jacobian is projected into the selected generalized-velocity slots. The row
+then uses the same solve, projection, telemetry, and guarded
+`articulated_gimbal_root` path as `[[multi_body.cfe_loop]]`. This is current
+articulated-gimbal-shadow reachability for the four-bar row model; prismatic
+landing-gear DOFs and general vehicle tree-joint authority remain future work.
 
 ### v3-only `[fc]` sub-blocks
 
@@ -3689,11 +5177,11 @@ kind          = "prioritised_redistributed"
 axis_priority = ["roll", "yaw", "pitch"]
 ```
 
-`kind` is one of `pseudo_inverse` (Stevens & Lewis 2015 §3.5) or
-`prioritised_redistributed` (Härkegård 2002). Both are consumed for the
-current `direct_torque` effector surface. `pseudo_inverse` uses a bounded
-weighted pseudo-inverse per body axis; coupled `G_eff` rows are not part of
-the scenario schema yet. `axis_priority` applies to
+`kind` is one of `pseudo_inverse` (Stevens & Lewis 2015 §3.5),
+`prioritised_redistributed` (Härkegård 2002), `dense_wls`, or `dense_inca`.
+The first two are consumed for the current `direct_torque` effector surface.
+`pseudo_inverse` uses
+a bounded weighted pseudo-inverse per body axis. `axis_priority` applies to
 `prioritised_redistributed`, lists body-frame axes in highest-first order, and
 must contain exactly `"roll"`, `"pitch"`, and `"yaw"` once each.
 
@@ -3701,6 +5189,97 @@ The allocator derives capacity only from `direct_torque`
 effectors with exact symmetric limits (`max == -min`). Phase authority is
 applied before the proportional split, so disallowed effectors receive
 zero commands and do not contribute capacity.
+
+`dense_wls` declares explicit dense effectivity columns in fixed `[roll, pitch,
+yaw]` row order and can use asymmetric bounds/rate limits. `dense_inca` uses the
+same `dense_effectors` block, but consumes `autopilot.pseudo_control_cmd`
+desired/measured angular-acceleration pseudo-control from the INDI rate loop and
+therefore requires the `indi` Cargo feature in the runner. Each `id` must name a
+declared `vehicle.assembly.effectors` entry or a physical engine-gimbal alias of
+the form `<engine_id>.gimbal_pitch` / `<engine_id>.gimbal_yaw`. When `min`,
+`max`, or `rate_limit` is omitted for a declared effector, the runner uses that
+effector's existing `limits.min`, `limits.max`, and `limits.max_rate_per_s`.
+When those fields are omitted for an engine-gimbal alias, the runner uses
+`-limits.max_gimbal_rad`, `limits.max_gimbal_rad`, and
+`limits.gimbal_slew_rad_per_s` from the referenced engine. `gamma` defaults to
+`1.0e6`, `virtual_weights` defaults to `[1, 1, 1]`, `effort_weight` defaults to
+`1`, and `preferred` defaults to `0`.
+
+```toml
+[fc.autopilot_allocation]
+kind = "dense_wls"
+gamma = 1000000.0
+virtual_weights = [1.0, 1.0, 1.0]
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "left-tvc"
+effectiveness = [0.4, 1.0, 0.2]
+min = -0.35
+max = 0.35
+rate_limit = 20.0
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "right-tvc"
+effectiveness = [-0.4, 1.0, -0.2]
+effort_weight = 1.2
+
+[[fc.autopilot_allocation.dense_effectors]]
+id = "main_engine.gimbal_pitch"
+effectiveness = [0.0, -1.0, 0.0]
+```
+
+#### `[[fc.engine_out_trim]]` — scalar engine-out trim biases
+
+```toml
+[[fc.engine_out_trim]]
+failed_engine = "center"
+
+[[fc.engine_out_trim.commands]]
+engine = "left"
+gimbal_pitch_bias_rad = 0.005
+gimbal_yaw_bias_rad = -0.010
+
+[[fc.engine_out_trim.commands]]
+engine = "right"
+gimbal_pitch_bias_rad = -0.010
+gimbal_yaw_bias_rad = 0.015
+```
+
+`[[fc.engine_out_trim]]` is v3-only and applies to the scalar `EngineDemand`
+fan-out path after engine availability has removed failed engines. Each row
+names the `failed_engine` that activates it and one or more surviving-engine
+`commands`. When the failed engine is unavailable, the mixer keeps the
+engine-out throttle redistribution from the scalar fan-out path and adds each
+declared `gimbal_pitch_bias_rad` / `gimbal_yaw_bias_rad` to the matching
+surviving engine command. Failed engines still receive zero throttle, zero
+gimbal, and shutdown. Trim is not applied to shutdown commands.
+
+All referenced engines must be declared in `[[vehicle.assembly.engines]]`.
+Rows must have unique `failed_engine` values; each row must contain at least
+one command; command engines must be unique within a row and cannot target the
+failed engine. This is the manual calibrated table path; it cannot be declared
+with `[fc.engine_out_trim_auto]`.
+
+#### `[fc.engine_out_trim_auto]` — geometry-derived scalar engine-out trim biases
+
+```toml
+[fc.engine_out_trim_auto]
+max_bias_rad = 0.05 # optional
+```
+
+`[fc.engine_out_trim_auto]` is v3-only and derives an `EngineOutTrimTable` for
+the scalar `EngineDemand` fan-out path from `[[vehicle.assembly.engines]]`
+geometry. It cannot be declared with manual `[[fc.engine_out_trim]]` rows. When
+enabled, the runner computes one row per single failed engine using declared
+engine `mount_point_body_m`, `limits.max_thrust_n`, and `limits.max_gimbal_rad`.
+The derivation compares the nominal axial-thrust moment with the moment after
+scalar survivor throttle retrim, then solves a regularized small-angle TVC
+least-squares system for survivor pitch/yaw trim biases. Biases are clamped by
+each engine's `limits.max_gimbal_rad` and by `max_bias_rad` when provided.
+
+This is a first-order geometry-derived scalar fan-out substrate. It does not
+estimate flight-calibrated integrator bias, live mass properties, thrust
+calibration, a guidance target, or closed-loop engine-out recoverability.
 
 #### `[fc.transport]` — opt-in FC bridge transport
 
@@ -3908,6 +5487,40 @@ The block is cross-validated with
 `fc.autopilot_params.trajectory_kind`: selecting `"minimum_snap"`
 requires `[fc.trajectory]`, and declaring `[fc.trajectory]` requires
 `trajectory_kind = "minimum_snap"`.
+
+#### `[fc.autopilot_params.load_relief]`
+
+```toml
+[fc.autopilot_params.load_relief]
+a0 = 1.0
+a1 = 0.2
+g_alpha_max = 0.8
+g_acc = 0.01
+q_alpha_limit_pa_rad = 1200.0
+
+[[fc.autopilot_params.load_relief.blend_schedule]]
+schedule_value = 0.0
+blend = 0.0
+
+[[fc.autopilot_params.load_relief.blend_schedule]]
+schedule_value = 20.0
+blend = 1.0
+```
+
+`[fc.autopilot_params.load_relief]` is v3-only. The runner maps it
+to `AutopilotParams::load_relief`, which is off by default. When
+enabled, the three-loop autopilot estimates alpha/beta from
+`PositionEstimate`, `EnvironmentEstimate`, and the optional
+`estimator.wind` topic published by the FC bridge, clamps alpha and
+beta by `q_alpha_limit_pa_rad`, and adds the resulting pitch/yaw
+correction before the attitude loop.
+
+`blend_schedule` is declared as
+`[[fc.autopilot_params.load_relief.blend_schedule]]` entries. Each node
+has a finite `schedule_value` and a `blend` in `[0, 1]`; schedule values
+must be strictly ascending. The schema intentionally has no
+target/aimpoint/range fields, and unknown fields are rejected at load
+time.
 
 #### `[fc.autopilot_params.rate_loop_kind]` and INDI
 

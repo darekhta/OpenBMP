@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 use openbmp_bridge::{
     ActuatorCommandPacket, EngineCommandPacket as BridgeEngineCommandPacket, ImuIncrementPacket,
     SensorPacket,
@@ -30,22 +30,30 @@ use openbmp_fc::fdir::{
     DetectorKind, FDIR_BIT_BODY_RATE_REDLINE, FdirJob, FdirParams, FdirRedlineWatchpoint,
 };
 use openbmp_fc::guidance::{
-    AscentReferenceGuidance, AttitudeHoldGuidance, GuidanceParams, WaypointGuidance,
+    AscentReferenceGuidance, AttitudeHoldGuidance, GuidanceParams,
+    OptimizedReferenceProfileGuidance, OptimizedReferenceProfileSample, WaypointGuidance,
     WaypointSequence,
 };
 use openbmp_fc::health::{HealthMonitor, HealthParams};
 use openbmp_fc::imm::ImmEstimator;
-use openbmp_fc::mixer::{ActuatorChannelMap, Mixer, PhaseAuthority, PhaseAuthorityTable};
+use openbmp_fc::mixer::{
+    ActuatorChannelMap, EngineOutTrimCommand, EngineOutTrimTable, Mixer, PhaseAuthority,
+    PhaseAuthorityTable,
+};
 use openbmp_fc::sr_ukf::{SquareRootUkf, SquareRootUkfAttitude, SquareRootUkfParams};
+use openbmp_fc::tables::{
+    GainInterp, RobustControllerNode, RobustControllerTable, ScheduleVariable, Table,
+};
 use openbmp_fc::topics::{
     ActuatorCommand, ActuatorStatus, AirDataSample, AttitudeEstimate, AutopilotStatus,
-    BarometerSample, CommsRegionStatePublish, EffectorCommandSet, EngineCommandSet, EngineDemand,
-    EnvironmentEstimate, EstimatorLaneSelection, EstimatorMode, EstimatorRegimeRegionStatePublish,
-    EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic, FdirStatus, GnssSample, GuidanceCutoff,
-    HealthRegionStatePublish, ImuIncrementWindow, ImuInertialIncrement, ImuSample,
-    MagnetometerSample, MissionActionBatch, MissionRegionStatePublish, MissionStatePublish,
-    PositionEstimate, PropellantState, ReferenceState, SensorStatus, StarTrackerSample,
-    StorageStatus, VehicleStatus, WatchdogStatus,
+    BarometerSample, CommsRegionStatePublish, EffectorAvailability, EffectorCommandSet,
+    EngineCommandSet, EngineDemand, EnvironmentEstimate, EstimatorLaneSelection, EstimatorMode,
+    EstimatorRegimeRegionStatePublish, EstimatorStatus, FailsafeFlags, FdirGlrtDiagnostic,
+    FdirStatus, GnssSample, GuidanceCutoff, HealthRegionStatePublish, ImuIncrementWindow,
+    ImuInertialIncrement, ImuSample, MAX_EFFECTOR_COMMANDS, MagnetometerSample, MissionActionBatch,
+    MissionRegionStatePublish, MissionStatePublish, PositionEstimate, PropellantSafingCommand,
+    PropellantState, PseudoControlCommand, ReferenceState, SensorStatus, StarTrackerSample,
+    StorageStatus, VehicleStatus, WatchdogStatus, WindEstimate,
 };
 use openbmp_fc::{
     ControllerError, DispatchSummary, EstimatorError, FcStepInput, FcStepOutput, FlightController,
@@ -61,16 +69,20 @@ use openbmp_physics::profile::{
     PegAscentReference, PitchProgramAscentReference, SequencedAscentReference,
 };
 use openbmp_scenario::{
-    FcActuatorChannelsConfig, FcAntiWindupConfig, FcAscentReferenceConfig, FcAscentReferenceMethod,
-    FcAutopilotKind, FcAutopilotParams, FcConfig, FcEkfConfig, FcEstimatorKind,
-    FcEstimatorLanesConfig, FcEstimatorVoterKind, FcFdirConfig, FcFdirDetectorKind,
-    FcFdirDetectorKindV5, FcGainsConfig, FcGravityModelKind, FcGuidanceKind, FcHealthConfig,
-    FcMagFieldKind, FcMekfConfig, FcPhaseAuthorityConfig, FcSchedulerConfig, FcTrajectoryKind,
+    EngineConfig, FcActuatorChannelsConfig, FcAntiWindupConfig, FcAscentReferenceConfig,
+    FcAscentReferenceMethod, FcAutopilotKind, FcAutopilotParams, FcConfig, FcEkfConfig,
+    FcEngineOutTrimAutoConfig, FcEngineOutTrimConfig, FcEstimatorKind, FcEstimatorLanesConfig,
+    FcEstimatorVoterKind, FcFdirConfig, FcFdirDetectorKind, FcFdirDetectorKindV5, FcGainsConfig,
+    FcGravityModelKind, FcGuidanceKind, FcHealthConfig, FcMagFieldKind, FcMekfConfig,
+    FcOptimizedReferenceConfig, FcPhaseAuthorityConfig, FcRobustControllerConfig,
+    FcSchedulerConfig, FcTrajectoryKind, ResolvedFile,
 };
+use serde::Deserialize;
 
 use crate::error::RunnerError;
 
 const DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR: f64 = 2025.0;
+const FC_ROBUST_CONTROLLER_ILOAD_FILE_KEY: &str = "fc.robust_controller.iload_file";
 
 struct HostTimingObserver;
 
@@ -143,20 +155,62 @@ impl FcRunner {
     ///
     /// Returns the underlying controller error if topic registration,
     /// job registration, or estimator construction fails.
-    #[allow(clippy::too_many_lines, clippy::expect_used)]
+    #[allow(clippy::expect_used)]
     pub fn new(
         config: &FcConfig,
+        engines: &[EngineConfig],
         mission: FcRunnerMission,
         autopilot_lqr_context: Option<FcAutopilotLqrContext>,
         loop_step_dt_s: f64,
         allocator: Option<openbmp_fc::allocation::ControlAllocator>,
         estimator_seed: EstimatorSeed,
     ) -> Result<Self, openbmp_fc::ControllerError> {
+        let resolved_files = BTreeMap::new();
+        Self::new_with_resolved_files(
+            config,
+            engines,
+            mission,
+            autopilot_lqr_context,
+            loop_step_dt_s,
+            allocator,
+            estimator_seed,
+            &resolved_files,
+        )
+    }
+
+    /// Builds the runner from the parsed `[fc]` block and the already
+    /// resolved scenario file map. File-backed FC artifacts are parsed,
+    /// validated, and declared in the FC table registry during boot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying controller error if artifact loading,
+    /// topic registration, job registration, or estimator construction fails.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::expect_used
+    )]
+    pub fn new_with_resolved_files(
+        config: &FcConfig,
+        engines: &[EngineConfig],
+        mission: FcRunnerMission,
+        autopilot_lqr_context: Option<FcAutopilotLqrContext>,
+        loop_step_dt_s: f64,
+        allocator: Option<openbmp_fc::allocation::ControlAllocator>,
+        estimator_seed: EstimatorSeed,
+        resolved_files: &BTreeMap<String, ResolvedFile>,
+    ) -> Result<Self, openbmp_fc::ControllerError> {
         let mut fc = FlightControllerBuilder::new()
             .frame_budget_us(config.frame_budget_us)
             .build();
 
         Self::register_canonical_topics(&fc)?;
+        declare_robust_controller_table(
+            &mut fc,
+            config.robust_controller.as_ref(),
+            resolved_files,
+        )?;
 
         let job_schedule = FcJobSchedule::from_config(config);
         let mut next_priority = 5_u8;
@@ -256,6 +310,16 @@ impl FcRunner {
                     }
                 }
             }
+            FcGuidanceKind::OptimizedReference => {
+                let guidance =
+                    build_optimized_reference_guidance(config.optimized_reference.as_ref())?;
+                fc.scheduler_mut().register_periodic(
+                    job_schedule.guidance_period_ticks,
+                    job_schedule.guidance_budget_us,
+                    next_priority,
+                    Box::new(guidance),
+                )?;
+            }
         }
         next_priority = next_priority.saturating_add(5);
 
@@ -307,8 +371,14 @@ impl FcRunner {
         next_priority = next_priority.saturating_add(5);
 
         // Mixer.
+        let engine_out_trim = build_engine_out_trim_table(
+            config.engine_out_trim.as_deref(),
+            config.engine_out_trim_auto.as_ref(),
+            engines,
+        )?;
         let mut mixer = Mixer::new()
             .with_authority(authority)
+            .with_engine_out_trim(engine_out_trim)
             .with_actuator_channel_map(build_actuator_channel_map(
                 config.actuator_channels.as_ref(),
             ));
@@ -371,6 +441,12 @@ impl FcRunner {
         } else {
             self.fc.step(time, tick)
         }
+    }
+
+    /// Returns the active robust-controller table declared at boot, if any.
+    #[must_use]
+    pub fn robust_controller_table(&self) -> Option<&RobustControllerTable> {
+        self.fc.tables().active::<RobustControllerTable>().ok()
     }
 
     /// Adapts one bridge sensor packet into the portable FC step facade and
@@ -465,6 +541,12 @@ impl FcRunner {
         let _ = self.fc.bus().publish(sample);
     }
 
+    /// Publishes the modeled local wind estimate used by controller
+    /// paths such as alpha/beta load relief.
+    pub fn publish_wind(&self, sample: WindEstimate) {
+        let _ = self.fc.bus().publish(sample);
+    }
+
     /// Publishes the propellant estimate used by onboard mission
     /// event triggers such as `AtMassFraction`.
     pub fn publish_propellant_state(&self, sample: PropellantState) {
@@ -504,12 +586,29 @@ impl FcRunner {
             .map(|(c, _)| c)
     }
 
+    /// Publish the current effector availability mask before the mixer
+    /// allocates commands for this tick.
+    pub fn publish_effector_availability(&self, availability: EffectorAvailability) {
+        let _ = self.fc.bus().publish(availability);
+    }
+
     /// Returns the latest engine-id command set, if any.
     #[must_use]
     pub fn latest_engine_command_set(&self) -> Option<EngineCommandSet> {
         self.fc
             .bus()
             .latest::<EngineCommandSet>()
+            .ok()
+            .flatten()
+            .map(|(c, _)| c)
+    }
+
+    /// Returns the latest propellant-system safing command, if any.
+    #[must_use]
+    pub fn latest_propellant_safing_command(&self) -> Option<PropellantSafingCommand> {
+        self.fc
+            .bus()
+            .latest::<PropellantSafingCommand>()
             .ok()
             .flatten()
             .map(|(c, _)| c)
@@ -666,6 +765,7 @@ impl FcRunner {
         bus.register::<AttitudeEstimate>()?;
         bus.register::<PositionEstimate>()?;
         bus.register::<EnvironmentEstimate>()?;
+        bus.register::<WindEstimate>()?;
         bus.register::<PropellantState>()?;
         bus.register::<EstimatorStatus>()?;
         bus.register::<VehicleStatus>()?;
@@ -676,10 +776,13 @@ impl FcRunner {
         bus.register::<ReferenceState>()?;
         bus.register::<GuidanceCutoff>()?;
         bus.register::<ActuatorCommand>()?;
+        bus.register::<PseudoControlCommand>()?;
         bus.register::<AutopilotStatus>()?;
+        bus.register::<EffectorAvailability>()?;
         bus.register::<EffectorCommandSet>()?;
         bus.register::<EngineDemand>()?;
         bus.register::<EngineCommandSet>()?;
+        bus.register::<PropellantSafingCommand>()?;
         bus.register::<FdirStatus>()?;
         // GLRT diagnostic topic. Always registered so
         // scenarios that opt into the windowed-mean-shift GLRT can
@@ -1000,10 +1103,18 @@ fn build_ascent_reference_generator(
                 .ok_or_else(|| GuidanceError::InvalidConfig {
                     reason: "pitch_program requires pitch_rad".to_owned(),
                 })?;
-            let generator = PitchProgramAscentReference::new(schedule.clone(), pitch.clone())
-                .map_err(|err| GuidanceError::InvalidConfig {
-                    reason: err.to_string(),
-                })?;
+            let generator = if let Some(yaw) = &cfg.yaw_rad {
+                PitchProgramAscentReference::new_with_yaw(
+                    schedule.clone(),
+                    pitch.clone(),
+                    yaw.clone(),
+                )
+            } else {
+                PitchProgramAscentReference::new(schedule.clone(), pitch.clone())
+            }
+            .map_err(|err| GuidanceError::InvalidConfig {
+                reason: err.to_string(),
+            })?;
             Ok(Box::new(generator))
         }
         FcAscentReferenceMethod::GravityTurn => Ok(Box::new(GravityTurnAscentReference::default())),
@@ -1089,6 +1200,202 @@ fn build_ascent_reference_generator(
         }
         .into()),
     }
+}
+
+fn build_optimized_reference_guidance(
+    cfg: Option<&FcOptimizedReferenceConfig>,
+) -> Result<OptimizedReferenceProfileGuidance, ControllerError> {
+    let cfg = cfg.ok_or_else(|| GuidanceError::InvalidConfig {
+        reason: "guidance = \"optimized_reference\" requires [fc.optimized_reference]".to_owned(),
+    })?;
+    let samples = cfg
+        .samples
+        .iter()
+        .map(|sample| OptimizedReferenceProfileSample {
+            time_s: sample.time_s,
+            radius_m: sample.radius_m,
+            speed_m_s: sample.speed_m_s,
+            flight_path_angle_rad: sample.flight_path_angle_rad,
+        })
+        .collect();
+    let mut guidance = OptimizedReferenceProfileGuidance::new(samples)?;
+    if let Some(paths) = cfg.active_phase_paths.as_ref() {
+        guidance = guidance.with_active_phase_ids(
+            paths
+                .iter()
+                .map(|path| PhaseId::from_path(path).value())
+                .collect(),
+        );
+    }
+    if cfg.radial_direction_eci.is_some() || cfg.tangential_direction_eci.is_some() {
+        let radial = cfg.radial_direction_eci.unwrap_or([1.0, 0.0, 0.0]);
+        let tangential = cfg.tangential_direction_eci.unwrap_or([0.0, 1.0, 0.0]);
+        guidance = guidance.with_reference_directions(
+            Vector3::new(radial[0], radial[1], radial[2]),
+            Vector3::new(tangential[0], tangential[1], tangential[2]),
+        )?;
+    }
+    if let Some(q) = cfg.reference_q_xyzw {
+        guidance = guidance.with_reference_attitude(q);
+    }
+    Ok(guidance)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RobustControllerIload {
+    robust_controller: RobustControllerIloadTable,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RobustControllerIloadTable {
+    controller_id: String,
+    source_id: String,
+    source_sha256_hex: String,
+    variable: String,
+    interp: String,
+    states: usize,
+    measurements: usize,
+    controls: usize,
+    nodes: Vec<RobustControllerIloadNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RobustControllerIloadNode {
+    node_id: String,
+    schedule_value: f64,
+    flight_condition_tag: String,
+    states: usize,
+    measurements: usize,
+    controls: usize,
+    a_row_major: Vec<f64>,
+    b_row_major: Vec<f64>,
+    c_row_major: Vec<f64>,
+    d_row_major: Vec<f64>,
+}
+
+fn declare_robust_controller_table(
+    fc: &mut FlightController,
+    cfg: Option<&FcRobustControllerConfig>,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<(), ControllerError> {
+    let Some(cfg) = cfg else {
+        return Ok(());
+    };
+    let table = build_robust_controller_table(cfg, resolved_files)?;
+    fc.tables_mut().declare(table)?;
+    Ok(())
+}
+
+fn build_robust_controller_table(
+    cfg: &FcRobustControllerConfig,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<RobustControllerTable, ControllerError> {
+    let resolved = resolved_files
+        .get(FC_ROBUST_CONTROLLER_ILOAD_FILE_KEY)
+        .ok_or_else(|| {
+            robust_controller_invalid(format!(
+                "resolved file key `{FC_ROBUST_CONTROLLER_ILOAD_FILE_KEY}` is missing for `{}`",
+                cfg.iload_file.display()
+            ))
+        })?;
+    if let Some(expected) = cfg.iload_file_sha256.as_deref()
+        && !expected.eq_ignore_ascii_case(&resolved.sha256_hex)
+    {
+        return Err(robust_controller_invalid(format!(
+            "SHA-256 pin mismatch for `{}`: expected {expected}, actual {}",
+            cfg.iload_file.display(),
+            resolved.sha256_hex
+        )));
+    }
+    let text = std::str::from_utf8(&resolved.bytes).map_err(|err| {
+        robust_controller_invalid(format!(
+            "`{}` is not valid UTF-8 TOML: {err}",
+            resolved.path.display()
+        ))
+    })?;
+    let iload: RobustControllerIload = toml::from_str(text).map_err(|err| {
+        robust_controller_invalid(format!(
+            "`{}` is not a valid robust-controller I-load: {err}",
+            resolved.path.display()
+        ))
+    })?;
+    iload.robust_controller.into_table()
+}
+
+impl RobustControllerIloadTable {
+    fn into_table(self) -> Result<RobustControllerTable, ControllerError> {
+        let table = RobustControllerTable {
+            controller_id: self.controller_id,
+            source_id: self.source_id,
+            source_sha256_hex: self.source_sha256_hex,
+            variable: parse_robust_controller_variable(&self.variable)?,
+            interp: parse_robust_controller_interp(&self.interp)?,
+            states: self.states,
+            measurements: self.measurements,
+            controls: self.controls,
+            nodes: self
+                .nodes
+                .into_iter()
+                .map(RobustControllerIloadNode::into_node)
+                .collect(),
+        };
+        table.validate().map_err(|reason| {
+            robust_controller_invalid(format!("table validation failed: {reason}"))
+        })?;
+        Ok(table)
+    }
+}
+
+impl RobustControllerIloadNode {
+    fn into_node(self) -> RobustControllerNode {
+        RobustControllerNode {
+            node_id: self.node_id,
+            schedule_value: self.schedule_value,
+            flight_condition_tag: self.flight_condition_tag,
+            states: self.states,
+            measurements: self.measurements,
+            controls: self.controls,
+            a_row_major: self.a_row_major,
+            b_row_major: self.b_row_major,
+            c_row_major: self.c_row_major,
+            d_row_major: self.d_row_major,
+        }
+    }
+}
+
+fn parse_robust_controller_variable(value: &str) -> Result<ScheduleVariable, ControllerError> {
+    match value {
+        "Mach" | "mach" => Ok(ScheduleVariable::Mach),
+        "DynamicPressurePa" | "dynamic_pressure_pa" | "qbar_pa" => {
+            Ok(ScheduleVariable::DynamicPressurePa)
+        }
+        "MassFraction" | "mass_fraction" => Ok(ScheduleVariable::MassFraction),
+        "TimeS" | "time_s" => Ok(ScheduleVariable::TimeS),
+        "NondimensionalTime" | "nondimensional_time" => Ok(ScheduleVariable::NondimensionalTime),
+        other => Err(robust_controller_invalid(format!(
+            "unsupported schedule variable `{other}`"
+        ))),
+    }
+}
+
+fn parse_robust_controller_interp(value: &str) -> Result<GainInterp, ControllerError> {
+    match value {
+        "Linear" | "linear" => Ok(GainInterp::Linear),
+        "Smoothstep" | "smoothstep" => Ok(GainInterp::Smoothstep),
+        other => Err(robust_controller_invalid(format!(
+            "unsupported interpolation law `{other}`"
+        ))),
+    }
+}
+
+fn robust_controller_invalid(reason: String) -> ControllerError {
+    GuidanceError::InvalidConfig {
+        reason: format!("fc.robust_controller I-load invalid: {reason}"),
+    }
+    .into()
 }
 
 /// Build a standalone PEG generator from the `[fc.ascent_reference]`
@@ -1664,6 +1971,20 @@ fn build_autopilot_params(
     if let Some(v) = cfg.max_dynamic_pressure_pa {
         params.max_dynamic_pressure_pa = v;
     }
+    if let Some(load_relief) = cfg.load_relief.as_ref() {
+        params.load_relief = Some(openbmp_fc::loadrelief::LoadReliefParams {
+            a0: load_relief.a0,
+            a1: load_relief.a1,
+            g_alpha_max: load_relief.g_alpha_max,
+            g_acc: load_relief.g_acc,
+            blend_schedule: load_relief
+                .blend_schedule
+                .iter()
+                .map(|node| (node.schedule_value, node.blend))
+                .collect(),
+            q_alpha_limit_pa_rad: load_relief.q_alpha_limit_pa_rad,
+        });
+    }
     if let Some(notches) = cfg.gyro_notch.as_ref() {
         params.gyro_notch = Some([
             openbmp_fc::filters::NotchConfig {
@@ -2026,14 +2347,41 @@ fn build_authority(
     }
     let mut table = PhaseAuthorityTable::default();
     for phase in &graph.phases {
+        let mut effectors: Vec<EffectorId> = phase
+            .allowed_effectors
+            .iter()
+            .map(|id| effector_id_from_config(id))
+            .collect();
+        for engine_id in &phase.allowed_engines {
+            let engine_id = engine_id_from_config(engine_id);
+            effectors.push(crate::fc_bridge::engine_gimbal_alias_effector_id(
+                engine_id,
+                crate::fc_bridge::EngineGimbalAxis::Pitch,
+            ));
+            effectors.push(crate::fc_bridge::engine_gimbal_alias_effector_id(
+                engine_id,
+                crate::fc_bridge::EngineGimbalAxis::Yaw,
+            ));
+        }
+        if effectors.len() > MAX_EFFECTOR_COMMANDS {
+            return Err(GuidanceError::InvalidConfig {
+                reason: format!(
+                    "mission phase 0x{:016x} authorizes {} effector commands after adding \
+                     engine-gimbal aliases, but the FC mixer publishes at most \
+                     MAX_EFFECTOR_COMMANDS = {} per tick; reduce phase authority or raise \
+                     MAX_EFFECTOR_COMMANDS to >= {}",
+                    phase.id.value(),
+                    effectors.len(),
+                    MAX_EFFECTOR_COMMANDS,
+                    effectors.len(),
+                ),
+            }
+            .into());
+        }
         table.allowed.insert(
             phase.id.value(),
             PhaseAuthority {
-                effectors: phase
-                    .allowed_effectors
-                    .iter()
-                    .map(|id| effector_id_from_config(id))
-                    .collect(),
+                effectors,
                 engines: phase
                     .allowed_engines
                     .iter()
@@ -2083,16 +2431,187 @@ fn engine_id_from_config(id: &str) -> EngineId {
     }
 }
 
+fn build_engine_out_trim_table(
+    rows: Option<&[FcEngineOutTrimConfig]>,
+    auto: Option<&FcEngineOutTrimAutoConfig>,
+    engines: &[EngineConfig],
+) -> Result<EngineOutTrimTable, ControllerError> {
+    if rows.is_some() && auto.is_some() {
+        return Err(GuidanceError::InvalidConfig {
+            reason: "fc.engine_out_trim_auto cannot be declared with fc.engine_out_trim".to_owned(),
+        }
+        .into());
+    }
+    let mut table = EngineOutTrimTable::default();
+    if let Some(rows) = rows {
+        for row in rows {
+            let failed_engine = engine_id_from_config(&row.failed_engine);
+            let commands = row
+                .commands
+                .iter()
+                .map(|command| EngineOutTrimCommand {
+                    engine: engine_id_from_config(&command.engine),
+                    gimbal_pitch_bias_rad: command.gimbal_pitch_bias_rad,
+                    gimbal_yaw_bias_rad: command.gimbal_yaw_bias_rad,
+                })
+                .collect::<Vec<_>>();
+            table.by_failed_engine.insert(failed_engine, commands);
+        }
+    } else if let Some(auto) = auto {
+        table = derive_geometry_engine_out_trim_table(auto, engines)?;
+    }
+    table
+        .validate()
+        .map_err(|reason| GuidanceError::InvalidConfig {
+            reason: format!("fc.engine_out_trim validation failed: {reason}"),
+        })?;
+    Ok(table)
+}
+
+fn derive_geometry_engine_out_trim_table(
+    auto: &FcEngineOutTrimAutoConfig,
+    engines: &[EngineConfig],
+) -> Result<EngineOutTrimTable, ControllerError> {
+    if engines.len() < 2 {
+        return Err(GuidanceError::InvalidConfig {
+            reason: "fc.engine_out_trim_auto requires at least two engines".to_owned(),
+        }
+        .into());
+    }
+
+    let nominal_moment = engines.iter().fold(Vector3::zeros(), |sum, engine| {
+        sum + axial_engine_moment(engine, 1.0)
+    });
+    let mut table = EngineOutTrimTable::default();
+    for failed in engines {
+        let failed_id = engine_id_from_config(&failed.id);
+        let survivors = engines
+            .iter()
+            .filter(|engine| engine.id != failed.id)
+            .collect::<Vec<_>>();
+        if survivors.is_empty() {
+            return Err(GuidanceError::InvalidConfig {
+                reason: format!(
+                    "fc.engine_out_trim_auto has no survivor engines for failed engine {}",
+                    failed.id
+                ),
+            }
+            .into());
+        }
+        let retrim_scale = engines.len() as f64 / survivors.len() as f64;
+        let retrim_moment = survivors.iter().fold(Vector3::zeros(), |sum, engine| {
+            sum + axial_engine_moment(engine, retrim_scale)
+        });
+        let target = nominal_moment - retrim_moment;
+        let commands =
+            derive_geometry_engine_out_trim_row(auto, &survivors, target).map_err(|reason| {
+                GuidanceError::InvalidConfig {
+                    reason: format!(
+                        "fc.engine_out_trim_auto failed for engine {}: {reason}",
+                        failed.id
+                    ),
+                }
+            })?;
+        table.by_failed_engine.insert(failed_id, commands);
+    }
+    Ok(table)
+}
+
+fn axial_engine_moment(engine: &EngineConfig, thrust_scale: f64) -> Vector3<f64> {
+    let r = Vector3::new(
+        engine.mount_point_body_m[0],
+        engine.mount_point_body_m[1],
+        engine.mount_point_body_m[2],
+    );
+    let force = Vector3::new(0.0, 0.0, engine.limits.max_thrust_n * thrust_scale);
+    r.cross(&force)
+}
+
+fn derive_geometry_engine_out_trim_row(
+    auto: &FcEngineOutTrimAutoConfig,
+    survivors: &[&EngineConfig],
+    target_moment_n_m: Vector3<f64>,
+) -> Result<Vec<EngineOutTrimCommand>, String> {
+    let mut columns: Vec<(usize, bool, Vector3<f64>)> = Vec::new();
+    for (engine_index, engine) in survivors.iter().enumerate() {
+        if engine.limits.max_gimbal_rad <= 0.0 {
+            continue;
+        }
+        let r = Vector3::new(
+            engine.mount_point_body_m[0],
+            engine.mount_point_body_m[1],
+            engine.mount_point_body_m[2],
+        );
+        let thrust = engine.limits.max_thrust_n;
+        let pitch_force = Vector3::new(thrust, 0.0, 0.0);
+        let yaw_force = Vector3::new(0.0, -thrust, 0.0);
+        columns.push((engine_index, true, r.cross(&pitch_force)));
+        columns.push((engine_index, false, r.cross(&yaw_force)));
+    }
+    if columns.is_empty() {
+        return Err("no survivor engine has nonzero gimbal authority".to_owned());
+    }
+
+    let mut gram = Matrix3::zeros();
+    for (_, _, column) in &columns {
+        gram += column * column.transpose();
+    }
+    let max_column_norm_sq = columns
+        .iter()
+        .map(|(_, _, column)| column.norm_squared())
+        .fold(0.0_f64, f64::max);
+    let regularization = (max_column_norm_sq * 1.0e-12).max(1.0e-12);
+    gram += Matrix3::identity() * regularization;
+    let lambda = gram.lu().solve(&target_moment_n_m).ok_or_else(|| {
+        "geometry-derived engine-out trim normal equations are singular".to_owned()
+    })?;
+    let mut pitch_yaw = vec![(0.0_f64, 0.0_f64); survivors.len()];
+    for (engine_index, is_pitch, column) in columns {
+        let value = column.dot(&lambda);
+        if !value.is_finite() {
+            return Err("geometry-derived engine-out trim produced a non-finite bias".to_owned());
+        }
+        if is_pitch {
+            pitch_yaw[engine_index].0 += value;
+        } else {
+            pitch_yaw[engine_index].1 += value;
+        }
+    }
+
+    let mut commands = Vec::new();
+    for (engine, (pitch, yaw)) in survivors.iter().zip(pitch_yaw) {
+        if engine.limits.max_gimbal_rad <= 0.0 {
+            continue;
+        }
+        let limit = auto
+            .max_bias_rad
+            .map_or(engine.limits.max_gimbal_rad, |max_bias_rad| {
+                max_bias_rad.min(engine.limits.max_gimbal_rad)
+            });
+        commands.push(EngineOutTrimCommand {
+            engine: engine_id_from_config(&engine.id),
+            gimbal_pitch_bias_rad: pitch.clamp(-limit, limit),
+            gimbal_yaw_bias_rad: yaw.clamp(-limit, limit),
+        });
+    }
+    if commands.is_empty() {
+        return Err("geometry-derived engine-out trim produced no survivor commands".to_owned());
+    }
+    Ok(commands)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
+    use approx::assert_abs_diff_eq;
     use openbmp_mission::{
         BuiltInEventTrigger, CanonicalRegionStates, CanonicalRegions, EventId, MissionAction,
         MissionState, Phase, PhaseTransition, Region, RegionSet,
     };
     use openbmp_scenario::{
         FcAscentReferenceConfig, FcAutopilotKind, FcEstimatorKind, FcFdirRedlinesConfig,
-        FcGuidanceKind,
+        FcGuidanceKind, FcLoadReliefBlendNodeConfig, FcLoadReliefConfig,
+        FcOptimizedReferenceConfig, FcOptimizedReferenceSampleConfig,
     };
 
     use super::*;
@@ -2259,6 +2778,125 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_engine_out_trim_table_translates_scenario_engine_ids() {
+        let rows = vec![FcEngineOutTrimConfig {
+            failed_engine: "center".to_owned(),
+            commands: vec![
+                openbmp_scenario::FcEngineOutTrimCommandConfig {
+                    engine: "left".to_owned(),
+                    gimbal_pitch_bias_rad: 0.005,
+                    gimbal_yaw_bias_rad: -0.010,
+                },
+                openbmp_scenario::FcEngineOutTrimCommandConfig {
+                    engine: "right".to_owned(),
+                    gimbal_pitch_bias_rad: -0.010,
+                    gimbal_yaw_bias_rad: 0.015,
+                },
+            ],
+        }];
+
+        let table = build_engine_out_trim_table(Some(&rows), None, &[]).expect("trim table builds");
+        let failed = engine_id_from_config("center");
+        let commands = table
+            .by_failed_engine
+            .get(&failed)
+            .expect("failed engine row present");
+
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].engine, engine_id_from_config("left"));
+        assert_eq!(
+            commands[0].gimbal_pitch_bias_rad.to_bits(),
+            0.005_f64.to_bits()
+        );
+        assert_eq!(
+            commands[0].gimbal_yaw_bias_rad.to_bits(),
+            (-0.010_f64).to_bits()
+        );
+        assert_eq!(commands[1].engine, engine_id_from_config("right"));
+        assert_eq!(
+            commands[1].gimbal_pitch_bias_rad.to_bits(),
+            (-0.010_f64).to_bits()
+        );
+        assert_eq!(
+            commands[1].gimbal_yaw_bias_rad.to_bits(),
+            0.015_f64.to_bits()
+        );
+    }
+
+    fn trim_test_engine(id: &str, mount_point_body_m: [f64; 3]) -> EngineConfig {
+        EngineConfig {
+            id: id.to_owned(),
+            mounted_to: None,
+            kind: openbmp_scenario::EngineKindConfig::LiquidEngine,
+            mount_point_body_m,
+            limits: openbmp_scenario::EngineLimitsConfig {
+                max_thrust_n: 1000.0,
+                isp_s: 250.0,
+                ignition_transient_s: 0.0,
+                shutdown_transient_s: 0.0,
+                max_gimbal_rad: 0.2,
+                gimbal_slew_rad_per_s: f64::INFINITY,
+                throttle_slew_per_s: f64::INFINITY,
+                min_throttle_unit: 0.0,
+                isp_throttle_falloff: 0.0,
+                restartable: false,
+            },
+            tvc_actuator: None,
+            propellant: None,
+            fault: None,
+            thermochemical_performance: None,
+        }
+    }
+
+    #[test]
+    fn build_engine_out_trim_table_derives_geometry_biases() {
+        let engines = vec![
+            trim_test_engine("left", [-0.1, 0.0, -2.0]),
+            trim_test_engine("center", [0.0, 0.0, -2.0]),
+            trim_test_engine("right", [0.1, 0.0, -2.0]),
+        ];
+        let auto = FcEngineOutTrimAutoConfig {
+            max_bias_rad: Some(0.05),
+        };
+
+        let table =
+            build_engine_out_trim_table(None, Some(&auto), &engines).expect("auto table builds");
+        let left_failed = engine_id_from_config("left");
+        let center = engine_id_from_config("center");
+        let right = engine_id_from_config("right");
+        let commands = table
+            .by_failed_engine
+            .get(&left_failed)
+            .expect("left failure row present");
+        let by_engine = commands
+            .iter()
+            .map(|command| (command.engine, command))
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(commands.len(), 2);
+        assert_abs_diff_eq!(
+            by_engine[&center].gimbal_pitch_bias_rad,
+            -0.0375,
+            epsilon = 1.0e-9
+        );
+        assert_abs_diff_eq!(
+            by_engine[&right].gimbal_pitch_bias_rad,
+            -0.0375,
+            epsilon = 1.0e-9
+        );
+        assert_abs_diff_eq!(
+            by_engine[&center].gimbal_yaw_bias_rad,
+            0.0,
+            epsilon = 1.0e-12
+        );
+        assert_abs_diff_eq!(
+            by_engine[&right].gimbal_yaw_bias_rad,
+            0.0,
+            epsilon = 1.0e-12
+        );
+    }
+
     fn powered_ascent_graph() -> (MissionPhaseGraph, Vec<EventBinding<MissionAction>>, PhaseId) {
         let pad = PhaseId::from_path("mission.phases.pad");
         let powered_ascent = PhaseId::from_path("mission.phases.powered_ascent");
@@ -2290,6 +2928,19 @@ mod tests {
             once: true,
         }];
         (graph, bindings, pad)
+    }
+
+    fn powered_ascent_initial_graph()
+    -> (MissionPhaseGraph, Vec<EventBinding<MissionAction>>, PhaseId) {
+        let powered_ascent = PhaseId::from_path("mission.phases.powered_ascent");
+        let phases = vec![Phase {
+            id: powered_ascent,
+            label: "powered_ascent".to_string(),
+            allowed_effectors: Vec::new(),
+            allowed_engines: vec!["main".to_string()],
+        }];
+        let graph = MissionPhaseGraph::new(phases, Vec::new(), powered_ascent, &[]).unwrap();
+        (graph, Vec::new(), powered_ascent)
     }
 
     #[test]
@@ -2334,6 +2985,151 @@ mod tests {
         assert!(build_authority(&graph, None).is_ok());
     }
 
+    #[test]
+    fn fc_runner_consumes_fdir_safe_request_into_shutdown_and_safing_outputs() {
+        let mut gain_schedule = BTreeMap::new();
+        gain_schedule.insert(
+            "mission.phases.powered_ascent".to_string(),
+            FcGainsConfig {
+                rate_kp: Some([0.5, 0.5, 0.5]),
+                rate_ki: None,
+                rate_kd: Some([0.05, 0.05, 0.05]),
+                attitude_kp: Some([2.0, 2.0, 1.0]),
+                attitude_ki: None,
+                attitude_kd: None,
+                trajectory_kp: None,
+                trajectory_ki: None,
+                trajectory_kd: None,
+                aileron_limit_rad: Some(0.35),
+                elevator_limit_rad: Some(0.35),
+                rudder_limit_rad: Some(0.35),
+                throttle_baseline: Some(1.0),
+            },
+        );
+        let config = FcConfig {
+            estimator: FcEstimatorKind::Ekf,
+            autopilot: FcAutopilotKind::ThreeLoop,
+            guidance: FcGuidanceKind::AttitudeHold,
+            reference_q_xyzw: Some([0.0, 0.0, 0.0, 1.0]),
+            base_rate_hz: 1_000,
+            frame_budget_us: 2_000,
+            scheduler: None,
+            ekf: Some(FcEkfConfig::default()),
+            mekf: None,
+            imm: None,
+            autopilot_params: None,
+            health: FcHealthConfig {
+                imu_stale_after_s: 0.05,
+                gnss_stale_after_s: 0.5,
+                baro_stale_after_s: 10.0,
+                mag_stale_after_s: 0.2,
+                overrun_burst_count: 5,
+            },
+            fdir: None,
+            actuator_channels: None,
+            gain_schedule,
+            phase_authority: None,
+            engine_out_trim: None,
+            engine_out_trim_auto: None,
+            estimator_lanes: None,
+            autopilot_allocation: None,
+            trajectory: None,
+            ascent_reference_by_phase: None,
+            optimized_reference: None,
+            robust_controller: None,
+            sil_stimulus: None,
+            transport: None,
+            transport_faults: None,
+            ascent_reference: None,
+        };
+        let (graph, bindings, start) = powered_ascent_initial_graph();
+        let mut runner = new_runner(&config, graph, bindings, start);
+        let dt_s = 0.001;
+        let mut armed_tick = None;
+        for k in 0..150_u64 {
+            let now = SimTime::from_seconds(f64::from(u32::try_from(k).unwrap()) * dt_s);
+            runner.publish_imu(ImuSample {
+                time: now,
+                gyro_rad_s: Vector3::zeros(),
+                accel_m_s2: Vector3::new(0.0, 0.0, 9.81),
+                healthy: true,
+            });
+            let _ = runner.step(now, StepIndex::new(k)).unwrap();
+            if runner
+                .latest_vehicle_status()
+                .is_some_and(|status| status.armed && status.in_flight)
+            {
+                armed_tick = Some(k);
+                break;
+            }
+        }
+        let armed_tick = armed_tick.expect("runner should arm in powered-ascent phase");
+
+        let prime_tick = armed_tick + 1;
+        let now = SimTime::from_seconds(f64::from(u32::try_from(prime_tick).unwrap()) * dt_s);
+        runner.publish_imu(ImuSample {
+            time: now,
+            gyro_rad_s: Vector3::zeros(),
+            accel_m_s2: Vector3::new(0.0, 0.0, 9.81),
+            healthy: true,
+        });
+        let _ = runner.step(now, StepIndex::new(prime_tick)).unwrap();
+
+        runner
+            .fc
+            .bus()
+            .publish(FdirStatus {
+                triggered: true,
+                tripped_mask: openbmp_fc::fdir::FDIR_BIT_IMU,
+                ticks_since_trip: 1,
+            })
+            .unwrap();
+        let safe_tick = prime_tick + 1;
+        let now = SimTime::from_seconds(f64::from(u32::try_from(safe_tick).unwrap()) * dt_s);
+        runner.publish_imu(ImuSample {
+            time: now,
+            gyro_rad_s: Vector3::zeros(),
+            accel_m_s2: Vector3::new(0.0, 0.0, 9.81),
+            healthy: true,
+        });
+        let _ = runner.step(now, StepIndex::new(safe_tick)).unwrap();
+
+        let status = runner
+            .latest_vehicle_status()
+            .expect("commander should publish vehicle status");
+        assert!(status.safe_state_requested);
+        let (autopilot, _) = runner
+            .fc
+            .bus()
+            .latest::<AutopilotStatus>()
+            .unwrap()
+            .expect("autopilot status should be published");
+        assert!(autopilot.safe_attitude_hold_active);
+        let engine = runner
+            .latest_engine_command()
+            .expect("autopilot should publish engine demand");
+        assert_eq!(engine.throttle_unit.to_bits(), 0.0_f64.to_bits());
+        assert!(engine.shutdown);
+        let safing = runner
+            .latest_propellant_safing_command()
+            .expect("mixer should publish propellant safing intent");
+        assert!(safing.safed);
+        assert!(safing.isolate_feeds);
+        assert!(safing.close_engine_valves);
+        assert!(safing.dump_enabled);
+        let commands = runner
+            .latest_engine_command_set()
+            .expect("mixer should publish per-engine shutdown set");
+        let engine_id = EngineId::from_path("vehicle.assembly.engines.main").value();
+        assert_eq!(commands.count, 1);
+        assert_eq!(commands.commands[0].engine_id, engine_id);
+        assert_eq!(
+            commands.commands[0].throttle_unit.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert!(commands.commands[0].shutdown);
+    }
+
     fn hsm_from_graph(graph: &MissionPhaseGraph) -> MissionStateMachine {
         let states = graph
             .phases
@@ -2366,6 +3162,12 @@ mod tests {
                         allowed_engines: Vec::new(),
                     },
                     Phase {
+                        id: CanonicalRegionStates::health_degraded(),
+                        label: "degraded".into(),
+                        allowed_effectors: Vec::new(),
+                        allowed_engines: Vec::new(),
+                    },
+                    Phase {
                         id: CanonicalRegionStates::health_abort_requested(),
                         label: "abort_requested".into(),
                         allowed_effectors: Vec::new(),
@@ -2385,10 +3187,174 @@ mod tests {
         bindings: Vec<EventBinding<MissionAction>>,
         pad: PhaseId,
     ) -> FcRunner {
+        new_runner_with_resolved_files(config, graph, bindings, pad, &BTreeMap::new()).unwrap()
+    }
+
+    fn new_runner_with_resolved_files(
+        config: &FcConfig,
+        graph: MissionPhaseGraph,
+        bindings: Vec<EventBinding<MissionAction>>,
+        pad: PhaseId,
+        resolved_files: &BTreeMap<String, ResolvedFile>,
+    ) -> Result<FcRunner, ControllerError> {
         let hsm = hsm_from_graph(&graph);
         let regions = regions_from_graph(&graph);
         let mission = FcRunnerMission::new(graph, hsm, regions, bindings, pad);
-        FcRunner::new(config, mission, None, 0.001, None, EstimatorSeed::default()).unwrap()
+        FcRunner::new_with_resolved_files(
+            config,
+            &[],
+            mission,
+            None,
+            0.001,
+            None,
+            EstimatorSeed::default(),
+            resolved_files,
+        )
+    }
+
+    fn attitude_hold_test_config() -> FcConfig {
+        let mut gain_schedule = BTreeMap::new();
+        gain_schedule.insert(
+            "mission.phases.powered_ascent".to_string(),
+            FcGainsConfig {
+                rate_kp: Some([0.5, 0.5, 0.5]),
+                rate_ki: None,
+                rate_kd: Some([0.05, 0.05, 0.05]),
+                attitude_kp: Some([2.0, 2.0, 1.0]),
+                attitude_ki: None,
+                attitude_kd: None,
+                trajectory_kp: None,
+                trajectory_ki: None,
+                trajectory_kd: None,
+                aileron_limit_rad: Some(0.35),
+                elevator_limit_rad: Some(0.35),
+                rudder_limit_rad: Some(0.35),
+                throttle_baseline: Some(1.0),
+            },
+        );
+        FcConfig {
+            estimator: FcEstimatorKind::Ekf,
+            autopilot: FcAutopilotKind::ThreeLoop,
+            guidance: FcGuidanceKind::AttitudeHold,
+            reference_q_xyzw: Some([0.0, 0.0, 0.0, 1.0]),
+            base_rate_hz: 1_000,
+            frame_budget_us: 2_000,
+            scheduler: None,
+            ekf: Some(FcEkfConfig::default()),
+            mekf: None,
+            imm: None,
+            autopilot_params: None,
+            health: FcHealthConfig {
+                imu_stale_after_s: 0.05,
+                gnss_stale_after_s: 0.5,
+                baro_stale_after_s: 10.0,
+                mag_stale_after_s: 0.2,
+                overrun_burst_count: 5,
+            },
+            fdir: None,
+            actuator_channels: None,
+            gain_schedule,
+            phase_authority: None,
+            engine_out_trim: None,
+            engine_out_trim_auto: None,
+            estimator_lanes: None,
+            autopilot_allocation: None,
+            trajectory: None,
+            ascent_reference_by_phase: None,
+            optimized_reference: None,
+            robust_controller: None,
+            sil_stimulus: None,
+            transport: None,
+            transport_faults: None,
+            ascent_reference: None,
+        }
+    }
+
+    fn robust_controller_iload_text() -> &'static str {
+        r#"
+[robust_controller]
+controller_id = "robust-local-v1"
+source_id = "hinf-reduced-order-local"
+source_sha256_hex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+variable = "dynamic_pressure_pa"
+interp = "linear"
+states = 1
+measurements = 1
+controls = 1
+
+[[robust_controller.nodes]]
+node_id = "qbar-low"
+schedule_value = 10000.0
+flight_condition_tag = "mach_qbar_mass"
+states = 1
+measurements = 1
+controls = 1
+a_row_major = [-0.20]
+b_row_major = [1.0]
+c_row_major = [0.8]
+d_row_major = [0.0]
+
+[[robust_controller.nodes]]
+node_id = "qbar-high"
+schedule_value = 25000.0
+flight_condition_tag = "mach_qbar_mass"
+states = 1
+measurements = 1
+controls = 1
+a_row_major = [-0.35]
+b_row_major = [1.2]
+c_row_major = [0.7]
+d_row_major = [0.05]
+"#
+    }
+
+    #[test]
+    fn fc_runner_declares_robust_controller_iload_table() {
+        let resolved = ResolvedFile::from_bytes(
+            "robust-controller.iload.toml",
+            robust_controller_iload_text().as_bytes().to_vec(),
+        );
+        let mut config = attitude_hold_test_config();
+        config.robust_controller = Some(FcRobustControllerConfig {
+            iload_file: "robust-controller.iload.toml".into(),
+            iload_file_sha256: Some(resolved.sha256_hex.clone()),
+        });
+        let resolved_files =
+            BTreeMap::from([(FC_ROBUST_CONTROLLER_ILOAD_FILE_KEY.to_owned(), resolved)]);
+        let (graph, bindings, start) = powered_ascent_initial_graph();
+
+        let runner =
+            new_runner_with_resolved_files(&config, graph, bindings, start, &resolved_files)
+                .expect("robust-controller I-load should build");
+        let table = runner
+            .robust_controller_table()
+            .expect("robust-controller table should be active");
+
+        assert_eq!(table.controller_id, "robust-local-v1");
+        assert_eq!(table.variable, ScheduleVariable::DynamicPressurePa);
+        assert_eq!(table.interp, GainInterp::Linear);
+        assert_eq!(table.nodes.len(), 2);
+        assert_eq!(table.nodes[1].node_id, "qbar-high");
+        assert_abs_diff_eq!(table.nodes[1].d_row_major[0], 0.05, epsilon = 1.0e-12);
+    }
+
+    #[test]
+    fn fc_runner_fails_closed_when_robust_controller_resolved_file_is_missing() {
+        let mut config = attitude_hold_test_config();
+        config.robust_controller = Some(FcRobustControllerConfig {
+            iload_file: "robust-controller.iload.toml".into(),
+            iload_file_sha256: None,
+        });
+        let (graph, bindings, start) = powered_ascent_initial_graph();
+
+        let err = new_runner_with_resolved_files(&config, graph, bindings, start, &BTreeMap::new())
+            .expect_err("missing robust-controller I-load should fail closed");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("fc.robust_controller I-load invalid")
+                && msg.contains(FC_ROBUST_CONTROLLER_ILOAD_FILE_KEY),
+            "missing-file error should name the robust-controller I-load key; got: {msg}"
+        );
     }
 
     #[test]
@@ -2614,10 +3580,14 @@ mod tests {
             actuator_channels: None,
             gain_schedule,
             phase_authority: None,
+            engine_out_trim: None,
+            engine_out_trim_auto: None,
             estimator_lanes: Some(lanes),
             autopilot_allocation: None,
             trajectory: None,
             ascent_reference_by_phase: None,
+            optimized_reference: None,
+            robust_controller: None,
             sil_stimulus: None,
             transport: None,
             transport_faults: None,
@@ -2695,10 +3665,14 @@ mod tests {
             actuator_channels: None,
             gain_schedule,
             phase_authority: None,
+            engine_out_trim: None,
+            engine_out_trim_auto: None,
             estimator_lanes: None,
             autopilot_allocation: None,
             trajectory: None,
             ascent_reference_by_phase: None,
+            optimized_reference: None,
+            robust_controller: None,
             sil_stimulus: None,
             transport: None,
             transport_faults: None,
@@ -2770,10 +3744,14 @@ mod tests {
             actuator_channels: None,
             gain_schedule,
             phase_authority: None,
+            engine_out_trim: None,
+            engine_out_trim_auto: None,
             estimator_lanes: None,
             autopilot_allocation: None,
             trajectory: None,
             ascent_reference_by_phase: None,
+            optimized_reference: None,
+            robust_controller: None,
             sil_stimulus: None,
             transport: None,
             transport_faults: None,
@@ -2781,6 +3759,7 @@ mod tests {
                 method: FcAscentReferenceMethod::PitchProgram,
                 schedule_s: Some(vec![0.0, 10.0, 30.0]),
                 pitch_rad: Some(vec![0.0, 0.2, 0.6]),
+                yaw_rad: None,
                 insertion_radius_m: None,
                 k_alt_rad_per_m: None,
                 k_vr_rad_per_m_s: None,
@@ -2802,6 +3781,119 @@ mod tests {
         };
         let (graph, bindings, pad) = powered_ascent_graph();
         let _runner = new_runner(&config, graph, bindings, pad);
+    }
+
+    #[test]
+    fn fc_runner_builds_from_optimized_reference_config_and_publishes_reference() {
+        let mut gain_schedule = BTreeMap::new();
+        gain_schedule.insert(
+            "mission.phases.powered_ascent".to_string(),
+            FcGainsConfig {
+                rate_kp: Some([0.5, 0.5, 0.5]),
+                rate_ki: None,
+                rate_kd: Some([0.05, 0.05, 0.05]),
+                attitude_kp: Some([2.0, 2.0, 1.0]),
+                attitude_ki: None,
+                attitude_kd: None,
+                trajectory_kp: None,
+                trajectory_ki: None,
+                trajectory_kd: None,
+                aileron_limit_rad: Some(0.35),
+                elevator_limit_rad: Some(0.35),
+                rudder_limit_rad: Some(0.35),
+                throttle_baseline: Some(0.0),
+            },
+        );
+        let config = FcConfig {
+            estimator: FcEstimatorKind::Ekf,
+            autopilot: FcAutopilotKind::ThreeLoop,
+            guidance: FcGuidanceKind::OptimizedReference,
+            reference_q_xyzw: None,
+            base_rate_hz: 1_000,
+            frame_budget_us: 2_000,
+            scheduler: None,
+            ekf: Some(FcEkfConfig::default()),
+            mekf: None,
+            imm: None,
+            autopilot_params: None,
+            health: FcHealthConfig {
+                imu_stale_after_s: 0.05,
+                gnss_stale_after_s: 0.5,
+                baro_stale_after_s: 10.0,
+                mag_stale_after_s: 0.2,
+                overrun_burst_count: 5,
+            },
+            fdir: None,
+            actuator_channels: None,
+            gain_schedule,
+            phase_authority: None,
+            engine_out_trim: None,
+            engine_out_trim_auto: None,
+            estimator_lanes: None,
+            autopilot_allocation: None,
+            trajectory: None,
+            ascent_reference_by_phase: None,
+            optimized_reference: Some(FcOptimizedReferenceConfig {
+                samples: vec![
+                    FcOptimizedReferenceSampleConfig {
+                        time_s: 0.0,
+                        radius_m: 100.0,
+                        speed_m_s: 10.0,
+                        flight_path_angle_rad: 0.0,
+                    },
+                    FcOptimizedReferenceSampleConfig {
+                        time_s: 0.02,
+                        radius_m: 120.0,
+                        speed_m_s: 20.0,
+                        flight_path_angle_rad: 0.2,
+                    },
+                ],
+                iload_file: None,
+                iload_file_sha256: None,
+                active_phase_paths: Some(vec!["mission.phases.powered_ascent".to_owned()]),
+                radial_direction_eci: Some([0.0, 1.0, 0.0]),
+                tangential_direction_eci: Some([0.0, 0.0, 1.0]),
+                reference_q_xyzw: Some([0.0, 0.0, 0.0, 1.0]),
+            }),
+            robust_controller: None,
+            sil_stimulus: None,
+            transport: None,
+            transport_faults: None,
+            ascent_reference: None,
+        };
+        let (graph, bindings, start) = powered_ascent_initial_graph();
+        let mut runner = new_runner(&config, graph, bindings, start);
+
+        let mut reference = None;
+        for k in 0..=20_u64 {
+            let now = SimTime::from_seconds(f64::from(u32::try_from(k).unwrap()) * 0.001);
+            runner.publish_imu(ImuSample {
+                time: now,
+                gyro_rad_s: Vector3::zeros(),
+                accel_m_s2: Vector3::new(0.0, 0.0, 9.81),
+                healthy: true,
+            });
+            let _ = runner.step(now, StepIndex::new(k)).unwrap();
+            reference = runner.latest_reference_state();
+            if reference.is_some() {
+                break;
+            }
+        }
+        let reference =
+            reference.expect("optimized guidance should publish after commander status");
+        let alpha = reference.time.as_seconds() / 0.02;
+        let expected_radius_m = 100.0 + 20.0 * alpha;
+        let expected_speed_m_s = 10.0 + 10.0 * alpha;
+        let expected_fpa_rad = 0.2 * alpha;
+        assert!(
+            (reference.position_eci_m - Vector3::new(0.0, expected_radius_m, 0.0)).norm() < 1.0e-12
+        );
+        let expected_velocity = Vector3::new(
+            0.0,
+            expected_speed_m_s * expected_fpa_rad.sin(),
+            expected_speed_m_s * expected_fpa_rad.cos(),
+        );
+        assert!((reference.velocity_eci_m_s - expected_velocity).norm() < 1.0e-12);
     }
 
     #[test]
@@ -2829,5 +3921,38 @@ mod tests {
             params.anti_windup,
             openbmp_fc::anti_windup::AntiWindupKind::default()
         );
+    }
+
+    #[test]
+    fn explicit_load_relief_block_populates_autopilot_params() {
+        let cfg = FcAutopilotParams {
+            load_relief: Some(FcLoadReliefConfig {
+                a0: 1.0,
+                a1: 0.2,
+                g_alpha_max: 0.8,
+                g_acc: 0.01,
+                blend_schedule: vec![
+                    FcLoadReliefBlendNodeConfig {
+                        schedule_value: 0.0,
+                        blend: 0.0,
+                    },
+                    FcLoadReliefBlendNodeConfig {
+                        schedule_value: 20.0,
+                        blend: 1.0,
+                    },
+                ],
+                q_alpha_limit_pa_rad: 1_200.0,
+            }),
+            ..FcAutopilotParams::default()
+        };
+
+        let params = build_autopilot_params(&cfg, 0.001, None).expect("autopilot params build");
+        let load_relief = params.load_relief.expect("load relief params populated");
+        assert_eq!(load_relief.a0, 1.0);
+        assert_eq!(load_relief.a1, 0.2);
+        assert_eq!(load_relief.g_alpha_max, 0.8);
+        assert_eq!(load_relief.g_acc, 0.01);
+        assert_eq!(load_relief.blend_schedule, vec![(0.0, 0.0), (20.0, 1.0)]);
+        assert_eq!(load_relief.q_alpha_limit_pa_rad, 1_200.0);
     }
 }

@@ -239,6 +239,11 @@ mod tests {
             (
                 "barometer",
                 "impl<S, V> Job for VotedBarometerIngest",
+                "/// Voted ingest job for redundant air-data lanes.",
+            ),
+            (
+                "airdata",
+                "impl<S, V> Job for VotedAirDataIngest",
                 "/// Voted ingest job for redundant GNSS lanes.",
             ),
             (

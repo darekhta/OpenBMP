@@ -547,6 +547,8 @@ mod tests {
             alpha_deg: 0.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1.0e-3,
+            airspeed_m_s: 100.0,
+            body_angular_rates_rad_s: nalgebra::Vector3::zeros(),
             knudsen: 1.0e-6,
             reynolds_length: 0.0,
         };
@@ -565,6 +567,8 @@ mod tests {
             alpha_deg: f64::NAN,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1.0e-3,
+            airspeed_m_s: 100.0,
+            body_angular_rates_rad_s: nalgebra::Vector3::zeros(),
             knudsen: 100.0,
             reynolds_length: 0.0,
         };
@@ -585,6 +589,8 @@ mod tests {
             alpha_deg: 45.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: -1.0e-3,
+            airspeed_m_s: 100.0,
+            body_angular_rates_rad_s: nalgebra::Vector3::zeros(),
             knudsen: f64::INFINITY,
             reynolds_length: 0.0,
         };
@@ -648,6 +654,8 @@ mod tests {
             alpha_deg: 5.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1.0e4,
+            airspeed_m_s: 100.0,
+            body_angular_rates_rad_s: nalgebra::Vector3::zeros(),
             knudsen: 1.0e-6,
             reynolds_length: 0.0,
         };
@@ -688,6 +696,8 @@ mod tests {
             alpha_deg: 5.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1.0e4,
+            airspeed_m_s: 100.0,
+            body_angular_rates_rad_s: nalgebra::Vector3::zeros(),
             knudsen: 100.0,
             reynolds_length: 0.0,
         };
@@ -724,6 +734,8 @@ mod tests {
             alpha_deg: 5.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: 1.0e4,
+            airspeed_m_s: 100.0,
+            body_angular_rates_rad_s: nalgebra::Vector3::zeros(),
             knudsen: f64::INFINITY,
             reynolds_length: 0.0,
         };

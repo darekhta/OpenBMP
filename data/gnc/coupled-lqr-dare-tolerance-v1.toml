@@ -1,0 +1,78 @@
+openbmp.gnc_coupled_lqr_reference = 1
+
+[meta]
+dataset_id = "openbmp.gnc.coupled_lqr_dare.v1"
+source_class = "derived-open-method"
+source_title = "Coupled discrete LQR DARE tolerance table"
+source_url = "https://python-control.readthedocs.io/"
+license_or_terms = "OpenBMP generated numeric regression fixture; no third-party source code or proprietary vehicle data."
+validation = "validated-toy"
+
+[tolerances]
+absolute_p = 1.0e-9
+absolute_k = 1.0e-10
+residual_norm = 1.0e-10
+
+[[problem]]
+name = "scalar_rate_integrator"
+states = 2
+controls = 1
+source_algorithm = "python-control control.dlqr using SciPy solve_discrete_are"
+a_row_major = [
+  1.0, 0.0,
+  1.0e-3, 1.0,
+]
+b_row_major = [
+  1.0e-3,
+  0.0,
+]
+q_row_major = [
+  1.0, 0.0,
+  0.0, 5.0e-2,
+]
+r_row_major = [
+  1.0,
+]
+expected_iterations_max = 64
+expected_p = [
+  1.20372576810370037e3, 2.23741337907343564e2,
+  2.23741337907343564e2, 2.69049412304693249e2,
+]
+expected_k = [
+  1.20250202676579288e0, 2.23472338495038697e-1,
+]
+
+[[problem]]
+name = "coupled_three_state_two_input"
+states = 3
+controls = 2
+source_algorithm = "python-control control.dlqr using SciPy solve_discrete_are"
+a_row_major = [
+  1.0, 2.0e-2, 0.0,
+  -1.5e-2, 9.97e-1, 1.0e-2,
+  0.0, -2.0e-2, 9.95e-1,
+]
+b_row_major = [
+  2.0e-2, 4.0e-3,
+  3.0e-3, 1.8e-2,
+  1.0e-2, -6.0e-3,
+]
+q_row_major = [
+  12.0, 1.0, 5.0e-1,
+  1.0, 8.0, -2.5e-1,
+  5.0e-1, -2.5e-1, 4.0,
+]
+r_row_major = [
+  8.0e-1, 1.0e-1,
+  1.0e-1, 5.0e-1,
+]
+expected_iterations_max = 64
+expected_p = [
+  1.84175725115774355e2, 1.34003485517508047e0, -5.61133666997060132e1,
+  1.34003485517508047e0, 1.10835410792185655e2, 9.52285320161160698e0,
+  -5.61133666997060132e1, 9.52285320161160698e0, 1.63824647434277722e2,
+]
+expected_k = [
+  3.42349128581481832e0, 9.31852163296668923e-2, 9.05186807950801087e-1,
+  1.22138450102722618e0, 3.60926344122490139e0, -2.04856285895174395e0,
+]

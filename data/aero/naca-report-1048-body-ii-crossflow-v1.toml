@@ -1,0 +1,62 @@
+# Public NACA Report 1048 body-II crossflow fixture.
+#
+# Uses the report body-II dimensions normalized by body diameter:
+# 33 1/3-caliber ogive nose, fineness ratio 13.1, and the appendix
+# finite-length crossflow drag ratio for body II. It checks the crossflow
+# increment only, not the scanned force/moment plot points.
+
+openbmp.naca_1048_crossflow_validation = 1
+
+[provenance]
+dataset_id = "openbmp.aero.naca_report_1048_body_ii_crossflow.v1"
+source_class = "public-domain-naca"
+validation_label = "checked"
+source_title = "NACA Report 1048, A Study of Effects of Viscosity on Flow Over Slender Inclined Bodies of Revolution"
+source_url = "https://ntrs.nasa.gov/citations/19930090962"
+
+[geometry]
+body_diameter_m = 1.0
+body_length_m = 13.1
+reference_area_m2 = 0.7853981633974483
+reference_length_m = 1.0
+surface_roughness_m = 0.0
+
+[geometry.nose]
+kind = "ogive"
+fineness = 5.752
+
+[tolerances]
+max_abs_error = 1.0e-12
+max_relative_error = 1.0e-12
+
+[[samples]]
+id = "body-ii-mach198-alpha4"
+mach = 1.98
+alpha_deg = 4.0
+reynolds_length = 1.0e6
+expected_crossflow_cn = 0.05773912179242602
+expected_cp_m = 7.423753768991748
+
+[[samples]]
+id = "body-ii-mach198-alpha8"
+mach = 1.98
+alpha_deg = 8.0
+reynolds_length = 1.0e6
+expected_crossflow_cn = 0.22939915130459207
+expected_cp_m = 7.423753768991748
+
+[[samples]]
+id = "body-ii-mach198-alpha12"
+mach = 1.98
+alpha_deg = 12.0
+reynolds_length = 1.0e6
+expected_crossflow_cn = 0.5084203535892712
+expected_cp_m = 7.423753768991748
+
+[[samples]]
+id = "body-ii-mach198-alpha16"
+mach = 1.98
+alpha_deg = 16.0
+reynolds_length = 1.0e6
+expected_crossflow_cn = 0.8828038898920049
+expected_cp_m = 7.423753768991748

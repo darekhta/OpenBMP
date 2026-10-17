@@ -1,0 +1,29 @@
+# Analytic finite-wing lift-curve fixture for the WP-03.5 VLM fin substrate.
+#
+# This fixture checks the NASA SP-405-style attached-flow finite-wing relation
+# used by the first fin substrate. It is analytic evidence, not AVL,
+# wind-tunnel, or flight data.
+
+[case]
+dataset_id = "openbmp.aero.vlm_finite_wing_analytic.v1"
+source_class = "analytic-openbmp"
+validation_label = "checked"
+root_chord_m = 1.0
+tip_chord_m = 1.0
+span_m = 4.0
+sweep_deg = 0.0
+root_le_x_m = 0.0
+moment_reference_x_m = 0.25
+reference_area_m2 = 4.0
+reference_length_m = 1.0
+hinge_chord_fraction = 0.75
+spanwise_panels = 16
+mach = 0.0
+alpha_deg = 4.0
+expected_aspect_ratio = 4.0
+expected_lift_curve_slope_per_rad = 3.6372866208934247
+expected_cl = 0.25393050949331614
+expected_cd_induced = 0.006036719247167906
+expected_aerodynamic_center_x_m = 0.25
+max_relative_error = 1.0e-12
+max_absolute_error = 1.0e-12

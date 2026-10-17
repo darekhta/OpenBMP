@@ -6,7 +6,11 @@ use openbmp_aero::{
     AccommodationCoeffs, AeroDeck, AeroError, AeroMethod, Afterbody, BodyGeometry, BuildupGrid,
     ChengBridge, ComponentBuildup, DeckLookup, DragBuildupModel, ErfcBridge, FinSet,
     FreeMolecularAero, HybridAeroMethod, LinearKnudsenBridge, LinearMachBridge, ModifiedNewtonian,
-    NoseShape, TangentCone, TangentWedge,
+    NoseShape, ProtuberanceSet, TangentCone, TangentWedge,
+};
+use openbmp_aerodb::{
+    CorrelatedDeckDrawSettings, RunMatrix, correlated_deck_draw_required_dimension_count,
+    draw_correlated_aero_deck,
 };
 use openbmp_core::SimTime;
 use openbmp_physics::AtmosphereModel;
@@ -39,13 +43,67 @@ pub fn load_aero_deck(
     let Some(aero) = &document.aero else {
         return Ok(None);
     };
-    if aero.deck.is_some() {
-        return load_deck_file(resolved_files).map(Some);
+    let deck = if aero.deck.is_some() {
+        Some(load_deck_file(resolved_files)?)
+    } else if let Some(buildup) = &aero.buildup {
+        Some(bake_buildup_deck(document, buildup)?)
+    } else {
+        None
+    };
+    deck.map(|deck| apply_deck_draw_if_declared(document, deck))
+        .transpose()
+}
+
+/// Return the deterministic RNG dimension count required by the resolved aero
+/// deck's correlated-draw tables.
+///
+/// # Errors
+///
+/// Returns [`RunnerError`] when the scenario's declared deck/buildup source
+/// cannot be loaded or baked.
+pub fn correlated_deck_draw_required_dimensions(
+    document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<Option<u32>, RunnerError> {
+    load_aero_deck(document, resolved_files).map(|deck| {
+        deck.as_ref()
+            .map(correlated_deck_draw_required_dimension_count)
+    })
+}
+
+/// Load a schema-declared offline aero-database run matrix.
+///
+/// This is a file-fed database handoff helper only. It does not make the run
+/// matrix an aerodynamic force source and does not launch an external solver.
+///
+/// # Errors
+///
+/// Returns [`RunnerError`] if the resolved-file set lacks the declared asset, if
+/// it is not UTF-8, or if `openbmp-aerodb` rejects the strict condition-only
+/// run-matrix TOML.
+pub fn load_declared_aero_run_matrix(
+    document: &ScenarioDocument,
+    resolved_files: &BTreeMap<String, ResolvedFile>,
+) -> Result<Option<RunMatrix>, RunnerError> {
+    if document
+        .aero
+        .as_ref()
+        .and_then(|aero| aero.run_matrix.as_ref())
+        .is_none()
+    {
+        return Ok(None);
     }
-    if let Some(buildup) = &aero.buildup {
-        return bake_buildup_deck(document, buildup).map(Some);
-    }
-    Ok(None)
+    let resolved = resolved_files.get("aero.run_matrix.file").ok_or_else(|| {
+        RunnerError::UnsupportedScenario {
+            what: "declared aero.run_matrix.file was not present in resolved scenario files"
+                .to_owned(),
+        }
+    })?;
+    let text =
+        std::str::from_utf8(&resolved.bytes).map_err(|err| RunnerError::UnsupportedScenario {
+            what: format!("aero.run_matrix.file is not UTF-8: {err}"),
+        })?;
+    Ok(Some(RunMatrix::load_toml_str(text)?))
 }
 
 /// Build the live [`AeroMethod`] selected by `[aero.method]`.
@@ -106,6 +164,29 @@ pub fn upstream_uq_budget(
         sources: vec![source],
         correlation: None,
     })
+}
+
+fn apply_deck_draw_if_declared(
+    document: &ScenarioDocument,
+    deck: AeroDeck,
+) -> Result<AeroDeck, RunnerError> {
+    let Some(draw) = document
+        .aero
+        .as_ref()
+        .and_then(|aero| aero.deck_draw.as_ref())
+    else {
+        return Ok(deck);
+    };
+    let settings = CorrelatedDeckDrawSettings::new_with_deck_default_and_axis_correlation_lengths(
+        draw.campaign_seed,
+        draw.sample_index,
+        draw.dimension_id_base,
+        draw.mach_correlation_length,
+        draw.alpha_correlation_length_deg,
+        draw.beta_correlation_length_deg,
+        &deck,
+    )?;
+    Ok(draw_correlated_aero_deck(&deck, settings)?)
 }
 
 /// Reject deck-only aerodynamic use when the initial state is already
@@ -410,11 +491,25 @@ fn bake_buildup_deck(
             thickness_ratio: fins.thickness_ratio,
             sweep_rad: fins.sweep_rad,
         }),
+        protuberances: config
+            .protuberances
+            .as_ref()
+            .map(|protuberances| ProtuberanceSet {
+                count: protuberances.count,
+                frontal_area_m2: protuberances.frontal_area_m2,
+                drag_coefficient: protuberances.drag_coefficient,
+                interference_factor: protuberances.interference_factor,
+            }),
         reference_area_m2: config.reference_area_m2,
         reference_length_m: config.reference_length_m,
         center_of_gravity_from_nose_m: config.center_of_gravity_from_nose_m,
     };
-    Ok(ComponentBuildup::default().bake_deck(&geom, &grid)?)
+    let legacy = ComponentBuildup::default();
+    if config.datcom {
+        Ok(legacy.datcom().bake_deck(&geom, &grid)?)
+    } else {
+        Ok(legacy.bake_deck(&geom, &grid)?)
+    }
 }
 
 fn scenario_nose(config: &AeroBuildupNoseConfig) -> Result<NoseShape, RunnerError> {
@@ -454,7 +549,7 @@ fn scenario_nose(config: &AeroBuildupNoseConfig) -> Result<NoseShape, RunnerErro
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use openbmp_scenario::Scenario;
+    use openbmp_scenario::{ResolvedFile, Scenario};
 
     const BUILDUP_SCENARIO: &str = r#"
 openbmp.scenario = 2
@@ -518,6 +613,260 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
+    const SIGMA_DECK_TOML: &str = r#"
+openbmp.aero_deck = 1
+
+reference.area_m2 = 1.0
+reference.length_m = 1.0
+provenance = "synthetic sigma deck"
+validation = "validated-toy"
+
+[grid]
+mach = [1.0, 2.0]
+alpha_deg = [0.0]
+beta_deg = [0.0]
+
+[coefficients.cn]
+data = [0.1, 0.2]
+
+[coefficients.cd]
+data = [0.3, 0.4]
+
+[coefficients.cm]
+data = [0.0, 0.0]
+
+[uncertainty.cn]
+data = [0.05, 0.05]
+
+[uncertainty.cd]
+data = [0.0, 0.0]
+
+[uncertainty.cm]
+data = [0.0, 0.0]
+
+[uncertainty.correlation]
+mach_length = 1.5
+"#;
+
+    const SIGMA_GRID_DECK_TOML: &str = r#"
+openbmp.aero_deck = 1
+
+reference.area_m2 = 1.0
+reference.length_m = 1.0
+provenance = "synthetic sigma grid deck"
+validation = "validated-toy"
+
+[grid]
+mach = [1.0, 2.0]
+alpha_deg = [-5.0, 5.0]
+beta_deg = [0.0, 3.0]
+
+[coefficients.cn]
+data = [0.10, 0.11, 0.12, 0.13, 0.20, 0.21, 0.22, 0.23]
+
+[coefficients.cd]
+data = [0.30, 0.31, 0.32, 0.33, 0.40, 0.41, 0.42, 0.43]
+
+[coefficients.cm]
+data = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+[uncertainty.cn]
+data = [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
+
+[uncertainty.cd]
+data = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+[uncertainty.cm]
+data = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+[uncertainty.correlation]
+mach_length = 1.5
+"#;
+
+    const SIX_SIGMA_DECK_TOML: &str = r#"
+openbmp.aero_deck = 1
+
+reference.area_m2 = 1.0
+reference.length_m = 1.0
+provenance = "synthetic six sigma deck"
+validation = "validated-toy"
+
+[grid]
+mach = [1.0, 2.0]
+alpha_deg = [0.0]
+beta_deg = [0.0]
+
+[coefficients.cn]
+data = [0.1, 0.2]
+
+[coefficients.cd]
+data = [0.3, 0.4]
+
+[coefficients.cm]
+data = [0.0, 0.0]
+
+[six_coefficients.cx]
+data = [0.11, 0.12]
+
+[six_coefficients.cy]
+data = [0.21, 0.22]
+
+[six_coefficients.cz]
+data = [0.31, 0.32]
+
+[six_coefficients.cl]
+data = [0.01, 0.02]
+
+[six_coefficients.cm]
+data = [0.03, 0.04]
+
+[six_coefficients.cn]
+data = [0.05, 0.06]
+
+[uncertainty.cn]
+data = [0.0, 0.0]
+
+[uncertainty.cd]
+data = [0.0, 0.0]
+
+[uncertainty.cm]
+data = [0.0, 0.0]
+
+[uncertainty.six_coefficients.cx]
+data = [0.05, 0.05]
+
+[uncertainty.six_coefficients.cy]
+data = [0.05, 0.05]
+
+[uncertainty.six_coefficients.cz]
+data = [0.05, 0.05]
+
+[uncertainty.six_coefficients.cl]
+data = [0.05, 0.05]
+
+[uncertainty.six_coefficients.cm]
+data = [0.05, 0.05]
+
+[uncertainty.six_coefficients.cn]
+data = [0.05, 0.05]
+
+[uncertainty.correlation]
+mach_length = 1.5
+"#;
+
+    const RUN_MATRIX_TOML: &str = r#"
+openbmp.aerodb_run_matrix = 1
+seed = 99
+
+[grid]
+mach = [0.5, 1.0]
+alpha_deg = [0.0]
+beta_deg = [0.0]
+reynolds_length = [1000000.0]
+knudsen = [0.0]
+dynamic_pressure_pa = [100.0]
+"#;
+
+    fn deck_draw_scenario(sample_index: u64) -> String {
+        format!(
+            r#"
+openbmp.scenario = 3
+
+[meta]
+name = "deck-draw-smoke"
+description = "deck draw smoke test"
+validation = "experimental"
+provenance = "synthetic"
+
+[time]
+start_s = 0.0
+stop_s = 0.02
+dt_s = 0.01
+seed = 1
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 50.0]
+
+[vehicle.assembly]
+id = "body"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = {{ kind = "reference", length_m = 2.4, area_m2 = 0.031415926535897934 }}
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "us_standard_1976"
+wind = "none"
+
+[forces]
+models = ["gravity", "aero"]
+
+[aero]
+deck = "deck.toml"
+
+[aero.deck_draw]
+campaign_seed = 123
+sample_index = {sample_index}
+dimension_id_base = 20
+mach_correlation_length = 1.5
+
+[telemetry]
+output.csv = "out/deck-draw-smoke.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
+"#
+        )
+    }
+
+    fn run_matrix_scenario() -> String {
+        BUILDUP_SCENARIO
+            .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
+            .replace(
+                "[aero]\n\n[aero.buildup]",
+                "[aero]\n\n[aero.run_matrix]\nfile = \"matrix.toml\"\n\n[aero.buildup]",
+            )
+    }
+
+    fn sigma_deck_files() -> BTreeMap<String, ResolvedFile> {
+        BTreeMap::from([(
+            "aero.deck".to_owned(),
+            ResolvedFile::from_bytes("deck.toml", SIGMA_DECK_TOML.as_bytes().to_vec()),
+        )])
+    }
+
+    fn six_sigma_deck_files() -> BTreeMap<String, ResolvedFile> {
+        BTreeMap::from([(
+            "aero.deck".to_owned(),
+            ResolvedFile::from_bytes("deck.toml", SIX_SIGMA_DECK_TOML.as_bytes().to_vec()),
+        )])
+    }
+
+    fn grid_sigma_deck_files() -> BTreeMap<String, ResolvedFile> {
+        BTreeMap::from([(
+            "aero.deck".to_owned(),
+            ResolvedFile::from_bytes("deck.toml", SIGMA_GRID_DECK_TOML.as_bytes().to_vec()),
+        )])
+    }
+
+    fn deck_draw_scenario_using_deck_correlation(sample_index: u64) -> String {
+        deck_draw_scenario(sample_index).replace("mach_correlation_length = 1.5\n", "")
+    }
+
+    fn deck_draw_grid_scenario(sample_index: u64) -> String {
+        deck_draw_scenario(sample_index).replace(
+            "mach_correlation_length = 1.5\n",
+            "mach_correlation_length = 1.5\nalpha_correlation_length_deg = 4.0\nbeta_correlation_length_deg = 3.0\n",
+        )
+    }
+
     #[test]
     fn load_aero_deck_bakes_buildup_without_resolved_file() {
         let scenario = Scenario::from_toml_str(BUILDUP_SCENARIO).unwrap();
@@ -529,6 +878,235 @@ require_monotonic_time = true
         assert_eq!(deck.beta_grid_deg(), &[0.0]);
         let coefficients = deck.lookup(0.5, 2.0, 0.0, &BTreeMap::new()).unwrap();
         assert!(coefficients.cd > 0.0);
+    }
+
+    #[test]
+    fn load_aero_deck_bakes_datcom_buildup_when_enabled() {
+        let legacy_scenario = Scenario::from_toml_str(BUILDUP_SCENARIO).unwrap();
+        let datcom_toml =
+            BUILDUP_SCENARIO.replace("[aero.buildup]\n", "[aero.buildup]\ndatcom = true\n");
+        let datcom_scenario = Scenario::from_toml_str(&datcom_toml).unwrap();
+        let legacy = load_aero_deck(&legacy_scenario.document, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+        let datcom = load_aero_deck(&datcom_scenario.document, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+
+        assert!(!legacy.has_dynamic_derivative_tables());
+        assert!(datcom.has_dynamic_derivative_tables());
+        let derivatives = datcom
+            .lookup_dynamic_derivatives(2.0, 0.0, 0.0, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+        assert!(derivatives.cm_q < 0.0);
+        assert!(derivatives.cn_r < 0.0);
+        assert!(derivatives.cl_p <= 0.0);
+
+        let legacy_zero = legacy.lookup(2.0, 0.0, 0.0, &BTreeMap::new()).unwrap();
+        let datcom_zero = datcom.lookup(2.0, 0.0, 0.0, &BTreeMap::new()).unwrap();
+        assert_eq!(legacy_zero.cn.to_bits(), datcom_zero.cn.to_bits());
+        assert!(datcom_zero.cd < legacy_zero.cd);
+        assert_eq!(legacy_zero.cm.to_bits(), datcom_zero.cm.to_bits());
+
+        let legacy_subsonic_zero = legacy.lookup(0.5, 0.0, 0.0, &BTreeMap::new()).unwrap();
+        let datcom_subsonic_zero = datcom.lookup(0.5, 0.0, 0.0, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            legacy_subsonic_zero.cd.to_bits(),
+            datcom_subsonic_zero.cd.to_bits()
+        );
+
+        let legacy_alpha = legacy.lookup(2.0, 6.0, 0.0, &BTreeMap::new()).unwrap();
+        let datcom_alpha = datcom.lookup(2.0, 6.0, 0.0, &BTreeMap::new()).unwrap();
+        assert!(datcom_alpha.cn > legacy_alpha.cn);
+        assert!(datcom_alpha.cd > legacy_alpha.cd);
+    }
+
+    #[test]
+    fn load_aero_deck_applies_datcom_protuberance_drag_when_declared() {
+        let datcom_toml =
+            BUILDUP_SCENARIO.replace("[aero.buildup]\n", "[aero.buildup]\ndatcom = true\n");
+        let protuberance_toml = datcom_toml.clone()
+            + r#"
+
+[aero.buildup.protuberances]
+count = 2
+frontal_area_m2 = 1.2e-4
+drag_coefficient = 1.15
+interference_factor = 1.1
+"#;
+        let datcom_scenario = Scenario::from_toml_str(&datcom_toml).unwrap();
+        let protuberance_scenario = Scenario::from_toml_str(&protuberance_toml).unwrap();
+        let datcom = load_aero_deck(&datcom_scenario.document, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+        let protuberance = load_aero_deck(&protuberance_scenario.document, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+
+        let datcom_zero = datcom.lookup(0.5, 0.0, 0.0, &BTreeMap::new()).unwrap();
+        let protuberance_zero = protuberance
+            .lookup(0.5, 0.0, 0.0, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(datcom_zero.cn.to_bits(), protuberance_zero.cn.to_bits());
+        assert_eq!(datcom_zero.cm.to_bits(), protuberance_zero.cm.to_bits());
+        assert!(protuberance_zero.cd > datcom_zero.cd);
+    }
+
+    #[test]
+    fn load_declared_aero_run_matrix_parses_resolved_asset() {
+        let scenario = Scenario::from_toml_str(&run_matrix_scenario()).unwrap();
+        let files = BTreeMap::from([(
+            "aero.run_matrix.file".to_owned(),
+            ResolvedFile::from_bytes("matrix.toml", RUN_MATRIX_TOML.as_bytes().to_vec()),
+        )]);
+
+        let matrix = load_declared_aero_run_matrix(&scenario.document, &files)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(matrix.seed(), 99);
+        assert_eq!(matrix.nodes().len(), 2);
+        assert_eq!(matrix.axes().mach, vec![0.5, 1.0]);
+    }
+
+    #[test]
+    fn load_aero_deck_applies_declared_correlated_draw() {
+        let nominal_toml = deck_draw_scenario(4).replace(
+            "\n[aero.deck_draw]\ncampaign_seed = 123\nsample_index = 4\ndimension_id_base = 20\nmach_correlation_length = 1.5\n",
+            "",
+        );
+        let nominal_scenario = Scenario::from_toml_str(&nominal_toml).unwrap();
+        let drawn_scenario = Scenario::from_toml_str(&deck_draw_scenario(4)).unwrap();
+        let deck_metadata_scenario =
+            Scenario::from_toml_str(&deck_draw_scenario_using_deck_correlation(4)).unwrap();
+        let different_scenario = Scenario::from_toml_str(&deck_draw_scenario(5)).unwrap();
+        let files = sigma_deck_files();
+
+        let nominal = load_aero_deck(&nominal_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+        let drawn_a = load_aero_deck(&drawn_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+        let drawn_b = load_aero_deck(&drawn_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+        let drawn_from_deck_metadata = load_aero_deck(&deck_metadata_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+        let drawn_c = load_aero_deck(&different_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(drawn_a, drawn_b);
+        assert_eq!(drawn_a, drawn_from_deck_metadata);
+        assert_ne!(drawn_a, drawn_c);
+        assert!(drawn_a.has_sigma_tables());
+
+        let nominal_coeffs = nominal.lookup(1.0, 0.0, 0.0, &BTreeMap::new()).unwrap();
+        let drawn_coeffs = drawn_a.lookup(1.0, 0.0, 0.0, &BTreeMap::new()).unwrap();
+        assert!((drawn_coeffs.cn - nominal_coeffs.cn).abs() > 1.0e-12);
+
+        let nominal_sigma = nominal
+            .lookup_sigma(1.0, 0.0, 0.0, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+        let drawn_sigma = drawn_a
+            .lookup_sigma(1.0, 0.0, 0.0, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(nominal_sigma, drawn_sigma);
+    }
+
+    #[test]
+    fn load_aero_deck_applies_declared_alpha_beta_correlated_draw() {
+        let nominal_toml = deck_draw_grid_scenario(4).replace(
+            "\n[aero.deck_draw]\ncampaign_seed = 123\nsample_index = 4\ndimension_id_base = 20\nmach_correlation_length = 1.5\nalpha_correlation_length_deg = 4.0\nbeta_correlation_length_deg = 3.0\n",
+            "",
+        );
+        let nominal_scenario = Scenario::from_toml_str(&nominal_toml).unwrap();
+        let default_scenario = Scenario::from_toml_str(&deck_draw_scenario(4)).unwrap();
+        let grid_scenario = Scenario::from_toml_str(&deck_draw_grid_scenario(4)).unwrap();
+        let files = grid_sigma_deck_files();
+
+        let nominal = load_aero_deck(&nominal_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+        let default_drawn = load_aero_deck(&default_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+        let grid_drawn_a = load_aero_deck(&grid_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+        let grid_drawn_b = load_aero_deck(&grid_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(grid_drawn_a, grid_drawn_b);
+
+        let nominal_low = nominal.lookup(1.0, -5.0, 0.0, &BTreeMap::new()).unwrap();
+        let nominal_high = nominal.lookup(1.0, 5.0, 3.0, &BTreeMap::new()).unwrap();
+        let default_low = default_drawn
+            .lookup(1.0, -5.0, 0.0, &BTreeMap::new())
+            .unwrap();
+        let default_high = default_drawn
+            .lookup(1.0, 5.0, 3.0, &BTreeMap::new())
+            .unwrap();
+        let grid_low = grid_drawn_a
+            .lookup(1.0, -5.0, 0.0, &BTreeMap::new())
+            .unwrap();
+        let grid_high = grid_drawn_a
+            .lookup(1.0, 5.0, 3.0, &BTreeMap::new())
+            .unwrap();
+
+        let default_delta_low = default_low.cn - nominal_low.cn;
+        let default_delta_high = default_high.cn - nominal_high.cn;
+        let grid_delta_low = grid_low.cn - nominal_low.cn;
+        let grid_delta_high = grid_high.cn - nominal_high.cn;
+
+        assert!((default_delta_low - default_delta_high).abs() < 1.0e-14);
+        assert_ne!(grid_delta_low.to_bits(), grid_delta_high.to_bits());
+    }
+
+    #[test]
+    fn load_aero_deck_applies_declared_six_correlated_draw() {
+        let nominal_toml = deck_draw_scenario(4).replace(
+            "\n[aero.deck_draw]\ncampaign_seed = 123\nsample_index = 4\ndimension_id_base = 20\nmach_correlation_length = 1.5\n",
+            "",
+        );
+        let nominal_scenario = Scenario::from_toml_str(&nominal_toml).unwrap();
+        let drawn_scenario = Scenario::from_toml_str(&deck_draw_scenario(4)).unwrap();
+        let files = six_sigma_deck_files();
+
+        let nominal = load_aero_deck(&nominal_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+        let drawn_a = load_aero_deck(&drawn_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+        let drawn_b = load_aero_deck(&drawn_scenario.document, &files)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(drawn_a, drawn_b);
+        assert!(drawn_a.has_six_coefficient_tables());
+        assert!(drawn_a.has_six_sigma_tables());
+
+        let nominal_six = nominal
+            .lookup_six(1.0, 0.0, 0.0, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+        let drawn_six = drawn_a
+            .lookup_six(1.0, 0.0, 0.0, &BTreeMap::new())
+            .unwrap()
+            .unwrap();
+        assert!((drawn_six.cx - nominal_six.cx).abs() > 1.0e-12);
+        assert!((drawn_six.cn - nominal_six.cn).abs() > 1.0e-12);
+
+        let nominal_coeffs = nominal.lookup(1.0, 0.0, 0.0, &BTreeMap::new()).unwrap();
+        let drawn_coeffs = drawn_a.lookup(1.0, 0.0, 0.0, &BTreeMap::new()).unwrap();
+        assert_eq!(nominal_coeffs, drawn_coeffs);
     }
 
     #[test]
@@ -614,6 +1192,8 @@ kn_hi = 10.0
                 alpha_deg: 12.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: 1_000.0,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: nalgebra::Vector3::zeros(),
                 knudsen: 1.0e-6,
                 reynolds_length: 1.0e6,
             })
@@ -624,6 +1204,8 @@ kn_hi = 10.0
                 alpha_deg: 12.0,
                 beta_deg: 0.0,
                 dynamic_pressure_pa: 1_000.0,
+                airspeed_m_s: 100.0,
+                body_angular_rates_rad_s: nalgebra::Vector3::zeros(),
                 knudsen: 100.0,
                 reynolds_length: 1.0e6,
             })

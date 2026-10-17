@@ -1,0 +1,54 @@
+# Synthetic DATCOM equivalent-protuberance drag validation fixture.
+#
+# This fixture pins OpenBMP's bounded equivalent-axisymmetric protuberance drag
+# branch across subsonic, transonic-blend, and supersonic Mach-factor regions.
+# It is method/equation-shape evidence only, not calibrated wind-tunnel data.
+
+openbmp.datcom_protuberance_drag_validation = 1
+
+[provenance]
+dataset_id = "openbmp.aero.datcom_protuberance_drag.v1"
+source_class = "synthetic-openbmp-public-methodology"
+validation_label = "checked"
+source_title = "DATCOM equivalent-protuberance drag equation-shape fixture"
+
+[geometry]
+body_diameter_m = 1.0
+body_length_m = 6.1
+reference_area_m2 = 1.0
+reference_length_m = 1.0
+surface_roughness_m = 0.0
+
+[geometry.nose]
+kind = "von_karman"
+fineness = 6.0
+
+[geometry.protuberances]
+count = 2
+frontal_area_m2 = 0.015
+drag_coefficient = 1.15
+interference_factor = 1.1
+
+[tolerances]
+max_abs_error = 1.0e-12
+max_relative_error = 1.0e-12
+
+[[samples]]
+id = "subsonic-mach0"
+mach = 0.0
+expected_cd_protuberance = 0.03795
+
+[[samples]]
+id = "subsonic-mach05"
+mach = 0.5
+expected_cd_protuberance = 0.039373125
+
+[[samples]]
+id = "transonic-midblend"
+mach = 1.0
+expected_cd_protuberance = 0.043566600000000004
+
+[[samples]]
+id = "supersonic-mach2"
+mach = 2.0
+expected_cd_protuberance = 0.047057999999999996

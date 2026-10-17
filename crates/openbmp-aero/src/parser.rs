@@ -1,6 +1,7 @@
 //! Aero deck-file TOML parser. Coefficient decks use Schema 1
 //! and Schema 2. A separate strict panel-mesh deck handles
-//! [`crate::hypersonic::LocalInclinationPanels`].
+//! [`crate::hypersonic::LocalInclinationPanels`], and strict ASCII / binary
+//! STL ingestion builds [`crate::hypersonic::PanelMesh`] directly.
 //!
 //! # Schema 1
 //!
@@ -28,7 +29,82 @@
 //!
 //! [coefficients.cm]
 //! data = [/* ... */]
+//!
+//! [six_coefficients.cx] # optional explicit body-axis six-channel block
+//! data = [/* row-major body-x force coefficient */]
+//!
+//! [six_coefficients.cy]
+//! data = [/* body-y force coefficient */]
+//!
+//! [six_coefficients.cz]
+//! data = [/* body-z force coefficient */]
+//!
+//! [six_coefficients.cl]
+//! data = [/* roll-moment coefficient */]
+//!
+//! [six_coefficients.cm]
+//! data = [/* pitch-moment coefficient */]
+//!
+//! [six_coefficients.cn]
+//! data = [/* yaw-moment coefficient */]
+//!
+//! [dynamic_derivatives.cm_q] # optional dynamic derivative block
+//! data = [/* row-major Cm_q values */]
+//!
+//! [dynamic_derivatives.cn_r]
+//! data = [/* row-major Cn_r values */]
+//!
+//! [dynamic_derivatives.cl_p]
+//! data = [/* row-major Cl_p values */]
+//!
+//! # Optional cross-coupling tables use the same pattern:
+//! # cl_q, cl_r, cm_p, cm_r, cn_p, cn_q
 //! ```
+//!
+//! # Optional one-sigma uncertainty tables
+//!
+//! Schema 1 and Schema 2 may include per-node coefficient one-sigma
+//! uncertainty tables aligned exactly to the nominal coefficient grid:
+//!
+//! ```toml
+//! [uncertainty.cn]
+//! data = [/* row-major one-sigma CN values */]
+//!
+//! [uncertainty.cd]
+//! data = [/* row-major one-sigma CD values */]
+//!
+//! [uncertainty.cm]
+//! data = [/* row-major one-sigma CM values */]
+//!
+//! [uncertainty.correlation]
+//! mach_length = 1.5
+//! coefficient = [
+//!   [1.0, 0.25, 0.0],
+//!   [0.25, 1.0, 0.0],
+//!   [0.0, 0.0, 1.0],
+//! ]
+//! six_coefficient = [
+//!   [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+//!   [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+//!   [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+//!   [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+//!   [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+//!   [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+//! ]
+//!
+//! [uncertainty.six_coefficients.cx] # optional, requires nominal six tables
+//! data = [/* row-major one-sigma CX values */]
+//! ```
+//!
+//! The tables are optional as a block. When present, all three channels
+//! are required, finite, non-negative, and length-matched to the deck
+//! node count. The optional `[uncertainty.correlation]` block records
+//! deck-level exponential Mach-correlation metadata plus optional reduced
+//! and six-channel coefficient-correlation matrices for higher-layer
+//! sampling. Explicit six-channel uncertainty tables are optional as a block
+//! under `[uncertainty.six_coefficients.*]` and require nominal
+//! `[six_coefficients.*]` tables. When absent, [`AeroDeck::lookup_sigma`] and
+//! [`AeroDeck::lookup_six_sigma`] return `Ok(None)`.
 //!
 //! # Schema 2 — control-effector axes
 //!
@@ -120,9 +196,11 @@ use std::path::Path;
 use nalgebra::Vector3;
 use serde::Deserialize;
 
-use crate::deck::{AeroDeck, ExtrapolationPolicy};
+use crate::deck::{
+    AeroDeck, AeroDynamicDerivativeTableSet, AeroUncertaintyCorrelation, ExtrapolationPolicy,
+};
 use crate::error::AeroError;
-use crate::hypersonic::{LocalInclinationPanels, PanelMesh};
+use crate::hypersonic::{LocalInclinationPanels, PanelMesh, PanelSkinFriction};
 
 const SCHEMA_VERSION_1: u32 = 1;
 const SCHEMA_VERSION_2: u32 = 2;
@@ -156,6 +234,12 @@ struct DeckFileV1 {
     grid: GridV1,
     coefficients: Coefficients,
     #[serde(default)]
+    six_coefficients: Option<SixCoefficients>,
+    #[serde(default)]
+    dynamic_derivatives: Option<DynamicDerivatives>,
+    #[serde(default)]
+    uncertainty: Option<UncertaintyTables>,
+    #[serde(default)]
     extrapolation: Option<String>,
 }
 
@@ -186,6 +270,62 @@ struct Coefficients {
     cn: CoefficientTable,
     cd: CoefficientTable,
     cm: CoefficientTable,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SixCoefficients {
+    cx: CoefficientTable,
+    cy: CoefficientTable,
+    cz: CoefficientTable,
+    cl: CoefficientTable,
+    cm: CoefficientTable,
+    cn: CoefficientTable,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DynamicDerivatives {
+    #[serde(default)]
+    cl_p: Option<CoefficientTable>,
+    #[serde(default)]
+    cl_q: Option<CoefficientTable>,
+    #[serde(default)]
+    cl_r: Option<CoefficientTable>,
+    #[serde(default)]
+    cm_p: Option<CoefficientTable>,
+    #[serde(default)]
+    cm_q: Option<CoefficientTable>,
+    #[serde(default)]
+    cm_r: Option<CoefficientTable>,
+    #[serde(default)]
+    cn_p: Option<CoefficientTable>,
+    #[serde(default)]
+    cn_q: Option<CoefficientTable>,
+    #[serde(default)]
+    cn_r: Option<CoefficientTable>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncertaintyTables {
+    cn: CoefficientTable,
+    cd: CoefficientTable,
+    cm: CoefficientTable,
+    #[serde(default)]
+    six_coefficients: Option<SixCoefficients>,
+    #[serde(default)]
+    correlation: Option<UncertaintyCorrelationConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncertaintyCorrelationConfig {
+    mach_length: f64,
+    #[serde(default)]
+    coefficient: Option<[[f64; 3]; 3]>,
+    #[serde(default)]
+    six_coefficient: Option<[[f64; 6]; 6]>,
 }
 
 #[derive(Deserialize)]
@@ -232,6 +372,12 @@ struct DeckFileV2 {
     grid: BTreeMap<String, Vec<f64>>,
     axis_order: AxisOrderConfig,
     coefficients: Coefficients,
+    #[serde(default)]
+    six_coefficients: Option<SixCoefficients>,
+    #[serde(default)]
+    dynamic_derivatives: Option<DynamicDerivatives>,
+    #[serde(default)]
+    uncertainty: Option<UncertaintyTables>,
     interpolation: InterpolationConfig,
 }
 
@@ -262,6 +408,8 @@ struct PanelMeshDeckFile {
     cp_max: f64,
     #[serde(default = "default_panel_shadowing")]
     shadowing: bool,
+    #[serde(default)]
+    skin_friction: Option<PanelSkinFrictionToml>,
     mesh: PanelMeshToml,
 }
 
@@ -278,6 +426,18 @@ struct PanelMeshToml {
     triangles: Vec<[u32; 3]>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PanelSkinFrictionToml {
+    reference_length_m: f64,
+    #[serde(default = "default_panel_wall_to_edge_temperature_ratio")]
+    wall_to_edge_temperature_ratio: f64,
+    #[serde(default = "default_panel_transition_reynolds")]
+    transition_reynolds: f64,
+    #[serde(default)]
+    roughness_over_length: f64,
+}
+
 #[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 enum PanelDeckMethod {
@@ -286,6 +446,14 @@ enum PanelDeckMethod {
 
 const fn default_panel_shadowing() -> bool {
     true
+}
+
+const fn default_panel_wall_to_edge_temperature_ratio() -> f64 {
+    1.0
+}
+
+const fn default_panel_transition_reynolds() -> f64 {
+    PanelSkinFriction::DEFAULT_TRANSITION_REYNOLDS
 }
 
 impl AeroDeck {
@@ -356,8 +524,11 @@ impl AeroDeck {
             parsed.coefficients.cm.data,
             parsed.reference.area_m2,
             parsed.reference.length_m,
-        )?;
-        Ok(deck.with_extrapolation_policy(extrapolation))
+        )?
+        .with_extrapolation_policy(extrapolation);
+        let deck = apply_six_coefficient_tables(deck, parsed.six_coefficients)?;
+        let deck = apply_dynamic_derivative_tables(deck, parsed.dynamic_derivatives)?;
+        apply_uncertainty_tables(deck, parsed.uncertainty)
     }
 
     fn load_schema2(s: &str) -> Result<Self, AeroError> {
@@ -388,8 +559,106 @@ impl AeroDeck {
         // surfaces. The `interpolation.extrapolation = "error"` literal
         // wire setting is validated above; the runtime policy is
         // therefore always FailClosed. Clamp is a Schema-1-only feature.
-        Ok(deck.with_extrapolation_policy(ExtrapolationPolicy::FailClosed))
+        let deck = deck.with_extrapolation_policy(ExtrapolationPolicy::FailClosed);
+        let deck = apply_six_coefficient_tables(deck, parsed.six_coefficients)?;
+        let deck = apply_dynamic_derivative_tables(deck, parsed.dynamic_derivatives)?;
+        apply_uncertainty_tables(deck, parsed.uncertainty)
     }
+}
+
+fn apply_six_coefficient_tables(
+    deck: AeroDeck,
+    six: Option<SixCoefficients>,
+) -> Result<AeroDeck, AeroError> {
+    let Some(six) = six else {
+        return Ok(deck);
+    };
+    deck.with_six_coefficient_tables(
+        six.cx.data,
+        six.cy.data,
+        six.cz.data,
+        six.cl.data,
+        six.cm.data,
+        six.cn.data,
+    )
+}
+
+fn apply_dynamic_derivative_tables(
+    deck: AeroDeck,
+    dynamic: Option<DynamicDerivatives>,
+) -> Result<AeroDeck, AeroError> {
+    let Some(dynamic) = dynamic else {
+        return Ok(deck);
+    };
+    if dynamic.cl_p.is_none()
+        && dynamic.cl_q.is_none()
+        && dynamic.cl_r.is_none()
+        && dynamic.cm_p.is_none()
+        && dynamic.cm_q.is_none()
+        && dynamic.cm_r.is_none()
+        && dynamic.cn_p.is_none()
+        && dynamic.cn_q.is_none()
+        && dynamic.cn_r.is_none()
+    {
+        return Err(AeroError::MalformedDeck {
+            reason: "dynamic derivative block contains no tables",
+        });
+    }
+    let expected = deck.node_count();
+    let table_or_zeros = |table: Option<CoefficientTable>| {
+        table
+            .map(|table| table.data)
+            .unwrap_or_else(|| vec![0.0; expected])
+    };
+    deck.with_dynamic_derivative_table_set(AeroDynamicDerivativeTableSet {
+        cl_p: table_or_zeros(dynamic.cl_p),
+        cl_q: table_or_zeros(dynamic.cl_q),
+        cl_r: table_or_zeros(dynamic.cl_r),
+        cm_p: table_or_zeros(dynamic.cm_p),
+        cm_q: table_or_zeros(dynamic.cm_q),
+        cm_r: table_or_zeros(dynamic.cm_r),
+        cn_p: table_or_zeros(dynamic.cn_p),
+        cn_q: table_or_zeros(dynamic.cn_q),
+        cn_r: table_or_zeros(dynamic.cn_r),
+    })
+}
+
+fn apply_uncertainty_tables(
+    deck: AeroDeck,
+    uncertainty: Option<UncertaintyTables>,
+) -> Result<AeroDeck, AeroError> {
+    let Some(uncertainty) = uncertainty else {
+        return Ok(deck);
+    };
+    let mut deck = deck.with_sigma_tables(
+        uncertainty.cn.data,
+        uncertainty.cd.data,
+        uncertainty.cm.data,
+    )?;
+    if let Some(six) = uncertainty.six_coefficients {
+        deck = deck.with_six_sigma_tables(
+            six.cx.data,
+            six.cy.data,
+            six.cz.data,
+            six.cl.data,
+            six.cm.data,
+            six.cn.data,
+        )?;
+    }
+    if let Some(correlation) = uncertainty.correlation {
+        let mut correlation_metadata =
+            AeroUncertaintyCorrelation::exponential_mach(correlation.mach_length)?;
+        if let Some(coefficient) = correlation.coefficient {
+            correlation_metadata =
+                correlation_metadata.with_coefficient_correlation(coefficient)?;
+        }
+        if let Some(coefficient) = correlation.six_coefficient {
+            correlation_metadata =
+                correlation_metadata.with_six_coefficient_correlation(coefficient)?;
+        }
+        deck = deck.with_uncertainty_correlation(correlation_metadata);
+    }
+    Ok(deck)
 }
 
 impl LocalInclinationPanels {
@@ -436,6 +705,14 @@ impl LocalInclinationPanels {
             PanelDeckMethod::ModifiedNewtonian => Self::modified_newtonian(geometry, parsed.cp_max),
         };
         panels.shadowing = parsed.shadowing;
+        if let Some(skin_friction) = parsed.skin_friction {
+            panels = panels.with_skin_friction(PanelSkinFriction::new(
+                skin_friction.reference_length_m,
+                skin_friction.wall_to_edge_temperature_ratio,
+                skin_friction.transition_reynolds,
+                skin_friction.roughness_over_length,
+            )?);
+        }
         Ok(panels)
     }
 
@@ -455,6 +732,350 @@ impl LocalInclinationPanels {
         })?;
         Self::load_from_str(&text)
     }
+}
+
+impl PanelMesh {
+    /// Parse a strict ASCII STL mesh from text.
+    ///
+    /// This accepts the standard `solid` / `facet normal` / `outer loop` /
+    /// three-`vertex` / `endloop` / `endfacet` / `endsolid` record sequence.
+    /// Vertex coordinates are metres in the body frame. Duplicate vertices are
+    /// deduplicated by exact floating-point bit pattern after canonicalising
+    /// signed zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::MalformedDeck`] for record-order, token-count,
+    /// numeric parse, or geometry validation failures, and
+    /// [`AeroError::NonFinite`] for NaN / Inf normals or coordinates.
+    pub fn load_ascii_stl_from_str(s: &str) -> Result<Self, AeroError> {
+        let mut lines = s.lines().map(str::trim).filter(|line| !line.is_empty());
+        let first = next_ascii_stl_line(&mut lines, "ASCII STL must start with a `solid` record")?;
+        let first_fields = ascii_stl_fields(first);
+        if first_fields.first().copied() != Some("solid") {
+            return Err(AeroError::MalformedDeck {
+                reason: "ASCII STL must start with a `solid` record",
+            });
+        }
+
+        let mut vertices = Vec::new();
+        let mut vertex_ids = BTreeMap::new();
+        let mut triangles = Vec::new();
+        loop {
+            let line =
+                next_ascii_stl_line(&mut lines, "ASCII STL ended before an `endsolid` record")?;
+            let fields = ascii_stl_fields(line);
+            match fields.first().copied() {
+                Some("endsolid") => {
+                    if lines.next().is_some() {
+                        return Err(AeroError::MalformedDeck {
+                            reason: "ASCII STL contains records after `endsolid`",
+                        });
+                    }
+                    break;
+                }
+                Some("facet") => {
+                    validate_ascii_stl_facet_header(&fields)?;
+                    require_ascii_stl_record(
+                        &ascii_stl_fields(next_ascii_stl_line(
+                            &mut lines,
+                            "ASCII STL facet is missing `outer loop`",
+                        )?),
+                        &["outer", "loop"],
+                        "ASCII STL facet must contain `outer loop`",
+                    )?;
+                    let mut triangle = [0_u32; 3];
+                    for index in &mut triangle {
+                        let vertex =
+                            parse_ascii_stl_vertex(&ascii_stl_fields(next_ascii_stl_line(
+                                &mut lines,
+                                "ASCII STL facet is missing a `vertex` record",
+                            )?))?;
+                        *index = intern_ascii_stl_vertex(&mut vertices, &mut vertex_ids, vertex)?;
+                    }
+                    require_ascii_stl_record(
+                        &ascii_stl_fields(next_ascii_stl_line(
+                            &mut lines,
+                            "ASCII STL facet is missing `endloop`",
+                        )?),
+                        &["endloop"],
+                        "ASCII STL facet must close with `endloop`",
+                    )?;
+                    require_ascii_stl_record(
+                        &ascii_stl_fields(next_ascii_stl_line(
+                            &mut lines,
+                            "ASCII STL facet is missing `endfacet`",
+                        )?),
+                        &["endfacet"],
+                        "ASCII STL facet must close with `endfacet`",
+                    )?;
+                    triangles.push(triangle);
+                }
+                _ => {
+                    return Err(AeroError::MalformedDeck {
+                        reason: "ASCII STL expected `facet` or `endsolid` record",
+                    });
+                }
+            }
+        }
+        Self::new(vertices, triangles)
+    }
+
+    /// Parse a strict ASCII STL mesh from a file on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::Io`] if the file cannot be read. Otherwise returns
+    /// the same errors as [`Self::load_ascii_stl_from_str`].
+    pub fn load_ascii_stl(path: &Path) -> Result<Self, AeroError> {
+        let text = std::fs::read_to_string(path).map_err(|e| AeroError::Io {
+            reason: format!("could not read ASCII STL file {}: {e}", path.display()),
+        })?;
+        Self::load_ascii_stl_from_str(&text)
+    }
+
+    /// Parse a strict binary STL mesh from bytes.
+    ///
+    /// The parser consumes the standard 80-byte header, little-endian `u32`
+    /// triangle count, and fixed 50-byte triangle records. Vertex coordinates are
+    /// metres in the body frame. Duplicate vertices are deduplicated by exact
+    /// floating-point bit pattern after converting binary `f32` fields to `f64`
+    /// and canonicalising signed zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::MalformedDeck`] for byte-count, triangle-count, or
+    /// geometry validation failures, and [`AeroError::NonFinite`] for NaN / Inf
+    /// normals or coordinates.
+    pub fn load_binary_stl_from_bytes(bytes: &[u8]) -> Result<Self, AeroError> {
+        const BINARY_STL_HEADER_BYTES: usize = 80;
+        const BINARY_STL_COUNT_BYTES: usize = 4;
+        const BINARY_STL_TRIANGLE_BYTES: usize = 50;
+        const BINARY_STL_ATTRIBUTE_BYTES: usize = 2;
+
+        if bytes.len() < BINARY_STL_HEADER_BYTES + BINARY_STL_COUNT_BYTES {
+            return Err(AeroError::MalformedDeck {
+                reason: "binary STL is shorter than the header and triangle count",
+            });
+        }
+        let count_start = BINARY_STL_HEADER_BYTES;
+        let count_end = count_start + BINARY_STL_COUNT_BYTES;
+        let triangle_count =
+            u32::from_le_bytes(bytes[count_start..count_end].try_into().map_err(|_| {
+                AeroError::MalformedDeck {
+                    reason: "binary STL triangle count did not parse",
+                }
+            })?) as usize;
+        let payload_bytes = triangle_count
+            .checked_mul(BINARY_STL_TRIANGLE_BYTES)
+            .and_then(|value| value.checked_add(BINARY_STL_HEADER_BYTES + BINARY_STL_COUNT_BYTES))
+            .ok_or(AeroError::MalformedDeck {
+                reason: "binary STL byte count overflows usize",
+            })?;
+        if bytes.len() != payload_bytes {
+            return Err(AeroError::MalformedDeck {
+                reason: "binary STL byte count does not match triangle count",
+            });
+        }
+
+        let mut vertices = Vec::new();
+        let mut vertex_ids = BTreeMap::new();
+        let mut triangles = Vec::with_capacity(triangle_count);
+        let mut offset = payload_bytes - triangle_count * BINARY_STL_TRIANGLE_BYTES;
+        for _ in 0..triangle_count {
+            for _ in 0..3 {
+                let _ = parse_binary_stl_f32(
+                    bytes,
+                    &mut offset,
+                    "binary STL normal component is NaN or Inf",
+                )?;
+            }
+            let mut triangle = [0_u32; 3];
+            for index in &mut triangle {
+                let vertex = Vector3::new(
+                    parse_binary_stl_f32(
+                        bytes,
+                        &mut offset,
+                        "binary STL vertex coordinate is NaN or Inf",
+                    )?,
+                    parse_binary_stl_f32(
+                        bytes,
+                        &mut offset,
+                        "binary STL vertex coordinate is NaN or Inf",
+                    )?,
+                    parse_binary_stl_f32(
+                        bytes,
+                        &mut offset,
+                        "binary STL vertex coordinate is NaN or Inf",
+                    )?,
+                );
+                *index = intern_binary_stl_vertex(&mut vertices, &mut vertex_ids, vertex)?;
+            }
+            triangles.push(triangle);
+            offset += BINARY_STL_ATTRIBUTE_BYTES;
+        }
+        Self::new(vertices, triangles)
+    }
+
+    /// Parse a strict binary STL mesh from a file on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AeroError::Io`] if the file cannot be read. Otherwise returns
+    /// the same errors as [`Self::load_binary_stl_from_bytes`].
+    pub fn load_binary_stl(path: &Path) -> Result<Self, AeroError> {
+        let bytes = std::fs::read(path).map_err(|e| AeroError::Io {
+            reason: format!("could not read binary STL file {}: {e}", path.display()),
+        })?;
+        Self::load_binary_stl_from_bytes(&bytes)
+    }
+}
+
+fn next_ascii_stl_line<'a, I>(lines: &mut I, reason: &'static str) -> Result<&'a str, AeroError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    lines.next().ok_or(AeroError::MalformedDeck { reason })
+}
+
+fn ascii_stl_fields(line: &str) -> Vec<&str> {
+    line.split_whitespace().collect()
+}
+
+fn require_ascii_stl_record(
+    fields: &[&str],
+    expected: &[&str],
+    reason: &'static str,
+) -> Result<(), AeroError> {
+    if fields == expected {
+        Ok(())
+    } else {
+        Err(AeroError::MalformedDeck { reason })
+    }
+}
+
+fn validate_ascii_stl_facet_header(fields: &[&str]) -> Result<(), AeroError> {
+    if fields.len() != 5 || fields[0] != "facet" || fields[1] != "normal" {
+        return Err(AeroError::MalformedDeck {
+            reason: "ASCII STL facet header must be `facet normal nx ny nz`",
+        });
+    }
+    for value in &fields[2..] {
+        let _ = parse_ascii_stl_f64(
+            value,
+            "ASCII STL normal component did not parse as f64",
+            "ASCII STL normal component is NaN or Inf",
+        )?;
+    }
+    Ok(())
+}
+
+fn parse_ascii_stl_vertex(fields: &[&str]) -> Result<Vector3<f64>, AeroError> {
+    if fields.len() != 4 || fields[0] != "vertex" {
+        return Err(AeroError::MalformedDeck {
+            reason: "ASCII STL vertex record must be `vertex x y z`",
+        });
+    }
+    Ok(Vector3::new(
+        parse_ascii_stl_f64(
+            fields[1],
+            "ASCII STL vertex coordinate did not parse as f64",
+            "ASCII STL vertex coordinate is NaN or Inf",
+        )?,
+        parse_ascii_stl_f64(
+            fields[2],
+            "ASCII STL vertex coordinate did not parse as f64",
+            "ASCII STL vertex coordinate is NaN or Inf",
+        )?,
+        parse_ascii_stl_f64(
+            fields[3],
+            "ASCII STL vertex coordinate did not parse as f64",
+            "ASCII STL vertex coordinate is NaN or Inf",
+        )?,
+    ))
+}
+
+fn parse_ascii_stl_f64(
+    value: &str,
+    parse_reason: &'static str,
+    finite_reason: &'static str,
+) -> Result<f64, AeroError> {
+    let parsed = value.parse::<f64>().map_err(|_| AeroError::MalformedDeck {
+        reason: parse_reason,
+    })?;
+    if parsed.is_finite() {
+        Ok(canonical_ascii_stl_coord(parsed))
+    } else {
+        Err(AeroError::NonFinite {
+            reason: finite_reason,
+        })
+    }
+}
+
+fn intern_ascii_stl_vertex(
+    vertices: &mut Vec<Vector3<f64>>,
+    vertex_ids: &mut BTreeMap<(u64, u64, u64), u32>,
+    vertex: Vector3<f64>,
+) -> Result<u32, AeroError> {
+    let key = (vertex.x.to_bits(), vertex.y.to_bits(), vertex.z.to_bits());
+    if let Some(index) = vertex_ids.get(&key) {
+        return Ok(*index);
+    }
+    let index = u32::try_from(vertices.len()).map_err(|_| AeroError::MalformedDeck {
+        reason: "ASCII STL unique vertex count exceeds u32 index range",
+    })?;
+    vertices.push(vertex);
+    vertex_ids.insert(key, index);
+    Ok(index)
+}
+
+fn parse_binary_stl_f32(
+    bytes: &[u8],
+    offset: &mut usize,
+    finite_reason: &'static str,
+) -> Result<f64, AeroError> {
+    let end = offset.checked_add(4).ok_or(AeroError::MalformedDeck {
+        reason: "binary STL field offset overflows usize",
+    })?;
+    let raw = bytes
+        .get(*offset..end)
+        .ok_or(AeroError::MalformedDeck {
+            reason: "binary STL ended before a required field",
+        })?
+        .try_into()
+        .map_err(|_| AeroError::MalformedDeck {
+            reason: "binary STL field did not parse",
+        })?;
+    *offset = end;
+    let parsed = f32::from_le_bytes(raw) as f64;
+    if parsed.is_finite() {
+        Ok(canonical_ascii_stl_coord(parsed))
+    } else {
+        Err(AeroError::NonFinite {
+            reason: finite_reason,
+        })
+    }
+}
+
+fn intern_binary_stl_vertex(
+    vertices: &mut Vec<Vector3<f64>>,
+    vertex_ids: &mut BTreeMap<(u64, u64, u64), u32>,
+    vertex: Vector3<f64>,
+) -> Result<u32, AeroError> {
+    let key = (vertex.x.to_bits(), vertex.y.to_bits(), vertex.z.to_bits());
+    if let Some(index) = vertex_ids.get(&key) {
+        return Ok(*index);
+    }
+    let index = u32::try_from(vertices.len()).map_err(|_| AeroError::MalformedDeck {
+        reason: "binary STL unique vertex count exceeds u32 index range",
+    })?;
+    vertices.push(vertex);
+    vertex_ids.insert(key, index);
+    Ok(index)
+}
+
+fn canonical_ascii_stl_coord(value: f64) -> f64 {
+    if value == 0.0 { 0.0 } else { value }
 }
 
 // ---------------------------------------------------------------------
@@ -627,6 +1248,55 @@ triangles = [[0, 1, 2], [0, 2, 3]]
 "#
     }
 
+    fn minimal_panel_ascii_stl() -> &'static str {
+        r#"
+solid square
+  facet normal 1 0 0
+    outer loop
+      vertex 1 -0.5 -0.5
+      vertex 1 0.5 -0.5
+      vertex 1 0.5 0.5
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex 1 -0.5 -0.5
+      vertex 1 0.5 0.5
+      vertex 1 -0.5 0.5
+    endloop
+  endfacet
+endsolid square
+"#
+    }
+
+    fn minimal_panel_binary_stl() -> Vec<u8> {
+        let mut bytes = vec![0_u8; 80];
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        push_binary_stl_triangle(
+            &mut bytes,
+            [1.0, 0.0, 0.0],
+            [[1.0, -0.5, -0.5], [1.0, 0.5, -0.5], [1.0, 0.5, 0.5]],
+        );
+        push_binary_stl_triangle(
+            &mut bytes,
+            [1.0, 0.0, 0.0],
+            [[1.0, -0.5, -0.5], [1.0, 0.5, 0.5], [1.0, -0.5, 0.5]],
+        );
+        bytes
+    }
+
+    fn push_binary_stl_triangle(bytes: &mut Vec<u8>, normal: [f32; 3], vertices: [[f32; 3]; 3]) {
+        for value in normal {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for vertex in vertices {
+            for value in vertex {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+    }
+
     // ---------------------------------------------------------------
     // Schema-1 parser tests — preserved verbatim
     // ---------------------------------------------------------------
@@ -703,6 +1373,368 @@ triangles = [[0, 1, 2], [0, 2, 3]]
         assert!(matches!(
             AeroDeck::load_from_str(&toml_str),
             Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_accepts_optional_uncertainty_tables() {
+        let toml_str = format!(
+            "{}\n\
+             [uncertainty.cn]\n\
+             data = [0.1, 0.2, 0.3, 0.4]\n\
+             \n\
+             [uncertainty.cd]\n\
+             data = [0.2, 0.3, 0.4, 0.5]\n\
+             \n\
+             [uncertainty.cm]\n\
+             data = [0.3, 0.4, 0.5, 0.6]\n",
+            minimal_deck_toml()
+        );
+        let deck = AeroDeck::load_from_str(&toml_str).unwrap();
+        let sigma = deck
+            .lookup_sigma(0.5, 0.5, 0.0, &std::collections::BTreeMap::new())
+            .unwrap()
+            .unwrap();
+
+        assert!(deck.has_sigma_tables());
+        assert_eq!(sigma.cn.to_bits(), 0.25_f64.to_bits());
+        assert_eq!(sigma.cd.to_bits(), 0.35_f64.to_bits());
+        assert_eq!(sigma.cm.to_bits(), 0.45_f64.to_bits());
+    }
+
+    #[test]
+    fn parser_accepts_optional_six_coefficient_tables_and_sigmas() {
+        let toml_str = format!(
+            "{}\n\
+             [six_coefficients.cx]\n\
+             data = [1.0, 2.0, 3.0, 4.0]\n\
+             \n\
+             [six_coefficients.cy]\n\
+             data = [2.0, 3.0, 4.0, 5.0]\n\
+             \n\
+             [six_coefficients.cz]\n\
+             data = [3.0, 4.0, 5.0, 6.0]\n\
+             \n\
+             [six_coefficients.cl]\n\
+             data = [4.0, 5.0, 6.0, 7.0]\n\
+             \n\
+             [six_coefficients.cm]\n\
+             data = [5.0, 6.0, 7.0, 8.0]\n\
+             \n\
+             [six_coefficients.cn]\n\
+             data = [6.0, 7.0, 8.0, 9.0]\n\
+             \n\
+             [uncertainty.cn]\n\
+             data = [0.0, 0.0, 0.0, 0.0]\n\
+             \n\
+             [uncertainty.cd]\n\
+             data = [0.0, 0.0, 0.0, 0.0]\n\
+             \n\
+             [uncertainty.cm]\n\
+             data = [0.0, 0.0, 0.0, 0.0]\n\
+             \n\
+             [uncertainty.six_coefficients.cx]\n\
+             data = [0.10, 0.10, 0.10, 0.10]\n\
+             \n\
+             [uncertainty.six_coefficients.cy]\n\
+             data = [0.20, 0.20, 0.20, 0.20]\n\
+             \n\
+             [uncertainty.six_coefficients.cz]\n\
+             data = [0.30, 0.30, 0.30, 0.30]\n\
+             \n\
+             [uncertainty.six_coefficients.cl]\n\
+             data = [0.40, 0.40, 0.40, 0.40]\n\
+             \n\
+             [uncertainty.six_coefficients.cm]\n\
+             data = [0.50, 0.50, 0.50, 0.50]\n\
+             \n\
+             [uncertainty.six_coefficients.cn]\n\
+             data = [0.60, 0.60, 0.60, 0.60]\n",
+            minimal_deck_toml()
+        );
+        let deck = AeroDeck::load_from_str(&toml_str).unwrap();
+        let six = deck
+            .lookup_six(0.5, 0.5, 0.0, &std::collections::BTreeMap::new())
+            .unwrap()
+            .unwrap();
+        let sigma = deck
+            .lookup_six_sigma(0.5, 0.5, 0.0, &std::collections::BTreeMap::new())
+            .unwrap()
+            .unwrap();
+
+        assert!(deck.has_six_coefficient_tables());
+        assert!(deck.has_six_sigma_tables());
+        assert_eq!(six.cx.to_bits(), 2.5_f64.to_bits());
+        assert_eq!(six.cy.to_bits(), 3.5_f64.to_bits());
+        assert_eq!(six.cz.to_bits(), 4.5_f64.to_bits());
+        assert_eq!(six.cl.to_bits(), 5.5_f64.to_bits());
+        assert_eq!(six.cm.to_bits(), 6.5_f64.to_bits());
+        assert_eq!(six.cn.to_bits(), 7.5_f64.to_bits());
+        assert_eq!(sigma.cx.to_bits(), 0.10_f64.to_bits());
+        assert_eq!(sigma.cy.to_bits(), 0.20_f64.to_bits());
+        assert_eq!(sigma.cz.to_bits(), 0.30_f64.to_bits());
+        assert_eq!(sigma.cl.to_bits(), 0.40_f64.to_bits());
+        assert_eq!(sigma.cm.to_bits(), 0.50_f64.to_bits());
+        assert_eq!(sigma.cn.to_bits(), 0.60_f64.to_bits());
+    }
+
+    #[test]
+    fn parser_accepts_optional_dynamic_derivative_tables() {
+        let toml_str = format!(
+            "{}\n\
+             [dynamic_derivatives.cm_q]\n\
+             data = [0.0, 1.0, 2.0, 3.0]\n\
+             \n\
+             [dynamic_derivatives.cn_r]\n\
+             data = [10.0, 11.0, 12.0, 13.0]\n\
+             \n\
+             [dynamic_derivatives.cl_p]\n\
+             data = [20.0, 21.0, 22.0, 23.0]\n",
+            minimal_deck_toml()
+        );
+        let deck = AeroDeck::load_from_str(&toml_str).unwrap();
+        let derivatives = deck
+            .lookup_dynamic_derivatives(0.5, 0.5, 0.0, &std::collections::BTreeMap::new())
+            .unwrap()
+            .unwrap();
+
+        assert!(deck.has_dynamic_derivative_tables());
+        assert_eq!(derivatives.cm_q.to_bits(), 1.5_f64.to_bits());
+        assert_eq!(derivatives.cn_r.to_bits(), 11.5_f64.to_bits());
+        assert_eq!(derivatives.cl_p.to_bits(), 21.5_f64.to_bits());
+        assert_eq!(derivatives.cl_q.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(derivatives.cm_p.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(derivatives.cn_q.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn parser_accepts_full_dynamic_derivative_matrix_tables() {
+        let toml_str = format!(
+            "{}\n\
+             [dynamic_derivatives.cl_p]\n\
+             data = [0.0, 1.0, 2.0, 3.0]\n\
+             \n\
+             [dynamic_derivatives.cl_q]\n\
+             data = [10.0, 11.0, 12.0, 13.0]\n\
+             \n\
+             [dynamic_derivatives.cl_r]\n\
+             data = [20.0, 21.0, 22.0, 23.0]\n\
+             \n\
+             [dynamic_derivatives.cm_p]\n\
+             data = [30.0, 31.0, 32.0, 33.0]\n\
+             \n\
+             [dynamic_derivatives.cm_q]\n\
+             data = [40.0, 41.0, 42.0, 43.0]\n\
+             \n\
+             [dynamic_derivatives.cm_r]\n\
+             data = [50.0, 51.0, 52.0, 53.0]\n\
+             \n\
+             [dynamic_derivatives.cn_p]\n\
+             data = [60.0, 61.0, 62.0, 63.0]\n\
+             \n\
+             [dynamic_derivatives.cn_q]\n\
+             data = [70.0, 71.0, 72.0, 73.0]\n\
+             \n\
+             [dynamic_derivatives.cn_r]\n\
+             data = [80.0, 81.0, 82.0, 83.0]\n",
+            minimal_deck_toml()
+        );
+        let deck = AeroDeck::load_from_str(&toml_str).unwrap();
+        let derivatives = deck
+            .lookup_dynamic_derivatives(0.5, 0.5, 0.0, &std::collections::BTreeMap::new())
+            .unwrap()
+            .unwrap();
+
+        assert!(deck.has_dynamic_derivative_tables());
+        assert_eq!(derivatives.cl_p.to_bits(), 1.5_f64.to_bits());
+        assert_eq!(derivatives.cl_q.to_bits(), 11.5_f64.to_bits());
+        assert_eq!(derivatives.cl_r.to_bits(), 21.5_f64.to_bits());
+        assert_eq!(derivatives.cm_p.to_bits(), 31.5_f64.to_bits());
+        assert_eq!(derivatives.cm_q.to_bits(), 41.5_f64.to_bits());
+        assert_eq!(derivatives.cm_r.to_bits(), 51.5_f64.to_bits());
+        assert_eq!(derivatives.cn_p.to_bits(), 61.5_f64.to_bits());
+        assert_eq!(derivatives.cn_q.to_bits(), 71.5_f64.to_bits());
+        assert_eq!(derivatives.cn_r.to_bits(), 81.5_f64.to_bits());
+    }
+
+    #[test]
+    fn parser_rejects_empty_dynamic_derivative_block() {
+        let toml_str = format!("{}\n[dynamic_derivatives]\n", minimal_deck_toml());
+        assert!(matches!(
+            AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_dynamic_derivative_table_length_mismatch() {
+        let toml_str = format!(
+            "{}\n\
+             [dynamic_derivatives.cm_q]\n\
+             data = [0.0, 1.0, 2.0]\n\
+             \n\
+             [dynamic_derivatives.cn_r]\n\
+             data = [10.0, 11.0, 12.0, 13.0]\n\
+             \n\
+             [dynamic_derivatives.cl_p]\n\
+             data = [20.0, 21.0, 22.0, 23.0]\n",
+            minimal_deck_toml()
+        );
+        assert!(matches!(
+            AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_accepts_optional_uncertainty_correlation_metadata() {
+        let toml_str = format!(
+            "{}\n\
+             [uncertainty.cn]\n\
+             data = [0.1, 0.2, 0.3, 0.4]\n\
+             \n\
+             [uncertainty.cd]\n\
+             data = [0.2, 0.3, 0.4, 0.5]\n\
+             \n\
+             [uncertainty.cm]\n\
+             data = [0.3, 0.4, 0.5, 0.6]\n\
+             \n\
+             [uncertainty.correlation]\n\
+             mach_length = 1.5\n\
+             coefficient = [[1.0, 0.25, 0.0], [0.25, 1.0, 0.0], [0.0, 0.0, 1.0]]\n\
+             six_coefficient = [[1.0, 0.25, 0.0, 0.0, 0.0, 0.0], [0.25, 1.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 1.0, -0.2], [0.0, 0.0, 0.0, 0.0, -0.2, 1.0]]\n",
+            minimal_deck_toml()
+        );
+        let deck = AeroDeck::load_from_str(&toml_str).unwrap();
+        let correlation = deck.uncertainty_correlation().unwrap();
+        let six_coefficient = [
+            [1.0, 0.25, 0.0, 0.0, 0.0, 0.0],
+            [0.25, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 1.0, -0.2],
+            [0.0, 0.0, 0.0, 0.0, -0.2, 1.0],
+        ];
+
+        assert_eq!(correlation.mach_length().to_bits(), 1.5_f64.to_bits());
+        assert_eq!(
+            correlation.coefficient_correlation(),
+            Some([[1.0, 0.25, 0.0], [0.25, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        );
+        assert_eq!(
+            correlation.six_coefficient_correlation(),
+            Some(six_coefficient)
+        );
+    }
+
+    #[test]
+    fn parser_rejects_invalid_uncertainty_correlation_metadata() {
+        let toml_str = format!(
+            "{}\n\
+             [uncertainty.cn]\n\
+             data = [0.1, 0.2, 0.3, 0.4]\n\
+             \n\
+             [uncertainty.cd]\n\
+             data = [0.2, 0.3, 0.4, 0.5]\n\
+             \n\
+             [uncertainty.cm]\n\
+             data = [0.3, 0.4, 0.5, 0.6]\n\
+             \n\
+             [uncertainty.correlation]\n\
+             mach_length = 0.0\n",
+            minimal_deck_toml()
+        );
+        assert!(matches!(
+            AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::InvalidParameter { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_invalid_uncertainty_coefficient_correlation_metadata() {
+        let toml_str = format!(
+            "{}\n\
+             [uncertainty.cn]\n\
+             data = [0.1, 0.2, 0.3, 0.4]\n\
+             \n\
+             [uncertainty.cd]\n\
+             data = [0.2, 0.3, 0.4, 0.5]\n\
+             \n\
+             [uncertainty.cm]\n\
+             data = [0.3, 0.4, 0.5, 0.6]\n\
+             \n\
+             [uncertainty.correlation]\n\
+             mach_length = 1.5\n\
+             coefficient = [[1.0, 0.25, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]\n",
+            minimal_deck_toml()
+        );
+        assert!(matches!(
+            AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::InvalidParameter { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_invalid_uncertainty_six_coefficient_correlation_metadata() {
+        let toml_str = format!(
+            "{}\n\
+             [uncertainty.cn]\n\
+             data = [0.1, 0.2, 0.3, 0.4]\n\
+             \n\
+             [uncertainty.cd]\n\
+             data = [0.2, 0.3, 0.4, 0.5]\n\
+             \n\
+             [uncertainty.cm]\n\
+             data = [0.3, 0.4, 0.5, 0.6]\n\
+             \n\
+             [uncertainty.correlation]\n\
+             mach_length = 1.5\n\
+             six_coefficient = [[1.0, 0.25, 0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]]\n",
+            minimal_deck_toml()
+        );
+        assert!(matches!(
+            AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::InvalidParameter { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_uncertainty_table_length_mismatch() {
+        let toml_str = format!(
+            "{}\n\
+             [uncertainty.cn]\n\
+             data = [0.1]\n\
+             \n\
+             [uncertainty.cd]\n\
+             data = [0.2, 0.3, 0.4, 0.5]\n\
+             \n\
+             [uncertainty.cm]\n\
+             data = [0.3, 0.4, 0.5, 0.6]\n",
+            minimal_deck_toml()
+        );
+        assert!(matches!(
+            AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_negative_uncertainty_value() {
+        let toml_str = format!(
+            "{}\n\
+             [uncertainty.cn]\n\
+             data = [-0.1, 0.2, 0.3, 0.4]\n\
+             \n\
+             [uncertainty.cd]\n\
+             data = [0.2, 0.3, 0.4, 0.5]\n\
+             \n\
+             [uncertainty.cm]\n\
+             data = [0.3, 0.4, 0.5, 0.6]\n",
+            minimal_deck_toml()
+        );
+        assert!(matches!(
+            AeroDeck::load_from_str(&toml_str),
+            Err(AeroError::InvalidParameter { .. }),
         ));
     }
 
@@ -815,6 +1847,109 @@ triangles = [[0, 1, 2], [0, 2, 3]]
         // Fixture CN at that corner = 1 + 1 + 0.1 * 20 = 4.0.
         let r = deck.lookup(1.0, 1.0, 0.0, &def).unwrap();
         assert_eq!(r.cn.to_bits(), 4.0_f64.to_bits());
+    }
+
+    #[test]
+    fn schema2_parser_accepts_optional_uncertainty_tables() {
+        let zeros = "0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0";
+        let toml_str = format!(
+            "{}\n\
+             [uncertainty.cn]\n\
+             data = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2]\n\
+             \n\
+             [uncertainty.cd]\n\
+             data = [{zeros}]\n\
+             \n\
+             [uncertainty.cm]\n\
+             data = [{zeros}]\n",
+            minimal_schema2_deck_toml()
+        );
+        let deck = AeroDeck::load_from_str(&toml_str).unwrap();
+        let mut def = std::collections::BTreeMap::new();
+        def.insert("delta_e_deg", 0.0);
+        let sigma = deck.lookup_sigma(0.0, 0.0, 0.0, &def).unwrap().unwrap();
+
+        assert!(deck.has_sigma_tables());
+        assert_eq!(sigma.cn.to_bits(), 0.2_f64.to_bits());
+        assert_eq!(sigma.cd.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(sigma.cm.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn schema2_parser_accepts_optional_six_coefficient_tables() {
+        let ones = "1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0";
+        let twos = "2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0";
+        let threes = "3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0";
+        let fours = "4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0";
+        let fives = "5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0";
+        let sixes = "6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0";
+        let toml_str = format!(
+            "{}\n\
+             [six_coefficients.cx]\n\
+             data = [{ones}]\n\
+             \n\
+             [six_coefficients.cy]\n\
+             data = [{twos}]\n\
+             \n\
+             [six_coefficients.cz]\n\
+             data = [{threes}]\n\
+             \n\
+             [six_coefficients.cl]\n\
+             data = [{fours}]\n\
+             \n\
+             [six_coefficients.cm]\n\
+             data = [{fives}]\n\
+             \n\
+             [six_coefficients.cn]\n\
+             data = [{sixes}]\n",
+            minimal_schema2_deck_toml()
+        );
+        let deck = AeroDeck::load_from_str(&toml_str).unwrap();
+        let mut def = std::collections::BTreeMap::new();
+        def.insert("delta_e_deg", 0.0);
+        let six = deck.lookup_six(0.5, 0.5, 0.0, &def).unwrap().unwrap();
+
+        assert!(deck.has_six_coefficient_tables());
+        assert_eq!(six.cx.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(six.cy.to_bits(), 2.0_f64.to_bits());
+        assert_eq!(six.cz.to_bits(), 3.0_f64.to_bits());
+        assert_eq!(six.cl.to_bits(), 4.0_f64.to_bits());
+        assert_eq!(six.cm.to_bits(), 5.0_f64.to_bits());
+        assert_eq!(six.cn.to_bits(), 6.0_f64.to_bits());
+    }
+
+    #[test]
+    fn schema2_parser_accepts_optional_dynamic_derivative_tables() {
+        let ones = "1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0";
+        let twos = "2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0";
+        let threes = "3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0";
+        let toml_str = format!(
+            "{}\n\
+             [dynamic_derivatives.cm_q]\n\
+             data = [{ones}]\n\
+             \n\
+             [dynamic_derivatives.cn_r]\n\
+             data = [{twos}]\n\
+             \n\
+             [dynamic_derivatives.cl_p]\n\
+             data = [{threes}]\n",
+            minimal_schema2_deck_toml()
+        );
+        let deck = AeroDeck::load_from_str(&toml_str).unwrap();
+        let mut def = std::collections::BTreeMap::new();
+        def.insert("delta_e_deg", 0.0);
+        let derivatives = deck
+            .lookup_dynamic_derivatives(0.5, 0.5, 0.0, &def)
+            .unwrap()
+            .unwrap();
+
+        assert!(deck.has_dynamic_derivative_tables());
+        assert_eq!(derivatives.cm_q.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(derivatives.cn_r.to_bits(), 2.0_f64.to_bits());
+        assert_eq!(derivatives.cl_p.to_bits(), 3.0_f64.to_bits());
+        assert_eq!(derivatives.cl_r.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(derivatives.cm_p.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(derivatives.cn_q.to_bits(), 0.0_f64.to_bits());
     }
 
     #[test]
@@ -947,6 +2082,8 @@ triangles = [[0, 1, 2], [0, 2, 3]]
             alpha_deg: 0.0,
             beta_deg: 0.0,
             dynamic_pressure_pa: q,
+            airspeed_m_s: 100.0,
+            body_angular_rates_rad_s: nalgebra::Vector3::zeros(),
             knudsen: 0.0,
             reynolds_length: 0.0,
         }
@@ -973,6 +2110,44 @@ triangles = [[0, 1, 2], [0, 2, 3]]
             minimal_panel_mesh_toml().replace("cp_max = 2.0", "cp_max = 2.0\nshadowing = false");
         let panels = LocalInclinationPanels::load_from_str(&toml_str).unwrap();
         assert!(!panels.shadowing);
+    }
+
+    #[test]
+    fn panel_mesh_parser_accepts_skin_friction_block() {
+        let toml_str = minimal_panel_mesh_toml().replace(
+            "cp_max = 2.0",
+            "cp_max = 2.0\n\n[skin_friction]\nreference_length_m = 1.0\nwall_to_edge_temperature_ratio = 0.9\ntransition_reynolds = 600000.0\nroughness_over_length = 0.0001",
+        );
+        let panels = LocalInclinationPanels::load_from_str(&toml_str).unwrap();
+        let skin_friction = panels.skin_friction.unwrap();
+        assert_eq!(
+            skin_friction.reference_length_m.to_bits(),
+            1.0_f64.to_bits()
+        );
+        assert_eq!(
+            skin_friction.wall_to_edge_temperature_ratio.to_bits(),
+            0.9_f64.to_bits()
+        );
+        assert_eq!(
+            skin_friction.transition_reynolds.to_bits(),
+            600000.0_f64.to_bits()
+        );
+        assert_eq!(
+            skin_friction.roughness_over_length.to_bits(),
+            0.0001_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn panel_mesh_parser_rejects_invalid_skin_friction_block() {
+        let toml_str = minimal_panel_mesh_toml().replace(
+            "cp_max = 2.0",
+            "cp_max = 2.0\n\n[skin_friction]\nreference_length_m = -1.0",
+        );
+        assert!(matches!(
+            LocalInclinationPanels::load_from_str(&toml_str),
+            Err(AeroError::InvalidParameter { .. }),
+        ));
     }
 
     #[test]
@@ -1023,6 +2198,156 @@ triangles = [[0, 1, 2], [0, 2, 3]]
         );
         assert!(matches!(
             LocalInclinationPanels::load_from_str(&toml_str),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn panel_mesh_ascii_stl_parser_builds_mesh_and_preserves_winding() {
+        let mesh = PanelMesh::load_ascii_stl_from_str(minimal_panel_ascii_stl()).unwrap();
+        assert_eq!(mesh.vertices().len(), 4);
+        assert_eq!(mesh.triangles(), &[[0, 1, 2], [0, 2, 3]]);
+
+        let panels = LocalInclinationPanels::modified_newtonian(mesh, 2.0);
+        let fmt = panels.aero_force_moment_body(&panel_ctx(100.0)).unwrap();
+        assert_eq!(fmt.force_n_body.x.to_bits(), (-200.0_f64).to_bits());
+        assert_eq!(fmt.force_n_body.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(fmt.force_n_body.z.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(fmt.moment_n_m_body.norm().to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn panel_mesh_ascii_stl_file_loader_reads_file() {
+        let path = std::env::temp_dir().join(format!(
+            "openbmp-panel-mesh-ascii-stl-{}.stl",
+            std::process::id()
+        ));
+        std::fs::write(&path, minimal_panel_ascii_stl()).unwrap();
+        let mesh = PanelMesh::load_ascii_stl(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(mesh.vertices().len(), 4);
+        assert_eq!(mesh.triangles().len(), 2);
+    }
+
+    #[test]
+    fn panel_mesh_ascii_stl_parser_rejects_malformed_records() {
+        let cases = [
+            "facet normal 1 0 0\nendsolid missing_solid\n",
+            "solid bad\ncolor red\nendsolid bad\n",
+            "solid bad\nfacet normal 1 0 0 0\nendsolid bad\n",
+            "solid bad\nfacet normal 1 0 0\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendsolid bad\n",
+            "solid bad\nendsolid bad\nfacet normal 1 0 0\n",
+        ];
+        for case in cases {
+            assert!(
+                matches!(
+                    PanelMesh::load_ascii_stl_from_str(case),
+                    Err(AeroError::MalformedDeck { .. }),
+                ),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn panel_mesh_ascii_stl_parser_rejects_nonfinite_and_degenerate_geometry() {
+        let nonfinite = minimal_panel_ascii_stl().replace("vertex 1 0.5 0.5", "vertex 1 NaN 0.5");
+        assert!(matches!(
+            PanelMesh::load_ascii_stl_from_str(&nonfinite),
+            Err(AeroError::NonFinite { .. }),
+        ));
+
+        let degenerate = r#"
+solid bad
+  facet normal 1 0 0
+    outer loop
+      vertex 0 0 0
+      vertex 1 0 0
+      vertex 2 0 0
+    endloop
+  endfacet
+endsolid bad
+"#;
+        assert!(matches!(
+            PanelMesh::load_ascii_stl_from_str(degenerate),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn panel_mesh_binary_stl_parser_builds_mesh_and_preserves_winding() {
+        let mesh = PanelMesh::load_binary_stl_from_bytes(&minimal_panel_binary_stl()).unwrap();
+        assert_eq!(mesh.vertices().len(), 4);
+        assert_eq!(mesh.triangles(), &[[0, 1, 2], [0, 2, 3]]);
+
+        let panels = LocalInclinationPanels::modified_newtonian(mesh, 2.0);
+        let fmt = panels.aero_force_moment_body(&panel_ctx(100.0)).unwrap();
+        assert_eq!(fmt.force_n_body.x.to_bits(), (-200.0_f64).to_bits());
+        assert_eq!(fmt.force_n_body.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(fmt.force_n_body.z.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(fmt.moment_n_m_body.norm().to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn panel_mesh_binary_stl_file_loader_reads_file() {
+        let path = std::env::temp_dir().join(format!(
+            "openbmp-panel-mesh-binary-stl-{}.stl",
+            std::process::id()
+        ));
+        std::fs::write(&path, minimal_panel_binary_stl()).unwrap();
+        let mesh = PanelMesh::load_binary_stl(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(mesh.vertices().len(), 4);
+        assert_eq!(mesh.triangles().len(), 2);
+    }
+
+    #[test]
+    fn panel_mesh_binary_stl_parser_rejects_malformed_byte_counts() {
+        assert!(matches!(
+            PanelMesh::load_binary_stl_from_bytes(&[0_u8; 83]),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+
+        let mut truncated = minimal_panel_binary_stl();
+        truncated.pop();
+        assert!(matches!(
+            PanelMesh::load_binary_stl_from_bytes(&truncated),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+
+        let mut trailing = minimal_panel_binary_stl();
+        trailing.push(0);
+        assert!(matches!(
+            PanelMesh::load_binary_stl_from_bytes(&trailing),
+            Err(AeroError::MalformedDeck { .. }),
+        ));
+    }
+
+    #[test]
+    fn panel_mesh_binary_stl_parser_rejects_nonfinite_and_degenerate_geometry() {
+        let mut nonfinite = vec![0_u8; 80];
+        nonfinite.extend_from_slice(&1_u32.to_le_bytes());
+        push_binary_stl_triangle(
+            &mut nonfinite,
+            [1.0, 0.0, 0.0],
+            [[0.0, 0.0, 0.0], [f32::NAN, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        );
+        assert!(matches!(
+            PanelMesh::load_binary_stl_from_bytes(&nonfinite),
+            Err(AeroError::NonFinite { .. }),
+        ));
+
+        let mut degenerate = vec![0_u8; 80];
+        degenerate.extend_from_slice(&1_u32.to_le_bytes());
+        push_binary_stl_triangle(
+            &mut degenerate,
+            [1.0, 0.0, 0.0],
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        );
+        assert!(matches!(
+            PanelMesh::load_binary_stl_from_bytes(&degenerate),
             Err(AeroError::MalformedDeck { .. }),
         ));
     }

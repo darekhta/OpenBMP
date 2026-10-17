@@ -118,19 +118,23 @@ Verified by reading the files below (not summaries).
 
 | Concern | File(s) | Maturity |
 |---|---|---|
-| Single first bending mode | `crates/openbmp-vehicle/src/structural.rs` | One SDOF per transverse axis (`q_x`, `q_y`); symplectic-Euler, locked operand order, no FMA; gyro slope-rate pickup; **lever-scaled** reaction moment `-m_q·slope_engine·q̈`. Explicitly first-increment (module doc: "the full distributed-load coupling is a follow-up"). |
-| Runner-side bending rack | `crates/openbmp-runner/src/structural.rs` | `StructuralRack::{Inactive,Active}`; built from `[vehicle.bending]`; one-step-lag body-accel driver; exposes `gyro_pickup_rad_s()` (wired to FC bridge) and `reaction_moment_body_n_m()` (exposed but the rack doc says "wired into the dynamics in a follow-up"). `Inactive` ⇒ byte-identical to a rigid vehicle. |
-| Scenario block | `crates/openbmp-scenario/src/document.rs` (`BendingConfig`, ~L2288) | `[vehicle.bending]`: `frequency_hz`, `damping_ratio`, `modal_mass_kg`, `slope_at_engine`, `slope_at_gyro`; `deny_unknown_fields`; fail-closed validation. Single mode only. |
-| FC-side gyro pickup add | `crates/openbmp-runner/src/fc_bridge.rs` (~L503–514) | The bridge adds `gyro_pickup_rad_s` onto `state.angular_velocity.vector` before forming the sensed body rate the FC reads — the existing flex→sensor boundary. |
+| Legacy first bending + modal block | `crates/openbmp-vehicle/src/structural.rs` | Legacy `BendingMode` remains as the one-SDOF-per-transverse-axis surface; `ModalBlock` now carries declaration-ordered N-mode lateral bending with the same semi-implicit-Euler arithmetic, mode-summed gyro pickup, accelerometer pickup, and lever-scaled reaction moment. N=1 `ModalBlock` byte-matches legacy `BendingMode`; legacy bending maps to zero accelerometer pickup. |
+| Runner-side structural rack | `crates/openbmp-runner/src/structural.rs` | `StructuralRack::{Inactive,Active}`; built from v3 `[vehicle.modes]` or legacy `[vehicle.bending]`; one-step-lag body-accel driver; exposes `gyro_pickup_rad_s()`, `accel_pickup_m_s2()`, and `reaction_moment_body_n_m()`. The rigid-body runner passes gyro/accel pickup to the FC bridge and applies the reaction moment before the kernel step only when `[vehicle.reaction] enabled = true`; otherwise the reaction surface remains exactly zero. `Inactive` ⇒ byte-identical to a rigid vehicle. |
+| Acoustic structural consumer | `crates/openbmp-runner/src/structural.rs` | Out-of-band first-bending random-response consumer for doc `22` modal-force PSD handoffs. It emits modal response CSV evidence plus a first-increment engine-station equivalent reaction-moment line-load recovery CSV from the declared `slope_at_engine`. This is not the T2/T3 multi-mode/FEM-derived LTM/OTM recovery below. |
+| Scenario block | `crates/openbmp-scenario/src/document.rs` | Legacy `[vehicle.bending]` remains accepted. New v3 `[vehicle.modes]` with `[[vehicle.modes.lateral]]` entries carries `id`, `frequency_hz`, `damping_ratio`, `modal_mass_kg`, `slope_at_engine`, `slope_at_gyro`, and optional `shape_at_accelerometer`; it is rigid-body-only, v3-only, duplicate-id checked, and mutually exclusive with `[vehicle.bending]`. New v3 `[vehicle.reaction] enabled = true` is valid only alongside `[vehicle.bending]` or `[vehicle.modes]`. |
+| FC-side structural pickup add | `crates/openbmp-runner/src/fc_bridge.rs` | The bridge adds `gyro_pickup_rad_s` onto sensed body rate and `accel_pickup_m_s2` onto sensed body-frame specific force across finite-difference, force-accumulator, and stationary-rotating-frame truth sources. |
 | Bending notch filter | `crates/openbmp-fc/src/filters.rs` | `Biquad` (Direct-Form-II Transposed): `notch`, `lowpass_first_order`, `butterworth_lowpass_second_order`, `magnitude_at_hz`. Pure arithmetic, no time source (lockstep-clock safe). `NotchConfig{center_hz,bandwidth_hz,depth_db}`. Consumed by `[fc.autopilot_params].gyro_notch` (`crates/openbmp-fc/src/autopilot.rs`). |
 | Slosh: all-fluid pendulum | `crates/openbmp-vehicle/src/tank/equivalent_pendulum.rs` | Abramson SP-106 cylindrical first mode: `ω_n² = (g_eff/a)·ξ₁·tanh(ξ₁h/a)`, `L = a/(ξ₁·tanh(...))`, `ξ₁=1.8411837813406593`; two tilt angles; small-angle linearized; freefall capillary term; semi-implicit Euler. **Treats all fluid as slosh mass** (`m_slosh=m_total`) — module doc admits this mis-states the rigid mass/inertia split (Abramson Table 7.1). |
 | Slosh variants | `crates/openbmp-vehicle/src/tank/{baffled_pendulum,equivalent_spring_mass,rigid_liquid}.rs`, `mod.rs` | `MovingMassModel` trait (`drain/step/mass_contribution/reaction_body/fluid_remaining_kg`); `BaffleModel` (scalar `damping_increment_zeta`, Abramson §7.4 linear-in-area-ratio approximation, full Eq. 7-46 deferred); `Tank`, `TankGeometry{Cylinder,Sphere,EllipsoidTextbook}`, `PropellantSpec`; `point_mass_inertia_about_origin` helper with locked operand order. |
 | Frontier note | `docs/launch-vehicle-fidelity-frontier.md` | Records the remaining gaps and the integration seams (the reaction-moment wiring, slosh-coupled closure, POGO) the WPs below pick up. |
 
-**Net baseline to regress against:** a Tier-0 capability — one decoupled bending
-SDOF wired to the gyro + lever-scaled reaction, one all-fluid pendulum (+ baffled
-/ spring-mass / rigid variants), symplectic-Euler, byte-deterministic,
-off-by-default. No POGO, no FEM-derived modes, no line-load recovery, no slosh
+**Net baseline to regress against:** a Tier-1 modal substrate — declaration-
+ordered lateral `ModalBlock` plus legacy one-mode `BendingMode` compatibility,
+gyro/accelerometer pickup, lever-scaled reaction, one doc-22 out-of-band
+first-bending acoustic response and engine-station equivalent reaction-moment
+recovery artifact, one all-fluid pendulum (+ baffled / spring-mass / rigid
+variants), symplectic-Euler, byte-deterministic, off-by-default. No POGO, no
+FEM-derived modes, no generalized station LTM/OTM line-load recovery, no slosh
 mass split, no CSI margin tooling.
 
 ---
@@ -319,6 +323,19 @@ impl PogoLoop {
 }
 ```
 
+Current method-level implementation (`REQ-STRUCT-008` / `V-STRUCT-008`) is
+intentionally smaller than a calibrated vehicle POGO target:
+`openbmp-structdyn::pogo` exposes
+`LongitudinalPogoMode`, `FeedTransferSample`, and `PogoLoopMargin` to evaluate
+the structural modal receptance and sampled Nyquist clearance for
+caller-provided feed transfer samples, lossless 1-D feedline transfer-matrix
+assembly with a uniform distributed-line analytic benchmark report, a
+finite-dimensional lumped feedline-coupled eigen/RHP check, plus a reduced
+first-order feed closed-loop eigen/RHP and MMS residual check. It also carries a
+provenance-backed public NASA qualitative case-history fixture for
+Gemini-Titan II and Saturn V trend evidence; it does not claim quantitative
+vehicle-specific Titan/Saturn margin closure.
+
 ```rust
 // openbmp-fc::csi — control-structure-interaction margins (FC-PORTABLE)
 // Consumes only plain coefficient arrays (frozen-time linearized plant);
@@ -451,8 +468,10 @@ filter, NTRS.)*
 
 - **T0 (current).** Single first-bending SDOF wired to gyro pickup + lever-scaled
   reaction; single all-fluid equivalent pendulum (+ baffled / spring-mass /
-  rigid variants); symplectic-Euler, byte-deterministic, off-by-default. No
-  POGO, no FEM-derived modes, no load recovery, no slosh mass split.
+  rigid variants); doc-22 out-of-band first-bending acoustic response with
+  engine-station equivalent reaction-moment recovery artifact; symplectic-Euler,
+  byte-deterministic, off-by-default. No POGO, no FEM-derived modes, no
+  generalized station LTM/OTM load recovery, no slosh mass split.
 
 - **T1 — Multi-mode lateral + corrected slosh analog.** Replace the single
   bending mode with an N-mode `ModalBlock` (still hand/spec-entered
@@ -711,6 +730,16 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
   - accelerometer pickup (`accel_pickup_m_s2`) added and wired through the bridge
     alongside the gyro pickup.
   - all §2 gates green.
+- **implementation_status:** implemented and traced by `REQ-STRUCT-001` /
+  `V-STRUCT-001`: `ModalBlock` / `ModeParams` landed in
+  `openbmp-vehicle::structural`; `[vehicle.modes]` parses and validates under
+  schema v3; the runner structural rack builds either `[vehicle.modes]` or
+  legacy `[vehicle.bending]`; `accel_pickup_m_s2` is wired through the rigid-body
+  FC bridge alongside `gyro_pickup_rad_s`; focused tests cover N=1 legacy
+  equivalence, declaration-ordered pickup summation, per-mode frequency/damping
+  equation terms, schema gates, and runner pickup behavior. Remaining doc-02
+  work starts at FEM modal ingestion / load recovery / slosh / POGO-CSI WPs.
+- **requirements:** [REQ-STRUCT-001]
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line (forward modal physics).
 - **est_effort:** ~1 week.
@@ -727,16 +756,33 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
 - **fidelity_tier:** T1
 - **depends_on:** [WP-02.1-a]
 - **new_crates:** none.
-- **touched:** `crates/openbmp-runner/src/structural.rs`, the kernel
-  moment-accumulation path.
+- **touched:** `crates/openbmp-runner/src/structural.rs`,
+  `crates/openbmp-runner/src/rigid_body.rs`,
+  `crates/openbmp-runner/tests/structural_reaction.rs`,
+  `crates/openbmp-scenario/src/document.rs`, the kernel moment-accumulation path.
 - **approach:** §3.3 (M3 lever route, mode-summed); add `−m_j·slope_engine_j·q̈_j`
   to the body moment, one-step-lag consistent with the existing driver.
 - **acceptance:**
   - reaction off by default (zero when rack `Inactive` ⇒ byte-identical rigid
-    run); on only when `[vehicle.modes]`/`[vehicle.bending]` present and a new
-    `reaction.enabled` flag set (preserve existing bending goldens until opt-in).
+    run); on only when `[vehicle.modes]`/`[vehicle.bending]` present and
+    `[vehicle.reaction] enabled = true` is set (preserve existing bending
+    goldens until opt-in).
   - momentum/energy bounded over a full ascent (no spurious injection).
   - all §2 gates green.
+- **implementation_status:** implemented and traced by `REQ-STRUCT-002` /
+  `V-STRUCT-002`. Schema-v3 `[vehicle.reaction] enabled = true` is accepted only
+  with legacy `[vehicle.bending]` or v3 `[vehicle.modes]`; absent reaction config
+  leaves `StructuralRack::reaction_moment_body_n_m()` exactly zero while sensor
+  pickup remains active. When enabled, the rack publishes the mode-summed lever
+  reaction through the rigid-body kernel torque path and the force-accumulator
+  sensor-truth path. The `structural_reaction_opt_in_tvc_probe_remains_bounded`
+  regression runs the full 40 s synthetic Phalcon-9 TVC ascent probe with
+  `[vehicle.bending]` plus `[vehicle.reaction] enabled = true` and bounds
+  angular-rate magnitude and quaternion norm through end time. The paired
+  `structural_reaction_opt_in_perturbs_tvc_probe_attitude_history` regression
+  runs the same TVC probe with bending active and reaction disabled/enabled,
+  proving the opt-in reaction produces a nonzero attitude-rate history delta.
+- **requirements:** [REQ-STRUCT-002]
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line.
 - **est_effort:** ~3-5 days.
@@ -754,8 +800,9 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
 - **depends_on:** []
 - **new_crates:** none (new `MovingMassModel` impl in `openbmp-vehicle::tank`).
 - **touched:** `crates/openbmp-vehicle/src/tank/` (+ `mod.rs` re-export),
-  `crates/openbmp-scenario/src/document.rs` (`[vehicle.slosh.mass_split]`),
-  `data/slosh/` (Dodge coefficient tables + `provenance.md`).
+  `crates/openbmp-scenario/src/document.rs`
+  (`moving_mass.kind = "abramson_multi_mass"`), `data/slosh/` (Dodge
+  coefficient tables + `provenance.md`).
 - **approach:** §3.3 (M4). `ξ_n` roots of `J_1'`, `m_n/m_f` and `m_0`, attach
   heights; N SDOF reactions at attach heights; fixed mass = rigid inertia only.
   Reuse the existing per-axis symplectic integrator and
@@ -767,6 +814,20 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
   - slosh period + energy property test passes (V2); Dodge tables ingested with
     `provenance.md` + SHA pin.
   - all §2 gates green.
+- **implementation_status:** implemented and traced by `REQ-STRUCT-003` /
+  `V-STRUCT-003`. `openbmp-vehicle::tank::AbramsonMultiMass` adds an opt-in
+  cylindrical fixed-mass plus first-N slosh-mass mechanical analog with
+  declaration-bounded `mode_count`, public coefficient helpers for the
+  `J_1'` roots, `m_n/m_liq`, pendulum length, hinge height, and slosh-mass
+  height, static fixed-mass balancing so the tank mount remains the liquid CG,
+  and semi-implicit per-axis mode integration. Schema TOML accepts
+  `moving_mass = { kind = "abramson_multi_mass", damping_ratio_zeta, mode_count }`
+  with first-mode linear initial slosh fields, and the runner builds the new
+  model through `TankRack`. `data/slosh/abramson-cylinder-table-v1.toml` plus
+  `data/slosh/provenance.md` pin the Dodge Table 3.2 source hash and checked-in
+  coefficient table. This closes the cylindrical T1 mass-correct slosh path only;
+  sphere/ellipsoid and nonlinear/large-amplitude slosh remain outside the claim.
+- **requirements:** [REQ-STRUCT-003]
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line.
 - **est_effort:** ~1-1.5 weeks.
@@ -796,6 +857,17 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
     MAC of ingested mode shapes vs source **> 0.9** (V8, tolerance table).
   - allow-list updated for the new data path in the same PR.
   - all §2 gates green.
+- **implementation_status:** implemented and traced by `REQ-STRUCT-004` /
+  `V-STRUCT-004` for the CSV-v1 path. `openbmp-modelio` is an L1 crate with a
+  deterministic `ModalAsset` parser for schema `openbmp.modal_asset.csv.v1`,
+  fail-closed schema/numeric/duplicate-id validation, and frequency-error plus
+  MAC source-reference checks. Schema-v3 `[vehicle.modes.asset]` points to a
+  SHA-pinned CSV, is mutually exclusive with inline `[[vehicle.modes.lateral]]`
+  rows, and is resolved under `vehicle.modes.asset.file` before the runner maps
+  the asset into the existing `ModalBlock` rack. `data/modal/` carries the
+  synthetic SOL103-style CSV and provenance record. OP2/OP4 binary readers are
+  still deferred and not claimed by this implementation.
+- **requirements:** [REQ-STRUCT-004]
 - **validation_label:** `research`
 - **dual_use_note:** far from line; modal data is structural, not targeting.
 - **est_effort:** ~2 weeks.
@@ -826,6 +898,20 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
   - line-load telemetry channels emitted; tolerance table added.
   - `SectionLoad`/`OutputId` vocabulary closed to structural quantities (dual-use).
   - all §2 gates green.
+- **implementation_status:** implemented and traced by `REQ-STRUCT-005` /
+  `V-STRUCT-005` as the first line-load recovery substrate. `openbmp-structdyn`
+  is an L2 crate exposing the closed `OutputId` vocabulary, `SectionLoad`,
+  `ModalRecoveryState`, and `LineLoadRecovery`; it evaluates
+  `A_d q + A_a q_ddot + A_ma q_ddot` with locked-order dense GEMV and includes
+  a synthetic static-reference test where the mode-acceleration correction is
+  within the 2% gate while the uncorrected result documents the residual error.
+  Schema-v3 `[loads.recovery]` is off by default, requires `[vehicle.bending]`
+  or `[vehicle.modes]`, declares stations and structural output rows, and the
+  runner structural rack emits `structural.load.<station>.<output>` telemetry
+  from the live modal state. This does not claim full OTM/LTM file ingestion,
+  distributed applied-load reconstruction, full-FEM benchmark campaigns, or
+  flight-loads correlation.
+- **requirements:** [REQ-STRUCT-005]
 - **validation_label:** `research`
 - **dual_use_note:** load-recovery outputs are structural only (no
   payload-effect/terminal quantities).
@@ -853,6 +939,36 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
     **MAC > 0.9**, frequency error **< a few %** (V8).
   - `ρ_∞`, `(β,γ)` pinned; changing them is a documented per-scenario byte lock.
   - all §2 gates green.
+- **implementation_status:** partial and traced by `REQ-STRUCT-006` /
+  `V-STRUCT-006`. `openbmp-structdyn::cb` now computes dense Craig-Bampton
+  constraint modes from `K_ii`, assembles the full-to-reduced transform with
+  retained fixed-interface modes plus boundary coordinates, projects
+  `T^T M T` / `T^T K T` in locked order, and exposes a sparse shift-invert
+  fixed-interface extraction API that returns mass-orthonormal dense mode
+  matrices for that reducer. It also exposes frequency/MAC modal correlation
+  helpers, full modal-basis MAC and mass-weighted cross-orthogonality matrix
+  evidence helpers, and a synthetic CalculiX-style CSV fixture that exercises
+  the benchmark harness path. `openbmp-structdyn::transient` now exposes pinned
+  Newmark-β parameters, generalized-α parameter derivation from `ρ_∞`, a
+  validated `ModalTransientSystem`, and constant-step Newmark plus
+  generalized-α integrators that precompute effective-stiffness Cholesky
+  factors. Schema-v3 `[vehicle.transient]` now byte-locks legacy,
+  Newmark-β, or generalized-α modal stepping; the runner keeps omitted configs
+  on the legacy step and uses the native `openbmp-structdyn` integrators for
+  explicit Newmark/generalized-α configs. The
+  shipped tests cover CB static-boundary stiffness and fixed-interface coupling
+  on synthetic models, sparse fixed-interface extraction with mass
+  orthonormality and CB handoff, synthetic frequency/MAC benchmark correlation,
+  full MAC and cross-orthogonality matrix evidence with fail-closed shape
+  validation, zero-weight generalized-α/Newmark equivalence, and quadratic
+  manufactured Newmark plus generalized-α modal transients recovered below
+  `1e-10`, plus parser gates and runner native-transient stepping for the
+  scenario surface.
+  This does **not** yet satisfy the full WP-02.3-a CalculiX `*FREQUENCY` /
+  `*SUBSTRUCTURE` MAC/frequency benchmark because provenance-pinned
+  tool-generated CalculiX output is still missing; public GARTEUR/AIRMOD modal
+  decks are also still missing.
+- **requirements:** [REQ-STRUCT-006]
 - **validation_label:** `research`
 - **dual_use_note:** far from line.
 - **est_effort:** ~3-5 weeks.
@@ -881,6 +997,51 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
   - per-event line-load envelope emitted; events off by default; fail-closed on
     unknown event type.
   - all §2 gates green.
+- **implementation_status:** partial and traced by `REQ-STRUCT-007` /
+  `V-STRUCT-007`. `openbmp-structdyn::fem` now assembles deterministic
+  two-node Euler-Bernoulli beam consistent mass and stiffness matrices in
+  displacement/rotation DOF order plus three-node constant-strain plane-stress
+  membrane triangle and four-node bilinear quadrilateral membrane mass and
+  stiffness matrices in locked translational DOF order plus three-node
+  Reissner-Mindlin plate-bending mass and stiffness matrices in locked
+  transverse-displacement/rotation DOF order, plus combined six-DOF triangular
+  and four-node quadrilateral shell assemblies with drilling-rotation
+  regularization in locked `[u_x,u_y,w,theta_x,theta_y,theta_z]` order; the
+  quadrilateral shell preserves the bilinear membrane block and a deterministic
+  two-triangle Reissner-Mindlin plate split. It extracts clamped
+  free-DOF matrices and carries clamped-free Blevins frequency references. A
+  synthetic uniform cantilever FEM regression uses the sparse fixed-interface
+  extractor from WP-02.3-a and matches the first five Blevins bending frequencies
+  within the 1% V7 gate. `openbmp-structdyn::events` now parses closed CLA
+  flight-event classes (`liftoff_release`, `max_q_gust`, `engine_ignition`,
+  `stage_separation`, `meco`) plus closed event profile kinds (`step`,
+  `ramp_release`, `rectangular_impulse`, `half_sine_impulse`, `dryden_gust`,
+  `von_karman_gust`), validates an OpenBMP local event-library fixture covering
+  those named classes plus checked ignition/separation/MECO modal
+  stiffness-scale schedules, evaluates physical event forces including
+  deterministic unit-area half-sine impulses, max-Q Dryden exponential
+  envelopes, and normalized von Karman gust envelopes, projects them as
+  `Phi^T F`, and emits max-absolute modal force envelopes over declared sample
+  times. Schema-v3
+  `[loads.events]` now accepts declared event force rows with optional closed
+  `flight_event_kind`, explicit physical-force vectors, dimensionless
+  mode-shape rows, optional `gust_length_scale_s` for gust kinds, and optional
+  positive `modal_stiffness_scale_1` multipliers for declared event stiffness
+  changes, requires `[vehicle.bending]` or `[vehicle.modes]`, rejects
+  incompatible flight-event/profile pairs, and the rigid-body runner
+  exposes deterministic max-absolute modal force envelopes plus typed
+  flight-event-class CSV bytes on `RunOutcome`, injects projected declared
+  event forces into the live structural rack modal state at each rack step,
+  applies event-profiled stiffness
+  multipliers for the legacy modal step, and advances explicit
+  Newmark/generalized-alpha transients through per-step variable-stiffness modal
+  systems. This is still only a partial FEM/event substrate: calibrated shell
+  formulations, calibrated gust distributions beyond the normalized
+  deterministic Dryden/von Karman envelopes, flight-calibrated
+  ignition/separation/MECO stiffness-change distributions beyond the local
+  checked schedules, public GARTEUR/AIRMOD modal benchmark decks, and
+  flight-load correlation remain open.
+- **requirements:** [REQ-STRUCT-007]
 - **validation_label:** `research`
 - **dual_use_note:** events are vehicle-intrinsic forcing, no targeting.
 - **est_effort:** ~3-4 weeks.
@@ -892,7 +1053,7 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
   eigen/Nyquist + accumulator detuning.
 - **goal:** Close the structure↔propulsion longitudinal loop (Rubin/Oppenheim,
   SP-8055) and assess stability + accumulator sizing — the integrating capstone,
-  entirely absent today.
+  absent in full today.
 - **fidelity_tier:** T4
 - **depends_on:** [WP-02.3-a, **WP-05.* feed-system transfer model** (doc 05)]
 - **new_crates:** extends `openbmp-structdyn::pogo`.
@@ -910,6 +1071,84 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
   - pump parameters entered as a dispersion box with `provenance.md`; **no
     vehicle-specific margin claimed** in any artifact.
   - all §2 gates green.
+- **implementation_status:** implemented at method-level research fidelity and
+  traced by `REQ-STRUCT-008` / `V-STRUCT-008`. `openbmp-structdyn::pogo` now exposes
+  `LongitudinalPogoMode`, `FeedTransferSample`, `PogoLoopMargin`,
+  `PogoNyquistReport`, `PogoOpenLoopSample`, `PogoNyquistVerdict`,
+  `PogoFeedlineSegment`, `PogoFeedlineTransferMatrix`,
+  `PogoDistributedFeedlineBenchmarkSample`,
+  `PogoDistributedFeedlineBenchmarkReport`,
+  `assemble_feedline_transfer_matrix`,
+  `evaluate_uniform_distributed_feedline_benchmark`,
+  `PogoPumpDispersionPoint`, `PogoPumpDispersionBox`, `PogoPumpDispersionReport`,
+  `analyze_pump_dispersion_box`, `PogoLumpedFeedlineModel`,
+  `PogoFeedlineCoupledEigenReport`,
+  `analyze_lumped_feedline_coupled_eigenproblem`, `PogoFirstOrderFeed`,
+  `PogoFirstOrderMmsSample`, `PogoFirstOrderMmsResidual`,
+  `evaluate_first_order_mms_residual`, `PogoClosedLoopEigenReport`,
+  `PogoClosedLoopVerdict`, and `analyze_first_order_closed_loop`. The helper
+  validates longitudinal modal parameters, lossless feedline segment fields,
+  pump Cb/Mb dispersion boxes, lumped feedline-coupled model fields, strictly
+  increasing frequency grids, complex feed-transfer samples, positive sampled
+  clearance thresholds, uniform distributed-feedline benchmark grids/media, and
+  reduced first-order feed-loop parameters; assembles
+  declaration-ordered 1-D feedline transfer matrices on `[pressure, volume_flow]`;
+  evaluates a uniform distributed-line analytic benchmark against the equivalent
+  single-line closed form with determinant, relative matrix, and
+  impedance-normalized off-diagonal residuals;
+  carries and typed-parses `data/feed_system/public-pogo-case-history-v1.toml`
+  with provenance-pinned NASA SP-8055 and NASA human-spaceflight POGO-history
+  source records for Gemini-Titan II and Saturn V S-IC/S-II observed frequency
+  bands, mitigation outcomes, source references, and accumulator/suppressor
+  trend expectations, rejecting unknown references and invalid bands
+  fail-closed;
+  evaluates deterministic min/nominal/max pump-dispersion corners with
+  worst-corner reporting; assembles a finite-dimensional lumped feedline
+  characteristic from summed segment inertance/compliance plus pump/accumulator
+  compliance and returns its complex roots with an RHP/marginal verdict;
+  evaluates the summed structural modal receptance at `s = j omega`; multiplies
+  it by caller-provided feed transfer samples to form dimensionless
+  `L(j omega)`; reports sampled `|1 + L|` distance to the Nyquist critical point
+  plus peak open-loop gain; validates and applies declared
+  `structural_nyquist_clearance_1` with a default of `0.1`; optionally rejects
+  below-clearance sampled structural Nyquist reports when
+  `require_structural_nyquist_clearance = true`; scales feed transfer samples
+  for accumulator or dispersion sweeps computed by the feed-system layer; and
+  returns closed-loop cubic eigenvalues, maximum real part, and an
+  asymptotically-stable versus RHP/marginal verdict for the reduced first-order
+  feed characteristic; and evaluates reduced first-order feed/structure MMS
+  residuals for declared displacement, feed-state, and manufactured-source
+  samples.
+  The existing scenario-facing `[propulsion.pogo]` runner path now preserves the
+  reduced feed-side startup stability gate while also deriving a normalized
+  structural mode, deterministic frequency grid, accumulator-attenuated
+  first-order feed-transfer samples, optional
+  `[propulsion.pogo.dispersion_box]` pump-dispersion reports with required
+  `provenance.md` pointers, optional `[propulsion.pogo.feedline]` references to
+  standalone `[[propulsion.lines]]`, closed-loop eigen report, `PogoRunReport`,
+  `RunOutcome.pogo.feedline_coupled`, and deterministic structural-margin CSV
+  bytes on `RunOutcome.pogo`. Focused
+  tests pin the modal closed form, feedline
+  low-frequency lumped limit, feedline cascade equivalence, distributed
+  feedline analytic benchmark residuals and fail-closed non-uniform/grid
+  validation, typed public Titan/Gemini and Saturn qualitative case-history
+  parsing plus metadata/trends and fail-closed malformed-reference/band checks,
+  pump-dispersion
+  worst-corner selection and validation, lumped feedline-coupled characteristic
+  root residuals and validation, stable and RHP closed-loop eigen roots,
+  reduced first-order feed/structure MMS residual recovery below `1e-10`,
+  sampled clearance verdict, below-clearance case, detuned feed scaling trend,
+  fail-closed invalid inputs, parser gates including provenance-backed
+  dispersion boxes and structural Nyquist gate fields, structural
+  Nyquist/eigen/dispersion report emission with preserved dispersion
+  provenance, optional
+  structural Nyquist clearance gate rejection, and configured-scenario
+  `RunOutcome.pogo` emission plus feedline-coupled report emission. This closes
+  the method-level WP while retaining quantitative vehicle-specific
+  Titan/Saturn margin closure as a validation ceiling; that margin is
+  intentionally not claimed because the public records do not provide calibrated
+  pump/feed parameter sets.
+- **requirements:** [REQ-STRUCT-008]
 - **validation_label:** `research` (method-level only)
 - **dual_use_note:** self-referential vehicle dynamics; pump gains/accumulator are
   stability inputs, no targeting surface.
@@ -942,6 +1181,67 @@ each shipping at a declared tier and earning a declared label. `WP-02.t[-letter]
     deliberately-unstable mode is lifted above 0 dB by the designed notch (V11).
   - time-domain SIL check: augmented modal model stays bounded through the FC.
   - all §2 gates green.
+- **implementation_status:** implemented at method level and traced by `REQ-STRUCT-009` /
+  `V-STRUCT-009`. `openbmp-fc::csi` now exposes `FrozenPlant`,
+  `FrozenTrajectoryPoint`, `ComplexResponse`, `CsiMarginCriteria`,
+  `CsiMarginReport`, `CsiTrajectoryReport`, `CsiMarginVerdict`, `ModalCsiMode`,
+  `BendingNotch`, `LeadLagSection`, `assemble_modal_csi_plant_coefficients`,
+  `design_bending_notch`, `design_phase_lead_lag`, `analyze_frozen_plant`, and
+  `analyze_frozen_trajectory`. The helper consumes only caller-owned modal
+  path definitions, coefficient arrays, scratch buffers, frozen-time slices,
+  frequency slices, and report buffers;
+  validates finite continuous-time numerator and denominator polynomials,
+  strictly increasing positive frequency grids, strictly increasing
+  non-negative trajectory times, non-negative margin criteria, positive modal
+  frequency and mass, finite modal input/sensor couplings, and notch and
+  lead/lag damping/frequency/phase values; assembles common-denominator modal
+  continuous-time plants from displacement/rate/acceleration sensor couplings
+  without heap allocation; evaluates sampled open-loop `L(j omega)` with no
+  clock reads or output allocation; reports per-point and worst-trajectory
+  sampled gain margin, phase margin, Nyquist critical-point distance, and peak
+  gain; designs the continuous notch
+  `(s^2 + 2 zeta_z omega s + omega^2)/(s^2 + 2 zeta_p omega s + omega^2)`
+  while exporting the existing `filters::NotchConfig` shape; and designs
+  unity-magnitude first-order lead/lag sections centered on a requested modal
+  frequency with fixed numerator/denominator coefficient export. Focused tests
+  pin gain/phase margin computation on a cubic-lag plant, below-threshold
+  verdicts, worst-case frozen-time trajectory margins, below-threshold
+  trajectory points, modal notch attenuation and digital-notch config export, a
+  deliberately high modal gain reduced below unity by the designed notch,
+  single-mode rate-gyro modal coefficient assembly, two-mode assembly matching
+  direct modal-receptance summation, lead/lag phase and coefficient synthesis,
+  lead-section phase-margin improvement at a cubic-lag gain crossover,
+  fail-closed invalid inputs, no-default-features compilation, and the FC
+  dependency tripwire. Schema-v3
+  `[csi]` now parses an off-default frozen-time CSI sweep requiring
+  `[vehicle.bending]` or `[vehicle.modes]`, strictly increasing positive
+  `frequency_grid_rad_s`, non-negative gain/phase criteria, and exactly one
+  plant source: unique explicit `[[csi.frozen_plants]]` ids with strictly
+  increasing non-negative frozen times and finite nonzero
+  numerator/denominator coefficient arrays in ascending powers of `s`, or
+  `[csi.modal_assembly]` with `sensor = "gyro_rate"` / `"accelerometer"`,
+  finite `loop_gain`, and unique `[[csi.modal_assembly.frozen_points]]` ids
+  with strictly increasing non-negative frozen times plus finite
+  `loop_gain_scale`. Optional `[csi.filter_insertion]` requires `[fc]`,
+  rejects simultaneous `[fc.autopilot_params.gyro_notch]`, validates notch
+  damping, uses the selected structural `mode_index` as the notch center, and
+  inserts the designed `NotchConfig` into the FC bridge's effective
+  `AutopilotParams` before the autopilot job is registered. The rigid-body
+  runner now consumes parsed `[csi]` into `RunOutcome.csi`, preserving the FC
+  helper's caller-owned-buffer contract,
+  assembling modal plants from `StructuralRack::mode_params` via
+  `slope_at_engine`, `slope_at_gyro`, and `shape_at_accelerometer` when the
+  modal source is selected, emitting CSI-designed gyro-notch evidence when
+  filter insertion is selected, and emitting a deterministic per-frozen-point
+  margin CSV while leaving scenarios without `[csi]` at `None`.
+  `crates/openbmp-runner/tests/csi_sil.rs` runs the synthetic 40 s Phalcon-9
+  TVC FC scenario with structural bending, CSI modal assembly, CSI filter
+  insertion, and a read-only SIL monitor; the test proves EndTime completion,
+  FC observation, nonempty actuator-stream evidence, finite bounded
+  angular-rate magnitude, and unit-quaternion norm. The remaining ceiling is
+  not a WP-02.4-b acceptance gap: no cFS/HIL qualification, GVT-correlated
+  vehicle data, or flight-test validation is claimed.
+- **requirements:** [REQ-STRUCT-009]
 - **validation_label:** `research` (method-level)
 - **dual_use_note:** stability-design tooling, benign; couples to the vehicle's
   own modes.

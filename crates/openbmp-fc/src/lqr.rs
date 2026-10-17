@@ -1,4 +1,4 @@
-//! Per-axis 2-state LQR for the rate loop.
+//! Per-axis and coupled-plant LQR helpers for the rate loop.
 //!
 //! Supplies the optimal full-state feedback gains for a single
 //! body axis under the standing project assumption that the
@@ -54,7 +54,10 @@
 //!   3rd ed. Wiley.
 
 #[cfg(not(feature = "std"))]
+use alloc::vec;
+#[cfg(not(feature = "std"))]
 use num_traits::Float;
+use std::vec::Vec;
 use thiserror::Error;
 
 /// Maximum DARE iterations before the doubling algorithm gives up.
@@ -67,6 +70,18 @@ pub const DARE_MAX_ITERATIONS: usize = 200;
 /// Convergence tolerance on the Frobenius-norm difference between
 /// successive iterates of the DARE solution `P`.
 pub const DARE_CONVERGENCE_TOL: f64 = 1.0e-12;
+
+/// Maximum dense coupled-plant state dimension accepted by the
+/// in-repo DARE oracle. Runtime control still uses precomputed gains;
+/// this guard keeps validation buffers bounded.
+pub const DENSE_DARE_MAX_STATES: usize = 16;
+
+/// Maximum dense coupled-plant control dimension accepted by the
+/// in-repo DARE oracle.
+pub const DENSE_DARE_MAX_CONTROLS: usize = 16;
+
+const DENSE_SYMMETRY_TOL: f64 = 1.0e-10;
+const DENSE_PIVOT_TOL: f64 = 1.0e-14;
 
 /// Errors raised by [`solve_lqr_rate_loop`].
 #[derive(Copy, Clone, Debug, Error, PartialEq)]
@@ -113,6 +128,56 @@ pub enum LqrError {
         /// Required tolerance.
         tolerance: f64,
     },
+    /// Dense solver dimension is zero or exceeds the fixed bound.
+    #[error("LQR dense dimension {label} must be in 1..={max}; got {value}")]
+    InvalidDimension {
+        /// Dimension label.
+        label: &'static str,
+        /// Offending dimension.
+        value: usize,
+        /// Maximum accepted dimension.
+        max: usize,
+    },
+    /// Row-major matrix length does not match declared dimensions.
+    #[error("LQR matrix {label} length mismatch: expected {expected}, got {actual}")]
+    MatrixLengthMismatch {
+        /// Matrix label.
+        label: &'static str,
+        /// Expected row-major entry count.
+        expected: usize,
+        /// Actual entry count.
+        actual: usize,
+    },
+    /// Cost matrix is expected to be symmetric but is not.
+    #[error(
+        "LQR cost matrix {label} must be symmetric; entries ({row},{col})={value:e} \
+         and ({col},{row})={transpose:e} differ"
+    )]
+    NonSymmetricCost {
+        /// Matrix label.
+        label: &'static str,
+        /// Row index.
+        row: usize,
+        /// Column index.
+        col: usize,
+        /// Forward entry.
+        value: f64,
+        /// Transposed entry.
+        transpose: f64,
+    },
+    /// Matrix expected to be positive definite was not factorable.
+    #[error("LQR matrix {label} must be symmetric positive definite")]
+    MatrixNotPositiveDefinite {
+        /// Matrix label.
+        label: &'static str,
+    },
+    /// Dense linear solve failed because the matrix was singular or
+    /// numerically ill-conditioned for this deterministic oracle.
+    #[error("LQR dense linear solve failed for {label}")]
+    LinearSolveFailed {
+        /// Matrix label.
+        label: &'static str,
+    },
 }
 
 /// Optimal feedback gains for one body axis. Used as
@@ -123,6 +188,49 @@ pub struct LqrGains {
     pub k_omega: f64,
     /// Integral-on-rate-error gain (`N·m / (rad·s)`).
     pub k_int: f64,
+}
+
+/// Dense coupled-plant DARE/LQR solution.
+///
+/// `p_row_major` is the stabilising Riccati solution `P` (`states × states`).
+/// `k_row_major` is the full-state feedback matrix `K`
+/// (`controls × states`) used as `u = -K x`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoupledLqrSolution {
+    /// State dimension.
+    pub states: usize,
+    /// Control dimension.
+    pub controls: usize,
+    /// Stabilising DARE solution `P`, row-major.
+    pub p_row_major: Vec<f64>,
+    /// LQR gain `K`, row-major (`controls × states`).
+    pub k_row_major: Vec<f64>,
+    /// Number of structure-preserving doubling iterations consumed.
+    pub iterations: usize,
+    /// Algebraic DARE residual `‖P - dare_rhs(P)‖_F`.
+    pub residual_norm: f64,
+}
+
+/// Dense steady-state LQG observer solution from the dual DARE.
+///
+/// `p_row_major` is the estimator covariance-like stabilising DARE
+/// solution (`states × states`). `l_row_major` is the predictor-form
+/// observer gain `L` (`states × measurements`) for
+/// `x_hat[k+1] = A x_hat[k] + B u[k] + L(y[k] - C x_hat[k])`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoupledLqgObserverSolution {
+    /// State dimension.
+    pub states: usize,
+    /// Measurement dimension.
+    pub measurements: usize,
+    /// Stabilising dual DARE solution `P`, row-major.
+    pub p_row_major: Vec<f64>,
+    /// Observer gain `L`, row-major (`states × measurements`).
+    pub l_row_major: Vec<f64>,
+    /// Number of structure-preserving doubling iterations consumed.
+    pub iterations: usize,
+    /// Algebraic dual DARE residual.
+    pub residual_norm: f64,
 }
 
 /// Solve the per-axis rate-loop DARE and return the LQR feedback
@@ -165,6 +273,263 @@ pub fn solve_lqr_rate_loop(
     let k_omega = b * (p.p11 + dt_s * p.p12) / denom;
     let k_int = b * p.p12 / denom;
     Ok(LqrGains { k_omega, k_int })
+}
+
+/// Solve the dense coupled-plant DARE and return the discrete LQR
+/// feedback matrix.
+///
+/// Matrices are row-major with shapes:
+///
+/// - `A`: `states × states`
+/// - `B`: `states × controls`
+/// - `Q`: `states × states`, symmetric positive definite
+/// - `R`: `controls × controls`, symmetric positive definite
+///
+/// The returned gain `K` has shape `controls × states` and is used as
+/// `u = -K x`. This helper is intended as the deterministic in-repo
+/// oracle for offline coupled-gain generation; the hot flight loop
+/// consumes precomputed gains.
+///
+/// # Errors
+///
+/// Returns [`LqrError`] when dimensions are invalid, matrices contain
+/// non-finite entries, `Q`/`R` are not symmetric positive definite, a
+/// deterministic dense solve fails, or the structure-preserving
+/// doubling iteration does not converge.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_dare_nxn_doubling(
+    states: usize,
+    controls: usize,
+    a_row_major: &[f64],
+    b_row_major: &[f64],
+    q_row_major: &[f64],
+    r_row_major: &[f64],
+) -> Result<CoupledLqrSolution, LqrError> {
+    solve_dare_nxn_doubling_with_options(
+        states,
+        controls,
+        a_row_major,
+        b_row_major,
+        q_row_major,
+        r_row_major,
+        DARE_MAX_ITERATIONS,
+        DARE_CONVERGENCE_TOL,
+    )
+}
+
+/// Variant of [`solve_dare_nxn_doubling`] with explicit iteration
+/// controls for tests and offline tools.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_dare_nxn_doubling_with_options(
+    states: usize,
+    controls: usize,
+    a_row_major: &[f64],
+    b_row_major: &[f64],
+    q_row_major: &[f64],
+    r_row_major: &[f64],
+    max_iterations: usize,
+    tolerance: f64,
+) -> Result<CoupledLqrSolution, LqrError> {
+    validate_dimension("states", states, DENSE_DARE_MAX_STATES)?;
+    validate_dimension("controls", controls, DENSE_DARE_MAX_CONTROLS)?;
+    require_finite("tolerance", tolerance)?;
+    if tolerance <= 0.0 {
+        return Err(LqrError::NonPositiveCostWeight {
+            label: "tolerance",
+            value: tolerance,
+        });
+    }
+    if max_iterations == 0 {
+        return Err(LqrError::InvalidDimension {
+            label: "max_iterations",
+            value: 0,
+            max: DARE_MAX_ITERATIONS,
+        });
+    }
+
+    let mut a = DenseMatrix::from_row_major("A", states, states, a_row_major)?;
+    let b = DenseMatrix::from_row_major("B", states, controls, b_row_major)?;
+    let q = DenseMatrix::from_row_major("Q", states, states, q_row_major)?;
+    let r = DenseMatrix::from_row_major("R", controls, controls, r_row_major)?;
+    validate_symmetric("Q", &q)?;
+    validate_symmetric("R", &r)?;
+    let _ = cholesky_lower("Q", &q)?;
+    let r_inv = invert_spd("R", &r)?;
+
+    let b_t = b.transpose();
+    let mut g = b.mul(&r_inv).mul(&b_t);
+    let mut h = q.clone();
+    let mut residual = f64::INFINITY;
+    let mut iterations = 0usize;
+    let mut converged = false;
+
+    for iteration in 1..=max_iterations {
+        let gh = g.mul(&h);
+        let m = DenseMatrix::identity(states).add(&gh);
+        let m_inv = invert_lu("I + G H", &m)?;
+
+        let new_a = a.mul(&m_inv).mul(&a);
+        let a_t = a.transpose();
+        let new_g = g.add(&a.mul(&m_inv).mul(&g).mul(&a_t));
+        let new_h = h.add(&a_t.mul(&h).mul(&m_inv).mul(&a));
+        let new_g = new_g.symmetrized();
+        let new_h = new_h.symmetrized();
+
+        residual = new_h.sub(&h).frobenius_norm();
+        if !residual.is_finite() {
+            return Err(LqrError::DareDidNotConverge {
+                iterations: iteration,
+                residual,
+                tolerance,
+            });
+        }
+
+        a = new_a;
+        g = new_g;
+        h = new_h;
+        iterations = iteration;
+        if residual < tolerance {
+            converged = true;
+            break;
+        }
+    }
+
+    if !converged {
+        return Err(LqrError::DareDidNotConverge {
+            iterations,
+            residual,
+            tolerance,
+        });
+    }
+
+    let a0 = DenseMatrix::from_row_major("A", states, states, a_row_major)?;
+    let b0 = DenseMatrix::from_row_major("B", states, controls, b_row_major)?;
+    let b0_t = b0.transpose();
+    let bt_p = b0_t.mul(&h);
+    let s = r.add(&bt_p.mul(&b0)).symmetrized();
+    let rhs = bt_p.mul(&a0);
+    let k = solve_spd("R + B' P B", &s, &rhs)?;
+    let residual_norm = dense_dare_residual_norm_from_matrices(&a0, &b0, &q, &r, &h)?;
+    if !residual_norm.is_finite() || residual_norm > tolerance.sqrt() {
+        return Err(LqrError::DareDidNotConverge {
+            iterations,
+            residual: residual_norm,
+            tolerance: tolerance.sqrt(),
+        });
+    }
+
+    Ok(CoupledLqrSolution {
+        states,
+        controls,
+        p_row_major: h.data,
+        k_row_major: k.data,
+        iterations,
+        residual_norm,
+    })
+}
+
+/// Solves the steady-state LQG observer gain through the LQR dual.
+///
+/// Matrices are row-major with shapes:
+///
+/// - `A`: `states × states`
+/// - `C`: `measurements × states`
+/// - `W`: `states × states`, symmetric positive definite process-noise weight
+/// - `V`: `measurements × measurements`, symmetric positive definite measurement-noise weight
+///
+/// The returned gain `L` has shape `states × measurements`.
+///
+/// # Errors
+///
+/// Returns [`LqrError`] for the same bounded-dimension, finite-value,
+/// positive-definite, and convergence failures as
+/// [`solve_dare_nxn_doubling`].
+#[allow(clippy::too_many_arguments)]
+pub fn solve_lqg_observer_nxn_dual_dare(
+    states: usize,
+    measurements: usize,
+    a_row_major: &[f64],
+    c_row_major: &[f64],
+    w_row_major: &[f64],
+    v_row_major: &[f64],
+) -> Result<CoupledLqgObserverSolution, LqrError> {
+    solve_lqg_observer_nxn_dual_dare_with_options(
+        states,
+        measurements,
+        a_row_major,
+        c_row_major,
+        w_row_major,
+        v_row_major,
+        DARE_MAX_ITERATIONS,
+        DARE_CONVERGENCE_TOL,
+    )
+}
+
+/// Variant of [`solve_lqg_observer_nxn_dual_dare`] with explicit
+/// iteration controls for tests and offline tools.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_lqg_observer_nxn_dual_dare_with_options(
+    states: usize,
+    measurements: usize,
+    a_row_major: &[f64],
+    c_row_major: &[f64],
+    w_row_major: &[f64],
+    v_row_major: &[f64],
+    max_iterations: usize,
+    tolerance: f64,
+) -> Result<CoupledLqgObserverSolution, LqrError> {
+    validate_dimension("states", states, DENSE_DARE_MAX_STATES)?;
+    validate_dimension("measurements", measurements, DENSE_DARE_MAX_CONTROLS)?;
+    let a = DenseMatrix::from_row_major("A", states, states, a_row_major)?;
+    let c = DenseMatrix::from_row_major("C", measurements, states, c_row_major)?;
+    let solution = solve_dare_nxn_doubling_with_options(
+        states,
+        measurements,
+        &a.transpose().data,
+        &c.transpose().data,
+        w_row_major,
+        v_row_major,
+        max_iterations,
+        tolerance,
+    )?;
+    let l = DenseMatrix::from_row_major("K_dual", measurements, states, &solution.k_row_major)?
+        .transpose();
+    Ok(CoupledLqgObserverSolution {
+        states,
+        measurements,
+        p_row_major: solution.p_row_major,
+        l_row_major: l.data,
+        iterations: solution.iterations,
+        residual_norm: solution.residual_norm,
+    })
+}
+
+/// Compute the dense DARE algebraic residual for an externally
+/// supplied candidate `P`.
+///
+/// This is exposed for tolerance-table tests and offline verification
+/// harnesses.
+#[allow(clippy::too_many_arguments)]
+pub fn dense_dare_residual_norm(
+    states: usize,
+    controls: usize,
+    a_row_major: &[f64],
+    b_row_major: &[f64],
+    q_row_major: &[f64],
+    r_row_major: &[f64],
+    p_row_major: &[f64],
+) -> Result<f64, LqrError> {
+    validate_dimension("states", states, DENSE_DARE_MAX_STATES)?;
+    validate_dimension("controls", controls, DENSE_DARE_MAX_CONTROLS)?;
+    let a = DenseMatrix::from_row_major("A", states, states, a_row_major)?;
+    let b = DenseMatrix::from_row_major("B", states, controls, b_row_major)?;
+    let q = DenseMatrix::from_row_major("Q", states, states, q_row_major)?;
+    let r = DenseMatrix::from_row_major("R", controls, controls, r_row_major)?;
+    let p = DenseMatrix::from_row_major("P", states, states, p_row_major)?;
+    validate_symmetric("Q", &q)?;
+    validate_symmetric("R", &r)?;
+    validate_symmetric("P", &p)?;
+    dense_dare_residual_norm_from_matrices(&a, &b, &q, &r, &p)
 }
 
 /// Symmetric 2×2 matrix `[[p11, p12], [p12, p22]]` used internally
@@ -323,6 +688,296 @@ fn solve_dare_2x2_doubling(
     Ok(h)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct DenseMatrix {
+    rows: usize,
+    cols: usize,
+    data: Vec<f64>,
+}
+
+impl DenseMatrix {
+    fn from_row_major(
+        label: &'static str,
+        rows: usize,
+        cols: usize,
+        data: &[f64],
+    ) -> Result<Self, LqrError> {
+        let expected = rows * cols;
+        if data.len() != expected {
+            return Err(LqrError::MatrixLengthMismatch {
+                label,
+                expected,
+                actual: data.len(),
+            });
+        }
+        for value in data {
+            require_finite(label, *value)?;
+        }
+        Ok(Self {
+            rows,
+            cols,
+            data: data.to_vec(),
+        })
+    }
+
+    fn zeros(rows: usize, cols: usize) -> Self {
+        Self {
+            rows,
+            cols,
+            data: vec![0.0; rows * cols],
+        }
+    }
+
+    fn identity(size: usize) -> Self {
+        let mut out = Self::zeros(size, size);
+        for i in 0..size {
+            out.set(i, i, 1.0);
+        }
+        out
+    }
+
+    fn get(&self, row: usize, col: usize) -> f64 {
+        self.data[row * self.cols + col]
+    }
+
+    fn set(&mut self, row: usize, col: usize, value: f64) {
+        self.data[row * self.cols + col] = value;
+    }
+
+    fn transpose(&self) -> Self {
+        let mut out = Self::zeros(self.cols, self.rows);
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                out.set(col, row, self.get(row, col));
+            }
+        }
+        out
+    }
+
+    fn add(&self, other: &Self) -> Self {
+        let mut out = Self::zeros(self.rows, self.cols);
+        for i in 0..self.data.len() {
+            out.data[i] = self.data[i] + other.data[i];
+        }
+        out
+    }
+
+    fn sub(&self, other: &Self) -> Self {
+        let mut out = Self::zeros(self.rows, self.cols);
+        for i in 0..self.data.len() {
+            out.data[i] = self.data[i] - other.data[i];
+        }
+        out
+    }
+
+    fn mul(&self, other: &Self) -> Self {
+        let mut out = Self::zeros(self.rows, other.cols);
+        for row in 0..self.rows {
+            for inner in 0..self.cols {
+                let lhs = self.get(row, inner);
+                for col in 0..other.cols {
+                    let idx = row * out.cols + col;
+                    out.data[idx] += lhs * other.get(inner, col);
+                }
+            }
+        }
+        out
+    }
+
+    fn symmetrized(&self) -> Self {
+        let mut out = self.clone();
+        for row in 0..self.rows {
+            for col in (row + 1)..self.cols {
+                let avg = 0.5 * (self.get(row, col) + self.get(col, row));
+                out.set(row, col, avg);
+                out.set(col, row, avg);
+            }
+        }
+        out
+    }
+
+    fn frobenius_norm(&self) -> f64 {
+        let mut sum = 0.0_f64;
+        for value in &self.data {
+            sum += *value * *value;
+        }
+        sum.sqrt()
+    }
+}
+
+fn validate_dimension(label: &'static str, value: usize, max: usize) -> Result<(), LqrError> {
+    if (1..=max).contains(&value) {
+        Ok(())
+    } else {
+        Err(LqrError::InvalidDimension { label, value, max })
+    }
+}
+
+fn validate_symmetric(label: &'static str, matrix: &DenseMatrix) -> Result<(), LqrError> {
+    for row in 0..matrix.rows {
+        for col in (row + 1)..matrix.cols {
+            let value = matrix.get(row, col);
+            let transpose = matrix.get(col, row);
+            if (value - transpose).abs() > DENSE_SYMMETRY_TOL {
+                return Err(LqrError::NonSymmetricCost {
+                    label,
+                    row,
+                    col,
+                    value,
+                    transpose,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cholesky_lower(label: &'static str, matrix: &DenseMatrix) -> Result<DenseMatrix, LqrError> {
+    let n = matrix.rows;
+    let mut lower = DenseMatrix::zeros(n, n);
+    for row in 0..n {
+        for col in 0..=row {
+            let mut sum = matrix.get(row, col);
+            for k in 0..col {
+                sum -= lower.get(row, k) * lower.get(col, k);
+            }
+            if row == col {
+                if !sum.is_finite() || sum <= DENSE_PIVOT_TOL {
+                    return Err(LqrError::MatrixNotPositiveDefinite { label });
+                }
+                lower.set(row, col, sum.sqrt());
+            } else {
+                let diag = lower.get(col, col);
+                if diag.abs() <= DENSE_PIVOT_TOL {
+                    return Err(LqrError::MatrixNotPositiveDefinite { label });
+                }
+                lower.set(row, col, sum / diag);
+            }
+        }
+    }
+    Ok(lower)
+}
+
+fn solve_spd(
+    label: &'static str,
+    matrix: &DenseMatrix,
+    rhs: &DenseMatrix,
+) -> Result<DenseMatrix, LqrError> {
+    let lower = cholesky_lower(label, matrix)?;
+    let n = matrix.rows;
+    let mut y = DenseMatrix::zeros(n, rhs.cols);
+    for col in 0..rhs.cols {
+        for row in 0..n {
+            let mut sum = rhs.get(row, col);
+            for k in 0..row {
+                sum -= lower.get(row, k) * y.get(k, col);
+            }
+            y.set(row, col, sum / lower.get(row, row));
+        }
+    }
+
+    let mut x = DenseMatrix::zeros(n, rhs.cols);
+    for col in 0..rhs.cols {
+        for row_rev in 0..n {
+            let row = n - 1 - row_rev;
+            let mut sum = y.get(row, col);
+            for k in (row + 1)..n {
+                sum -= lower.get(k, row) * x.get(k, col);
+            }
+            x.set(row, col, sum / lower.get(row, row));
+        }
+    }
+    Ok(x)
+}
+
+fn invert_spd(label: &'static str, matrix: &DenseMatrix) -> Result<DenseMatrix, LqrError> {
+    solve_spd(label, matrix, &DenseMatrix::identity(matrix.rows))
+}
+
+fn invert_lu(label: &'static str, matrix: &DenseMatrix) -> Result<DenseMatrix, LqrError> {
+    let n = matrix.rows;
+    let mut lu = matrix.data.clone();
+    let mut pivots: Vec<usize> = (0..n).collect();
+
+    for k in 0..n {
+        let mut pivot_row = k;
+        let mut pivot_abs = lu[k * n + k].abs();
+        for row in (k + 1)..n {
+            let candidate_abs = lu[row * n + k].abs();
+            if candidate_abs > pivot_abs {
+                pivot_abs = candidate_abs;
+                pivot_row = row;
+            }
+        }
+        if !pivot_abs.is_finite() || pivot_abs <= DENSE_PIVOT_TOL {
+            return Err(LqrError::LinearSolveFailed { label });
+        }
+        if pivot_row != k {
+            for col in 0..n {
+                lu.swap(k * n + col, pivot_row * n + col);
+            }
+            pivots.swap(k, pivot_row);
+        }
+        for row in (k + 1)..n {
+            let factor = lu[row * n + k] / lu[k * n + k];
+            lu[row * n + k] = factor;
+            for col in (k + 1)..n {
+                let idx = row * n + col;
+                lu[idx] -= factor * lu[k * n + col];
+            }
+        }
+    }
+
+    let mut inverse = DenseMatrix::zeros(n, n);
+    for rhs_col in 0..n {
+        let mut y = vec![0.0_f64; n];
+        for row in 0..n {
+            let mut sum = if pivots[row] == rhs_col { 1.0 } else { 0.0 };
+            for k in 0..row {
+                sum -= lu[row * n + k] * y[k];
+            }
+            y[row] = sum;
+        }
+
+        let mut x = vec![0.0_f64; n];
+        for row_rev in 0..n {
+            let row = n - 1 - row_rev;
+            let mut sum = y[row];
+            for k in (row + 1)..n {
+                sum -= lu[row * n + k] * x[k];
+            }
+            let diag = lu[row * n + row];
+            if diag.abs() <= DENSE_PIVOT_TOL {
+                return Err(LqrError::LinearSolveFailed { label });
+            }
+            x[row] = sum / diag;
+        }
+
+        for (row, value) in x.iter().enumerate().take(n) {
+            inverse.set(row, rhs_col, *value);
+        }
+    }
+
+    Ok(inverse)
+}
+
+fn dense_dare_residual_norm_from_matrices(
+    a: &DenseMatrix,
+    b: &DenseMatrix,
+    q: &DenseMatrix,
+    r: &DenseMatrix,
+    p: &DenseMatrix,
+) -> Result<f64, LqrError> {
+    let a_t = a.transpose();
+    let b_t = b.transpose();
+    let pb = p.mul(b);
+    let s = r.add(&b_t.mul(&pb)).symmetrized();
+    let btpa = b_t.mul(p).mul(a);
+    let k = solve_spd("R + B' P B", &s, &btpa)?;
+    let rhs = a_t.mul(p).mul(a).sub(&a_t.mul(&pb).mul(&k)).add(q);
+    Ok(p.sub(&rhs).frobenius_norm())
+}
+
 fn require_finite(label: &'static str, value: f64) -> Result<(), LqrError> {
     if value.is_finite() {
         Ok(())
@@ -374,11 +1029,61 @@ pub fn closed_loop_pole_magnitudes(dt_s: f64, inertia_kg_m2: f64, gains: LqrGain
 )]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use toml::Value;
 
     use super::*;
 
+    const COUPLED_LQR_DARE_TOLERANCE_TABLE: &str =
+        include_str!("../../../data/gnc/coupled-lqr-dare-tolerance-v1.toml");
+    const GAIN_SCHEDULE_LQG_TOLERANCE_TABLE: &str =
+        include_str!("../../../data/gnc/gain-schedule-lqg-tolerance-v1.toml");
+
     fn nominal() -> LqrGains {
         solve_lqr_rate_loop(0.001, 1.0, 1.0, 0.1, 0.1).expect("nominal LQR converges")
+    }
+
+    fn toml_table<'a>(value: &'a Value, key: &str) -> &'a toml::map::Map<String, Value> {
+        value
+            .get(key)
+            .and_then(Value::as_table)
+            .unwrap_or_else(|| panic!("missing TOML table {key}"))
+    }
+
+    fn toml_array<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+        value
+            .get(key)
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_else(|| panic!("missing TOML array {key}"))
+    }
+
+    fn toml_f64(value: &toml::map::Map<String, Value>, key: &str) -> f64 {
+        value
+            .get(key)
+            .and_then(Value::as_float)
+            .unwrap_or_else(|| panic!("missing TOML float {key}"))
+    }
+
+    fn toml_usize(value: &toml::map::Map<String, Value>, key: &str) -> usize {
+        value
+            .get(key)
+            .and_then(Value::as_integer)
+            .and_then(|raw| usize::try_from(raw).ok())
+            .unwrap_or_else(|| panic!("missing TOML usize {key}"))
+    }
+
+    fn toml_f64_array(value: &toml::map::Map<String, Value>, key: &str) -> Vec<f64> {
+        value
+            .get(key)
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("missing TOML array {key}"))
+            .iter()
+            .map(|entry| {
+                entry
+                    .as_float()
+                    .unwrap_or_else(|| panic!("TOML array {key} contains non-float"))
+            })
+            .collect()
     }
 
     fn dare_residual_norm(p: Sym2, dt_s: f64, b: f64, q_omega: f64, q_int: f64, r: f64) -> f64 {
@@ -434,6 +1139,200 @@ mod tests {
             residual < 1.0e-10,
             "DARE residual {residual:e} exceeds tolerance"
         );
+    }
+
+    #[test]
+    fn coupled_lqr_dense_solver_matches_tolerance_table() {
+        let data: Value =
+            toml::from_str(COUPLED_LQR_DARE_TOLERANCE_TABLE).expect("coupled LQR table parses");
+        assert_eq!(
+            toml_table(&data, "openbmp")
+                .get("gnc_coupled_lqr_reference")
+                .and_then(Value::as_integer),
+            Some(1)
+        );
+        let tolerance = toml_table(&data, "tolerances");
+        let p_epsilon = toml_f64(tolerance, "absolute_p");
+        let k_epsilon = toml_f64(tolerance, "absolute_k");
+        let residual_epsilon = toml_f64(tolerance, "residual_norm");
+
+        for problem in toml_array(&data, "problem") {
+            let problem = problem.as_table().expect("problem table");
+            let problem_name = problem
+                .get("name")
+                .and_then(Value::as_str)
+                .expect("problem name");
+            let states = toml_usize(problem, "states");
+            let controls = toml_usize(problem, "controls");
+            let solution = solve_dare_nxn_doubling(
+                states,
+                controls,
+                &toml_f64_array(problem, "a_row_major"),
+                &toml_f64_array(problem, "b_row_major"),
+                &toml_f64_array(problem, "q_row_major"),
+                &toml_f64_array(problem, "r_row_major"),
+            )
+            .unwrap_or_else(|err| panic!("{problem_name} dense DARE failed: {err}"));
+            let rerun = solve_dare_nxn_doubling(
+                states,
+                controls,
+                &toml_f64_array(problem, "a_row_major"),
+                &toml_f64_array(problem, "b_row_major"),
+                &toml_f64_array(problem, "q_row_major"),
+                &toml_f64_array(problem, "r_row_major"),
+            )
+            .unwrap_or_else(|err| panic!("{problem_name} dense DARE rerun failed: {err}"));
+            assert_eq!(solution, rerun, "{problem_name} bit-stable rerun");
+
+            for (actual, expected) in solution
+                .p_row_major
+                .iter()
+                .zip(toml_f64_array(problem, "expected_p"))
+            {
+                assert!(
+                    (*actual - expected).abs() <= p_epsilon,
+                    "{problem_name} P actual {actual:e}, expected {expected:e}, epsilon \
+                     {p_epsilon:e}"
+                );
+            }
+            for (actual, expected) in solution
+                .k_row_major
+                .iter()
+                .zip(toml_f64_array(problem, "expected_k"))
+            {
+                assert!(
+                    (*actual - expected).abs() <= k_epsilon,
+                    "{problem_name} K actual {actual:e}, expected {expected:e}, epsilon \
+                     {k_epsilon:e}"
+                );
+            }
+            assert!(
+                solution.residual_norm <= residual_epsilon,
+                "{problem_name} residual {:e} exceeds {:e}",
+                solution.residual_norm,
+                residual_epsilon
+            );
+            assert!(
+                solution.iterations <= toml_usize(problem, "expected_iterations_max"),
+                "{problem_name} iterations {} exceed bound",
+                solution.iterations
+            );
+        }
+    }
+
+    #[test]
+    fn coupled_lqr_dense_solver_rejects_bad_inputs() {
+        assert!(matches!(
+            solve_dare_nxn_doubling(0, 1, &[], &[], &[], &[1.0]),
+            Err(LqrError::InvalidDimension {
+                label: "states",
+                ..
+            })
+        ));
+        assert!(matches!(
+            solve_dare_nxn_doubling(1, 1, &[1.0], &[1.0], &[1.0], &[1.0, 2.0]),
+            Err(LqrError::MatrixLengthMismatch { label: "R", .. })
+        ));
+        assert!(matches!(
+            solve_dare_nxn_doubling(
+                2,
+                1,
+                &[1.0, 0.0, 0.0, 1.0],
+                &[1.0, 0.0],
+                &[1.0, 0.2, 0.0, 1.0],
+                &[1.0],
+            ),
+            Err(LqrError::NonSymmetricCost { label: "Q", .. })
+        ));
+        assert!(matches!(
+            solve_dare_nxn_doubling(1, 1, &[1.0], &[1.0], &[1.0], &[0.0]),
+            Err(LqrError::MatrixNotPositiveDefinite { label: "R" })
+        ));
+    }
+
+    #[test]
+    fn coupled_lqr_dense_solver_fails_closed_on_uncontrolled_unstable_mode() {
+        let err = solve_dare_nxn_doubling_with_options(
+            2,
+            1,
+            &[1.1, 0.0, 0.0, 0.9],
+            &[0.0, 1.0],
+            &[1.0, 0.0, 0.0, 1.0],
+            &[1.0],
+            32,
+            1.0e-12,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            LqrError::DareDidNotConverge { .. } | LqrError::LinearSolveFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn lqg_observer_dual_dare_returns_transposed_dual_gain() {
+        let a = [1.0, 0.1, 0.0, 0.98];
+        let c = [1.0, 0.0];
+        let w = [0.01, 0.0, 0.0, 0.02];
+        let v = [0.05];
+        let observer =
+            solve_lqg_observer_nxn_dual_dare(2, 1, &a, &c, &w, &v).expect("observer DARE");
+        let dual = solve_dare_nxn_doubling(2, 1, &[1.0, 0.0, 0.1, 0.98], &[1.0, 0.0], &w, &v)
+            .expect("dual LQR DARE");
+        assert_eq!(observer.p_row_major, dual.p_row_major);
+        assert_eq!(
+            observer.l_row_major,
+            vec![dual.k_row_major[0], dual.k_row_major[1]]
+        );
+        assert!(observer.residual_norm < 1.0e-10);
+    }
+
+    #[test]
+    fn lqg_observer_dual_dare_matches_tolerance_table() {
+        let data: Value =
+            toml::from_str(GAIN_SCHEDULE_LQG_TOLERANCE_TABLE).expect("LQG table parses");
+        assert_eq!(
+            toml_table(&data, "openbmp")
+                .get("gnc_gain_schedule_lqg_reference")
+                .and_then(Value::as_integer),
+            Some(1)
+        );
+        let tolerance = toml_table(&data, "tolerances");
+        let p_epsilon = toml_f64(tolerance, "absolute_observer_covariance");
+        let l_epsilon = toml_f64(tolerance, "absolute_observer_gain");
+        let residual_epsilon = toml_f64(tolerance, "residual_norm");
+        let observer = toml_table(&data, "lqg_observer");
+        let solution = solve_lqg_observer_nxn_dual_dare(
+            toml_usize(observer, "states"),
+            toml_usize(observer, "measurements"),
+            &toml_f64_array(observer, "a_row_major"),
+            &toml_f64_array(observer, "c_row_major"),
+            &toml_f64_array(observer, "w_row_major"),
+            &toml_f64_array(observer, "v_row_major"),
+        )
+        .expect("LQG observer DARE converges");
+
+        for (actual, expected) in solution
+            .p_row_major
+            .iter()
+            .zip(toml_f64_array(observer, "expected_p"))
+        {
+            assert!(
+                (*actual - expected).abs() <= p_epsilon,
+                "observer P actual {actual:e}, expected {expected:e}, epsilon {p_epsilon:e}"
+            );
+        }
+        for (actual, expected) in solution
+            .l_row_major
+            .iter()
+            .zip(toml_f64_array(observer, "expected_l"))
+        {
+            assert!(
+                (*actual - expected).abs() <= l_epsilon,
+                "observer L actual {actual:e}, expected {expected:e}, epsilon {l_epsilon:e}"
+            );
+        }
+        assert!(solution.residual_norm <= residual_epsilon);
     }
 
     #[test]

@@ -32,7 +32,9 @@ const FORBIDDEN_OPENBMP_FC_DEPS: &[&str] = &[
     "openbmp-scenario",
     "openbmp-telemetry",
     "openbmp-bridge",
+    "openbmp-aerodb",
     "openbmp-aerothermal",
+    "openbmp-thermochem",
 ];
 
 fn workspace_root() -> PathBuf {

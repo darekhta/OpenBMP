@@ -1,6 +1,6 @@
 # Day-of-Launch Winds, I-Load Update & Commit Operations
 
-**Status:** `experimental` (design intent; no code shipped by this document).
+**Status:** `experimental` (design intent plus WP-19.1-WP-19.3 implementation, WP-19.4 verifier substrate, WP-19.5 persistence substrate, WP-19.6 COLA substrate, and DOL-level commit-readiness latch/CLI handoff).
 **Audience:** the engineer or LLM agent implementing the parity work packages.
 **Prerequisite reading:** `00-overview.md`, `13-agent-execution-playbook.md`,
 `07-trajectory-optimization-and-mission-design.md` (whose terminal-condition
@@ -105,9 +105,20 @@ this — redesign, screen, and decide."**
 ## 2. Current state in source
 
 - `crates/openbmp-physics/src/wind/` + `data/wind/` — climatological wind
-  (HWM14 quiet-time + disturbance) and constant/layered/gust profiles;
-  scenario `[wind]` blocks. No measured-profile ingestion, no QC, no
-  splicing.
+  (HWM14 quiet-time + disturbance), constant/layered/gust profiles, and the
+  first WP-19.1 measured-profile substrate. `openbmp-physics::wind::measured`
+  now exposes `MeasuredWindProfile`, `WindQcConfig`, `SpliceRule`,
+  `SplicedWindProfile`, `MartinGrahamFilterConfig`, and
+  `SyntheticWindFamilyConfig` for offline measured-wind QC, deterministic
+  two-source splicing with per-sample attribution, Martin-Graham-style
+  response checks, and seeded synthetic balloon-family generation. Scenario v3
+  parses `[day_of_launch.wind]` declarations for measured, spliced, and
+  synthetic-family inputs, and `data/wind/synthetic-balloon-family-v1.toml`
+  provides the in-repo synthetic deck. The T2 redesign, degraded
+  load-indicator surrogate, runner/SIL report-card verifier, synthetic
+  persistence RSS knockdown, synthetic geometric COLA screening, and DOL-level
+  commit-readiness latch/CLI handoff substrates now exist; operational LCC
+  sequencing and operational COLA products remain open.
 - `crates/openbmp-trajopt/src/{corrector.rs,iload.rs,target.rs}` — the
   forward-only differential corrector, I-load emission surface, and the
   locked terminal-condition vocabulary (doc `07` extends to the full solver
@@ -326,6 +337,22 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 
 ### WP-19.1 — Measured-wind ingestion, QC, splicing + synthetic families
 
+- **implementation_status:** implemented and traced by `REQ-DOL-001` /
+  `V-DOL-001`. `openbmp-physics::wind::measured` provides measured profile
+  construction with strictly ascending finite altitude samples, fail-closed QC
+  screens for gap, shear, speed, sample quality, altitude envelope, and
+  staleness, deterministic two-source splicing over a declared overlap band,
+  byte-stable CSV attribution artifacts, Martin-Graham-style first-order
+  low-pass response and filtering, and a seeded `DeterministicRng` synthetic
+  balloon-family generator. `openbmp-scenario` accepts v3-only
+  `[day_of_launch.wind]` declarations for `kind = "measured"`,
+  `"spliced"`, and `"synthetic_family"`, validates profile rows, QC/filter
+  thresholds, splice references, and synthetic-family grids, and rejects the
+  block under v2. `data/wind/synthetic-balloon-family-v1.toml` plus
+  `data/wind/provenance.md` pin the synthetic deck. This closes the T1 front
+  door only: the runner does not consume `[day_of_launch.wind]`, and
+  redesign, verification, load indicators, persistence knockdowns, and COLA
+  remain separate WPs.
 - **title:** `MeasuredWindProfile`/`SplicedWindProfile` schemas, fail-closed QC screens, declared splice rules, Martin-Graham filtering, seeded synthetic balloon-family generator.
 - **goal:** Measured winds become a first-class, quality-controlled,
   deterministic input distinct from climatology — the front door of the
@@ -349,9 +376,29 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
   impact-surface coupling (the ballistic-state provenance lock is untouched).
 - **est_effort:** 2–3 weeks
 - **parity_ceiling:** synthetic/LOCAL profiles; no operational met network.
+- **requirements:** [REQ-DOL-001]
 
 ### WP-19.2 — 3-DOF I-load redesign driver + vocabulary-closure tripwire
 
+- **implementation_status:** implemented and traced by `REQ-DOL-002` /
+  `V-DOL-002`. `openbmp-trajopt::dol` consumes a
+  `SplicedWindProfile`, the closed `TerminalCondition` vocabulary from
+  `openbmp-physics`, a declared load window, stale pitch/yaw steering biases,
+  scalar load-angle and insertion-residual limits, and provenance pins. It
+  fails closed on invalid windows, non-finite inputs, empty/nonascending
+  spliced samples, nonpositive design scales, and insertion residuals above the
+  declared limit. Accepted updates recenter the pitch/yaw bias tables to the
+  load-window mean induced alpha/beta, emit `dol_pitch_bias_rad` and
+  `dol_yaw_bias_rad` postcard I-load gain tables, and report
+  stale/redesigned minimum margin, not-worse fraction, terminal kind, profile
+  digest, solver provenance, and residual bounds. `openbmp trajopt
+  dol-redesign` materializes the v3 `[day_of_launch.wind] kind = "spliced"`
+  declaration, writes the deterministic I-load, and optionally writes the JSON
+  DOL artifact. `dol_no_terminal_extension_compile_fail` proves this surface
+  cannot introduce a day-of-launch-specific `TerminalCondition` variant. This
+  closes the T2 redesign substrate only: the runner still does not dispatch
+  DOL winds automatically, and 6-DOF verification/report cards, load
+  indicators, persistence knockdowns, and COLA remain separate WPs.
 - **title:** Redesign loop on the point-mass path through spliced wind: α/β recentering + load-margin objective, `07`-vocabulary boundary conditions, `ILoadUpdate` artifact, closure tripwire.
 - **goal:** The heart of DOLILU: steering tables regenerated for the measured
   atmosphere, emitted through the existing I-load schema with full
@@ -361,9 +408,11 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **depends_on:** [WP-19.1; cross-doc: WP-07.0 (wired corrector) minimum,
   WP-07.2+ preferred]
 - **new_crates:** none.
-- **touched:** `crates/openbmp-trajopt/src/{iload.rs,target.rs}` (+ new
-  `dol` module), `crates/openbmp-cli` (subcommand), tripwire test in
-  `crates/openbmp-testkit`.
+- **touched:** `crates/openbmp-trajopt/src/{dol.rs,lib.rs}` plus existing
+  I-load types, `crates/openbmp-cli` (`trajopt dol-redesign` subcommand and
+  report JSON error path), `crates/openbmp-cli/tests/fixtures/`
+  day-of-launch spliced-wind fixture, and `crates/openbmp-testkit` trybuild
+  closure guard.
 - **approach:** §3.4; objective = recentering + min-margin maximization;
   solver settings per `12`; artifact carries design-profile hash + solver
   provenance.
@@ -381,9 +430,27 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **est_effort:** 3–4 weeks
 - **parity_ceiling:** 3-DOF design tier; redesign quality bounded by the
   available `07` tier and open aero/loads decks.
+- **requirements:** [REQ-DOL-002]
 
 ### WP-19.3 — Load-indicator surrogate set + fit pipeline
 
+- **implementation_status:** implemented and traced by `REQ-DOL-003` /
+  `V-DOL-003`. `openbmp-trajopt::dol` now exposes
+  `LoadIndicatorSample`, `LoadIndicatorVector`, `LoadIndicatorFitInput`,
+  `LoadIndicatorSurrogate`, `LoadIndicatorValidationReport`, and
+  `LoadIndicatorFitResult`. The degraded T3 path computes q-alpha, q-beta, and
+  gimbal indicators, fits a deterministic linear station-moment surrogate,
+  reports calibration RMS, held-out Pearson correlation, maximum absolute
+  error, maximum unconservative absolute-moment error, and sample counts, and
+  fails closed on non-finite samples, non-negative dynamic-pressure violations,
+  underdetermined/singular fits, deck-hash drift, correlation below the
+  declared threshold, or unconservative error above the declared bound.
+  `data/wind/dol-load-indicator-surrogate-v1.toml` plus
+  `data/wind/provenance.md` pin the synthetic feature vocabulary, upstream
+  hash, and validation thresholds. This closes the degraded synthetic
+  q-alpha/q-beta/gimbal screening substrate only: no certified loads-cycle
+  surrogate, runner launch-commit screening, 6-DOF report-card integration,
+  persistence knockdown, or COLA claim is made here.
 - **title:** Reduced screening indicators (q·α/q·β gates, station-moment surrogates, gimbal margin) fitted offline against full `02`/`03` recovery, with correlation tables and a drift gate.
 - **goal:** Fast, honest screening: the Shuttle-SLI pattern reproduced from
   this repo's own models, with the surrogate quality measured and
@@ -409,9 +476,55 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **est_effort:** 2–3 weeks
 - **parity_ceiling:** surrogates of in-repo models, not of a certified loads
   cycle.
+- **requirements:** [REQ-DOL-003]
 
 ### WP-19.4 — 6-DOF verification pass + go/no-go report card
 
+- **implementation_status:** partial and traced by `REQ-DOL-004` /
+  `V-DOL-004`. `openbmp-trajopt::dol` now exposes the deterministic
+  report-card substrate: `DolReportVerdict`,
+  `DolVerificationIndicator`, `DolVerificationIndicatorReport`,
+  `DolReportCardInput`, `DolReportCard`, `build_dol_report_card`, and
+  `dol_report_card_csv`. The builder consumes the DOL I-load update artifact
+  plus caller-supplied verification indicator comparisons, validates finite
+  artifact fields and thresholds, rejects empty indicator sets, latches
+  `no_go` monotonically on margin, not-worse-fraction, residual, or
+  design-vs-verify indicator breaches, records the first binding check, and
+  emits a byte-stable ordered CSV report-card artifact with a golden fixture.
+  `openbmp trajopt dol-materialize-indicators` adds the runner/SIL telemetry
+  extraction seam: a spec CSV maps named DOL indicators to telemetry columns,
+  deterministic reducers, allowed error bands, and optional time windows, then
+  writes the indicator CSV consumed by `openbmp trajopt dol-report-card`. The
+  report-card command reads a `dol-redesign` JSON update artifact plus that
+  runner/SIL-style indicator CSV, writes deterministic report-card CSV and
+  optional JSON artifacts, and exits fail-closed on `no_go` verdicts.
+  The DOL update artifact and report card carry `iload_sha256_hex` for the
+  encoded updated I-load bytes. `openbmp trajopt dol-verify-run` now adds bound
+  native-runner report generation: it requires both the verifier design-profile
+  digest and the updated I-load SHA-256 digest to match the DOL update artifact
+  before invoking the runner, decodes and validates the authenticated updated
+  I-load bytes, applies `dol_pitch_bias_rad` and `dol_yaw_bias_rad` time-axis
+  gain tables to `pitch_program` FC ascent-reference schedules when the
+  verifier scenario declares `guidance = "ascent_reference"`, revalidates the
+  in-memory scenario, runs that verification scenario through the same
+  telemetry override path as `openbmp run`, materializes the declared
+  indicators from the produced telemetry, writes the indicator CSV, builds the
+  report card, and exits fail-closed on digest mismatch, malformed I-load
+  application, or `no_go`. `openbmp trajopt dol-verify-sil` adds the native
+  SIL verifier path: it runs the same authenticated digest and I-load decode
+  checks, loads the selected mission-package case, derives the adjusted
+  pitch/yaw schedules, injects them through `SilStimulation`
+  `ParameterOverride` records, runs the package through the native SIL
+  testbench, writes SIL telemetry plus an evidence manifest carrying the
+  applied parameter-override stimuli, materializes indicators, builds the
+  report card, and exits fail-closed on digest mismatch, incompatible I-load
+  application, missing SIL overrides, or `no_go`. The pitch-program
+  ascent-reference surface now carries an optional `yaw_rad` schedule so
+  updated yaw-bias tables are applied rather than ignored. `REQ-DOL-007` now
+  adds the DOL-level commit-readiness latch and `openbmp trajopt
+  dol-commit-readiness` CLI handoff that consume the report card, persistence
+  knockdown report, and COLA report. This is not full WP-19.4 closure:
+  operational LCC/DOLILU sequencing remains open.
 - **title:** Full FC-in-the-loop verification run on updated I-loads; deterministic report card (margins, residuals, attribution, latched verdict) consumed by `18`'s LCC.
 - **goal:** The design/verify split that makes DOLILU trustworthy: a cheap
   designer, an honest full-stack verifier, and one artifact that says go or
@@ -437,9 +550,31 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **est_effort:** 2 weeks
 - **parity_ceiling:** method-shape conformance to DOLILU, no operational
   certification.
+- **requirements:** [REQ-DOL-004, REQ-DOL-007] (partial verifier seam +
+  DOL-level commit-readiness latch/CLI handoff only)
 
 ### WP-19.5 — Persistence statistics + dispersion knockdowns
 
+- **implementation_status:** partial and traced by `REQ-DOL-005` /
+  `V-DOL-005`. `openbmp-trajopt::dol` now exposes
+  `DolPersistenceDeck`, `DolPersistenceBand`,
+  `DolPersistenceIndicatorInput`, `DolPersistenceKnockdownInput`,
+  `DolPersistenceIndicatorReport`, `DolPersistenceKnockdownReport`,
+  `DolPersistenceTruthSample`, `DolPersistenceTruthValidationInput`,
+  `DolPersistenceTruthValidationReport`,
+  `evaluate_persistence_knockdowns`, and
+  `validate_persistence_truth_samples`. The substrate validates
+  non-overlapping altitude bands with non-negative zero-lead and square-root
+  lead-time wind-change sigma values, computes per-indicator persistence,
+  gust, and system margin knockdowns, combines them by RSS, subtracts the
+  total from nominal margins, tracks the minimum knocked-down margin, and
+  latches `no_go` on the first indicator below the declared threshold. The
+  checked-in `data/wind/dol-persistence-knockdown-v1.toml` fixture pins a
+  synthetic altitude-banded square-root lead-time deck and synthetic truth
+  wind-change samples used by the validation test. `REQ-DOL-007` consumes this
+  report in the DOL-level commit-readiness latch. This is not full WP-19.5
+  closure: site-fitted persistence statistics, Wilks-sized range-data closure,
+  and operational LCC integration remain open.
 - **title:** Band-wise wind-change-over-lead-time variance deck, gust and system dispersion RSS combination into screening margins.
 - **goal:** Margins account for the wind changing between the design balloon
   and flight — the statistical heart of the commit decision, as a
@@ -463,9 +598,30 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **est_effort:** 2 weeks
 - **parity_ceiling:** synthetic site statistics; real site fits are
   user-LOCAL.
+- **requirements:** [REQ-DOL-005, REQ-DOL-007] (partial substrate +
+  DOL-level commit-readiness consumption only)
 
 ### WP-19.6 — Launch COLA screening
 
+- **implementation_status:** partial and traced by `REQ-DOL-006` /
+  `V-DOL-006`. `openbmp-trajopt::dol` now exposes
+  `DolColaTrajectorySample`, `DolColaWindowSlot`, `DolColaCatalogObject`,
+  `DolColaScreeningInput`, `DolColaEncounterReport`,
+  `DolColaSlotReport`, `DolColaScreeningReport`, and
+  `screen_launch_cola`. The substrate validates named finite launch-window
+  slots with strictly increasing piecewise-linear trajectory samples, named
+  finite constant-velocity ECI catalog states, non-negative hard-body radii,
+  and a non-negative vehicle keepout radius. It propagates catalog objects
+  with constant velocity, evaluates closest approach over each vehicle
+  segment, reports per-slot/object closest time, miss distance,
+  combined-keepout clearance, and blocked status, emits deterministic
+  clear/blocked slot rows, counts blocked slots, and latches `no_go` on the
+  first blocked slot/object. The checked-in
+  `data/cola/launch-cola-screening-v1.toml` fixture pins one clear and one
+  blocked synthetic slot. `REQ-DOL-007` consumes this report in the DOL-level
+  commit-readiness latch. This is not full WP-19.6 closure: SGP4/covariance
+  realism, probability-of-collision integration, operational catalogs, CLI,
+  and operational LCC integration remain open.
 - **title:** Forward closest-approach screening of the planned trajectory against declared catalog states; per-slot clear/blocked window table.
 - **goal:** The launch-window product every range process includes, as pure
   forward screening over declared inputs.
@@ -489,6 +645,30 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **est_effort:** 1–2 weeks
 - **parity_ceiling:** geometric screening; no operational catalog quality or
   covariance realism.
+- **requirements:** [REQ-DOL-006, REQ-DOL-007] (partial geometric substrate +
+  DOL-level commit-readiness consumption only)
+
+#### DOL commit-readiness integration artifact
+
+- **implementation_status:** partial and traced by `REQ-DOL-007` /
+  `V-DOL-007`. `openbmp-trajopt::dol` now exposes
+  `DOL_COMMIT_READINESS_SCHEMA_VERSION`, `DolCommitReadinessInput`,
+  `DolCommitGateReport`, `DolCommitReadinessReport`,
+  `build_dol_commit_readiness`, and `dol_commit_readiness_csv`. The builder
+  requires the report card, persistence knockdown report, and launch-COLA
+  screening report together; revalidates each stored report against its row
+  evidence; rejects inconsistent verdicts, bindings, minimum margins, pass
+  flags, blocked flags, or blocked-slot counts; emits ordered `report_card`,
+  `persistence`, and `cola` gate rows; and latches `no_go` monotonically in
+  that order with the first binding gate/detail preserved. The committed
+  `dol-commit-readiness-v1.csv` golden locks the canonical CSV bytes.
+  `openbmp trajopt dol-commit-readiness` reads report-card, persistence, and
+  COLA JSON artifacts, writes deterministic CSV plus optional JSON readiness
+  artifacts, prints the latched gate summary, and exits fail-closed after
+  writing evidence on `no_go`. This is a DOL-level readiness artifact and
+  file-fed CLI handoff only: operational LCC sequencing, range authority, real
+  persistence statistics, and operational catalog products remain outside the
+  claim.
 
 ---
 

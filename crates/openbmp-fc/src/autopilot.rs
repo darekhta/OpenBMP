@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::format;
 use std::string::String;
 use std::string::ToString;
+use std::vec::Vec;
 
 use nalgebra::{UnitQuaternion, Vector3};
 #[cfg(not(feature = "std"))]
@@ -27,15 +28,20 @@ use openbmp_physics::kinematics::quaternion_error_small_angle;
 
 use crate::error::{AutopilotError, ControllerError};
 use crate::filters::Biquad;
+use crate::loadrelief::{LoadReliefCommand, LoadReliefParams, evaluate_load_relief};
 use crate::nav_metrics::{
     dynamic_pressure_air_relative, dynamic_pressure_air_relative_with_density,
 };
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
-use crate::tables::Table;
+use crate::tables::{
+    BendingFilterTable, ScheduleVariable, Table, interpolate_bending_filter_table,
+};
+#[cfg(feature = "indi")]
+use crate::topics::PseudoControlCommand;
 use crate::topics::{
     ActuatorCommand, AttitudeEstimate, AutopilotStatus, EngineDemand, EnvironmentEstimate,
-    PositionEstimate, ReferenceState, VehicleStatus,
+    PositionEstimate, ReferenceState, VehicleStatus, WindEstimate,
 };
 use crate::trajectory::{MinimumSnapTrajectory, YawProfile, flat_output_attitude_reference};
 
@@ -160,6 +166,18 @@ pub struct AutopilotParams {
     pub trajectory_kind: TrajectoryKind,
     /// Optional per-axis gyro notch filters.
     pub gyro_notch: Option<[crate::filters::NotchConfig; 3]>,
+    /// Optional off-default scheduled bending/slosh filter cascade
+    /// applied to measured body rates before the rate loop. The table
+    /// schedules physical pole/zero parameters; taps are regenerated at
+    /// runtime and the stateful cascade preserves its delay state across
+    /// coefficient updates.
+    pub bending_filter: Option<BendingFilterRuntimeConfig>,
+    /// Optional off-default drift/load-minimum load-relief term. When
+    /// installed, the autopilot estimates alpha/beta from the position,
+    /// attitude, environment, and modeled-wind topics, applies the
+    /// structural `q * alpha` limiter, and adds the resulting pitch/yaw
+    /// correction before the attitude loop.
+    pub load_relief: Option<LoadReliefParams>,
     /// Optional Cao-Hovakimyan L1 adaptive augmentation on the rate
     /// loop. When `Some(_)` the autopilot installs a
     /// per-axis [`crate::l1_adaptive_full::L1AdaptiveChannel`] and
@@ -219,6 +237,8 @@ impl Default for AutopilotParams {
             trajectory_loop_enabled: false,
             trajectory_kind: TrajectoryKind::Pid,
             gyro_notch: None,
+            bending_filter: None,
+            load_relief: None,
             #[cfg(feature = "l1-adaptive")]
             l1_adaptive: None,
             rate_loop_kind: RateLoopKind::Pid,
@@ -230,6 +250,33 @@ impl Default for AutopilotParams {
             #[cfg(feature = "mpc")]
             attitude_mpc: None,
         }
+    }
+}
+
+/// Runtime insertion config for scheduled bending/slosh filters.
+///
+/// The filter is off by default. When enabled, the same scheduled cascade is
+/// applied to each axis whose `axes_enabled` entry is `true`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BendingFilterRuntimeConfig {
+    /// Validated physical-parameter schedule.
+    pub table: BendingFilterTable,
+    /// Per-body-axis enable flags ordered `[roll, pitch, yaw]`.
+    pub axes_enabled: [bool; 3],
+}
+
+impl BendingFilterRuntimeConfig {
+    /// Validate the runtime insertion config.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation string when no axis is enabled or the table
+    /// fails its stable-pole validation.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.axes_enabled.iter().any(|enabled| *enabled) {
+            return Err("at least one bending-filter axis must be enabled".to_string());
+        }
+        self.table.validate()
     }
 }
 
@@ -315,6 +362,7 @@ pub struct ThreeLoopAutopilot {
     schedule: GainSchedule,
     params: AutopilotParams,
     gyro_notch_state: Option<[Biquad; 3]>,
+    bending_filter_state: Option<BendingFilterRuntimeState>,
     /// Optional minimum-snap trajectory consumed when
     /// `params.trajectory_kind == TrajectoryKind::DifferentialFlatness`.
     /// The autopilot owns the trajectory.
@@ -323,6 +371,8 @@ pub struct ThreeLoopAutopilot {
     /// Scenario `[fc.trajectory].yaw_rad` sets this; programmatic users
     /// that omit it inherit yaw from the bus reference.
     minimum_snap_yaw_rad: Option<f64>,
+    /// Attitude reference latched when the commander requests SAFE.
+    safe_hold_reference_q_body_to_eci_xyzw: Option<[f64; 4]>,
     /// Per-axis L1 adaptive state. Used only when
     /// [`AutopilotParams::l1_adaptive`] is `Some(_)` and the
     /// `l1-adaptive` feature is on.
@@ -364,8 +414,10 @@ impl ThreeLoopAutopilot {
             schedule,
             params: AutopilotParams::default(),
             gyro_notch_state: None,
+            bending_filter_state: None,
             minimum_snap_trajectory: None,
             minimum_snap_yaw_rad: None,
+            safe_hold_reference_q_body_to_eci_xyzw: None,
             #[cfg(feature = "l1-adaptive")]
             l1_state: [crate::l1_adaptive_full::L1AdaptiveChannel::new(); 3],
             #[cfg(feature = "lqr")]
@@ -406,6 +458,7 @@ impl ThreeLoopAutopilot {
     pub fn with_params(mut self, params: AutopilotParams) -> Self {
         self.params = params;
         self.gyro_notch_state = None;
+        self.bending_filter_state = None;
         #[cfg(feature = "indi")]
         {
             // Filter coefficients depend on cutoff/kind; force a
@@ -469,7 +522,7 @@ impl ThreeLoopAutopilot {
         dt: f64,
         torque_min: f64,
         torque_max: f64,
-    ) -> Result<(f64, bool), ControllerError> {
+    ) -> Result<crate::indi::IndiStep, ControllerError> {
         if self.indi_state.is_none() {
             let ch = crate::indi::IndiChannel::new(params, dt).map_err(|err| {
                 ControllerError::from(AutopilotError::Trajectory {
@@ -483,7 +536,7 @@ impl ThreeLoopAutopilot {
                 reason: "INDI state lost between primer and step (impossible)".to_string(),
             }));
         };
-        Ok(channels[axis].step(
+        Ok(channels[axis].step_diagnostic(
             params, axis, omega_meas, rate_cmd, torque_min, torque_max, dt,
         ))
     }
@@ -495,29 +548,212 @@ impl ThreeLoopAutopilot {
             .unwrap_or(&self.schedule.default)
     }
 
-    fn filtered_omega_body(&mut self, omega_body_rad_s: Vector3<f64>, dt_s: f64) -> Vector3<f64> {
+    #[allow(clippy::too_many_arguments)]
+    fn filtered_omega_body(
+        &mut self,
+        omega_body_rad_s: Vector3<f64>,
+        dt_s: f64,
+        now_s: f64,
+        position: Option<&PositionEstimate>,
+        environment: Option<&EnvironmentEstimate>,
+    ) -> Result<Vector3<f64>, ControllerError> {
+        let mut filtered = omega_body_rad_s;
         let Some(configs) = self.params.gyro_notch else {
-            return omega_body_rad_s;
+            return self.apply_bending_filter(filtered, now_s, position, environment);
         };
         if self.gyro_notch_state.is_none() {
             let sample_rate_hz = 1.0 / dt_s;
             let mut filters = [Biquad::default(); 3];
             for (slot, config) in filters.iter_mut().zip(configs) {
                 let Ok(filter) = Biquad::notch(config, sample_rate_hz) else {
-                    return omega_body_rad_s;
+                    return self.apply_bending_filter(filtered, now_s, position, environment);
                 };
                 *slot = filter;
             }
             self.gyro_notch_state = Some(filters);
         }
         let Some(filters) = &mut self.gyro_notch_state else {
-            return omega_body_rad_s;
+            return self.apply_bending_filter(filtered, now_s, position, environment);
         };
-        Vector3::new(
+        filtered = Vector3::new(
             filters[0].step(omega_body_rad_s.x),
             filters[1].step(omega_body_rad_s.y),
             filters[2].step(omega_body_rad_s.z),
+        );
+        self.apply_bending_filter(filtered, now_s, position, environment)
+    }
+
+    fn apply_bending_filter(
+        &mut self,
+        omega_body_rad_s: Vector3<f64>,
+        now_s: f64,
+        position: Option<&PositionEstimate>,
+        environment: Option<&EnvironmentEstimate>,
+    ) -> Result<Vector3<f64>, ControllerError> {
+        let Some(config) = self.params.bending_filter.as_ref() else {
+            return Ok(omega_body_rad_s);
+        };
+        config.validate().map_err(|reason| {
+            ControllerError::from(AutopilotError::Trajectory {
+                reason: format!("bending-filter config rejected: {reason}"),
+            })
+        })?;
+        let schedule_value = bending_filter_schedule_value(config, now_s, position, environment)?;
+        let sections =
+            interpolate_bending_filter_table(&config.table, schedule_value).map_err(|reason| {
+                ControllerError::from(AutopilotError::Trajectory {
+                    reason: format!("bending-filter schedule rejected: {reason}"),
+                })
+            })?;
+        let axes_enabled = config.axes_enabled;
+        let state = self
+            .bending_filter_state
+            .get_or_insert_with(BendingFilterRuntimeState::new);
+        state.update_sections(&sections, axes_enabled)?;
+        Ok(state.step(omega_body_rad_s, axes_enabled))
+    }
+
+    fn apply_load_relief(
+        &self,
+        attitude_error: &mut Vector3<f64>,
+        attitude: &AttitudeEstimate,
+        position: Option<&PositionEstimate>,
+        environment: Option<&EnvironmentEstimate>,
+        wind: Option<&WindEstimate>,
+        now_s: f64,
+    ) -> Result<Option<LoadReliefCommand>, ControllerError> {
+        let Some(params) = self.params.load_relief.as_ref() else {
+            return Ok(None);
+        };
+        params.validate().map_err(|reason| {
+            ControllerError::from(AutopilotError::Trajectory {
+                reason: format!("load-relief params rejected: {reason}"),
+            })
+        })?;
+        let Some(position) = position else {
+            return Err(ControllerError::from(AutopilotError::Trajectory {
+                reason: "load-relief runtime requires a PositionEstimate".to_string(),
+            }));
+        };
+        let Some(environment) = environment else {
+            return Err(ControllerError::from(AutopilotError::Trajectory {
+                reason: "load-relief runtime requires an EnvironmentEstimate".to_string(),
+            }));
+        };
+        let q_body_to_eci = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            attitude.q_body_to_eci_xyzw[3],
+            attitude.q_body_to_eci_xyzw[0],
+            attitude.q_body_to_eci_xyzw[1],
+            attitude.q_body_to_eci_xyzw[2],
+        ));
+        let wind_eci_m_s = wind.map_or_else(Vector3::zeros, |sample| sample.wind_eci_m_s);
+        let command = evaluate_load_relief(
+            params,
+            now_s,
+            position.velocity_eci_m_s,
+            wind_eci_m_s,
+            q_body_to_eci.inverse(),
+            environment.density_kg_m3,
+            Vector3::zeros(),
         )
+        .map_err(|reason| {
+            ControllerError::from(AutopilotError::Trajectory {
+                reason: format!("load-relief runtime rejected: {reason}"),
+            })
+        })?;
+        *attitude_error += command.attitude_correction_body_rad;
+        Ok(Some(command))
+    }
+}
+
+#[derive(Debug, Default)]
+struct BendingFilterRuntimeState {
+    filters: [Vec<Biquad>; 3],
+}
+
+impl BendingFilterRuntimeState {
+    fn new() -> Self {
+        Self {
+            filters: [Vec::new(), Vec::new(), Vec::new()],
+        }
+    }
+
+    fn update_sections(
+        &mut self,
+        sections: &[crate::filters::BiquadSection],
+        axes_enabled: [bool; 3],
+    ) -> Result<(), ControllerError> {
+        for (axis, enabled) in axes_enabled.iter().enumerate() {
+            if !enabled {
+                self.filters[axis].clear();
+                continue;
+            }
+            if self.filters[axis].len() != sections.len() {
+                self.filters[axis].clear();
+                for &section in sections {
+                    let filter = Biquad::from_section(section).map_err(|reason| {
+                        ControllerError::from(AutopilotError::Trajectory {
+                            reason: format!("bending-filter section rejected: {reason}"),
+                        })
+                    })?;
+                    self.filters[axis].push(filter);
+                }
+            } else {
+                for (filter, &section) in self.filters[axis].iter_mut().zip(sections) {
+                    filter.replace_section(section).map_err(|reason| {
+                        ControllerError::from(AutopilotError::Trajectory {
+                            reason: format!("bending-filter section rejected: {reason}"),
+                        })
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn step(&mut self, omega_body_rad_s: Vector3<f64>, axes_enabled: [bool; 3]) -> Vector3<f64> {
+        let mut out = omega_body_rad_s;
+        for axis in 0..3 {
+            if !axes_enabled[axis] {
+                continue;
+            }
+            for filter in &mut self.filters[axis] {
+                out[axis] = filter.step(out[axis]);
+            }
+        }
+        out
+    }
+}
+
+fn bending_filter_schedule_value(
+    config: &BendingFilterRuntimeConfig,
+    now_s: f64,
+    position: Option<&PositionEstimate>,
+    environment: Option<&EnvironmentEstimate>,
+) -> Result<f64, ControllerError> {
+    match config.table.variable {
+        ScheduleVariable::TimeS => Ok(now_s),
+        ScheduleVariable::DynamicPressurePa => {
+            let Some(position) = position else {
+                return Err(ControllerError::from(AutopilotError::Trajectory {
+                    reason: "bending-filter dynamic-pressure schedule requires a PositionEstimate"
+                        .to_string(),
+                }));
+            };
+            Ok(environment.map_or_else(
+                || dynamic_pressure_air_relative(position),
+                |env| dynamic_pressure_air_relative_with_density(position, env.density_kg_m3),
+            ))
+        }
+        ScheduleVariable::Mach
+        | ScheduleVariable::MassFraction
+        | ScheduleVariable::NondimensionalTime => {
+            Err(ControllerError::from(AutopilotError::Trajectory {
+                reason:
+                    "bending-filter runtime supports TimeS and DynamicPressurePa schedules only"
+                        .to_string(),
+            }))
+        }
     }
 }
 
@@ -585,6 +821,12 @@ impl Job for ThreeLoopAutopilot {
             .ok()
             .flatten()
             .map(|(e, _)| e);
+        let wind = ctx
+            .bus
+            .latest::<WindEstimate>()
+            .ok()
+            .flatten()
+            .map(|(w, _)| w);
         let reference = ctx
             .bus
             .latest::<ReferenceState>()?
@@ -594,11 +836,27 @@ impl Job for ThreeLoopAutopilot {
             return Ok(());
         };
         if !(status.armed && status.in_flight) {
+            self.safe_hold_reference_q_body_to_eci_xyzw = None;
             return Ok(());
         }
+        let safe_attitude_hold_active = status.safe_state_requested;
+        let safe_hold_entered = if safe_attitude_hold_active {
+            if self.safe_hold_reference_q_body_to_eci_xyzw.is_none() {
+                self.safe_hold_reference_q_body_to_eci_xyzw = Some(attitude.q_body_to_eci_xyzw);
+                true
+            } else {
+                false
+            }
+        } else {
+            self.safe_hold_reference_q_body_to_eci_xyzw = None;
+            false
+        };
         let phase_changed = self.last_phase_id != Some(status.phase_id);
+        let control_mode_changed = phase_changed || safe_hold_entered;
         if phase_changed {
             self.last_phase_id = Some(status.phase_id);
+        }
+        if control_mode_changed {
             #[cfg(feature = "lqr")]
             {
                 self.lqr_integrators = [0.0; 3];
@@ -612,10 +870,13 @@ impl Job for ThreeLoopAutopilot {
         let mut saturated = false;
 
         // Attitude loop input: small-angle error in body frame.
+        let reference_q_body_to_eci_xyzw = self
+            .safe_hold_reference_q_body_to_eci_xyzw
+            .unwrap_or(reference.q_body_to_eci_xyzw);
         let mut attitude_error = if self.params.thrust_vector_control {
-            thrust_axis_error_body(attitude.q_body_to_eci_xyzw, reference.q_body_to_eci_xyzw)
+            thrust_axis_error_body(attitude.q_body_to_eci_xyzw, reference_q_body_to_eci_xyzw)
         } else {
-            quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, reference.q_body_to_eci_xyzw)
+            quaternion_error_small_angle(attitude.q_body_to_eci_xyzw, reference_q_body_to_eci_xyzw)
         };
         let mut differential_flatness_active = false;
         let mut differential_flatness_reference_suppressed = false;
@@ -626,7 +887,8 @@ impl Job for ThreeLoopAutopilot {
         // bus `ReferenceState.position_eci_m`. The `Pid` variant
         // continues to read the bus reference and an estimator
         // position, gated below.
-        if self.params.trajectory_loop_enabled
+        if !safe_attitude_hold_active
+            && self.params.trajectory_loop_enabled
             && self.params.trajectory_kind == TrajectoryKind::DifferentialFlatness
         {
             differential_flatness_active = true;
@@ -667,13 +929,15 @@ impl Job for ThreeLoopAutopilot {
         let _ = ctx.bus.publish(AutopilotStatus {
             differential_flatness_active,
             differential_flatness_reference_suppressed,
+            safe_attitude_hold_active,
         });
 
         // Trajectory loop: feeds an attitude-error correction. Active
         // only when enabled by params and a position reference is
         // present. The DifferentialFlatness branch is handled above;
         // this block covers the bus-reference-driven variants only.
-        if self.params.trajectory_loop_enabled
+        if !safe_attitude_hold_active
+            && self.params.trajectory_loop_enabled
             && self.params.trajectory_kind != TrajectoryKind::DifferentialFlatness
             && reference.position_eci_m.norm() > 0.0
             && let Some(pos) = position
@@ -714,6 +978,19 @@ impl Job for ThreeLoopAutopilot {
             }
         }
 
+        let _load_relief = if safe_attitude_hold_active {
+            None
+        } else {
+            self.apply_load_relief(
+                &mut attitude_error,
+                &attitude,
+                position.as_ref(),
+                environment.as_ref(),
+                wind.as_ref(),
+                now_s,
+            )?
+        };
+
         // Attitude-loop dispatch. PID is the
         // default; MPC consumes the same
         // attitude-error vector and returns the optimal first-step
@@ -725,7 +1002,7 @@ impl Job for ThreeLoopAutopilot {
         match self.params.attitude_loop_kind {
             AttitudeLoopKind::Pid => {
                 for i in 0..3 {
-                    if phase_changed {
+                    if control_mode_changed {
                         self.attitude_state[i].reset_and_prime(attitude_error[i]);
                     }
                     let (cmd, sat) = pid_step(
@@ -777,11 +1054,24 @@ impl Job for ThreeLoopAutopilot {
         // Per-axis integrator freeze when measured body rate is below
         // the configured deadband — prevents integrator wind-up at
         // very low rates where measurement noise dominates the signal.
-        let omega_body_rad_s = self.filtered_omega_body(attitude.omega_body_rad_s, dt);
+        let omega_body_rad_s = self.filtered_omega_body(
+            attitude.omega_body_rad_s,
+            dt,
+            now_s,
+            position.as_ref(),
+            environment.as_ref(),
+        )?;
         let rate_error = rate_cmd - omega_body_rad_s;
         let mut torque = Vector3::zeros();
+        #[cfg(feature = "indi")]
+        let mut pseudo_control_cmd = PseudoControlCommand {
+            time: ctx.clock.now(),
+            ..PseudoControlCommand::default()
+        };
+        #[cfg(feature = "indi")]
+        let mut publish_pseudo_control = false;
         for i in 0..3 {
-            if phase_changed {
+            if control_mode_changed {
                 self.rate_state[i].reset_and_prime(rate_error[i]);
             }
             let limit = match i {
@@ -841,7 +1131,7 @@ impl Job for ThreeLoopAutopilot {
                                 .to_string(),
                         })
                     })?;
-                    self.indi_step(
+                    let step = self.indi_step(
                         &indi_params,
                         i,
                         rate_cmd[i],
@@ -849,7 +1139,11 @@ impl Job for ThreeLoopAutopilot {
                         dt,
                         -limit,
                         limit,
-                    )?
+                    )?;
+                    pseudo_control_cmd.omega_dot_des_rad_s2[i] = step.omega_dot_des_rad_s2;
+                    pseudo_control_cmd.omega_dot_meas_rad_s2[i] = step.omega_dot_meas_rad_s2;
+                    publish_pseudo_control = true;
+                    (step.command, step.saturated)
                 }
                 #[cfg(not(feature = "indi"))]
                 RateLoopKind::Indi => {
@@ -890,6 +1184,11 @@ impl Job for ThreeLoopAutopilot {
             }
             torque[i] = axis_cmd;
             saturated |= sat;
+        }
+
+        #[cfg(feature = "indi")]
+        if publish_pseudo_control {
+            let _ = ctx.bus.publish(pseudo_control_cmd);
         }
 
         let cmd = ActuatorCommand {
@@ -946,6 +1245,7 @@ impl Job for ThreeLoopAutopilot {
         // No-op when max_dynamic_pressure_pa is infinite (the default) or
         // there is no navigation estimate yet.
         let throttle_unit = match position.as_ref() {
+            _ if safe_attitude_hold_active => 0.0,
             Some(p) if self.params.max_dynamic_pressure_pa.is_finite() => {
                 let q = environment.map_or_else(
                     || dynamic_pressure_air_relative(p),
@@ -963,10 +1263,18 @@ impl Job for ThreeLoopAutopilot {
         let engine = EngineDemand {
             time: ctx.clock.now(),
             throttle_unit,
-            gimbal_pitch_rad,
-            gimbal_yaw_rad,
+            gimbal_pitch_rad: if safe_attitude_hold_active {
+                0.0
+            } else {
+                gimbal_pitch_rad
+            },
+            gimbal_yaw_rad: if safe_attitude_hold_active {
+                0.0
+            } else {
+                gimbal_yaw_rad
+            },
             ignite: false,
-            shutdown: false,
+            shutdown: safe_attitude_hold_active,
         };
         let _ = ctx.bus.publish(engine);
         Ok(())
@@ -1069,7 +1377,14 @@ mod tests {
     use nalgebra::{UnitQuaternion, Vector3};
     use openbmp_core::SimTime;
 
-    use super::{PidGains, PidState, pid_step, reference_yaw_rad, thrust_axis_error_body};
+    use super::{
+        BendingFilterRuntimeConfig, PidGains, PidState, pid_step, reference_yaw_rad,
+        thrust_axis_error_body,
+    };
+    use crate::tables::{
+        BendingFilterNode, BendingFilterSectionSpec, BendingFilterTable, GainInterp,
+        ScheduleVariable,
+    };
 
     #[test]
     fn reference_yaw_rad_recovers_z_rotation() {
@@ -1277,6 +1592,703 @@ mod tests {
             .unwrap()
             .expect("engine demand");
         assert_eq!(cmd.throttle_unit, 1.0);
+    }
+
+    #[test]
+    fn safe_state_request_latches_entry_attitude_hold_and_zeroes_engine_demand() {
+        use std::collections::BTreeMap;
+
+        use openbmp_core::StepIndex;
+
+        use crate::autopilot::{GainSchedule, ThreeLoopAutopilot, ThreeLoopGains};
+        use crate::bus::Bus;
+        use crate::clock::SimulatedClock;
+        use crate::scheduler::{Job as _, JobContext};
+        use crate::topics::{
+            ActuatorCommand, AttitudeEstimate, AutopilotStatus, EngineDemand, EnvironmentEstimate,
+            PositionEstimate, ReferenceState, VehicleStatus, WindEstimate,
+        };
+
+        fn q_xyzw(q: UnitQuaternion<f64>) -> [f64; 4] {
+            let q = q.into_inner();
+            [q.i, q.j, q.k, q.w]
+        }
+
+        let bus = Bus::new();
+        bus.register::<AttitudeEstimate>().unwrap();
+        bus.register::<PositionEstimate>().unwrap();
+        bus.register::<EnvironmentEstimate>().unwrap();
+        bus.register::<WindEstimate>().unwrap();
+        bus.register::<ReferenceState>().unwrap();
+        bus.register::<VehicleStatus>().unwrap();
+        bus.register::<AutopilotStatus>().unwrap();
+        bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<EngineDemand>().unwrap();
+
+        bus.publish(ReferenceState {
+            q_body_to_eci_xyzw: q_xyzw(UnitQuaternion::from_euler_angles(0.0, 0.4, 0.0)),
+            ..ReferenceState::default()
+        })
+        .unwrap();
+        bus.publish(VehicleStatus {
+            armed: true,
+            in_flight: true,
+            phase_id: 0,
+            safe_state_requested: false,
+        })
+        .unwrap();
+
+        let gains = ThreeLoopGains {
+            rate: [PidGains {
+                kp: 1.0,
+                ki: 0.0,
+                kd: 0.0,
+            }; 3],
+            attitude: [PidGains {
+                kp: 1.0,
+                ki: 0.0,
+                kd: 0.0,
+            }; 3],
+            trajectory: [PidGains::default(); 3],
+            elevator_limit_rad: 1.0,
+            aileron_limit_rad: 1.0,
+            rudder_limit_rad: 1.0,
+            throttle_baseline: 1.0,
+        };
+        let mut autopilot = ThreeLoopAutopilot::with_schedule(GainSchedule {
+            by_phase: BTreeMap::new(),
+            default: gains,
+        });
+        let clock = SimulatedClock::new();
+
+        bus.publish(AttitudeEstimate {
+            time: SimTime::from_seconds(0.001),
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            omega_body_rad_s: Vector3::zeros(),
+            gyro_bias_body_rad_s: Vector3::zeros(),
+        })
+        .unwrap();
+        clock.set(SimTime::from_seconds(0.001), StepIndex::new(1));
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .expect("warm-up tick");
+
+        bus.publish(VehicleStatus {
+            armed: true,
+            in_flight: true,
+            phase_id: 0,
+            safe_state_requested: true,
+        })
+        .unwrap();
+        bus.publish(AttitudeEstimate {
+            time: SimTime::from_seconds(0.002),
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            omega_body_rad_s: Vector3::zeros(),
+            gyro_bias_body_rad_s: Vector3::zeros(),
+        })
+        .unwrap();
+        clock.set(SimTime::from_seconds(0.002), StepIndex::new(2));
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .expect("safe entry tick");
+
+        let (entry_cmd, _) = bus
+            .latest::<ActuatorCommand>()
+            .unwrap()
+            .expect("safe entry actuator command");
+        assert_eq!(entry_cmd.aileron_rad.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(entry_cmd.elevator_rad.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(entry_cmd.rudder_rad.to_bits(), 0.0_f64.to_bits());
+        let (status, _) = bus
+            .latest::<AutopilotStatus>()
+            .unwrap()
+            .expect("autopilot status");
+        assert!(status.safe_attitude_hold_active);
+        assert!(!status.differential_flatness_active);
+        assert!(!status.differential_flatness_reference_suppressed);
+        let (engine, _) = bus
+            .latest::<EngineDemand>()
+            .unwrap()
+            .expect("safe entry engine demand");
+        assert_eq!(engine.throttle_unit.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(engine.gimbal_pitch_rad.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(engine.gimbal_yaw_rad.to_bits(), 0.0_f64.to_bits());
+        assert!(engine.shutdown);
+
+        bus.publish(AttitudeEstimate {
+            time: SimTime::from_seconds(0.003),
+            q_body_to_eci_xyzw: q_xyzw(UnitQuaternion::from_euler_angles(0.12, 0.0, 0.0)),
+            omega_body_rad_s: Vector3::zeros(),
+            gyro_bias_body_rad_s: Vector3::zeros(),
+        })
+        .unwrap();
+        clock.set(SimTime::from_seconds(0.003), StepIndex::new(3));
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .expect("safe hold tick");
+
+        let (hold_cmd, _) = bus
+            .latest::<ActuatorCommand>()
+            .unwrap()
+            .expect("safe hold actuator command");
+        assert!(
+            hold_cmd.aileron_rad.abs() > 0.05
+                || hold_cmd.elevator_rad.abs() > 0.05
+                || hold_cmd.rudder_rad.abs() > 0.05,
+            "SAFE hold should correct drift away from the latched entry attitude, got {hold_cmd:?}"
+        );
+    }
+
+    #[test]
+    fn load_relief_runtime_is_off_by_default_and_biases_pitch_when_enabled() {
+        use std::collections::BTreeMap;
+
+        use openbmp_core::StepIndex;
+
+        use crate::autopilot::{
+            AutopilotParams, GainSchedule, PidGains, ThreeLoopAutopilot, ThreeLoopGains,
+        };
+        use crate::bus::Bus;
+        use crate::clock::SimulatedClock;
+        use crate::loadrelief::LoadReliefParams;
+        use crate::scheduler::{Job as _, JobContext};
+        use crate::topics::{
+            ActuatorCommand, AttitudeEstimate, EngineDemand, EnvironmentEstimate, PositionEstimate,
+            ReferenceState, VehicleStatus, WindEstimate,
+        };
+
+        fn run_case(params: AutopilotParams) -> f64 {
+            let bus = Bus::new();
+            bus.register::<AttitudeEstimate>().unwrap();
+            bus.register::<PositionEstimate>().unwrap();
+            bus.register::<EnvironmentEstimate>().unwrap();
+            bus.register::<WindEstimate>().unwrap();
+            bus.register::<ReferenceState>().unwrap();
+            bus.register::<VehicleStatus>().unwrap();
+            bus.register::<ActuatorCommand>().unwrap();
+            bus.register::<EngineDemand>().unwrap();
+            bus.publish(VehicleStatus {
+                armed: true,
+                in_flight: true,
+                phase_id: 0,
+                safe_state_requested: false,
+            })
+            .unwrap();
+            bus.publish(ReferenceState {
+                q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+                ..ReferenceState::default()
+            })
+            .unwrap();
+            bus.publish(EnvironmentEstimate {
+                time: SimTime::from_seconds(0.001),
+                density_kg_m3: 1.0,
+            })
+            .unwrap();
+            bus.publish(WindEstimate {
+                time: SimTime::from_seconds(0.001),
+                wind_eci_m_s: Vector3::zeros(),
+            })
+            .unwrap();
+            bus.publish(PositionEstimate {
+                time: SimTime::from_seconds(0.001),
+                position_eci_m: Vector3::zeros(),
+                velocity_eci_m_s: Vector3::new(100.0, 0.0, 10.0),
+                accel_bias_body_m_s2: Vector3::zeros(),
+            })
+            .unwrap();
+
+            let gains = ThreeLoopGains {
+                rate: [PidGains {
+                    kp: 1.0,
+                    ki: 0.0,
+                    kd: 0.0,
+                }; 3],
+                attitude: [PidGains {
+                    kp: 1.0,
+                    ki: 0.0,
+                    kd: 0.0,
+                }; 3],
+                trajectory: [PidGains::default(); 3],
+                elevator_limit_rad: 1.0,
+                aileron_limit_rad: 1.0,
+                rudder_limit_rad: 1.0,
+                throttle_baseline: 0.0,
+            };
+            let mut autopilot = ThreeLoopAutopilot::with_schedule(GainSchedule {
+                by_phase: BTreeMap::new(),
+                default: gains,
+            })
+            .with_params(params);
+            let clock = SimulatedClock::new();
+            for tick in 1..=2_u64 {
+                let time_s = tick as f64 * 0.001;
+                bus.publish(AttitudeEstimate {
+                    time: SimTime::from_seconds(time_s),
+                    q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+                    omega_body_rad_s: Vector3::zeros(),
+                    gyro_bias_body_rad_s: Vector3::zeros(),
+                })
+                .unwrap();
+                clock.set(SimTime::from_seconds(time_s), StepIndex::new(tick));
+                autopilot
+                    .run(&JobContext {
+                        bus: &bus,
+                        clock: &clock,
+                    })
+                    .expect("load-relief runtime tick");
+            }
+            let (cmd, _) = bus
+                .latest::<ActuatorCommand>()
+                .unwrap()
+                .expect("actuator command");
+            cmd.elevator_rad
+        }
+
+        let off_default = run_case(AutopilotParams {
+            rate_deadband_rad_s: 0.0,
+            ..AutopilotParams::default()
+        });
+        let enabled = run_case(AutopilotParams {
+            rate_deadband_rad_s: 0.0,
+            load_relief: Some(LoadReliefParams {
+                a0: 1.0,
+                a1: 0.2,
+                g_alpha_max: 1.0,
+                g_acc: 0.0,
+                blend_schedule: vec![(0.0, 1.0)],
+                q_alpha_limit_pa_rad: 100_000.0,
+            }),
+            ..AutopilotParams::default()
+        });
+
+        assert_eq!(off_default.to_bits(), 0.0_f64.to_bits());
+        assert!(
+            enabled < -0.05,
+            "positive alpha should drive a negative pitch correction, got {enabled}"
+        );
+    }
+
+    #[test]
+    fn load_relief_reduces_post_response_qalpha_under_gust_envelopes() {
+        use std::collections::BTreeMap;
+
+        use openbmp_core::StepIndex;
+
+        use crate::autopilot::{
+            AutopilotParams, GainSchedule, PidGains, ThreeLoopAutopilot, ThreeLoopGains,
+        };
+        use crate::bus::Bus;
+        use crate::clock::SimulatedClock;
+        use crate::loadrelief::{LoadReliefParams, estimate_alpha_beta};
+        use crate::scheduler::{Job as _, JobContext};
+        use crate::topics::{
+            ActuatorCommand, AttitudeEstimate, EngineDemand, EnvironmentEstimate, PositionEstimate,
+            ReferenceState, VehicleStatus, WindEstimate,
+        };
+
+        #[derive(Copy, Clone, Debug)]
+        enum GustEnvelope {
+            Dryden,
+            VonKarman,
+        }
+
+        #[derive(Copy, Clone, Debug, Default)]
+        struct GustSilMetrics {
+            peak_qalpha_pa_rad: f64,
+            peak_elevator_rad: f64,
+        }
+
+        fn gust_multiplier(kind: GustEnvelope, elapsed_s: f64, length_scale_s: f64) -> f64 {
+            match kind {
+                GustEnvelope::Dryden => (-elapsed_s / length_scale_s).exp(),
+                GustEnvelope::VonKarman => {
+                    let normalized_time = elapsed_s / length_scale_s;
+                    (1.0 + normalized_time * normalized_time).powf(-5.0 / 6.0)
+                }
+            }
+        }
+
+        fn run_case(kind: GustEnvelope, load_relief: Option<LoadReliefParams>) -> GustSilMetrics {
+            let bus = Bus::new();
+            bus.register::<AttitudeEstimate>().unwrap();
+            bus.register::<PositionEstimate>().unwrap();
+            bus.register::<EnvironmentEstimate>().unwrap();
+            bus.register::<WindEstimate>().unwrap();
+            bus.register::<ReferenceState>().unwrap();
+            bus.register::<VehicleStatus>().unwrap();
+            bus.register::<ActuatorCommand>().unwrap();
+            bus.register::<EngineDemand>().unwrap();
+            bus.publish(VehicleStatus {
+                armed: true,
+                in_flight: true,
+                phase_id: 0,
+                safe_state_requested: false,
+            })
+            .unwrap();
+            bus.publish(ReferenceState {
+                q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+                ..ReferenceState::default()
+            })
+            .unwrap();
+            bus.publish(EnvironmentEstimate {
+                time: SimTime::from_seconds(0.0),
+                density_kg_m3: 0.9,
+            })
+            .unwrap();
+
+            let gains = ThreeLoopGains {
+                rate: [PidGains {
+                    kp: 1.4,
+                    ki: 0.0,
+                    kd: 0.0,
+                }; 3],
+                attitude: [PidGains {
+                    kp: 1.6,
+                    ki: 0.0,
+                    kd: 0.0,
+                }; 3],
+                trajectory: [PidGains::default(); 3],
+                elevator_limit_rad: 0.5,
+                aileron_limit_rad: 0.5,
+                rudder_limit_rad: 0.5,
+                throttle_baseline: 0.0,
+            };
+            let mut autopilot = ThreeLoopAutopilot::with_schedule(GainSchedule {
+                by_phase: BTreeMap::new(),
+                default: gains,
+            })
+            .with_params(AutopilotParams {
+                rate_deadband_rad_s: 0.0,
+                load_relief,
+                ..AutopilotParams::default()
+            });
+            let clock = SimulatedClock::new();
+
+            let dt_s = 0.01;
+            let forward_speed_m_s = 250.0;
+            let peak_vertical_gust_m_s = 42.0;
+            let length_scale_s = 0.55;
+            let duration_s = 2.2;
+            let post_response_start_s = 0.35;
+            let mut response_velocity_z_m_s = 0.0;
+            let mut peak_qalpha_pa_rad: f64 = 0.0;
+            let mut peak_elevator_rad: f64 = 0.0;
+
+            for tick in 1..=260_u64 {
+                let time_s = tick as f64 * dt_s;
+                let elapsed_s = time_s.min(duration_s);
+                let gust_z_m_s =
+                    peak_vertical_gust_m_s * gust_multiplier(kind, elapsed_s, length_scale_s);
+                let vehicle_velocity_eci_m_s =
+                    Vector3::new(forward_speed_m_s, 0.0, response_velocity_z_m_s);
+                let wind_eci_m_s = Vector3::new(0.0, 0.0, -gust_z_m_s);
+                let sample_time = SimTime::from_seconds(time_s);
+
+                bus.publish(AttitudeEstimate {
+                    time: sample_time,
+                    q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+                    omega_body_rad_s: Vector3::zeros(),
+                    gyro_bias_body_rad_s: Vector3::zeros(),
+                })
+                .unwrap();
+                bus.publish(PositionEstimate {
+                    time: sample_time,
+                    position_eci_m: Vector3::zeros(),
+                    velocity_eci_m_s: vehicle_velocity_eci_m_s,
+                    accel_bias_body_m_s2: Vector3::zeros(),
+                })
+                .unwrap();
+                bus.publish(WindEstimate {
+                    time: sample_time,
+                    wind_eci_m_s,
+                })
+                .unwrap();
+
+                let estimate = estimate_alpha_beta(
+                    vehicle_velocity_eci_m_s,
+                    wind_eci_m_s,
+                    UnitQuaternion::identity(),
+                    0.9,
+                )
+                .expect("q-alpha estimate");
+                if time_s >= post_response_start_s {
+                    peak_qalpha_pa_rad =
+                        peak_qalpha_pa_rad.max((estimate.qbar_pa * estimate.alpha_rad).abs());
+                }
+
+                clock.set(sample_time, StepIndex::new(tick));
+                autopilot
+                    .run(&JobContext {
+                        bus: &bus,
+                        clock: &clock,
+                    })
+                    .expect("load-relief gust-SIL tick");
+
+                let elevator = bus
+                    .latest::<ActuatorCommand>()
+                    .unwrap()
+                    .map_or(0.0, |(cmd, _)| cmd.elevator_rad);
+                peak_elevator_rad = peak_elevator_rad.max(elevator.abs());
+                let response_accel_z_m_s2 = 65.0 * elevator - 1.1 * response_velocity_z_m_s;
+                response_velocity_z_m_s += response_accel_z_m_s2 * dt_s;
+            }
+
+            GustSilMetrics {
+                peak_qalpha_pa_rad,
+                peak_elevator_rad,
+            }
+        }
+
+        for kind in [GustEnvelope::Dryden, GustEnvelope::VonKarman] {
+            let baseline = run_case(kind, None);
+            let relieved = run_case(
+                kind,
+                Some(LoadReliefParams {
+                    a0: 1.0,
+                    a1: 0.2,
+                    g_alpha_max: 2.0,
+                    g_acc: 0.0,
+                    blend_schedule: vec![(0.0, 0.0), (0.20, 1.0)],
+                    q_alpha_limit_pa_rad: 1.0e9,
+                }),
+            );
+            assert!(
+                relieved.peak_qalpha_pa_rad < 0.80 * baseline.peak_qalpha_pa_rad,
+                "{kind:?} relieved peak q-alpha should be at least 20% below baseline; \
+                 baseline={:.6e}, relieved={:.6e}",
+                baseline.peak_qalpha_pa_rad,
+                relieved.peak_qalpha_pa_rad,
+            );
+            assert!(
+                baseline.peak_elevator_rad <= 1.0e-12 && relieved.peak_elevator_rad > 0.1,
+                "{kind:?} load-relief trade should require nonzero pitch command; \
+                 baseline elevator={:.6e}, relieved elevator={:.6e}",
+                baseline.peak_elevator_rad,
+                relieved.peak_elevator_rad,
+            );
+        }
+    }
+
+    #[test]
+    fn scheduled_bending_filter_runtime_filters_enabled_gyro_axis_only() {
+        use std::collections::BTreeMap;
+
+        use openbmp_core::StepIndex;
+
+        use crate::autopilot::{AutopilotParams, GainSchedule, ThreeLoopAutopilot, ThreeLoopGains};
+        use crate::bus::Bus;
+        use crate::clock::SimulatedClock;
+        use crate::scheduler::{Job as _, JobContext};
+        use crate::topics::{
+            ActuatorCommand, AttitudeEstimate, EngineDemand, PositionEstimate, ReferenceState,
+            VehicleStatus,
+        };
+
+        let bus = Bus::new();
+        bus.register::<AttitudeEstimate>().unwrap();
+        bus.register::<PositionEstimate>().unwrap();
+        bus.register::<ReferenceState>().unwrap();
+        bus.register::<VehicleStatus>().unwrap();
+        bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<EngineDemand>().unwrap();
+        bus.publish(VehicleStatus {
+            armed: true,
+            in_flight: true,
+            phase_id: 0,
+            safe_state_requested: false,
+        })
+        .unwrap();
+        bus.publish(ReferenceState {
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            ..ReferenceState::default()
+        })
+        .unwrap();
+
+        let gains = ThreeLoopGains {
+            rate: [PidGains {
+                kp: 1.0,
+                ki: 0.0,
+                kd: 0.0,
+            }; 3],
+            attitude: [PidGains::default(); 3],
+            trajectory: [PidGains::default(); 3],
+            elevator_limit_rad: 10.0,
+            aileron_limit_rad: 10.0,
+            rudder_limit_rad: 10.0,
+            throttle_baseline: 0.0,
+        };
+        let table = bending_filter_runtime_test_table(ScheduleVariable::TimeS);
+        let mut autopilot = ThreeLoopAutopilot::with_schedule(GainSchedule {
+            by_phase: BTreeMap::new(),
+            default: gains,
+        })
+        .with_params(AutopilotParams {
+            bending_filter: Some(BendingFilterRuntimeConfig {
+                table,
+                axes_enabled: [true, false, false],
+            }),
+            rate_deadband_rad_s: 0.0,
+            ..AutopilotParams::default()
+        });
+        let clock = SimulatedClock::new();
+        let mode_frequency_rad_s = 10.0;
+        let dt_s = 0.01;
+        let mut filtered_axis_peak: f64 = 0.0;
+        let mut bypass_axis_peak: f64 = 0.0;
+
+        for tick in 1..=900_u64 {
+            let time_s = tick as f64 * dt_s;
+            let rate = (mode_frequency_rad_s * time_s).sin();
+            bus.publish(AttitudeEstimate {
+                time: SimTime::from_seconds(time_s),
+                q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+                omega_body_rad_s: Vector3::new(rate, rate, 0.0),
+                gyro_bias_body_rad_s: Vector3::zeros(),
+            })
+            .unwrap();
+            clock.set(SimTime::from_seconds(time_s), StepIndex::new(tick));
+            autopilot
+                .run(&JobContext {
+                    bus: &bus,
+                    clock: &clock,
+                })
+                .expect("scheduled bending-filter runtime tick");
+            if tick > 450 {
+                let (cmd, _) = bus
+                    .latest::<ActuatorCommand>()
+                    .unwrap()
+                    .expect("actuator command");
+                filtered_axis_peak = filtered_axis_peak.max(cmd.aileron_rad.abs());
+                bypass_axis_peak = bypass_axis_peak.max(cmd.elevator_rad.abs());
+            }
+        }
+
+        assert!(
+            filtered_axis_peak < 0.35,
+            "enabled bending-filter axis should attenuate the modal rate; peak={filtered_axis_peak}"
+        );
+        assert!(
+            bypass_axis_peak > 0.85,
+            "disabled bending-filter axis should preserve the modal rate; peak={bypass_axis_peak}"
+        );
+    }
+
+    #[test]
+    fn scheduled_bending_filter_runtime_rejects_unsupported_schedule_variable() {
+        use std::collections::BTreeMap;
+
+        use openbmp_core::StepIndex;
+
+        use crate::autopilot::{AutopilotParams, GainSchedule, ThreeLoopAutopilot};
+        use crate::bus::Bus;
+        use crate::clock::SimulatedClock;
+        use crate::error::{AutopilotError, ControllerError};
+        use crate::scheduler::{Job as _, JobContext};
+        use crate::tables::ScheduleVariable;
+        use crate::topics::{
+            ActuatorCommand, AttitudeEstimate, EngineDemand, PositionEstimate, ReferenceState,
+            VehicleStatus,
+        };
+
+        let bus = Bus::new();
+        bus.register::<AttitudeEstimate>().unwrap();
+        bus.register::<PositionEstimate>().unwrap();
+        bus.register::<ReferenceState>().unwrap();
+        bus.register::<VehicleStatus>().unwrap();
+        bus.register::<ActuatorCommand>().unwrap();
+        bus.register::<EngineDemand>().unwrap();
+        bus.publish(VehicleStatus {
+            armed: true,
+            in_flight: true,
+            phase_id: 0,
+            safe_state_requested: false,
+        })
+        .unwrap();
+        bus.publish(ReferenceState {
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            ..ReferenceState::default()
+        })
+        .unwrap();
+        bus.publish(AttitudeEstimate {
+            time: SimTime::from_seconds(0.001),
+            q_body_to_eci_xyzw: [0.0, 0.0, 0.0, 1.0],
+            omega_body_rad_s: Vector3::new(0.1, 0.0, 0.0),
+            gyro_bias_body_rad_s: Vector3::zeros(),
+        })
+        .unwrap();
+
+        let mut autopilot = ThreeLoopAutopilot::with_schedule(GainSchedule {
+            by_phase: BTreeMap::new(),
+            default: super::default_gains(),
+        })
+        .with_params(AutopilotParams {
+            bending_filter: Some(BendingFilterRuntimeConfig {
+                table: bending_filter_runtime_test_table(ScheduleVariable::Mach),
+                axes_enabled: [true, false, false],
+            }),
+            ..AutopilotParams::default()
+        });
+        let clock = SimulatedClock::new();
+        clock.set(SimTime::from_seconds(0.001), StepIndex::new(1));
+        autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .expect("warm-up tick");
+        clock.set(SimTime::from_seconds(0.002), StepIndex::new(2));
+        let err = autopilot
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap_err();
+
+        match err {
+            ControllerError::Autopilot(AutopilotError::Trajectory { reason }) => {
+                assert!(
+                    reason.contains("TimeS") && reason.contains("DynamicPressurePa"),
+                    "unexpected bending-filter rejection reason: {reason}"
+                );
+            }
+            other => panic!("expected bending-filter AutopilotError::Trajectory, got {other:?}"),
+        }
+    }
+
+    fn bending_filter_runtime_test_table(variable: ScheduleVariable) -> BendingFilterTable {
+        let section = BendingFilterSectionSpec {
+            mode_frequency_rad_s: 10.0,
+            zero_frequency_rad_s: 10.0,
+            zero_damping_ratio: 0.02,
+            pole_frequency_rad_s: 10.0,
+            pole_damping_ratio: 0.20,
+        };
+        BendingFilterTable {
+            variable,
+            interp: GainInterp::Linear,
+            sample_interval_s: 0.01,
+            nodes: vec![
+                BendingFilterNode {
+                    node_id: "low".to_string(),
+                    schedule_value: 0.0,
+                    sections: vec![section.clone()],
+                },
+                BendingFilterNode {
+                    node_id: "high".to_string(),
+                    schedule_value: 10.0,
+                    sections: vec![section],
+                },
+            ],
+        }
     }
 
     #[test]

@@ -1,0 +1,21 @@
+# Bryson-Denham state-constrained benchmark for WP-07.2/WP-07.3 partials.
+#
+# The case solves the standard normalized Bryson-Denham double-integrator OCP as
+# fixed-mesh equality-constrained dense QPs with hard state path inequalities.
+
+case       = "bryson-denham-state-constrained"
+source     = "Public Bryson-Denham state-constrained optimal-control benchmark; see scenarios/trajopt-bryson-denham/provenance.md."
+validation = "research"
+
+[problem]
+segment_count = 30
+lgr_collocation_count = 4
+state_bound = 0.1111111111111111
+entry_time_s = 0.3333333333333333
+exit_time_s = 0.6666666666666666
+expected_cost = 4.0
+cost_tolerance = 1.0e-7
+max_residual_norm = 1.0e-7
+max_path_violation = 1.0e-9
+max_state_error = 1.0e-5
+max_control_error = 1.0e-4

@@ -173,15 +173,16 @@ pub trait AscentReferenceGenerator {
 
 /// Pitch-program ascent reference.
 ///
-/// The program linearly interpolates pitch angle from the vertical in
-/// a fixed inertial x-z plane, with body `+x` aligned to the resulting
-/// reference direction. Times before the first schedule entry clamp to
-/// the first pitch; times after the final entry clamp to the final
-/// pitch.
+/// The program linearly interpolates pitch angle from the vertical plus
+/// an optional yaw angle about the inertial vertical. With no yaw schedule it
+/// preserves the legacy fixed inertial x-z plane. Times before the first
+/// schedule entry clamp to the first value; times after the final entry clamp
+/// to the final value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PitchProgramAscentReference {
     schedule_s: Vec<f64>,
     pitch_rad: Vec<f64>,
+    yaw_rad: Vec<f64>,
 }
 
 impl PitchProgramAscentReference {
@@ -193,10 +194,27 @@ impl PitchProgramAscentReference {
     /// differ in length, contain fewer than two entries, contain
     /// non-finite values, or the schedule is not strictly increasing.
     pub fn new(schedule_s: Vec<f64>, pitch_rad: Vec<f64>) -> Result<Self, PhysicsError> {
-        validate_pitch_program(&schedule_s, &pitch_rad)?;
+        let yaw_rad = vec![0.0; schedule_s.len()];
+        Self::new_with_yaw(schedule_s, pitch_rad, yaw_rad)
+    }
+
+    /// Construct a validated pitch/yaw-program reference generator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] when the schedule, pitch, and yaw arrays
+    /// differ in length, contain fewer than two entries, contain non-finite
+    /// values, or the schedule is not strictly increasing.
+    pub fn new_with_yaw(
+        schedule_s: Vec<f64>,
+        pitch_rad: Vec<f64>,
+        yaw_rad: Vec<f64>,
+    ) -> Result<Self, PhysicsError> {
+        validate_pitch_program(&schedule_s, &pitch_rad, &yaw_rad)?;
         Ok(Self {
             schedule_s,
             pitch_rad,
+            yaw_rad,
         })
     }
 
@@ -212,6 +230,12 @@ impl PitchProgramAscentReference {
         &self.pitch_rad
     }
 
+    /// Yaw values (rad), one per schedule timestamp.
+    #[must_use]
+    pub fn yaw_rad(&self) -> &[f64] {
+        &self.yaw_rad
+    }
+
     /// Interpolated pitch angle at `time`.
     ///
     /// # Errors
@@ -220,6 +244,21 @@ impl PitchProgramAscentReference {
     /// validation guarantees the interpolation intervals themselves are
     /// usable.
     pub fn pitch_at(&self, time: SimTime) -> Result<f64, PhysicsError> {
+        self.interpolate_at(time, &self.pitch_rad)
+    }
+
+    /// Interpolated yaw angle at `time`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PhysicsError`] if `time` is non-finite. Constructor
+    /// validation guarantees the interpolation intervals themselves are
+    /// usable.
+    pub fn yaw_at(&self, time: SimTime) -> Result<f64, PhysicsError> {
+        self.interpolate_at(time, &self.yaw_rad)
+    }
+
+    fn interpolate_at(&self, time: SimTime, values: &[f64]) -> Result<f64, PhysicsError> {
         let t = time.as_seconds();
         if !t.is_finite() {
             return Err(PhysicsError::InvalidParameter {
@@ -227,19 +266,18 @@ impl PitchProgramAscentReference {
             });
         }
         if t <= self.schedule_s[0] {
-            return Ok(self.pitch_rad[0]);
+            return Ok(values[0]);
         }
         let last = self.schedule_s.len() - 1;
         if t >= self.schedule_s[last] {
-            return Ok(self.pitch_rad[last]);
+            return Ok(values[last]);
         }
         for index in 0..last {
             let t0 = self.schedule_s[index];
             let t1 = self.schedule_s[index + 1];
             if t >= t0 && t <= t1 {
                 let alpha = (t - t0) / (t1 - t0);
-                return Ok(self.pitch_rad[index]
-                    + alpha * (self.pitch_rad[index + 1] - self.pitch_rad[index]));
+                return Ok(values[index] + alpha * (values[index + 1] - values[index]));
             }
         }
         Err(PhysicsError::OutOfEnvelope {
@@ -256,7 +294,12 @@ impl AscentReferenceGenerator for PitchProgramAscentReference {
     ) -> Result<AscentReference, PhysicsError> {
         state.validate()?;
         let pitch = self.pitch_at(time)?;
-        let forward_eci = [pitch.sin(), 0.0, pitch.cos()];
+        let yaw = self.yaw_at(time)?;
+        let forward_eci = [
+            pitch.sin() * yaw.cos(),
+            pitch.sin() * yaw.sin(),
+            pitch.cos(),
+        ];
         let q_body_to_eci_xyzw = reference_quaternion_from_body_z(forward_eci)?;
         Ok(AscentReference {
             q_body_to_eci_xyzw,
@@ -3975,10 +4018,14 @@ fn dispersion_ellipse(input: FootprintDispersionInput) -> FootprintDispersionEll
     }
 }
 
-fn validate_pitch_program(schedule_s: &[f64], pitch_rad: &[f64]) -> Result<(), PhysicsError> {
-    if schedule_s.len() != pitch_rad.len() {
+fn validate_pitch_program(
+    schedule_s: &[f64],
+    pitch_rad: &[f64],
+    yaw_rad: &[f64],
+) -> Result<(), PhysicsError> {
+    if schedule_s.len() != pitch_rad.len() || schedule_s.len() != yaw_rad.len() {
         return Err(PhysicsError::InvalidParameter {
-            reason: "pitch-program schedule and pitch arrays must have equal length",
+            reason: "pitch-program schedule, pitch, and yaw arrays must have equal length",
         });
     }
     if schedule_s.len() < 2 {
@@ -3995,6 +4042,11 @@ fn validate_pitch_program(schedule_s: &[f64], pitch_rad: &[f64]) -> Result<(), P
         if !pitch_rad[index].is_finite() {
             return Err(PhysicsError::InvalidParameter {
                 reason: "pitch-program pitch values must be finite",
+            });
+        }
+        if !yaw_rad[index].is_finite() {
+            return Err(PhysicsError::InvalidParameter {
+                reason: "pitch-program yaw values must be finite",
             });
         }
         if index > 0 && schedule_s[index] <= schedule_s[index - 1] {
@@ -4289,6 +4341,7 @@ mod tests {
         assert_eq!(program.pitch_at(SimTime::from_seconds(-1.0)).unwrap(), 0.0);
         assert_eq!(program.pitch_at(SimTime::from_seconds(40.0)).unwrap(), 0.6);
         assert_eq!(program.pitch_at(SimTime::from_seconds(20.0)).unwrap(), 0.4);
+        assert_eq!(program.yaw_at(SimTime::from_seconds(20.0)).unwrap(), 0.0);
     }
 
     #[test]
@@ -4306,9 +4359,39 @@ mod tests {
     }
 
     #[test]
+    fn pitch_program_reference_applies_yaw_schedule() {
+        let program = PitchProgramAscentReference::new_with_yaw(
+            vec![0.0, 10.0],
+            vec![0.4, 0.4],
+            vec![0.0, 0.2],
+        )
+        .unwrap();
+        let reference = program
+            .ascent_reference(&nominal_ascent_state(), SimTime::from_seconds(5.0))
+            .unwrap();
+        let body_z = body_z_axis(reference.q_body_to_eci_xyzw);
+        let pitch = 0.4_f64;
+        let yaw = 0.1_f64;
+        let expected = Vector3::new(
+            pitch.sin() * yaw.cos(),
+            pitch.sin() * yaw.sin(),
+            pitch.cos(),
+        );
+        assert!((body_z - expected).norm() < 1.0e-12);
+    }
+
+    #[test]
     fn pitch_program_rejects_non_monotonic_schedule() {
         let err = PitchProgramAscentReference::new(vec![0.0, 10.0, 10.0], vec![0.0, 0.1, 0.2])
             .unwrap_err();
+        assert!(matches!(err, PhysicsError::InvalidParameter { .. }));
+    }
+
+    #[test]
+    fn pitch_program_rejects_mismatched_yaw_schedule() {
+        let err =
+            PitchProgramAscentReference::new_with_yaw(vec![0.0, 10.0], vec![0.0, 0.1], vec![0.0])
+                .unwrap_err();
         assert!(matches!(err, PhysicsError::InvalidParameter { .. }));
     }
 

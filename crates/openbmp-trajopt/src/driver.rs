@@ -146,6 +146,7 @@ pub fn correct_two_body_apogee(
             event_bindings_postcard: Vec::new(),
             gain_tables: Vec::new(),
             reference_profile: reference_profile.clone(),
+            optimality_certificate: None,
         };
         let encoded = encode_iload_payload(&payload)?;
         (Some(payload), Some(encoded))

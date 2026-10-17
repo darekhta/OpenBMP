@@ -1,0 +1,45 @@
+openbmp.scenario = 3
+
+[meta]
+name = "recovery-drogue-main-inflation-rack-test"
+description = "Synthetic staged recovery inflation rack test."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 1.0
+dt_s = 0.25
+seed = 1
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 1000.0]
+initial_velocity_eci_m_s = [0.0, 0.0, -50.0]
+
+[vehicle.assembly]
+id = "recovery-staged-inflation"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 0.5 }
+dry_mass_kg = 1.0
+
+[[vehicle.assembly.recovery]]
+id = "dual_chute"
+kind = { kind = "drogue_main", drogue_c_d = 1.0, drogue_area_m2 = 2.0, main_c_d = 1.5, main_area_m2 = 6.0 }
+drogue_inflation = { fill_time_s = 1.0, opening_force_coeff_c_x = 1.1, growth = "polynomial", exponent_j = 1.0, apparent_mass_coeff_k_a = 0.5, pflanz = { ballistic_parameter_a = [0.01, 1000.0], exponent_j = [1.0], reduction_factors = [0.5, 0.5] } }
+main_inflation = { fill_time_s = 2.0, opening_force_coeff_c_x = 1.2, growth = "polynomial", exponent_j = 1.0, apparent_mass_coeff_k_a = 0.7, pflanz = { ballistic_parameter_a = [0.01, 1000.0], exponent_j = [1.0], reduction_factors = [0.8, 0.8] } }
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "us_standard_1976"
+wind = "none"
+
+[telemetry]
+output.csv = "out/recovery-drogue-main-inflation-rack-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true

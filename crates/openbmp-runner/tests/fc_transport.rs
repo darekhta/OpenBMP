@@ -4,7 +4,10 @@
 
 use std::path::Path;
 
+use openbmp_core::StepIndex;
+use openbmp_runner::sil::{FcObservation, SilMonitor};
 use openbmp_scenario::Scenario;
+use openbmp_sensors::SensorTruth;
 
 const SCENARIO_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -172,6 +175,19 @@ fn load_without_section(section: &str, extra: &str) -> Scenario {
     Scenario::from_toml_str_with_source_dir(&toml, source_dir).expect("scenario parses")
 }
 
+#[derive(Default)]
+struct CountingMonitor {
+    ticks: usize,
+    saw_estimator: bool,
+}
+
+impl SilMonitor for CountingMonitor {
+    fn observe(&mut self, _step: StepIndex, _truth: &SensorTruth, observation: &FcObservation) {
+        self.ticks += 1;
+        self.saw_estimator |= observation.estimator.is_some();
+    }
+}
+
 #[test]
 fn in_process_fc_transport_preserves_telemetry_bytes() {
     let baseline = openbmp_runner::run(&load("")).expect("baseline run");
@@ -325,6 +341,45 @@ max_payload_len = 4096
     let comm = transported.comm.as_ref().expect("transported comm report");
     let link = comm.links.first().expect("comm link report");
     assert_eq!(link.packet_processing_delay_s.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn zero_effect_comm_link_preserves_sil_determinism_hash() {
+    let scenario = load_visible_comm_with_processing_delay(
+        0.0,
+        r#"
+
+[fc.transport]
+mode = "in_process"
+max_payload_len = 4096
+"#,
+    );
+    let baseline = openbmp_runner::run(&scenario).expect("baseline zero-effect comm run");
+
+    let mut monitor = CountingMonitor::default();
+    let observed = openbmp_runner::run_with_monitor(&scenario, &mut monitor)
+        .expect("observed zero-effect comm run");
+
+    assert!(monitor.ticks > 0, "SIL monitor must observe ticks");
+    assert!(
+        monitor.saw_estimator,
+        "SIL monitor must observe FC estimator state"
+    );
+    assert_eq!(
+        openbmp_runner::determinism::telemetry_sha256_hex(&baseline.table)
+            .expect("baseline telemetry hash"),
+        openbmp_runner::determinism::telemetry_sha256_hex(&observed.table)
+            .expect("observed telemetry hash"),
+        "zero-effect comm link must preserve the SIL determinism telemetry hash"
+    );
+    assert_eq!(
+        baseline.table, observed.table,
+        "zero-effect comm link with a read-only SIL monitor must preserve telemetry bytes"
+    );
+    assert_eq!(
+        baseline.actuator_stream, observed.actuator_stream,
+        "zero-effect comm link with a read-only SIL monitor must preserve actuator stream evidence"
+    );
 }
 
 #[test]

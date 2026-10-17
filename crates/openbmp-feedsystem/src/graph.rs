@@ -1,5 +1,7 @@
 //! Steady node/branch feed-network graph.
 
+use std::f64::consts::PI;
+
 use openbmp_core::ValidationStatus;
 
 use crate::error::FeedSystemError;
@@ -8,6 +10,9 @@ const DEFAULT_MAX_NEWTON_ITERATIONS: usize = 64;
 const DEFAULT_RESIDUAL_TOLERANCE_KG_PER_S: f64 = 1.0e-8;
 const DERIVATIVE_DELTA_P_FLOOR_PA: f64 = 1.0;
 const MIN_DAMPING_STEPS: usize = 32;
+const PIPE_FLOW_DERIVATIVE_REL_STEP: f64 = 1.0e-6;
+const PIPE_FRICTION_ITERATIONS: usize = 32;
+const LAMINAR_REYNOLDS_LIMIT: f64 = 2_300.0;
 
 /// Node declaration for a steady feed-network graph.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -142,6 +147,58 @@ impl ValveBranch {
     }
 }
 
+/// Incompressible Darcy-Weisbach pipe branch between two pressure nodes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PipeBranch {
+    /// Upstream endpoint index for positive flow.
+    pub from: usize,
+    /// Downstream endpoint index for positive flow.
+    pub to: usize,
+    /// Pipe length in m.
+    pub length_m: f64,
+    /// Pipe internal diameter in m.
+    pub diameter_m: f64,
+    /// Relative roughness `epsilon / diameter`.
+    pub relative_roughness: f64,
+    /// Single-fluid density in kg/m^3.
+    pub density_kg_m3: f64,
+    /// Single-fluid dynamic viscosity in Pa*s.
+    pub dynamic_viscosity_pa_s: f64,
+}
+
+impl PipeBranch {
+    fn require_valid(self, node_count: usize) -> Result<(), FeedSystemError> {
+        if self.from >= node_count || self.to >= node_count {
+            return Err(FeedSystemError::InvalidParameter {
+                reason: "pipe branch endpoint index is outside the node list",
+            });
+        }
+        if self.from == self.to {
+            return Err(FeedSystemError::InvalidParameter {
+                reason: "pipe branch endpoints must be distinct",
+            });
+        }
+        require_positive_finite(self.length_m, "pipe branch length must be positive")?;
+        require_positive_finite(
+            self.diameter_m,
+            "pipe branch internal diameter must be positive",
+        )?;
+        require_nonnegative_finite(
+            self.relative_roughness,
+            "pipe branch relative roughness must be finite and non-negative",
+        )?;
+        require_positive_finite(self.density_kg_m3, "pipe branch density must be positive")?;
+        require_positive_finite(
+            self.dynamic_viscosity_pa_s,
+            "pipe branch dynamic viscosity must be positive",
+        )
+    }
+
+    fn area_m2(self) -> f64 {
+        0.25 * PI * self.diameter_m * self.diameter_m
+    }
+}
+
 /// Validated steady feed-network graph configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SteadyFeedGraphConfig {
@@ -149,6 +206,8 @@ pub struct SteadyFeedGraphConfig {
     pub nodes: Vec<FeedGraphNode>,
     /// Valve branches.
     pub valve_branches: Vec<ValveBranch>,
+    /// Darcy-Weisbach pipe branches.
+    pub pipe_branches: Vec<PipeBranch>,
     /// Fixed Newton iteration cap.
     pub max_newton_iterations: usize,
     /// Absolute mass-balance residual tolerance in kg/s.
@@ -162,9 +221,17 @@ impl SteadyFeedGraphConfig {
         Self {
             nodes,
             valve_branches,
+            pipe_branches: Vec::new(),
             max_newton_iterations: DEFAULT_MAX_NEWTON_ITERATIONS,
             residual_tolerance_kg_per_s: DEFAULT_RESIDUAL_TOLERANCE_KG_PER_S,
         }
+    }
+
+    /// Attach Darcy-Weisbach pipe branches to this graph configuration.
+    #[must_use]
+    pub fn with_pipe_branches(mut self, pipe_branches: Vec<PipeBranch>) -> Self {
+        self.pipe_branches = pipe_branches;
+        self
     }
 
     /// Validate graph shape and scalar envelopes.
@@ -179,9 +246,9 @@ impl SteadyFeedGraphConfig {
                 reason: "feed graph must declare at least one node",
             });
         }
-        if self.valve_branches.is_empty() {
+        if self.valve_branches.is_empty() && self.pipe_branches.is_empty() {
             return Err(FeedSystemError::InvalidParameter {
-                reason: "feed graph must declare at least one valve branch",
+                reason: "feed graph must declare at least one branch",
             });
         }
         if self.max_newton_iterations == 0 {
@@ -207,6 +274,9 @@ impl SteadyFeedGraphConfig {
             });
         }
         for branch in &self.valve_branches {
+            branch.require_valid(self.nodes.len())?;
+        }
+        for branch in &self.pipe_branches {
             branch.require_valid(self.nodes.len())?;
         }
         Ok(())
@@ -272,7 +342,7 @@ impl SteadyFeedGraph {
             }
             let rhs: Vec<f64> = residuals.iter().map(|value| -*value).collect();
             let delta = solve_dense_linear(jacobian, rhs)?;
-            damped_update(&mut unknown_pressures_pa, &delta)?;
+            self.damped_update(&mut unknown_pressures_pa, &delta, max_residual)?;
         }
 
         let (residuals, _, max_residual) = self.residual_and_jacobian(&unknown_pressures_pa)?;
@@ -317,13 +387,39 @@ impl SteadyFeedGraph {
                     reason: "steady feed graph valve branch produced a non-finite value",
                 });
             }
-            accumulate_branch(
+            accumulate_branch_endpoints(
                 &mut residuals,
                 &mut jacobian,
                 &self.unknown_by_node,
-                *branch,
-                flow_kg_per_s,
-                derivative,
+                BranchContribution {
+                    from: branch.from,
+                    to: branch.to,
+                    flow_kg_per_s,
+                    derivative,
+                },
+                unknown_count,
+            );
+        }
+
+        for branch in &self.config.pipe_branches {
+            let pressure_delta_pa = node_pressures_pa[branch.from] - node_pressures_pa[branch.to];
+            let flow_kg_per_s = signed_pipe_flow(*branch, pressure_delta_pa);
+            let derivative = pipe_flow_derivative(*branch, pressure_delta_pa);
+            if !flow_kg_per_s.is_finite() || !derivative.is_finite() {
+                return Err(FeedSystemError::NonFinite {
+                    reason: "steady feed graph pipe branch produced a non-finite value",
+                });
+            }
+            accumulate_branch_endpoints(
+                &mut residuals,
+                &mut jacobian,
+                &self.unknown_by_node,
+                BranchContribution {
+                    from: branch.from,
+                    to: branch.to,
+                    flow_kg_per_s,
+                    derivative,
+                },
                 unknown_count,
             );
         }
@@ -353,6 +449,36 @@ impl SteadyFeedGraph {
         Ok((residuals, jacobian, max_residual))
     }
 
+    fn damped_update(
+        &self,
+        values: &mut [f64],
+        delta: &[f64],
+        current_max_residual: f64,
+    ) -> Result<(), FeedSystemError> {
+        let mut scale = 1.0;
+        for _ in 0..MIN_DAMPING_STEPS {
+            let candidate: Vec<f64> = values
+                .iter()
+                .zip(delta)
+                .map(|(value, step)| *value + scale * *step)
+                .collect();
+            let candidate_valid = candidate
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0);
+            if candidate_valid {
+                let (_, _, candidate_max_residual) = self.residual_and_jacobian(&candidate)?;
+                if candidate_max_residual < current_max_residual {
+                    values.copy_from_slice(&candidate);
+                    return Ok(());
+                }
+            }
+            scale *= 0.5;
+        }
+        Err(FeedSystemError::NonConverged {
+            reason: "steady feed graph Newton damping could not reduce the mass residual",
+        })
+    }
+
     fn snapshot(
         &self,
         unknown_pressures_pa: &[f64],
@@ -373,11 +499,31 @@ impl SteadyFeedGraph {
             }
             valve_branch_mass_flow_kg_per_s.push(flow);
         }
+        let mut pipe_branch_mass_flow_kg_per_s =
+            Vec::with_capacity(self.config.pipe_branches.len());
+        for branch in &self.config.pipe_branches {
+            let flow = signed_pipe_flow(
+                *branch,
+                node_pressures_pa[branch.from] - node_pressures_pa[branch.to],
+            );
+            if !flow.is_finite() {
+                return Err(FeedSystemError::NonFinite {
+                    reason: "steady feed graph snapshot contains non-finite pipe branch flow",
+                });
+            }
+            pipe_branch_mass_flow_kg_per_s.push(flow);
+        }
+        let validation = if self.config.pipe_branches.is_empty() {
+            ValidationStatus::ValidatedToy
+        } else {
+            ValidationStatus::Research
+        };
         Ok(SteadyFeedGraphSnapshot {
             node_pressures_pa,
             valve_branch_mass_flow_kg_per_s,
+            pipe_branch_mass_flow_kg_per_s,
             max_residual_kg_per_s,
-            validation: ValidationStatus::ValidatedToy,
+            validation,
         })
     }
 }
@@ -389,10 +535,20 @@ pub struct SteadyFeedGraphSnapshot {
     pub node_pressures_pa: Vec<f64>,
     /// Signed branch mass flows in declaration order. Positive is `from -> to`.
     pub valve_branch_mass_flow_kg_per_s: Vec<f64>,
+    /// Signed pipe branch mass flows in declaration order. Positive is `from -> to`.
+    pub pipe_branch_mass_flow_kg_per_s: Vec<f64>,
     /// Maximum absolute unknown-node mass residual in kg/s.
     pub max_residual_kg_per_s: f64,
     /// Validation posture of the graph model.
     pub validation: ValidationStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BranchContribution {
+    from: usize,
+    to: usize,
+    flow_kg_per_s: f64,
+    derivative: f64,
 }
 
 fn signed_valve_flow(branch: ValveBranch, pressure_delta_pa: f64) -> f64 {
@@ -418,23 +574,86 @@ fn valve_flow_derivative(branch: ValveBranch, pressure_delta_pa: f64) -> f64 {
             .sqrt()
 }
 
-fn accumulate_branch(
+fn signed_pipe_flow(branch: PipeBranch, pressure_delta_pa: f64) -> f64 {
+    if pressure_delta_pa == 0.0 {
+        return 0.0;
+    }
+    let pressure_drop_pa = pressure_delta_pa.abs();
+    let area_m2 = branch.area_m2();
+    let mut friction_factor = 0.02;
+    for _ in 0..PIPE_FRICTION_ITERATIONS {
+        let mass_flow_kg_per_s = pipe_flow_from_friction(branch, pressure_drop_pa, friction_factor);
+        let reynolds =
+            mass_flow_kg_per_s * branch.diameter_m / (area_m2 * branch.dynamic_viscosity_pa_s);
+        let next_friction_factor =
+            darcy_friction_factor(reynolds, branch.relative_roughness).max(f64::EPSILON);
+        if (next_friction_factor - friction_factor).abs()
+            <= 1.0e-10_f64.max(1.0e-8 * friction_factor.abs())
+        {
+            friction_factor = next_friction_factor;
+            break;
+        }
+        friction_factor = next_friction_factor;
+    }
+    let magnitude = pipe_flow_from_friction(branch, pressure_drop_pa, friction_factor);
+    if pressure_delta_pa.is_sign_positive() {
+        magnitude
+    } else {
+        -magnitude
+    }
+}
+
+fn pipe_flow_from_friction(branch: PipeBranch, pressure_drop_pa: f64, friction_factor: f64) -> f64 {
+    branch.area_m2()
+        * (2.0 * branch.density_kg_m3 * pressure_drop_pa * branch.diameter_m
+            / (friction_factor * branch.length_m))
+            .sqrt()
+}
+
+fn pipe_flow_derivative(branch: PipeBranch, pressure_delta_pa: f64) -> f64 {
+    let step =
+        (pressure_delta_pa.abs() * PIPE_FLOW_DERIVATIVE_REL_STEP).max(DERIVATIVE_DELTA_P_FLOOR_PA);
+    let plus = signed_pipe_flow(branch, pressure_delta_pa + step);
+    let minus = signed_pipe_flow(branch, pressure_delta_pa - step);
+    (plus - minus) / (2.0 * step)
+}
+
+fn darcy_friction_factor(reynolds: f64, relative_roughness: f64) -> f64 {
+    if reynolds <= 0.0 {
+        return f64::INFINITY;
+    }
+    if reynolds < LAMINAR_REYNOLDS_LIMIT {
+        return 64.0 / reynolds;
+    }
+    let roughness_term = (relative_roughness / 3.7).powf(1.11);
+    let mut inverse_sqrt_f = -1.8 * (roughness_term + 6.9 / reynolds).log10();
+    for _ in 0..PIPE_FRICTION_ITERATIONS {
+        let colebrook_argument = relative_roughness / 3.7 + 2.51 * inverse_sqrt_f / reynolds;
+        let next_inverse_sqrt_f = -2.0 * colebrook_argument.log10();
+        if (next_inverse_sqrt_f - inverse_sqrt_f).abs() <= 1.0e-12 {
+            inverse_sqrt_f = next_inverse_sqrt_f;
+            break;
+        }
+        inverse_sqrt_f = next_inverse_sqrt_f;
+    }
+    1.0 / (inverse_sqrt_f * inverse_sqrt_f)
+}
+
+fn accumulate_branch_endpoints(
     residuals: &mut [f64],
     jacobian: &mut [f64],
     unknown_by_node: &[Option<usize>],
-    branch: ValveBranch,
-    flow_kg_per_s: f64,
-    derivative: f64,
+    branch: BranchContribution,
     unknown_count: usize,
 ) {
     if let Some(from_unknown) = unknown_by_node[branch.from] {
-        residuals[from_unknown] -= flow_kg_per_s;
+        residuals[from_unknown] -= branch.flow_kg_per_s;
         add_jacobian(
             jacobian,
             unknown_count,
             from_unknown,
             branch.from,
-            -derivative,
+            -branch.derivative,
             unknown_by_node,
         );
         add_jacobian(
@@ -442,18 +661,18 @@ fn accumulate_branch(
             unknown_count,
             from_unknown,
             branch.to,
-            derivative,
+            branch.derivative,
             unknown_by_node,
         );
     }
     if let Some(to_unknown) = unknown_by_node[branch.to] {
-        residuals[to_unknown] += flow_kg_per_s;
+        residuals[to_unknown] += branch.flow_kg_per_s;
         add_jacobian(
             jacobian,
             unknown_count,
             to_unknown,
             branch.from,
-            derivative,
+            branch.derivative,
             unknown_by_node,
         );
         add_jacobian(
@@ -461,7 +680,7 @@ fn accumulate_branch(
             unknown_count,
             to_unknown,
             branch.to,
-            -derivative,
+            -branch.derivative,
             unknown_by_node,
         );
     }
@@ -536,25 +755,6 @@ fn solve_dense_linear(
         }
     }
     Ok(x)
-}
-
-fn damped_update(values: &mut [f64], delta: &[f64]) -> Result<(), FeedSystemError> {
-    let mut scale = 1.0;
-    for _ in 0..MIN_DAMPING_STEPS {
-        let candidate_valid = values.iter().zip(delta).all(|(value, step)| {
-            (*value + scale * *step).is_finite() && *value + scale * *step >= 0.0
-        });
-        if candidate_valid {
-            for (value, step) in values.iter_mut().zip(delta) {
-                *value += scale * *step;
-            }
-            return Ok(());
-        }
-        scale *= 0.5;
-    }
-    Err(FeedSystemError::NonConverged {
-        reason: "steady feed graph Newton damping could not keep pressures non-negative",
-    })
 }
 
 fn max_abs(values: &[f64]) -> f64 {
@@ -827,6 +1027,112 @@ mod tests {
         }
     }
 
+    #[test]
+    fn graph_matches_gfssp_water_distribution_network() {
+        let data: toml::Value = toml::from_str(include_str!(
+            "../../../data/feed_system/gfssp-water-distribution-network-v1.toml"
+        ))
+        .unwrap();
+        assert_eq!(
+            table("openbmp", &data)["feed_network_gfssp_water_distribution"]
+                .as_integer()
+                .unwrap(),
+            1
+        );
+        assert_eq!(string(table("meta", &data), "validation"), "research");
+
+        let graph_config = table("config", &data);
+        let nodes_data = data
+            .get("node")
+            .and_then(toml::Value::as_array)
+            .expect("node array");
+        let mut nodes = Vec::with_capacity(nodes_data.len());
+        let mut expected_node_pressures = Vec::with_capacity(nodes_data.len());
+        for node in nodes_data {
+            let node = node.as_table().expect("node table");
+            let kind = match string(node, "kind") {
+                "pressure_boundary" => FeedGraphNodeKind::PressureBoundary {
+                    pressure_pa: float(node, "pressure_pa"),
+                },
+                "junction" => FeedGraphNodeKind::Junction {
+                    initial_pressure_pa: float(node, "initial_pressure_pa"),
+                },
+                other => panic!("unsupported GFSSP node kind {other}"),
+            };
+            nodes.push(FeedGraphNode { kind });
+            expected_node_pressures.push(float(node, "expected_pressure_pa"));
+        }
+
+        let pipes_data = data
+            .get("pipe_branch")
+            .and_then(toml::Value::as_array)
+            .expect("pipe_branch array");
+        let mut pipe_branches = Vec::with_capacity(pipes_data.len());
+        let mut expected_pipe_flows = Vec::with_capacity(pipes_data.len());
+        for pipe in pipes_data {
+            let pipe = pipe.as_table().expect("pipe_branch table");
+            let from = usize::try_from(integer(pipe, "from_node_id") - 1).unwrap();
+            let to = usize::try_from(integer(pipe, "to_node_id") - 1).unwrap();
+            pipe_branches.push(PipeBranch {
+                from,
+                to,
+                length_m: float(pipe, "length_m"),
+                diameter_m: float(pipe, "diameter_m"),
+                relative_roughness: float(graph_config, "relative_roughness"),
+                density_kg_m3: float(graph_config, "density_kg_m3"),
+                dynamic_viscosity_pa_s: float(graph_config, "dynamic_viscosity_pa_s"),
+            });
+            expected_pipe_flows.push(float(pipe, "expected_mass_flow_kg_per_s"));
+        }
+
+        let mut config =
+            SteadyFeedGraphConfig::new(nodes, Vec::new()).with_pipe_branches(pipe_branches);
+        config.max_newton_iterations =
+            usize::try_from(integer(graph_config, "max_newton_iterations")).unwrap();
+        config.residual_tolerance_kg_per_s = float(graph_config, "residual_tolerance_kg_per_s");
+        let graph = SteadyFeedGraph::new(config).unwrap();
+        let snapshot = graph.solve().unwrap();
+        let tolerances = table("tolerances", &data);
+
+        assert_eq!(
+            snapshot.node_pressures_pa.len(),
+            expected_node_pressures.len()
+        );
+        for (actual, expected) in snapshot
+            .node_pressures_pa
+            .iter()
+            .zip(expected_node_pressures.iter())
+        {
+            assert_abs_diff_eq!(
+                actual,
+                expected,
+                epsilon = float(tolerances, "absolute_pressure_pa")
+            );
+        }
+        assert!(snapshot.valve_branch_mass_flow_kg_per_s.is_empty());
+        assert_eq!(
+            snapshot.pipe_branch_mass_flow_kg_per_s.len(),
+            expected_pipe_flows.len()
+        );
+        for (actual, expected) in snapshot
+            .pipe_branch_mass_flow_kg_per_s
+            .iter()
+            .zip(expected_pipe_flows.iter())
+        {
+            assert_abs_diff_eq!(
+                actual,
+                expected,
+                epsilon = float(tolerances, "absolute_mass_flow_kg_per_s")
+            );
+        }
+        assert_abs_diff_eq!(
+            snapshot.max_residual_kg_per_s,
+            0.0,
+            epsilon = float(tolerances, "absolute_residual_kg_per_s")
+        );
+        assert_eq!(snapshot.validation, ValidationStatus::Research);
+    }
+
     fn table<'a>(key: &str, value: &'a toml::Value) -> &'a Table {
         value
             .get(key)
@@ -839,6 +1145,13 @@ mod tests {
             .get(key)
             .and_then(toml::Value::as_float)
             .unwrap_or_else(|| panic!("missing float {key}"))
+    }
+
+    fn integer(table: &Table, key: &str) -> i64 {
+        table
+            .get(key)
+            .and_then(toml::Value::as_integer)
+            .unwrap_or_else(|| panic!("missing integer {key}"))
     }
 
     fn float_array(table: &Table, key: &str) -> Vec<f64> {

@@ -1,6 +1,6 @@
 # Run-Data Management, Regression Infrastructure & Visualization
 
-**Status:** `experimental` (design intent; no code shipped by this document).
+**Status:** `experimental` (design intent; WP-21.1 through WP-21.8 implemented).
 **Audience:** the engineer or LLM agent implementing the parity work packages.
 **Prerequisite reading:** `00-overview.md`, `13-agent-execution-playbook.md`,
 `11-monte-carlo-uq-and-validation.md` and
@@ -94,19 +94,59 @@ emission — this document owns everything after the bytes land.
 ## 2. Current state in source
 
 - `crates/openbmp-telemetry/src/` — channelized Parquet/CSV/JSON writers
-  with schema v1; the byte-diff gate runs on these outputs. No index above
-  individual runs.
+  with schema v1; the byte-diff gate runs on these outputs. The run-data
+  layer now indexes these artifacts when explicitly requested.
 - `crates/openbmp-sil/src/{checks.rs,monitor.rs}` — verdict machinery
   (estimate-vs-truth monitors, honest pass/fail records) — the seed of the
   verdict engine.
-- `crates/openbmp-cli` — `diff`, `check-provenance`, MC subcommands; golden
-  scenario archive workflow in CI (`docs/verification.md`).
+- `crates/openbmp-cli` — `diff`, `check-provenance`, MC subcommands, and
+  off-by-default `openbmp run --run-index-jsonl/--run-index-parquet`
+  emission; golden scenario archive workflow in CI (`docs/verification.md`).
 - `crates/openbmp-mc/src/lib.rs` — Welford/Clopper-Pearson reducers whose
   outputs need a home and a trend line.
 - Criterion benchmarks produce HTML locally (dev-only); no deterministic
   plotting exists for results.
-- No run index, no baseline bands, no trends, no scoreboard, no 3D export,
-  no external-tool shims, no campaign manifests.
+- `crates/openbmp-rundata` now provides the WP-21.1 file-index substrate:
+  deterministic `RunRecord`, artifact/gate/label records, per-channel
+  telemetry digests, canonical JSONL bytes, append-only JSONL index helpers
+  with duplicate-run-id rejection, and deterministic Parquet index mirrors.
+  It also has the WP-21.2 verdict-rule core: closed TOML rule documents for
+  limits, tolerance-vs-golden, monotonicity, event windows, statistical bands,
+  and cross-run deltas, evaluated fail-closed over telemetry tables and
+  optional baseline records with byte-stable JSON reports and off-by-default
+  CLI emission. The WP-21.3 baseline-band substrate can generate
+  deterministic median/MAD and percentile-envelope JSON artifacts from
+  `RunRecord` families and evaluate candidate run records against the shared
+  band schema. The WP-21.4 trend substrate aggregates per-metric histories by
+  scenario family and `code_ordinal`, runs deterministic Page-Hinkley drift
+  checks, emits a byte-stable Markdown scoreboard, and exposes a CI
+  fail-on-drift helper covered by a constructed drift fixture. The WP-21.5
+  render substrate produces fixed-layout SVG time-series plots, percentile
+  fans, run-diff residual plots, deterministic top-k spike-hunt reports, and
+  Markdown report booklets with committed goldens. The first WP-21.6 export
+  substrate emits deterministic CZML-shaped JSON and glTF JSON artifacts with
+  embedded animation buffers/accessors from declared body tracks, event
+  intervals, and ground sites with committed goldens and local structural
+  validators; full external schema conformance and runner/multi-body fixture
+  wiring remain open. The WP-21.7 Open MCT substrate
+  emits deterministic static catalog JSON and replay-frame JSON for declared
+  numeric telemetry channels, and a feature-gated host example serves the
+  generated catalog plus replay frames through loopback HTTP/WebSocket requests
+  with a CI-lite WebSocket smoke. The WP-21.8 campaign substrate
+  parses deterministic TrickOps-shaped manifests, expands scenario/seed/overlay
+  matrices, shards run specs across worker counts, aggregates verdict reports
+  fail-closed, exposes `openbmp campaign plan` to write deterministic plan and
+  optional worker-shard JSON, and exposes `openbmp campaign run` for bounded
+  worker execution of scenario x seed cases with optional overlay TOML files in
+  append or parsed merge mode.
+  The executor applies manifest seeds to parsed scenarios, materializes combined
+  overlay scenarios per run, writes per-run telemetry, merges per-run local
+  indexes into a shared run index in expanded-plan order, optionally writes a
+  Parquet mirror, writes per-run verdict JSON, trend artifacts, combined
+  verdict/trend CI-failure summaries, and an aggregate summary. Overlay files
+  default to byte-compatible append mode; `mode = "merge"` parses base and
+  overlay TOML with `toml_edit`, recursively merges tables, appends matching
+  arrays of tables, and rejects invalid merge overlays fail-closed.
 
 ---
 
@@ -230,8 +270,8 @@ shape. CI consumes manifests for the canonical regression set.
 - **Determinism:** canonical serialization everywhere; digests via locked
   single-pass reducers; detectors deterministic; plots byte-stable; the
   only wall-clock data lives in an excluded sidecar.
-- **Byte-stable default:** emission hooks off by default
-  (`[rundata]` block / CLI flags); existing outputs and goldens unchanged.
+- **Byte-stable default:** run-data emission hooks are off by default
+  (`openbmp run` CLI flags); existing outputs and goldens unchanged.
 - **FC portability:** untouched — everything here is at or above L7.
 - **Provenance:** baseline bands, manifests, and report goldens are pinned;
   run records embed the existing scenario content-pin machinery; artifact
@@ -305,14 +345,29 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 ### WP-21.1 — `openbmp-rundata` skeleton: run records + campaign index
 
 - **title:** Canonical `RunRecord`, channel digests, append-only JSONL+Parquet index, runner emission hook.
+- **implementation_status:** implemented. `crates/openbmp-rundata` exists as
+  the L7 run-data crate and exposes deterministic `RunRecord`, `ArtifactRef`,
+  `GateResult`, `RunLabel`, `ChannelDigest`, `NumericChannelDigest`,
+  `channel_digests()`, `RunIndex`, `append_record_jsonl()`, and deterministic
+  Parquet index mirrors. `openbmp run` now has off-by-default
+  `--run-index-jsonl`, `--run-index-parquet`, and `--run-code-id` emission
+  hooks that build records from the runner telemetry table and written
+  telemetry artifacts. Tests prove identical records produce identical JSONL
+  bytes and record hashes, channel digests match direct row-order statistics,
+  JSONL appends preserve the existing prefix, unterminated existing indexes
+  fail closed, duplicate run ids are rejected, malformed SHA-256 pins are
+  rejected, Parquet mirrors are byte-stable, and a real CLI run emits
+  parseable JSONL plus a matching Parquet mirror.
 - **goal:** Every run becomes a durable, hashable, queryable fact — the
   substrate for verdicts, trends, and everything downstream.
 - **fidelity_tier:** T1
 - **depends_on:** []
 - **new_crates:** **`openbmp-rundata` (L7)** — skeleton + placement
   justification first (§3.1).
-- **touched:** `crates/openbmp-rundata/**(new)`, `crates/openbmp-runner`
-  (emission hook), `crates/openbmp-cli` (subcommand), schema docs.
+- **touched:** `crates/openbmp-rundata/**(new)`, `crates/openbmp-cli`
+  (`openbmp run` emission flags and report surface), schema docs. The runner
+  core remains unchanged because `runner::run()` already returns the telemetry
+  table required for record construction.
 - **approach:** §3.2; canonical serialization; single-pass digests via
   `openbmp-mc` reducers; wall-clock only in the excluded sidecar.
 - **acceptance:**
@@ -320,6 +375,8 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
   - identical run → identical record bytes (golden); index append-only
     property test
   - digest matches direct statistics exactly
+  - JSONL and Parquet run-index outputs are emitted only when requested and
+    are parseable/byte-stable
   - all `13` §2 gates green
 - **validation_label:** `validated-toy`
 - **dual_use_note:** far from line — bookkeeping.
@@ -329,13 +386,30 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 ### WP-21.2 — Verdict rule engine
 
 - **title:** Declarative post-run checks (limits, tolerance-vs-golden, event windows, monotonicity, statistical bands, cross-run deltas) with fail-closed honest verdicts.
+- **implementation_status:** implemented. `openbmp-rundata::verdict` exposes
+  closed TOML rule documents (`VerdictRuleDocument`) and typed rule variants
+  for limits, tolerance-vs-golden, monotonicity, event windows, statistical
+  bands, and cross-run deltas. It emits stable `VerdictReport` /
+  `VerdictRecord` JSON, evaluates over `TelemetryTable` plus optional
+  baseline `RunRecord`, rejects malformed/duplicate/unknown-field rule
+  documents, and fails closed for unknown channels, non-numeric metrics, absent
+  events, and missing baselines. `openbmp run` now has off-by-default
+  `--run-verdict-rules`, `--run-verdict-json`, and optional
+  `--run-verdict-baseline-jsonl` flags that write deterministic verdict-report
+  JSON after a real run; missing rule/output flag pairs fail closed before
+  scenario loading. Unit tests, a checked TOML fixture, and CLI end-to-end
+  coverage exercise the current path, including generated property checks for
+  inclusive bounds, monotonic samples, and unknown-channel fail-closed behavior
+  plus a committed verdict-report JSON golden. `openbmp-sil` remains
+  tap-specific; the shared contract is the stable pass/fail/skip verdict
+  vocabulary rather than a new dependency edge.
 - **goal:** The >99.99%-auto-checked pattern: rules judge every run, humans
   read only failures, and "could not evaluate" is never a pass.
 - **fidelity_tier:** T1
 - **depends_on:** [WP-21.1]
 - **new_crates:** none.
 - **touched:** `crates/openbmp-rundata` (verdict module),
-  `crates/openbmp-sil/src/checks.rs` (shared verdict types), rule schema
+  `crates/openbmp-cli` (off-by-default report emission flags), rule schema
   docs, fixtures under `tests/fixtures/`.
 - **approach:** §3.3 forms; typed verdicts with measured values; label
   passthrough verbatim.
@@ -353,6 +427,21 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 ### WP-21.3 — Baseline ensemble bands + out-of-family detection
 
 - **title:** Deterministic band generation (median/MAD, percentile envelopes) from seeded run families; robust out-of-family rule form; shared artifact schema with doc 18.
+- **implementation_status:** implemented. `openbmp-rundata::bands` exposes
+  `BaselineBandSpec`, `BaselineBandArtifact`, `BaselineBand`,
+  `OutOfFamilyFinding`, `generate_baseline_band_artifact()`, and
+  `evaluate_out_of_family()`, plus JSONL-index generation and a doc-18-style
+  launch-commit out-of-family predicate that consumes the same artifact schema
+  without translation. The artifact schema carries stable family id, sample
+  count, channel/metric bands, median, MAD, percentile envelope, and MAD
+  envelope fields; generation sorts specs deterministically, rejects empty
+  inputs, bad percentiles, and missing/non-numeric metrics, and serializes to
+  stable JSON with committed crate and `data/rundata/` golden fixtures. Tests
+  prove deterministic artifact bytes, JSON round-trip, linear percentile
+  interpolation, direct digest consumption without telemetry tables,
+  append-only JSONL run-index generation, shared-schema out-of-family
+  evaluation, doc-18 predicate fail-closed behavior, and synthetic
+  false-alarm/detection-rate tolerance evidence.
 - **goal:** "Is this run normal for its family?" becomes a computed verdict —
   the band artifact serves both post-run review here and `18`'s LCC
   out-of-family predicate.
@@ -438,6 +527,25 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **new_crates:** none.
 - **touched:** `crates/openbmp-rundata` (export module), schema validation
   tests, example docs.
+- **implementation_status:** implemented and traced by `REQ-RUNDATA-006` /
+  `V-RUNDATA-006`: `openbmp-rundata::export3d` exposes `SceneExport`,
+  `BodyTrack`, `KinematicSample`, `TelemetryBodyTrackSpec`, `EventInterval`,
+  `GroundSite`, `generate_czml()`, `generate_gltf_json()`,
+  `scene_export_from_telemetry_table()`, `validate_czml_export()`, and
+  `validate_gltf_export()`. It emits deterministic CZML-shaped trajectory,
+  attitude, event, and site packets, plus deterministic glTF 2.0 JSON with
+  embedded base64 animation buffers, bufferViews, accessors, animation
+  samplers/channels, and OpenBMP per-body track extras. The export path sorts
+  tracks/events/sites deterministically, validates empty tracks, empty samples,
+  non-finite values, duplicate/decreasing sample times, invalid intervals,
+  unknown telemetry channels, missing samples, non-numeric samples, and
+  malformed generated documents fail-closed, checks committed JSON goldens,
+  proves per-body track ordering on a constructed multi-body fixture, and
+  exports the real runner output from
+  `scenarios/multi-body/initial-formation.toml` into validated CZML/glTF
+  primary-plus-observer tracks. `scripts/check_export3d_schemas.py` downloads
+  pinned upstream Khronos glTF 2.0 and CZML writer schema trees and validates
+  the committed CZML/glTF goldens through AJV.
 - **approach:** §3.6; deterministic packet/track generation; placeholder
   geometry convention documented.
 - **acceptance:**
@@ -463,6 +571,27 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **new_crates:** none (example binary behind a feature, host-only).
 - **touched:** `crates/openbmp-rundata` (example), docs (run instructions),
   CI-lite smoke lane (optional, non-blocking).
+- **implementation_status:** implemented and traced by `REQ-RUNDATA-007` /
+  `V-RUNDATA-007`: `openbmp-rundata::openmct` emits deterministic static
+  catalog JSON for numeric telemetry channels and deterministic replay-frame
+  JSON for declared numeric channels at a finite positive replay speed.
+  `OpenMctCatalog::from_json_bytes()` round-trips catalog artifacts, and
+  helpers reject empty namespaces, empty replay channel lists, invalid replay
+  speed, unknown channels, missing samples, and non-numeric samples fail-closed.
+  The opt-in `openmct-host` feature exposes `openmct_host` helpers for serving
+  `GET /catalog.json` and WebSocket `GET /replay` requests from already
+  generated catalog/replay JSON artifacts. The example binary is built only
+  with `--features openmct-host`:
+  `cargo run -p openbmp-rundata --features openmct-host --example
+  openmct_replay_server --
+  crates/openbmp-rundata/tests/fixtures/openmct-catalog.json
+  crates/openbmp-rundata/tests/fixtures/openmct-replay.json
+  127.0.0.1:8765 1`, then configure Open MCT to load
+  `http://127.0.0.1:8765/catalog.json` and subscribe to
+  `ws://127.0.0.1:8765/replay`. Tests compare committed catalog/replay JSON
+  goldens, check the RFC WebSocket accept key, prove catalog HTTP serving, run a
+  loopback WebSocket replay smoke, and compile-check the feature-gated example.
+  This remains an example shim rather than a supported OpenBMP service.
 - **approach:** §3.7; replay at declared speed; explicitly outside the
   determinism story and excluded from goldens.
 - **acceptance:**
@@ -487,6 +616,41 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 - **touched:** `crates/openbmp-rundata` (manifest module),
   `crates/openbmp-cli` (campaign subcommand), CI integration, manifest
   fixtures.
+- **implementation_status:** implemented and traced by `REQ-RUNDATA-008` /
+  `V-RUNDATA-008`: `openbmp-rundata::campaign` parses closed TOML campaign
+  manifests, expands scenario x seed x overlay matrices into stable run specs,
+  serializes deterministic plan JSON, partitions run specs into deterministic
+  round-robin shards, and aggregates per-run verdict reports so any failed run
+  fails the campaign summary. The CLI exposes `openbmp campaign plan`, which
+  reads a manifest, writes the deterministic plan JSON, optionally writes worker
+  shard JSON, rejects zero-worker shard requests fail-closed, and is covered by a
+  binary smoke test plus the top-level help snapshot. The CLI also exposes
+  `openbmp campaign run`: it writes `plan.json`, runs each scenario x seed case
+  through a bounded worker pool with per-run telemetry under `runs/<run_key>/`,
+  applies selected manifest-relative `[[overlay_files]]` rows, materializes a
+  combined per-run `scenario.toml` artifact, appends a shared `run-index.jsonl`,
+  optionally writes `run-index.parquet`, writes per-run `verdict.json` files
+  when rules are declared, writes `summary.json`, aggregates verdicts, and
+  rejects selected overlays without files fail-closed. Overlay files default to
+  `mode = "append"` for legacy fragment behavior; `mode = "merge"` parses base
+  and overlay TOML with `toml_edit`, recursively merges tables, appends matching
+  arrays of tables, materializes the merged scenario, and rejects malformed
+  merge overlays fail-closed.
+  When the manifest declares a manifest-relative `trend_specs` TOML document,
+  the executor parses its `[[metrics]]` rows as `TrendMetricSpec`, evaluates the
+  completed `run-index.jsonl`, writes `trend-store.json`, `drift-report.json`,
+  and `trend-scoreboard.md`, and records stable `ci_failures` strings in
+  `summary.json`. The campaign summary also carries combined verdict/trend
+  `ci_failures`; `openbmp campaign run --fail-on-ci-gates` writes all artifacts
+  first and then exits non-zero when those gates are nonempty, with a CI job
+  exercising the failing-verdict path. `openbmp campaign run --workers N`
+  executes run specs through a bounded worker pool, writes one local
+  `run-index.jsonl` per run directory, merges records into the campaign
+  `run-index.jsonl` in expanded-plan order, and has regression coverage proving
+  plan, index, Parquet, summary, verdict, trend, and per-run telemetry artifact
+  bytes are identical across 1/4/16 workers. The implementation intentionally
+  stops short of keyed or semantic patch operations beyond recursive table
+  merge and matching array-of-tables append.
 - **approach:** §3.8; manifest → run set → records → verdicts → trends;
   deterministic across worker counts.
 - **acceptance:**

@@ -1,0 +1,53 @@
+format = "openbmp.runner.recovery_pflanz_integrated_sweep.v1"
+description = "Synthetic fixed-step integrated descent-EOM sweep for WP-16.1 Pflanz peak-load closure."
+
+[tolerances]
+peak_ratio_abs = 2.0e-4
+final_speed_abs_m_s = 2.0e-4
+ballistic_parameter_rel = 1.0e-12
+finite_peak_ratio_abs = 1.0e-15
+
+[[cases]]
+case = "very-low-A"
+target_ballistic_parameter_a = 0.02
+initial_speed_m_s = 50.0
+fill_time_s = 1.0
+dt_s = 0.002
+c_d = 1.5
+area_m2 = 8.0
+
+[[cases]]
+case = "low-A"
+target_ballistic_parameter_a = 0.1
+initial_speed_m_s = 50.0
+fill_time_s = 1.0
+dt_s = 0.002
+c_d = 1.5
+area_m2 = 8.0
+
+[[cases]]
+case = "mid-A"
+target_ballistic_parameter_a = 0.5
+initial_speed_m_s = 50.0
+fill_time_s = 1.0
+dt_s = 0.002
+c_d = 1.5
+area_m2 = 8.0
+
+[[cases]]
+case = "high-A"
+target_ballistic_parameter_a = 3.0
+initial_speed_m_s = 50.0
+fill_time_s = 1.0
+dt_s = 0.002
+c_d = 1.5
+area_m2 = 8.0
+
+[[cases]]
+case = "very-high-A"
+target_ballistic_parameter_a = 30.0
+initial_speed_m_s = 50.0
+fill_time_s = 1.0
+dt_s = 0.002
+c_d = 1.5
+area_m2 = 8.0

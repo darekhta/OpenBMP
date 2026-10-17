@@ -8,6 +8,10 @@ repository.workspace    = true
 authors.workspace       = true
 description             = "OpenBMP telemetry: typed channels, ring buffer, exporters (CSV, JSON, Parquet)."
 
+[features]
+default        = []
+interop-export = []
+
 [dependencies]
 arrow        = { workspace = true }
 openbmp-core = { workspace = true }

@@ -1,0 +1,72 @@
+openbmp_feed_pogo_case_history = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.public_pogo_case_history.v1"
+source_class = "public-case-history"
+source_title = "NASA public POGO case-history qualitative benchmark record"
+provenance = "data/feed_system/provenance.md#openbmp.feed_system.public_pogo_case_history.v1"
+license_or_terms = "NASA NTRS public records; work of the US Government, public use permitted"
+validation = "research-method-level"
+retrieved_utc = "2026-06-24"
+
+[[source]]
+id = "nasa_sp_8055"
+title = "Prevention of Coupled Structure-Propulsion Instability (POGO)"
+document_id = "19710016604"
+report_number = "NASA-SP-8055"
+url = "https://ntrs.nasa.gov/citations/19710016604"
+download_url = "https://ntrs.nasa.gov/api/citations/19710016604/downloads/19710016604.pdf"
+sha256 = "f7db2a45c7ad64434bb94f6dffaaa4e2bbfe4b168f8b6aaba0e5bf7745c6abb7"
+public = true
+
+[[source]]
+id = "larsen_2008"
+title = "NASA Experience with Pogo in Human Spaceflight Vehicles"
+document_id = "20080018689"
+report_number = "RTO-MP-AVT-152"
+url = "https://ntrs.nasa.gov/citations/20080018689"
+download_url = "https://ntrs.nasa.gov/api/citations/20080018689/downloads/20080018689.pdf"
+sha256 = "6dc98264ca77e8465cddb1ed7e517cb73fc83e331eca7cd5c95c55683dbcd777"
+public = true
+
+[[case]]
+id = "gemini_titan_ii"
+vehicle_family = "Gemini-Titan II"
+stage = "Titan II first stage"
+source_ids = ["nasa_sp_8055", "larsen_2008"]
+observed_pogo = true
+public_frequency_band_hz = [10.0, 13.0]
+public_peak_acceleration_g = 2.5
+mitigation = "fuel-line accumulators plus oxidizer standpipes/suppressors"
+mitigation_outcome = "suppressed_to_human_flight_limit"
+accumulator_trend = "raises_margin"
+qualitative_benchmark = "correct fuel/oxidizer suppression reduced Titan II pogo below the Gemini human-flight limit; incomplete or wrong-side suppression could worsen coupled instability"
+model_expectation = "adding appropriate accumulator compliance should detune the feedline resonance away from the structural mode and improve the stability verdict or sampled margin"
+
+[[case]]
+id = "apollo_saturn_v_sic"
+vehicle_family = "Apollo Saturn V"
+stage = "S-IC first stage"
+source_ids = ["nasa_sp_8055", "larsen_2008"]
+observed_pogo = true
+public_frequency_band_hz = [5.0, 5.5]
+public_peak_acceleration_g = 0.6
+mitigation = "helium gas trapped in liquid-oxygen prevalves, converting cavities to low-inertance accumulators"
+mitigation_outcome = "suppressed_on_corrected_subsequent_flights"
+accumulator_trend = "raises_margin"
+qualitative_benchmark = "Saturn V S-IC pogo occurred near the F-1/first-longitudinal-mode coincidence and was cleared after the LOX prevalve accumulator conversion"
+model_expectation = "accumulator detuning should move the first feedline resonance away from the first significant structural mode and improve the stability verdict or sampled margin"
+
+[[case]]
+id = "apollo_saturn_v_sii"
+vehicle_family = "Apollo Saturn V"
+stage = "S-II second stage center J-2 engine"
+source_ids = ["nasa_sp_8055", "larsen_2008"]
+observed_pogo = true
+public_frequency_band_hz = [17.0, 18.0]
+public_peak_acceleration_g = 34.0
+mitigation = "helium-bleed toroidal pogo suppressor on the oxidizer side of the center J-2 engine"
+mitigation_outcome = "suppressed_after_apollo_13"
+accumulator_trend = "raises_margin"
+qualitative_benchmark = "Saturn V S-II center-engine pogo escalated on Apollo 13 and the oxidizer-side suppressor was installed for subsequent Apollo missions"
+model_expectation = "adding the suppressor/accumulator compliance near the pump should reduce feedline/structural coincidence and improve the stability verdict or sampled margin"

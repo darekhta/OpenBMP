@@ -1,0 +1,3 @@
+schema,id,frequency_hz,shape_internal_dof_0,shape_internal_dof_1
+openbmp.structural_cb_modal_benchmark.csv.v1,cb_mode_1,0.3183098861837907,0.7071067811865475,0.0
+openbmp.structural_cb_modal_benchmark.csv.v1,cb_mode_2,0.477464829275686,0.0,1.0

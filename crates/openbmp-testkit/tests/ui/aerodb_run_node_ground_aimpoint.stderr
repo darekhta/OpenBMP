@@ -1,0 +1,5 @@
+error[E0599]: no method named `with_ground_aimpoint_eci_m` found for struct `RunNode` in the current scope
+ --> tests/ui/aerodb_run_node_ground_aimpoint.rs:5:18
+  |
+5 |     let _ = node.with_ground_aimpoint_eci_m([0.0, 0.0, 0.0]);
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `RunNode`

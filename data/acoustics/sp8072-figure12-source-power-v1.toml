@@ -1,0 +1,71 @@
+openbmp.acoustics_sp8072_axial_power_curve = 1
+
+[meta]
+dataset_id = "openbmp.acoustics.sp8072_figure12_source_power.v1"
+source_manifest_id = "openbmp.acoustics.sp8072_source.v1"
+source_manifest_file = "data/acoustics/sp8072-source-v1.toml"
+source_figure_id = "figure_12"
+source_pdf_sha256 = "84f1483c2c8477810186e98765ea99e4b7f7cc71e0a47eb8f86977d3b02aabf8"
+digitization_method = "coarse manual digitization from the pinned NASA SP-8072 PDF Figure 12 raster; values are rounded visual samples for parser/integration evidence, not a production acoustic calibration"
+license_or_terms = "Public NASA Technical Reports Server document"
+validation = "coarse-public-digitization"
+
+[[points]]
+x_over_core_length = 0.10
+relative_power_db = -18.9
+
+[[points]]
+x_over_core_length = 0.15
+relative_power_db = -16.8
+
+[[points]]
+x_over_core_length = 0.20
+relative_power_db = -15.0
+
+[[points]]
+x_over_core_length = 0.30
+relative_power_db = -12.3
+
+[[points]]
+x_over_core_length = 0.50
+relative_power_db = -8.7
+
+[[points]]
+x_over_core_length = 0.70
+relative_power_db = -6.7
+
+[[points]]
+x_over_core_length = 1.00
+relative_power_db = -4.8
+
+[[points]]
+x_over_core_length = 1.40
+relative_power_db = -3.2
+
+[[points]]
+x_over_core_length = 1.80
+relative_power_db = -3.0
+
+[[points]]
+x_over_core_length = 2.20
+relative_power_db = -3.6
+
+[[points]]
+x_over_core_length = 2.60
+relative_power_db = -5.2
+
+[[points]]
+x_over_core_length = 3.00
+relative_power_db = -8.5
+
+[[points]]
+x_over_core_length = 3.50
+relative_power_db = -13.0
+
+[[points]]
+x_over_core_length = 4.20
+relative_power_db = -18.0
+
+[[points]]
+x_over_core_length = 5.00
+relative_power_db = -20.0

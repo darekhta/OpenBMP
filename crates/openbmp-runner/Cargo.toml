@@ -21,7 +21,10 @@ mpc         = ["openbmp-fc/mpc"]
 
 [dependencies]
 nalgebra            = { workspace = true }
+num-complex         = { workspace = true }
+openbmp-acoustics   = { workspace = true }
 openbmp-aero        = { workspace = true }
+openbmp-aerodb      = { workspace = true }
 openbmp-aerothermal = { workspace = true }
 openbmp-afts        = { workspace = true }
 openbmp-bridge      = { workspace = true }
@@ -30,8 +33,10 @@ openbmp-contact     = { workspace = true }
 openbmp-core        = { workspace = true }
 openbmp-feedsystem  = { workspace = true }
 openbmp-fc          = { workspace = true }
+openbmp-ground      = { workspace = true }
 openbmp-mission     = { workspace = true }
 openbmp-mc          = { workspace = true }
+openbmp-modelio     = { workspace = true }
 openbmp-multibody   = { workspace = true }
 openbmp-physics     = { workspace = true }
 openbmp-pil         = { workspace = true }
@@ -42,8 +47,10 @@ openbmp-scenario    = { workspace = true }
 openbmp-sensors     = { workspace = true, features = ["synthetic"] }
 openbmp-sim         = { workspace = true }
 openbmp-state       = { workspace = true }
+openbmp-structdyn   = { workspace = true }
 openbmp-telemetry   = { workspace = true }
 openbmp-thermochem  = { workspace = true }
+openbmp-trajopt     = { workspace = true }
 openbmp-uq          = { workspace = true }
 openbmp-vehicle     = { workspace = true }
 serde               = { workspace = true }
@@ -56,6 +63,7 @@ uom                 = { workspace = true }
 [dev-dependencies]
 approx          = { workspace = true }
 openbmp-testkit = { workspace = true }
+openbmp-trajopt = { workspace = true, features = ["sqp"] }
 
 [lints]
 workspace = true

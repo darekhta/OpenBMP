@@ -1,0 +1,113 @@
+schema = "openbmp.slosh.abramson-cylinder-table.v1"
+source = "Dodge SP-106 update, Table 3.2 cylindrical-tank mechanical-model formulas"
+source_url = "https://www2.swri.org/www2/fluid-slosh/dodge-sp-106-update.pdf"
+source_pdf_sha256 = "2985277d1b7a0b7ad445cc11c5bc56587a89a5b8998d5ddc549976d75c5f0d31"
+coordinate_note = "h_over_d is liquid depth over cylinder diameter; hinge_height_over_d is measured upward from the liquid bottom; slosh_mass_height_over_d is relative to the liquid center of mass."
+
+[[cases]]
+h_over_d = 0.25
+mode = 1
+xi = 1.841183781340659
+mass_fraction = 0.6601084670917898
+pendulum_length_over_d = 0.3739643419741387
+hinge_height_over_d = 0.2652422178348165
+slosh_mass_height_over_d = -0.2337221241393223
+
+[[cases]]
+h_over_d = 0.25
+mode = 2
+xi = 5.331442773525032
+mass_fraction = 0.02709433524596284
+pendulum_length_over_d = 0.09469492944582046
+hinge_height_over_d = 0.05652206922813884
+slosh_mass_height_over_d = -0.1631728602176816
+
+[[cases]]
+h_over_d = 0.25
+mode = 3
+xi = 8.536316366346286
+mass_fraction = 0.006517473741798466
+pendulum_length_over_d = 0.05859626433026392
+hinge_height_over_d = 0.06968625406562981
+slosh_mass_height_over_d = -0.1139100102646341
+
+[[cases]]
+h_over_d = 0.5
+mode = 1
+xi = 1.841183781340659
+mass_fraction = 0.4321966868008369
+pendulum_length_over_d = 0.285584128784974
+hinge_height_over_d = 0.1411762975933554
+slosh_mass_height_over_d = -0.3944078311916187
+
+[[cases]]
+h_over_d = 0.5
+mode = 2
+xi = 5.331442773525032
+mass_fraction = 0.01367822219055717
+pendulum_length_over_d = 0.0937876329523693
+hinge_height_over_d = 0.158026960034533
+slosh_mass_height_over_d = -0.1857606729178363
+
+[[cases]]
+h_over_d = 0.5
+mode = 3
+xi = 8.536316366346286
+mass_fraction = 0.003260015675469512
+pendulum_length_over_d = 0.05857327880562652
+hinge_height_over_d = 0.1914726922436483
+slosh_mass_height_over_d = -0.1171005865619782
+
+[[cases]]
+h_over_d = 1.0
+mode = 1
+xi = 1.841183781340659
+mass_fraction = 0.2269669686673296
+pendulum_length_over_d = 0.2719085402349475
+hinge_height_over_d = 0.2554426368651056
+slosh_mass_height_over_d = -0.516465903369842
+
+[[cases]]
+h_over_d = 1.0
+mode = 2
+xi = 5.331442773525032
+mass_fraction = 0.006839431130148165
+pendulum_length_over_d = 0.09378324438374294
+hinge_height_over_d = 0.4062255327535098
+slosh_mass_height_over_d = -0.1875577116302332
+
+[[cases]]
+h_over_d = 1.0
+mode = 3
+xi = 8.536316366346286
+mass_fraction = 0.001630007963242204
+pendulum_length_over_d = 0.05857327429559777
+hinge_height_over_d = 0.4414267347244597
+slosh_mass_height_over_d = -0.1171465395711381
+
+[[cases]]
+h_over_d = 2.0
+mode = 1
+xi = 1.841183781340659
+mass_fraction = 0.1136271981947753
+pendulum_length_over_d = 0.2715646346665015
+hinge_height_over_d = 0.7291231764703904
+slosh_mass_height_over_d = -0.5424414581961112
+
+[[cases]]
+h_over_d = 2.0
+mode = 2
+xi = 5.331442773525032
+mass_fraction = 0.00341971556881825
+pendulum_length_over_d = 0.09378324428106184
+hinge_height_over_d = 0.9062167559243004
+slosh_mass_height_over_d = -0.1875664883567615
+
+[[cases]]
+h_over_d = 2.0
+mode = 3
+xi = 8.536316366346286
+mass_fraction = 0.0008150039816211046
+pendulum_length_over_d = 0.0585732742955976
+hinge_height_over_d = 0.9414267257044028
+slosh_mass_height_over_d = -0.1171465485911948

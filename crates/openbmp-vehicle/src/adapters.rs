@@ -30,7 +30,7 @@
 //!   for those fields); the motor's mass-rate is the only non-zero
 //!   contribution.
 
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 
 use openbmp_aero::{
     AeroContext, AeroDeck, AeroError, AeroMethod, knudsen_number, mean_free_path_m,
@@ -40,8 +40,8 @@ use openbmp_contact::{
     NormalLaw, half_space_kinematics,
 };
 use openbmp_models::{
-    ForceContext, ForceModel, MassModel, MassPropertiesRate, ModelEvalError, MomentContext,
-    MomentModel, RigidMassModel,
+    ForceContext, ForceModel, MassContext, MassModel, MassPropertiesRate, ModelEvalError,
+    MomentContext, MomentModel, RigidMassModel,
 };
 use openbmp_physics::{AtmosphereModel, GravityModel};
 use openbmp_propulsion::Motor;
@@ -91,6 +91,27 @@ fn mapped_owner_allows<K: Ord>(
             |owner| Ok(*owner == active),
         ),
     }
+}
+
+/// Frame transform for aero resources routed from a welded descendant body onto
+/// the departing root owner.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct AeroFrameTransform {
+    /// Rotation from the aero resource's declared mounted-body frame into the
+    /// owner body frame used by the active kernel lane.
+    pub rot_owner_from_aero_body: Matrix3<f64>,
+    /// Translation from the owner body origin to the aero mounted-body origin,
+    /// expressed in the owner body frame.
+    pub translation_owner_from_aero_body_m: Vector3<f64>,
+}
+
+/// Frame transform for a solid motor routed from a welded descendant body onto
+/// the departing root owner.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct MotorThrustFrameTransform {
+    /// Rotation from the motor's declared mounted-body frame into the owner body
+    /// frame used by the active kernel lane.
+    pub rot_owner_from_motor_body: Matrix3<f64>,
 }
 
 // ---------------------------------------------------------------------
@@ -399,6 +420,7 @@ pub struct MotorThrustForceAdapter<M> {
     ignition_time_s: f64,
     model_id: ModelId,
     owner: Option<BodyId>,
+    motor_frame_transform: Option<MotorThrustFrameTransform>,
 }
 
 impl<M> MotorThrustForceAdapter<M> {
@@ -411,6 +433,7 @@ impl<M> MotorThrustForceAdapter<M> {
             ignition_time_s,
             model_id,
             owner: None,
+            motor_frame_transform: None,
         }
     }
 
@@ -427,6 +450,26 @@ impl<M> MotorThrustForceAdapter<M> {
             ignition_time_s,
             model_id,
             owner: Some(owner),
+            motor_frame_transform: None,
+        }
+    }
+
+    /// Construct with an owning body and motor-frame transform for
+    /// post-separation routing from a welded descendant frame.
+    #[must_use]
+    pub const fn new_owned_with_frame_transform(
+        motor: M,
+        ignition_time_s: f64,
+        model_id: ModelId,
+        owner: BodyId,
+        motor_frame_transform: MotorThrustFrameTransform,
+    ) -> Self {
+        Self {
+            motor,
+            ignition_time_s,
+            model_id,
+            owner: Some(owner),
+            motor_frame_transform: Some(motor_frame_transform),
         }
     }
 
@@ -510,7 +553,13 @@ impl<M: Motor> ForceModel<RigidBodyState> for MotorThrustForceAdapter<M> {
         // rocket's body `+z`, which is the typical solid-rocket
         // convention.
         let thrust_body = Vector3::new(0.0, 0.0, thrust_n);
-        let f = ctx.state.orientation.q * thrust_body;
+        let thrust_owner = if let Some(transform) = self.motor_frame_transform {
+            validate_motor_thrust_frame_transform(&transform, self.model_id)?;
+            transform.rot_owner_from_motor_body * thrust_body
+        } else {
+            thrust_body
+        };
+        let f = ctx.state.orientation.q * thrust_owner;
         if !f.x.is_finite() || !f.y.is_finite() || !f.z.is_finite() {
             return Err(ModelEvalError::NonFinite {
                 model: self.model_id,
@@ -526,6 +575,23 @@ impl<M: Motor> ForceModel<RigidBodyState> for MotorThrustForceAdapter<M> {
     fn supports_separated_body_propagation(&self) -> bool {
         self.owner.is_some()
     }
+}
+
+fn validate_motor_thrust_frame_transform(
+    transform: &MotorThrustFrameTransform,
+    model_id: ModelId,
+) -> Result<(), ModelEvalError> {
+    if !transform
+        .rot_owner_from_motor_body
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return Err(ModelEvalError::InvalidState {
+            model: model_id,
+            reason: Cow::Borrowed("motor thrust frame transform must contain finite components"),
+        });
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------
@@ -641,6 +707,7 @@ pub struct DeckDragForceAdapter<Atm> {
     atmosphere: Atm,
     model_id: ModelId,
     owner: Option<BodyId>,
+    aero_frame_transform: Option<AeroFrameTransform>,
 }
 
 impl<Atm> DeckDragForceAdapter<Atm> {
@@ -653,6 +720,7 @@ impl<Atm> DeckDragForceAdapter<Atm> {
             atmosphere,
             model_id,
             owner: None,
+            aero_frame_transform: None,
         }
     }
 
@@ -669,6 +737,26 @@ impl<Atm> DeckDragForceAdapter<Atm> {
             atmosphere,
             model_id,
             owner: Some(owner),
+            aero_frame_transform: None,
+        }
+    }
+
+    /// Construct with an owning body and aero-frame transform for
+    /// post-separation routing from a welded descendant frame.
+    #[must_use]
+    pub const fn new_owned_with_frame_transform(
+        deck: AeroDeck,
+        atmosphere: Atm,
+        model_id: ModelId,
+        owner: BodyId,
+        aero_frame_transform: AeroFrameTransform,
+    ) -> Self {
+        Self {
+            deck,
+            atmosphere,
+            model_id,
+            owner: Some(owner),
+            aero_frame_transform: Some(aero_frame_transform),
         }
     }
 
@@ -733,6 +821,28 @@ impl<Atm: AtmosphereModel> ForceModel<RigidBodyState> for DeckDragForceAdapter<A
         let velocity_eci = ctx
             .environment
             .air_relative_velocity_eci_m_s(ctx.state.velocity.vector);
+        if let Some(transform) = self.aero_frame_transform {
+            validate_aero_frame_transform(&transform, self.model_id)?;
+            let velocity_owner = ctx.state.orientation.q.inverse() * velocity_eci;
+            let velocity_aero = transform.rot_owner_from_aero_body.transpose() * velocity_owner;
+            let force_aero = compute_rigid_body_deck_force_body(
+                &self.deck,
+                &self.atmosphere,
+                self.model_id,
+                ctx.state.position.vector,
+                velocity_aero,
+                ctx.time,
+                ctx.effector_actuals,
+            )?;
+            let force_owner = transform.rot_owner_from_aero_body * force_aero;
+            let force_eci = ctx.state.orientation.q * force_owner;
+            if !force_eci.iter().all(|value| value.is_finite()) {
+                return Err(ModelEvalError::NonFinite {
+                    model: self.model_id,
+                });
+            }
+            return Ok(force_eci);
+        }
         compute_rigid_body_deck_force(
             &self.deck,
             &self.atmosphere,
@@ -765,6 +875,7 @@ pub struct AeroMethodForceAdapter<M, Atm> {
     model_id: ModelId,
     reference_length_m: f64,
     owner: Option<BodyId>,
+    aero_frame_transform: Option<AeroFrameTransform>,
 }
 
 impl<M, Atm> std::fmt::Debug for AeroMethodForceAdapter<M, Atm> {
@@ -775,6 +886,7 @@ impl<M, Atm> std::fmt::Debug for AeroMethodForceAdapter<M, Atm> {
             .field("model_id", &self.model_id)
             .field("reference_length_m", &self.reference_length_m)
             .field("owner", &self.owner)
+            .field("aero_frame_transform", &self.aero_frame_transform)
             .finish()
     }
 }
@@ -795,6 +907,7 @@ impl<M, Atm> AeroMethodForceAdapter<M, Atm> {
             model_id,
             reference_length_m,
             owner: None,
+            aero_frame_transform: None,
         }
     }
 
@@ -813,6 +926,28 @@ impl<M, Atm> AeroMethodForceAdapter<M, Atm> {
             model_id,
             reference_length_m,
             owner: Some(owner),
+            aero_frame_transform: None,
+        }
+    }
+
+    /// Construct with an owning body and aero-frame transform for
+    /// post-separation routing from a welded descendant frame.
+    #[must_use]
+    pub const fn new_owned_with_frame_transform(
+        method: M,
+        atmosphere: Atm,
+        model_id: ModelId,
+        reference_length_m: f64,
+        owner: BodyId,
+        aero_frame_transform: AeroFrameTransform,
+    ) -> Self {
+        Self {
+            method,
+            atmosphere,
+            model_id,
+            reference_length_m,
+            owner: Some(owner),
+            aero_frame_transform: Some(aero_frame_transform),
         }
     }
 }
@@ -884,7 +1019,13 @@ impl<M: AeroMethod, Atm: AtmosphereModel> ForceModel<RigidBodyState>
         let velocity_eci = ctx
             .environment
             .air_relative_velocity_eci_m_s(ctx.state.velocity.vector);
-        let velocity_body = ctx.state.orientation.q.inverse() * velocity_eci;
+        let velocity_owner = ctx.state.orientation.q.inverse() * velocity_eci;
+        let velocity_body = if let Some(transform) = self.aero_frame_transform {
+            validate_aero_frame_transform(&transform, self.model_id)?;
+            transform.rot_owner_from_aero_body.transpose() * velocity_owner
+        } else {
+            velocity_owner
+        };
         let Some((aero_ctx, _)) = aero_context_from_velocity(
             &self.atmosphere,
             self.model_id,
@@ -901,7 +1042,12 @@ impl<M: AeroMethod, Atm: AtmosphereModel> ForceModel<RigidBodyState>
             .method
             .aero_force_moment_body(&aero_ctx)
             .map_err(|err| map_aero_lookup_error(self.model_id, err))?;
-        let force_eci = ctx.state.orientation.q * body.force_n_body;
+        let force_owner = self
+            .aero_frame_transform
+            .map_or(body.force_n_body, |transform| {
+                transform.rot_owner_from_aero_body * body.force_n_body
+            });
+        let force_eci = ctx.state.orientation.q * force_owner;
         if !(force_eci.x.is_finite() && force_eci.y.is_finite() && force_eci.z.is_finite()) {
             return Err(ModelEvalError::NonFinite {
                 model: self.model_id,
@@ -927,6 +1073,7 @@ pub struct AeroMethodMomentAdapter<M, Atm> {
     model_id: ModelId,
     reference_length_m: f64,
     owner: Option<BodyId>,
+    aero_frame_transform: Option<AeroFrameTransform>,
 }
 
 impl<M, Atm> std::fmt::Debug for AeroMethodMomentAdapter<M, Atm> {
@@ -937,6 +1084,7 @@ impl<M, Atm> std::fmt::Debug for AeroMethodMomentAdapter<M, Atm> {
             .field("model_id", &self.model_id)
             .field("reference_length_m", &self.reference_length_m)
             .field("owner", &self.owner)
+            .field("aero_frame_transform", &self.aero_frame_transform)
             .finish()
     }
 }
@@ -957,6 +1105,7 @@ impl<M, Atm> AeroMethodMomentAdapter<M, Atm> {
             model_id,
             reference_length_m,
             owner: None,
+            aero_frame_transform: None,
         }
     }
 
@@ -975,6 +1124,28 @@ impl<M, Atm> AeroMethodMomentAdapter<M, Atm> {
             model_id,
             reference_length_m,
             owner: Some(owner),
+            aero_frame_transform: None,
+        }
+    }
+
+    /// Construct with an owning body and aero-frame transform for
+    /// post-separation routing from a welded descendant frame.
+    #[must_use]
+    pub const fn new_owned_with_frame_transform(
+        method: M,
+        atmosphere: Atm,
+        model_id: ModelId,
+        reference_length_m: f64,
+        owner: BodyId,
+        aero_frame_transform: AeroFrameTransform,
+    ) -> Self {
+        Self {
+            method,
+            atmosphere,
+            model_id,
+            reference_length_m,
+            owner: Some(owner),
+            aero_frame_transform: Some(aero_frame_transform),
         }
     }
 }
@@ -997,8 +1168,14 @@ impl<M: AeroMethod, Atm: AtmosphereModel> MomentModel<RigidBodyState>
         let velocity_eci = ctx
             .environment
             .air_relative_velocity_eci_m_s(ctx.state.velocity.vector);
-        let velocity_body = ctx.state.orientation.q.inverse() * velocity_eci;
-        let Some((aero_ctx, _)) = aero_context_from_velocity(
+        let velocity_owner = ctx.state.orientation.q.inverse() * velocity_eci;
+        let velocity_body = if let Some(transform) = self.aero_frame_transform {
+            validate_aero_frame_transform(&transform, self.model_id)?;
+            transform.rot_owner_from_aero_body.transpose() * velocity_owner
+        } else {
+            velocity_owner
+        };
+        let Some((mut aero_ctx, _)) = aero_context_from_velocity(
             &self.atmosphere,
             self.model_id,
             velocity_body,
@@ -1010,19 +1187,30 @@ impl<M: AeroMethod, Atm: AtmosphereModel> MomentModel<RigidBodyState>
         else {
             return Ok(Vector3::zeros());
         };
+        aero_ctx.body_angular_rates_rad_s = if let Some(transform) = self.aero_frame_transform {
+            transform.rot_owner_from_aero_body.transpose() * ctx.state.angular_velocity.vector
+        } else {
+            ctx.state.angular_velocity.vector
+        };
         let body = self
             .method
             .aero_force_moment_body(&aero_ctx)
             .map_err(|err| map_aero_lookup_error(self.model_id, err))?;
-        if !(body.moment_n_m_body.x.is_finite()
-            && body.moment_n_m_body.y.is_finite()
-            && body.moment_n_m_body.z.is_finite())
-        {
+        let moment_body = if let Some(transform) = self.aero_frame_transform {
+            let force_owner = transform.rot_owner_from_aero_body * body.force_n_body;
+            transform.rot_owner_from_aero_body * body.moment_n_m_body
+                + transform
+                    .translation_owner_from_aero_body_m
+                    .cross(&force_owner)
+        } else {
+            body.moment_n_m_body
+        };
+        if !moment_body.iter().all(|value| value.is_finite()) {
             return Err(ModelEvalError::NonFinite {
                 model: self.model_id,
             });
         }
-        Ok(body.moment_n_m_body)
+        Ok(moment_body)
     }
 
     fn supports_separated_body_propagation(&self) -> bool {
@@ -1096,6 +1284,8 @@ fn aero_context_from_velocity<Atm: AtmosphereModel>(
             alpha_deg,
             beta_deg,
             dynamic_pressure_pa,
+            airspeed_m_s: speed,
+            body_angular_rates_rad_s: Vector3::zeros(),
             knudsen,
             reynolds_length,
         },
@@ -1212,14 +1402,40 @@ fn compute_rigid_body_deck_force<Atm: AtmosphereModel>(
     time: SimTime,
     effector_actuals: openbmp_models::EffectorActualsView<'_>,
 ) -> Result<Vector3<f64>, ModelEvalError> {
-    let speed_sq = velocity_eci.x * velocity_eci.x
-        + velocity_eci.y * velocity_eci.y
-        + velocity_eci.z * velocity_eci.z;
+    let velocity_body = state.orientation.q.inverse() * velocity_eci;
+    let force_body = compute_rigid_body_deck_force_body(
+        deck,
+        atmosphere,
+        model_id,
+        state.position.vector,
+        velocity_body,
+        time,
+        effector_actuals,
+    )?;
+    let force_eci = state.orientation.q * force_body;
+    if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
+        return Err(ModelEvalError::NonFinite { model: model_id });
+    }
+    Ok(force_eci)
+}
+
+fn compute_rigid_body_deck_force_body<Atm: AtmosphereModel>(
+    deck: &AeroDeck,
+    atmosphere: &Atm,
+    model_id: ModelId,
+    position_eci_m: Vector3<f64>,
+    velocity_body: Vector3<f64>,
+    time: SimTime,
+    effector_actuals: openbmp_models::EffectorActualsView<'_>,
+) -> Result<Vector3<f64>, ModelEvalError> {
+    let speed_sq = velocity_body.x * velocity_body.x
+        + velocity_body.y * velocity_body.y
+        + velocity_body.z * velocity_body.z;
     if speed_sq <= 0.0 {
         return Ok(Vector3::zeros());
     }
     let speed = speed_sq.sqrt();
-    let altitude_m = geometric_altitude_m(state.position.vector);
+    let altitude_m = geometric_altitude_m(position_eci_m);
     let atm_sample =
         atmosphere
             .sample(altitude_m, time)
@@ -1243,7 +1459,6 @@ fn compute_rigid_body_deck_force<Atm: AtmosphereModel>(
     }
 
     let mach = speed / speed_of_sound;
-    let velocity_body = state.orientation.q.inverse() * velocity_eci;
     let alpha_deg = velocity_body.x.atan2(velocity_body.z).to_degrees();
     let beta_denominator =
         (velocity_body.x * velocity_body.x + velocity_body.z * velocity_body.z).sqrt();
@@ -1259,11 +1474,10 @@ fn compute_rigid_body_deck_force<Atm: AtmosphereModel>(
         0.0,
         axial_drag_sign * coefficients.cd * q_s,
     );
-    let force_eci = state.orientation.q * force_body;
-    if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
+    if !force_body.x.is_finite() || !force_body.y.is_finite() || !force_body.z.is_finite() {
         return Err(ModelEvalError::NonFinite { model: model_id });
     }
-    Ok(force_eci)
+    Ok(force_body)
 }
 
 fn deck_deflections<'a>(
@@ -1277,6 +1491,27 @@ fn deck_deflections<'a>(
         }
     }
     deflections
+}
+
+fn validate_aero_frame_transform(
+    transform: &AeroFrameTransform,
+    model_id: ModelId,
+) -> Result<(), ModelEvalError> {
+    if !transform
+        .rot_owner_from_aero_body
+        .iter()
+        .all(|value| value.is_finite())
+        || !transform
+            .translation_owner_from_aero_body_m
+            .iter()
+            .all(|value| value.is_finite())
+    {
+        return Err(ModelEvalError::InvalidState {
+            model: model_id,
+            reason: Cow::Borrowed("aero frame transform must contain finite components"),
+        });
+    }
+    Ok(())
 }
 
 fn map_aero_lookup_error(model_id: ModelId, err: AeroError) -> ModelEvalError {
@@ -1323,7 +1558,19 @@ fn map_aero_lookup_error(model_id: ModelId, err: AeroError) -> ModelEvalError {
 pub struct EngineClusterForceAdapter {
     engine_ids: Vec<openbmp_core::EngineId>,
     engine_owners: BTreeMap<openbmp_core::EngineId, BodyId>,
+    engine_frame_transforms: BTreeMap<openbmp_core::EngineId, EngineClusterFrameTransform>,
     model_id: ModelId,
+}
+
+/// Per-engine frame transform used when an engine resource is routed from a
+/// welded descendant body onto its departing root owner.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct EngineClusterFrameTransform {
+    /// Rotation from the engine's declared mounted-body frame into the owner
+    /// body frame used by the active kernel lane.
+    pub rot_owner_from_engine_body: Matrix3<f64>,
+    /// Engine mount point expressed in the owner body frame.
+    pub mount_point_owner_m: Vector3<f64>,
 }
 
 impl EngineClusterForceAdapter {
@@ -1334,6 +1581,7 @@ impl EngineClusterForceAdapter {
         Self {
             engine_ids,
             engine_owners: BTreeMap::new(),
+            engine_frame_transforms: BTreeMap::new(),
             model_id,
         }
     }
@@ -1349,9 +1597,85 @@ impl EngineClusterForceAdapter {
         Self {
             engine_ids,
             engine_owners,
+            engine_frame_transforms: BTreeMap::new(),
             model_id,
         }
     }
+
+    /// Construct with per-engine owner bodies plus optional frame transforms
+    /// for post-separation routing from welded descendant frames.
+    #[must_use]
+    pub fn new_with_owners_and_frame_transforms(
+        engine_ids: Vec<openbmp_core::EngineId>,
+        engine_owners: BTreeMap<openbmp_core::EngineId, BodyId>,
+        engine_frame_transforms: BTreeMap<openbmp_core::EngineId, EngineClusterFrameTransform>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            engine_ids,
+            engine_owners,
+            engine_frame_transforms,
+            model_id,
+        }
+    }
+}
+
+fn transformed_engine_thrust_body(
+    id: &openbmp_core::EngineId,
+    thrust_body: Vector3<f64>,
+    transforms: &BTreeMap<openbmp_core::EngineId, EngineClusterFrameTransform>,
+    model_id: ModelId,
+) -> Result<Vector3<f64>, ModelEvalError> {
+    if let Some(transform) = transforms.get(id) {
+        validate_engine_cluster_frame_transform(transform, model_id)?;
+        let thrust_owner = transform.rot_owner_from_engine_body * thrust_body;
+        if !thrust_owner.iter().all(|value| value.is_finite()) {
+            return Err(ModelEvalError::NonFinite { model: model_id });
+        }
+        Ok(thrust_owner)
+    } else {
+        Ok(thrust_body)
+    }
+}
+
+fn transformed_engine_mount_and_thrust_body(
+    id: &openbmp_core::EngineId,
+    mount_point_body_m: Vector3<f64>,
+    thrust_body: Vector3<f64>,
+    transforms: &BTreeMap<openbmp_core::EngineId, EngineClusterFrameTransform>,
+    model_id: ModelId,
+) -> Result<(Vector3<f64>, Vector3<f64>), ModelEvalError> {
+    if let Some(transform) = transforms.get(id) {
+        validate_engine_cluster_frame_transform(transform, model_id)?;
+        let thrust_owner = transform.rot_owner_from_engine_body * thrust_body;
+        if !thrust_owner.iter().all(|value| value.is_finite()) {
+            return Err(ModelEvalError::NonFinite { model: model_id });
+        }
+        Ok((transform.mount_point_owner_m, thrust_owner))
+    } else {
+        Ok((mount_point_body_m, thrust_body))
+    }
+}
+
+fn validate_engine_cluster_frame_transform(
+    transform: &EngineClusterFrameTransform,
+    model_id: ModelId,
+) -> Result<(), ModelEvalError> {
+    if !transform
+        .rot_owner_from_engine_body
+        .iter()
+        .all(|value| value.is_finite())
+        || !transform
+            .mount_point_owner_m
+            .iter()
+            .all(|value| value.is_finite())
+    {
+        return Err(ModelEvalError::InvalidState {
+            model: model_id,
+            reason: Cow::Borrowed("engine cluster frame transform must contain finite components"),
+        });
+    }
+    Ok(())
 }
 
 impl ForceModel<PointMassState> for EngineClusterForceAdapter {
@@ -1384,7 +1708,12 @@ impl ForceModel<PointMassState> for EngineClusterForceAdapter {
             // maps gimbal lateral components onto ECI x/y, which is
             // how the 3.6.D exit-criterion scenario detects
             // asymmetric thrust.
-            force_eci += snap.thrust_body;
+            force_eci += transformed_engine_thrust_body(
+                id,
+                snap.thrust_body,
+                &self.engine_frame_transforms,
+                self.model_id,
+            )?;
         }
         if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
             return Err(ModelEvalError::NonFinite {
@@ -1427,7 +1756,13 @@ impl ForceModel<RigidBodyState> for EngineClusterForceAdapter {
             // Rotate each engine's body-frame thrust through the
             // attitude quaternion. Same locked rotation order as
             // `MotorThrustForceAdapter::force_n_eci<RigidBodyState>`.
-            let f_eci = ctx.state.orientation.q * snap.thrust_body;
+            let thrust_body = transformed_engine_thrust_body(
+                id,
+                snap.thrust_body,
+                &self.engine_frame_transforms,
+                self.model_id,
+            )?;
+            let f_eci = ctx.state.orientation.q * thrust_body;
             force_eci += f_eci;
         }
         if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
@@ -1460,6 +1795,7 @@ pub struct EngineClusterMomentAdapter {
     engine_ids: Vec<openbmp_core::EngineId>,
     mount_points_body: Vec<Position3<Body>>,
     engine_owners: BTreeMap<openbmp_core::EngineId, BodyId>,
+    engine_frame_transforms: BTreeMap<openbmp_core::EngineId, EngineClusterFrameTransform>,
     model_id: ModelId,
 }
 
@@ -1488,6 +1824,7 @@ impl EngineClusterMomentAdapter {
             engine_ids,
             mount_points_body,
             engine_owners: BTreeMap::new(),
+            engine_frame_transforms: BTreeMap::new(),
             model_id,
         })
     }
@@ -1517,6 +1854,38 @@ impl EngineClusterMomentAdapter {
             engine_ids,
             mount_points_body,
             engine_owners,
+            engine_frame_transforms: BTreeMap::new(),
+            model_id,
+        })
+    }
+
+    /// Construct with per-engine owner bodies plus optional frame transforms
+    /// for post-separation routing from welded descendant frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelEvalError::InvalidState`] when the arrays are not
+    /// the same length.
+    pub fn new_with_owners_and_frame_transforms(
+        engine_ids: Vec<openbmp_core::EngineId>,
+        mount_points_body: Vec<Position3<Body>>,
+        engine_owners: BTreeMap<openbmp_core::EngineId, BodyId>,
+        engine_frame_transforms: BTreeMap<openbmp_core::EngineId, EngineClusterFrameTransform>,
+        model_id: ModelId,
+    ) -> Result<Self, ModelEvalError> {
+        if engine_ids.len() != mount_points_body.len() {
+            return Err(ModelEvalError::InvalidState {
+                model: model_id,
+                reason: Cow::Borrowed(
+                    "engine cluster moment adapter: engine_ids and mount_points_body must have the same length",
+                ),
+            });
+        }
+        Ok(Self {
+            engine_ids,
+            mount_points_body,
+            engine_owners,
+            engine_frame_transforms,
             model_id,
         })
     }
@@ -1556,7 +1925,14 @@ impl MomentModel<RigidBodyState> for EngineClusterMomentAdapter {
                         "engine cluster moment adapter: snapshot missing declared engine id",
                     ),
                 })?;
-            let moment_body = (mount.vector - cg).cross(&snap.thrust_body);
+            let (mount_body, thrust_body) = transformed_engine_mount_and_thrust_body(
+                id,
+                mount.vector,
+                snap.thrust_body,
+                &self.engine_frame_transforms,
+                self.model_id,
+            )?;
+            let moment_body = (mount_body - cg).cross(&thrust_body);
             total_moment_body += moment_body;
         }
         if !total_moment_body.x.is_finite()
@@ -1888,7 +2264,20 @@ impl<M: Motor> RigidMassModel for RigidMotorMassAdapter<M> {
 pub struct TankRackForceAdapter {
     tank_ids: Vec<openbmp_core::TankId>,
     tank_owners: BTreeMap<openbmp_core::TankId, BodyId>,
+    tank_frame_transforms: BTreeMap<openbmp_core::TankId, TankRackFrameTransform>,
     model_id: ModelId,
+}
+
+/// Per-tank frame transform used when a tank resource is routed from a welded
+/// descendant body onto its departing root owner.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TankRackFrameTransform {
+    /// Rotation from the tank's declared mounted-body frame into the owner body
+    /// frame used by the active kernel lane.
+    pub rot_owner_from_tank_body: Matrix3<f64>,
+    /// Translation from the owner body origin to the tank mounted-body origin,
+    /// expressed in the owner body frame.
+    pub translation_owner_from_tank_body_m: Vector3<f64>,
 }
 
 impl TankRackForceAdapter {
@@ -1899,6 +2288,7 @@ impl TankRackForceAdapter {
         Self {
             tank_ids,
             tank_owners: BTreeMap::new(),
+            tank_frame_transforms: BTreeMap::new(),
             model_id,
         }
     }
@@ -1914,9 +2304,89 @@ impl TankRackForceAdapter {
         Self {
             tank_ids,
             tank_owners,
+            tank_frame_transforms: BTreeMap::new(),
             model_id,
         }
     }
+
+    /// Construct with per-tank owner bodies plus optional frame transforms for
+    /// post-separation routing from welded descendant frames.
+    #[must_use]
+    pub fn new_with_owners_and_frame_transforms(
+        tank_ids: Vec<openbmp_core::TankId>,
+        tank_owners: BTreeMap<openbmp_core::TankId, BodyId>,
+        tank_frame_transforms: BTreeMap<openbmp_core::TankId, TankRackFrameTransform>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            tank_ids,
+            tank_owners,
+            tank_frame_transforms,
+            model_id,
+        }
+    }
+}
+
+fn transformed_tank_force_body(
+    id: &openbmp_core::TankId,
+    force_body: Vector3<f64>,
+    transforms: &BTreeMap<openbmp_core::TankId, TankRackFrameTransform>,
+    model_id: ModelId,
+) -> Result<Vector3<f64>, ModelEvalError> {
+    if let Some(transform) = transforms.get(id) {
+        validate_tank_rack_frame_transform(transform, model_id)?;
+        let force_owner = transform.rot_owner_from_tank_body * force_body;
+        if !force_owner.iter().all(|value| value.is_finite()) {
+            return Err(ModelEvalError::NonFinite { model: model_id });
+        }
+        Ok(force_owner)
+    } else {
+        Ok(force_body)
+    }
+}
+
+fn transformed_tank_moment_body(
+    id: &openbmp_core::TankId,
+    force_body: Vector3<f64>,
+    moment_body: Vector3<f64>,
+    transforms: &BTreeMap<openbmp_core::TankId, TankRackFrameTransform>,
+    model_id: ModelId,
+) -> Result<Vector3<f64>, ModelEvalError> {
+    if let Some(transform) = transforms.get(id) {
+        validate_tank_rack_frame_transform(transform, model_id)?;
+        let force_owner = transform.rot_owner_from_tank_body * force_body;
+        let moment_owner = transform.rot_owner_from_tank_body * moment_body
+            + transform
+                .translation_owner_from_tank_body_m
+                .cross(&force_owner);
+        if !moment_owner.iter().all(|value| value.is_finite()) {
+            return Err(ModelEvalError::NonFinite { model: model_id });
+        }
+        Ok(moment_owner)
+    } else {
+        Ok(moment_body)
+    }
+}
+
+fn validate_tank_rack_frame_transform(
+    transform: &TankRackFrameTransform,
+    model_id: ModelId,
+) -> Result<(), ModelEvalError> {
+    if !transform
+        .rot_owner_from_tank_body
+        .iter()
+        .all(|value| value.is_finite())
+        || !transform
+            .translation_owner_from_tank_body_m
+            .iter()
+            .all(|value| value.is_finite())
+    {
+        return Err(ModelEvalError::InvalidState {
+            model: model_id,
+            reason: Cow::Borrowed("tank rack frame transform must contain finite components"),
+        });
+    }
+    Ok(())
 }
 
 impl ForceModel<PointMassState> for TankRackForceAdapter {
@@ -1945,7 +2415,12 @@ impl ForceModel<PointMassState> for TankRackForceAdapter {
                     ),
                 })?;
             // Point-mass kernel has no orientation; body == ECI.
-            force_eci += snap.reaction_force_body_n;
+            force_eci += transformed_tank_force_body(
+                id,
+                snap.reaction_force_body_n,
+                &self.tank_frame_transforms,
+                self.model_id,
+            )?;
         }
         if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
             return Err(ModelEvalError::NonFinite {
@@ -1985,7 +2460,13 @@ impl ForceModel<RigidBodyState> for TankRackForceAdapter {
                         "tank rack force adapter: snapshot missing declared tank id",
                     ),
                 })?;
-            let f_eci = ctx.state.orientation.q * snap.reaction_force_body_n;
+            let force_body = transformed_tank_force_body(
+                id,
+                snap.reaction_force_body_n,
+                &self.tank_frame_transforms,
+                self.model_id,
+            )?;
+            let f_eci = ctx.state.orientation.q * force_body;
             force_eci += f_eci;
         }
         if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
@@ -2020,6 +2501,7 @@ impl ForceModel<RigidBodyState> for TankRackForceAdapter {
 pub struct TankRackMomentAdapter {
     tank_ids: Vec<openbmp_core::TankId>,
     tank_owners: BTreeMap<openbmp_core::TankId, BodyId>,
+    tank_frame_transforms: BTreeMap<openbmp_core::TankId, TankRackFrameTransform>,
     model_id: ModelId,
 }
 
@@ -2031,6 +2513,7 @@ impl TankRackMomentAdapter {
         Self {
             tank_ids,
             tank_owners: BTreeMap::new(),
+            tank_frame_transforms: BTreeMap::new(),
             model_id,
         }
     }
@@ -2046,6 +2529,24 @@ impl TankRackMomentAdapter {
         Self {
             tank_ids,
             tank_owners,
+            tank_frame_transforms: BTreeMap::new(),
+            model_id,
+        }
+    }
+
+    /// Construct with per-tank owner bodies plus optional frame transforms for
+    /// post-separation routing from welded descendant frames.
+    #[must_use]
+    pub fn new_with_owners_and_frame_transforms(
+        tank_ids: Vec<openbmp_core::TankId>,
+        tank_owners: BTreeMap<openbmp_core::TankId, BodyId>,
+        tank_frame_transforms: BTreeMap<openbmp_core::TankId, TankRackFrameTransform>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            tank_ids,
+            tank_owners,
+            tank_frame_transforms,
             model_id,
         }
     }
@@ -2076,7 +2577,13 @@ impl MomentModel<RigidBodyState> for TankRackMomentAdapter {
                         "tank rack moment adapter: snapshot missing declared tank id",
                     ),
                 })?;
-            total += snap.reaction_moment_body_n_m;
+            total += transformed_tank_moment_body(
+                id,
+                snap.reaction_force_body_n,
+                snap.reaction_moment_body_n_m,
+                &self.tank_frame_transforms,
+                self.model_id,
+            )?;
         }
         if !total.x.is_finite() || !total.y.is_finite() || !total.z.is_finite() {
             return Err(ModelEvalError::NonFinite {
@@ -2098,6 +2605,376 @@ impl MomentModel<RigidBodyState> for TankRackMomentAdapter {
 }
 
 // ---------------------------------------------------------------------
+// RecoveryRiserMomentAdapter
+// ---------------------------------------------------------------------
+
+/// Kernel-side force adapter for declared recovery risers.
+///
+/// The recovery rack stores aggregate riser endpoint force in body-frame
+/// coordinates. Point-mass scenarios have no attitude state, so the body frame
+/// is treated as aligned with ECI just like [`TankRackForceAdapter`]'s
+/// point-mass reaction-force path. Rigid-body scenarios rotate the same
+/// body-frame aggregate through the live body-to-ECI attitude.
+#[derive(Clone, Debug)]
+pub struct RecoveryRiserForceAdapter {
+    recovery_ids: Vec<openbmp_core::RecoveryId>,
+    recovery_owners: BTreeMap<openbmp_core::RecoveryId, BodyId>,
+    model_id: ModelId,
+}
+
+impl RecoveryRiserForceAdapter {
+    /// Construct from scenario-declared recovery ids and a stable model id.
+    #[must_use]
+    pub fn new(recovery_ids: Vec<openbmp_core::RecoveryId>, model_id: ModelId) -> Self {
+        Self {
+            recovery_ids,
+            recovery_owners: BTreeMap::new(),
+            model_id,
+        }
+    }
+
+    /// Construct with per-recovery owner bodies for post-separation routing.
+    #[must_use]
+    pub fn new_with_owners(
+        recovery_ids: Vec<openbmp_core::RecoveryId>,
+        recovery_owners: BTreeMap<openbmp_core::RecoveryId, BodyId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            recovery_ids,
+            recovery_owners,
+            model_id,
+        }
+    }
+
+    fn force_body_n<S: openbmp_models::SimState>(
+        &self,
+        ctx: ForceContext<'_, S>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let mut total = Vector3::zeros();
+        for id in &self.recovery_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.recovery_owners,
+                id,
+                self.model_id,
+                "recovery riser force adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
+            let snap = ctx
+                .recovery_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "recovery riser force adapter: snapshot missing declared recovery id",
+                    ),
+                })?;
+            if !(snap.riser_force_body_n.x.is_finite()
+                && snap.riser_force_body_n.y.is_finite()
+                && snap.riser_force_body_n.z.is_finite())
+            {
+                return Err(ModelEvalError::InvalidState {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "recovery riser force adapter: riser force must be finite",
+                    ),
+                });
+            }
+            total += snap.riser_force_body_n;
+        }
+        if !total.x.is_finite() || !total.y.is_finite() || !total.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(total)
+    }
+
+    fn all_ids_have_owners(&self) -> bool {
+        self.recovery_ids
+            .iter()
+            .all(|id| self.recovery_owners.contains_key(id))
+    }
+}
+
+impl ForceModel<PointMassState> for RecoveryRiserForceAdapter {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, PointMassState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        self.force_body_n(ctx)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.all_ids_have_owners()
+    }
+}
+
+impl ForceModel<RigidBodyState> for RecoveryRiserForceAdapter {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let body_to_eci = ctx.state.orientation.q;
+        let force_body = self.force_body_n(ctx)?;
+        let force_eci = body_to_eci * force_body;
+        if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(force_eci)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.all_ids_have_owners()
+    }
+}
+
+/// Kernel-side force adapter for recovery deployment sequence impulses.
+///
+/// The runner's recovery rack stores active one-tick mortar force in body-frame
+/// coordinates. Point-mass scenarios treat body axes as ECI axes; rigid-body
+/// scenarios rotate the same body-frame force through the live attitude.
+#[derive(Clone, Debug)]
+pub struct RecoverySequenceForceAdapter {
+    recovery_ids: Vec<openbmp_core::RecoveryId>,
+    recovery_owners: BTreeMap<openbmp_core::RecoveryId, BodyId>,
+    model_id: ModelId,
+}
+
+impl RecoverySequenceForceAdapter {
+    /// Construct from scenario-declared recovery ids and a stable model id.
+    #[must_use]
+    pub fn new(recovery_ids: Vec<openbmp_core::RecoveryId>, model_id: ModelId) -> Self {
+        Self {
+            recovery_ids,
+            recovery_owners: BTreeMap::new(),
+            model_id,
+        }
+    }
+
+    /// Construct with per-recovery owner bodies for post-separation routing.
+    #[must_use]
+    pub fn new_with_owners(
+        recovery_ids: Vec<openbmp_core::RecoveryId>,
+        recovery_owners: BTreeMap<openbmp_core::RecoveryId, BodyId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            recovery_ids,
+            recovery_owners,
+            model_id,
+        }
+    }
+
+    fn force_body_n<S: openbmp_models::SimState>(
+        &self,
+        ctx: ForceContext<'_, S>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let mut total = Vector3::zeros();
+        for id in &self.recovery_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.recovery_owners,
+                id,
+                self.model_id,
+                "recovery sequence force adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
+            let snap = ctx
+                .recovery_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "recovery sequence force adapter: snapshot missing declared recovery id",
+                    ),
+                })?;
+            if !(snap.mortar_force_body_n.x.is_finite()
+                && snap.mortar_force_body_n.y.is_finite()
+                && snap.mortar_force_body_n.z.is_finite())
+            {
+                return Err(ModelEvalError::InvalidState {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "recovery sequence force adapter: mortar force must be finite",
+                    ),
+                });
+            }
+            total += snap.mortar_force_body_n;
+        }
+        if !total.x.is_finite() || !total.y.is_finite() || !total.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(total)
+    }
+
+    fn all_ids_have_owners(&self) -> bool {
+        self.recovery_ids
+            .iter()
+            .all(|id| self.recovery_owners.contains_key(id))
+    }
+}
+
+impl ForceModel<PointMassState> for RecoverySequenceForceAdapter {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, PointMassState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        self.force_body_n(ctx)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.all_ids_have_owners()
+    }
+}
+
+impl ForceModel<RigidBodyState> for RecoverySequenceForceAdapter {
+    fn force_n_eci(
+        &self,
+        ctx: ForceContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let body_to_eci = ctx.state.orientation.q;
+        let force_body = self.force_body_n(ctx)?;
+        let force_eci = body_to_eci * force_body;
+        if !force_eci.x.is_finite() || !force_eci.y.is_finite() || !force_eci.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(force_eci)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.all_ids_have_owners()
+    }
+}
+
+/// Kernel-side moment adapter for declared recovery risers.
+///
+/// The runner's recovery rack evaluates declared riser line elements once per
+/// kernel base tick and stores aggregate body-frame force and origin-referenced
+/// moment diagnostics in [`openbmp_models::RecoverySnapshot`]. This adapter
+/// consumes those diagnostics in scenario-declared recovery order and shifts
+/// the origin-referenced moment to the live rigid-body CG before returning the
+/// body-frame moment used by the Euler equation.
+#[derive(Clone, Debug)]
+pub struct RecoveryRiserMomentAdapter {
+    recovery_ids: Vec<openbmp_core::RecoveryId>,
+    recovery_owners: BTreeMap<openbmp_core::RecoveryId, BodyId>,
+    model_id: ModelId,
+}
+
+impl RecoveryRiserMomentAdapter {
+    /// Construct from scenario-declared recovery ids and a stable model id.
+    #[must_use]
+    pub fn new(recovery_ids: Vec<openbmp_core::RecoveryId>, model_id: ModelId) -> Self {
+        Self {
+            recovery_ids,
+            recovery_owners: BTreeMap::new(),
+            model_id,
+        }
+    }
+
+    /// Construct with per-recovery owner bodies for post-separation routing.
+    #[must_use]
+    pub fn new_with_owners(
+        recovery_ids: Vec<openbmp_core::RecoveryId>,
+        recovery_owners: BTreeMap<openbmp_core::RecoveryId, BodyId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            recovery_ids,
+            recovery_owners,
+            model_id,
+        }
+    }
+}
+
+impl MomentModel<RigidBodyState> for RecoveryRiserMomentAdapter {
+    fn moment_n_m_body(
+        &self,
+        ctx: MomentContext<'_, RigidBodyState>,
+    ) -> Result<Vector3<f64>, ModelEvalError> {
+        let mut total = Vector3::zeros();
+        let cg_body_m = ctx.state.mass_props.center_of_mass_body.vector;
+        for id in &self.recovery_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.recovery_owners,
+                id,
+                self.model_id,
+                "recovery riser moment adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
+            let snap = ctx
+                .recovery_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "recovery riser moment adapter: snapshot missing declared recovery id",
+                    ),
+                })?;
+            if !(snap.riser_force_body_n.x.is_finite()
+                && snap.riser_force_body_n.y.is_finite()
+                && snap.riser_force_body_n.z.is_finite()
+                && snap.riser_moment_body_n_m.x.is_finite()
+                && snap.riser_moment_body_n_m.y.is_finite()
+                && snap.riser_moment_body_n_m.z.is_finite())
+            {
+                return Err(ModelEvalError::InvalidState {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "recovery riser moment adapter: riser force/moment must be finite",
+                    ),
+                });
+            }
+            total += snap.riser_moment_body_n_m - cg_body_m.cross(&snap.riser_force_body_n);
+        }
+        if !total.x.is_finite() || !total.y.is_finite() || !total.z.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(total)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+
+    fn supports_separated_body_propagation(&self) -> bool {
+        self.recovery_ids
+            .iter()
+            .all(|id| self.recovery_owners.contains_key(id))
+    }
+}
+
+// ---------------------------------------------------------------------
 // DirectTorqueMomentAdapter
 // ---------------------------------------------------------------------
 
@@ -2106,10 +2983,13 @@ impl MomentModel<RigidBodyState> for TankRackMomentAdapter {
 ///
 /// Reads each declared effector's current deflection (rad) from the
 /// kernel's `EffectorActualsView`, multiplies by per-effector
-/// effectiveness (N·m / rad), and sums per body axis. Used in
-/// closed-loop autopilot-validation scenarios where the kernel must
-/// respond to autopilot torque commands without going through an aero
-/// deck (e.g. `diff-flatness-figure-eight`).
+/// effectiveness (N·m / rad), and sums per body axis. Bindings normally use
+/// a principal body-axis index; callers that need pre-transformed axes, such
+/// as welded-release descendant resources, may provide a finite
+/// `moment_axis_body` vector instead. Used in closed-loop
+/// autopilot-validation scenarios where the kernel must respond to autopilot
+/// torque commands without going through an aero deck (e.g.
+/// `diff-flatness-figure-eight`).
 ///
 /// The snapshot keys are the bare effector ids the runner uses to
 /// register the effectors with the kernel via `set_effector_actuals`.
@@ -2119,10 +2999,10 @@ impl MomentModel<RigidBodyState> for TankRackMomentAdapter {
 /// than three direct-torque effectors).
 #[derive(Clone, Debug)]
 pub struct DirectTorqueMomentAdapter {
-    /// Per-effector binding: snapshot key, body-axis index (0/1/2),
-    /// effectiveness (N·m / rad). Iteration order is stable across
-    /// reruns by `Vec` order, which the runner produces in
-    /// scenario-declared `[[vehicle.assembly.effectors]]` order.
+    /// Per-effector binding: snapshot key, body-axis index or vector, and
+    /// effectiveness (N·m / rad). Iteration order is stable across reruns by
+    /// `Vec` order, which the runner produces in scenario-declared
+    /// `[[vehicle.assembly.effectors]]` order.
     bindings: Vec<DirectTorqueBinding>,
     model_id: ModelId,
 }
@@ -2137,6 +3017,9 @@ pub struct DirectTorqueBinding {
     pub owner: Option<BodyId>,
     /// Body-axis index in `[roll, pitch, yaw]` order.
     pub body_axis_index: usize,
+    /// Optional unit torque axis in the owner body's frame. When present, this
+    /// supersedes `body_axis_index`.
+    pub moment_axis_body: Option<Vector3<f64>>,
     /// Per-rad torque effectiveness (N·m / rad).
     pub effectiveness_n_m_per_rad: f64,
 }
@@ -2168,20 +3051,34 @@ impl MomentModel<RigidBodyState> for DirectTorqueMomentAdapter {
                 .effector_actuals
                 .get(&binding.snapshot_key)
                 .unwrap_or(0.0);
-            let axis = binding.body_axis_index;
-            // Defensive: axis is constructed from `TorqueAxis` which is
-            // bounded to {0, 1, 2}; the bound is reasserted here so a
-            // future binding source that does not honour it cannot
-            // out-of-bounds.
-            if axis >= 3 {
-                return Err(ModelEvalError::InvalidState {
-                    model: self.model_id,
-                    reason: Cow::Borrowed(
-                        "direct torque moment adapter: body_axis_index must be 0, 1, or 2",
-                    ),
-                });
+            let torque_n_m = deflection * binding.effectiveness_n_m_per_rad;
+            if let Some(axis_body) = binding.moment_axis_body {
+                let axis_norm = axis_body.norm();
+                if !axis_norm.is_finite() || axis_norm <= 0.0 {
+                    return Err(ModelEvalError::InvalidState {
+                        model: self.model_id,
+                        reason: Cow::Borrowed(
+                            "direct torque moment adapter: moment_axis_body must be finite and non-zero",
+                        ),
+                    });
+                }
+                total += axis_body / axis_norm * torque_n_m;
+            } else {
+                let axis = binding.body_axis_index;
+                // Defensive: axis is constructed from `TorqueAxis` which is
+                // bounded to {0, 1, 2}; the bound is reasserted here so a
+                // future binding source that does not honour it cannot
+                // out-of-bounds.
+                if axis >= 3 {
+                    return Err(ModelEvalError::InvalidState {
+                        model: self.model_id,
+                        reason: Cow::Borrowed(
+                            "direct torque moment adapter: body_axis_index must be 0, 1, or 2",
+                        ),
+                    });
+                }
+                total[axis] += torque_n_m;
             }
-            total[axis] += deflection * binding.effectiveness_n_m_per_rad;
         }
         if !total.x.is_finite() || !total.y.is_finite() || !total.z.is_finite() {
             return Err(ModelEvalError::NonFinite {
@@ -2331,6 +3228,154 @@ impl MassModel for TankRackMassAdapter {
 }
 
 // ---------------------------------------------------------------------
+// RecoveryRackMassAdapter
+// ---------------------------------------------------------------------
+
+/// Kernel-side scalar mass adapter for canopy apparent mass.
+///
+/// Wraps an inner [`MassModel`] and adds each configured recovery
+/// snapshot's scalar `apparent_mass_kg` plus `apparent_mass_rate_kg_s`.
+/// The runner only constructs this wrapper when at least one recovery
+/// device opts into `inflation.apparent_mass_coeff_k_a`, so scenarios
+/// without apparent mass keep their existing mass path.
+pub struct RecoveryRackMassAdapter {
+    inner: Box<dyn MassModel>,
+    recovery_ids: Vec<openbmp_core::RecoveryId>,
+    recovery_owners: BTreeMap<openbmp_core::RecoveryId, BodyId>,
+    model_id: ModelId,
+}
+
+impl std::fmt::Debug for RecoveryRackMassAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecoveryRackMassAdapter")
+            .field("recovery_ids", &self.recovery_ids)
+            .field("recovery_owners", &self.recovery_owners)
+            .field("model_id", &self.model_id)
+            .field("inner", &"Box<dyn MassModel>")
+            .finish()
+    }
+}
+
+impl RecoveryRackMassAdapter {
+    /// Construct from an inner mass model, scenario-declared recovery ids, and
+    /// a stable model id.
+    #[must_use]
+    pub const fn new(
+        inner: Box<dyn MassModel>,
+        recovery_ids: Vec<openbmp_core::RecoveryId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            inner,
+            recovery_ids,
+            recovery_owners: BTreeMap::new(),
+            model_id,
+        }
+    }
+
+    /// Construct with per-recovery owner bodies for post-separation routing.
+    #[must_use]
+    pub fn new_with_owners(
+        inner: Box<dyn MassModel>,
+        recovery_ids: Vec<openbmp_core::RecoveryId>,
+        recovery_owners: BTreeMap<openbmp_core::RecoveryId, BodyId>,
+        model_id: ModelId,
+    ) -> Self {
+        Self {
+            inner,
+            recovery_ids,
+            recovery_owners,
+            model_id,
+        }
+    }
+
+    fn apparent_mass_terms(&self, ctx: MassContext<'_>) -> Result<(f64, f64), ModelEvalError> {
+        let mut apparent_mass_kg = 0.0_f64;
+        let mut apparent_mass_rate_kg_s = 0.0_f64;
+        for id in &self.recovery_ids {
+            if !mapped_owner_allows(
+                ctx.active_body,
+                &self.recovery_owners,
+                id,
+                self.model_id,
+                "recovery rack mass adapter: mounted_to is required for separated-body propagation",
+            )? {
+                continue;
+            }
+            let snap = ctx
+                .recovery_snapshot
+                .get(*id)
+                .ok_or(ModelEvalError::OutOfEnvelope {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "recovery rack mass adapter: snapshot missing declared recovery id",
+                    ),
+                })?;
+            if !snap.apparent_mass_kg.is_finite() || snap.apparent_mass_kg < 0.0 {
+                return Err(ModelEvalError::InvalidState {
+                    model: self.model_id,
+                    reason: Cow::Borrowed("recovery apparent mass must be finite and non-negative"),
+                });
+            }
+            if !snap.apparent_mass_rate_kg_s.is_finite() || snap.apparent_mass_rate_kg_s < 0.0 {
+                return Err(ModelEvalError::InvalidState {
+                    model: self.model_id,
+                    reason: Cow::Borrowed(
+                        "recovery apparent mass rate must be finite and non-negative",
+                    ),
+                });
+            }
+            apparent_mass_kg += snap.apparent_mass_kg;
+            apparent_mass_rate_kg_s += snap.apparent_mass_rate_kg_s;
+        }
+        if !apparent_mass_kg.is_finite() || !apparent_mass_rate_kg_s.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok((apparent_mass_kg, apparent_mass_rate_kg_s))
+    }
+}
+
+impl MassModel for RecoveryRackMassAdapter {
+    fn mass_kg(&self, t: SimTime) -> Result<f64, ModelEvalError> {
+        self.inner.mass_kg(t)
+    }
+
+    fn mass_rate_kg_s(&self, t: SimTime) -> Result<f64, ModelEvalError> {
+        self.inner.mass_rate_kg_s(t)
+    }
+
+    fn mass_kg_at(&self, ctx: MassContext<'_>) -> Result<f64, ModelEvalError> {
+        let inner = self.inner.mass_kg_at(ctx)?;
+        let (apparent_mass_kg, _) = self.apparent_mass_terms(ctx)?;
+        let total = inner + apparent_mass_kg;
+        if !total.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(total)
+    }
+
+    fn mass_rate_kg_s_at(&self, ctx: MassContext<'_>) -> Result<f64, ModelEvalError> {
+        let inner = self.inner.mass_rate_kg_s_at(ctx)?;
+        let (_, apparent_mass_rate_kg_s) = self.apparent_mass_terms(ctx)?;
+        let total = inner + apparent_mass_rate_kg_s;
+        if !total.is_finite() {
+            return Err(ModelEvalError::NonFinite {
+                model: self.model_id,
+            });
+        }
+        Ok(total)
+    }
+
+    fn validation(&self) -> ValidationStatus {
+        ValidationStatus::Checked
+    }
+}
+
+// ---------------------------------------------------------------------
 // RecoveryRackForceAdapter
 // ---------------------------------------------------------------------
 
@@ -2342,13 +3387,15 @@ impl MassModel for TankRackMassAdapter {
 /// [`openbmp_models::RecoverySnapshotView`], queries the atmosphere for
 /// density at the body's altitude proxy (ECI z, clamped to ≥ 0 to
 /// match the [`DeckDragForceAdapter`] convention), and returns
-/// `F = -½ ρ |v|² · Σ(C_D · A) · v̂` in ECI per Knacke 1992 Chapter 5.
+/// `F = -½ ρ |v_air|² · Σ(C_D · A) · v̂_air` in ECI per Knacke 1992 Chapter 5.
+/// When scalar apparent mass is active, the adapter also adds
+/// `-(dm_a/dt) v_air` from the recovery snapshot.
 ///
 /// Drag is identical for point-mass and rigid-body kernels: it
-/// opposes the body's ECI velocity, magnitude depends only on
-/// altitude and speed, and the direction does not depend on body
-/// attitude. (Long parachute risers are assumed to decouple body
-/// rotation from drag direction.)
+/// opposes the body's air-relative velocity, magnitude depends only
+/// on altitude and relative speed, and the direction does not depend
+/// on body attitude. (Long parachute risers are assumed to decouple
+/// body rotation from drag direction.)
 ///
 /// Operand order: scenario-declared `recovery_ids` order with locked
 /// left-fold summation of `(c_d, drag_area)` products. Empty snapshot
@@ -2484,6 +3531,7 @@ fn compute_recovery_drag<Atm: AtmosphereModel>(
     // order matches the scenario-declared `recovery_ids` Vec; same
     // left-fold convention as TankRackForceAdapter / EngineCluster.
     let mut sum_cd_area = 0.0_f64;
+    let mut sum_apparent_mass_rate_kg_s = 0.0_f64;
     for id in recovery_ids {
         if !mapped_owner_allows(
             active_body,
@@ -2502,12 +3550,24 @@ fn compute_recovery_drag<Atm: AtmosphereModel>(
                     "recovery rack force adapter: snapshot missing declared recovery id",
                 ),
             })?;
-        // Stowed devices have `deployed = false` and zero c_d / area
-        // — the multiplication contributes 0 and the summation
-        // doesn't need a special case.
-        sum_cd_area += snap.c_d * snap.drag_area_m2;
+        // Stowed devices have `deployed = false` and zero c_d / area — the
+        // multiplication contributes 0. Devices whose aerodynamic drag has
+        // already been transmitted through declared riser forces skip this
+        // scalar drag term to avoid double-counting the same `C_D A` load.
+        if !snap.riser_force_path_active {
+            sum_cd_area += snap.c_d * snap.drag_area_m2;
+        }
+        if !snap.apparent_mass_rate_kg_s.is_finite() || snap.apparent_mass_rate_kg_s < 0.0 {
+            return Err(ModelEvalError::InvalidState {
+                model: model_id,
+                reason: Cow::Borrowed(
+                    "recovery rack force adapter: apparent mass rate must be finite and non-negative",
+                ),
+            });
+        }
+        sum_apparent_mass_rate_kg_s += snap.apparent_mass_rate_kg_s;
     }
-    if sum_cd_area <= 0.0 {
+    if sum_cd_area <= 0.0 && sum_apparent_mass_rate_kg_s <= 0.0 {
         // No deployed area. Skip the atmosphere lookup so legacy
         // scenarios keep their byte output (no atmosphere queries
         // are introduced when no recovery is declared).
@@ -2520,6 +3580,14 @@ fn compute_recovery_drag<Atm: AtmosphereModel>(
         return Ok(Vector3::zeros());
     }
     let speed = speed_sq.sqrt();
+
+    if sum_cd_area <= 0.0 {
+        let f = -sum_apparent_mass_rate_kg_s * v;
+        if !f.x.is_finite() || !f.y.is_finite() || !f.z.is_finite() {
+            return Err(ModelEvalError::NonFinite { model: model_id });
+        }
+        return Ok(f);
+    }
 
     // Altitude proxy: ECI z (vertical-launch simplification, matches
     // DeckDragForceAdapter). Clamp to ≥ 0 so atmosphere out-of-
@@ -2541,7 +3609,7 @@ fn compute_recovery_drag<Atm: AtmosphereModel>(
     let drag_magnitude = q * sum_cd_area;
 
     let v_hat = v / speed;
-    let f = -drag_magnitude * v_hat;
+    let f = -drag_magnitude * v_hat - sum_apparent_mass_rate_kg_s * v;
     if !f.x.is_finite() || !f.y.is_finite() || !f.z.is_finite() {
         return Err(ModelEvalError::NonFinite { model: model_id });
     }
@@ -2554,11 +3622,11 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use openbmp_core::{BodyId, EngineId, Position3, SimTime, Velocity3};
-    use openbmp_models::EngineSnapshot;
+    use openbmp_core::{BodyId, EngineId, Position3, SimTime, TankId, Velocity3};
     use openbmp_models::EnvironmentSample;
+    use openbmp_models::{EngineSnapshot, TankSnapshot};
     use openbmp_physics::{AtmosphereSample, ConstantGravity, IsothermalAtmosphere, PhysicsError};
-    use openbmp_propulsion::SolidMotor;
+    use openbmp_propulsion::{MotorError, MotorVariant, SolidMotor};
     use proptest::prelude::*;
     use uom::si::f64::Mass;
     use uom::si::mass::kilogram;
@@ -2599,6 +3667,13 @@ mod tests {
     fn env_with_atmosphere_velocity(velocity_eci_m_s: Vector3<f64>) -> EnvironmentSample {
         EnvironmentSample {
             atmosphere_velocity_eci_m_s: velocity_eci_m_s,
+            ..EnvironmentSample::default()
+        }
+    }
+
+    fn env_with_wind_eci(wind_eci_m_s: Vector3<f64>) -> EnvironmentSample {
+        EnvironmentSample {
+            wind_eci_m_s,
             ..EnvironmentSample::default()
         }
     }
@@ -2921,6 +3996,25 @@ mod tests {
         }
     }
 
+    fn rigid_force_ctx_empty<'a>(
+        state: &'a RigidBodyState,
+        env: &'a EnvironmentSample,
+        active_body: Option<BodyId>,
+    ) -> ForceContext<'a, RigidBodyState> {
+        ForceContext {
+            state,
+            environment: env,
+            mass_kg: state.mass_props.mass_kg(),
+            time: SimTime::ZERO,
+            active_body,
+            phase_id: None,
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+            recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
+        }
+    }
+
     fn rigid_moment_ctx<'a>(
         state: &'a RigidBodyState,
         env: &'a EnvironmentSample,
@@ -2935,6 +4029,84 @@ mod tests {
             effector_actuals: openbmp_models::EffectorActualsView::empty(),
             engine_snapshot: openbmp_models::EngineSnapshotView::new(snapshot),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+            recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
+        }
+    }
+
+    fn rigid_moment_ctx_empty<'a>(
+        state: &'a RigidBodyState,
+        env: &'a EnvironmentSample,
+        active_body: Option<BodyId>,
+    ) -> MomentContext<'a, RigidBodyState> {
+        MomentContext {
+            state,
+            environment: env,
+            time: SimTime::ZERO,
+            active_body,
+            phase_id: None,
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+            recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
+        }
+    }
+
+    fn rigid_force_ctx_with_engines<'a>(
+        state: &'a RigidBodyState,
+        env: &'a EnvironmentSample,
+        snapshot: &'a BTreeMap<EngineId, EngineSnapshot>,
+        active_body: Option<BodyId>,
+    ) -> ForceContext<'a, RigidBodyState> {
+        ForceContext {
+            state,
+            environment: env,
+            mass_kg: state.mass_props.mass_kg(),
+            time: SimTime::ZERO,
+            active_body,
+            phase_id: None,
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::new(snapshot),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+            recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
+        }
+    }
+
+    fn rigid_force_ctx_with_tanks<'a>(
+        state: &'a RigidBodyState,
+        env: &'a EnvironmentSample,
+        snapshot: &'a BTreeMap<TankId, TankSnapshot>,
+        active_body: Option<BodyId>,
+    ) -> ForceContext<'a, RigidBodyState> {
+        ForceContext {
+            state,
+            environment: env,
+            mass_kg: state.mass_props.mass_kg(),
+            time: SimTime::ZERO,
+            active_body,
+            phase_id: None,
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::new(snapshot),
+            recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
+        }
+    }
+
+    fn rigid_moment_ctx_with_tanks<'a>(
+        state: &'a RigidBodyState,
+        env: &'a EnvironmentSample,
+        snapshot: &'a BTreeMap<TankId, TankSnapshot>,
+        active_body: Option<BodyId>,
+    ) -> MomentContext<'a, RigidBodyState> {
+        MomentContext {
+            state,
+            environment: env,
+            time: SimTime::ZERO,
+            active_body,
+            phase_id: None,
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::new(snapshot),
+            recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
         }
     }
 
@@ -3023,6 +4195,75 @@ mod tests {
         assert!(f.z.abs() < tol, "f.z = {}", f.z);
     }
 
+    #[derive(Copy, Clone, Debug)]
+    struct ConstantTestMotor {
+        thrust_n: f64,
+        mass_kg: f64,
+        mass_rate_kg_s: f64,
+    }
+
+    impl Motor for ConstantTestMotor {
+        fn thrust_n_at(&self, _t_since_ignition_s: f64) -> Result<f64, MotorError> {
+            Ok(self.thrust_n)
+        }
+
+        fn mass_kg(&self, _t_since_ignition_s: f64) -> Result<f64, MotorError> {
+            Ok(self.mass_kg)
+        }
+
+        fn mass_rate_kg_s(&self, _t_since_ignition_s: f64) -> Result<f64, MotorError> {
+            Ok(self.mass_rate_kg_s)
+        }
+
+        fn burn_duration_s(&self) -> f64 {
+            1.0
+        }
+
+        fn total_impulse_n_s(&self) -> f64 {
+            self.thrust_n
+        }
+
+        fn dry_mass_kg(&self) -> f64 {
+            self.mass_kg
+        }
+
+        fn propellant_mass_kg(&self) -> f64 {
+            0.0
+        }
+
+        fn variant(&self) -> MotorVariant {
+            MotorVariant::Solid
+        }
+    }
+
+    #[test]
+    fn motor_thrust_adapter_uses_transformed_descendant_frame() {
+        let owner = BodyId::from_path("test.owner");
+        let transform = MotorThrustFrameTransform {
+            rot_owner_from_motor_body: Matrix3::new(0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0),
+        };
+        let adapter = MotorThrustForceAdapter::new_owned_with_frame_transform(
+            ConstantTestMotor {
+                thrust_n: 10.0,
+                mass_kg: 1.0,
+                mass_rate_kg_s: 0.0,
+            },
+            0.0,
+            ModelId::new(997),
+            owner,
+            transform,
+        );
+        let state = rigid_state_with_orientation(0.0, 0.0, identity_body_to_eci());
+        let env = null_env();
+        let force = adapter
+            .force_n_eci(rigid_force_ctx_empty(&state, &env, Some(owner)))
+            .unwrap();
+
+        assert_eq!(force.x.to_bits(), (-10.0_f64).to_bits());
+        assert_eq!(force.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(force.z.to_bits(), 0.0_f64.to_bits());
+    }
+
     // -----------------------------------------------------------------
     // Rigid DeckDragForceAdapter
     // -----------------------------------------------------------------
@@ -3094,6 +4335,138 @@ mod tests {
             "positive body-x velocity should produce negative normal force, got {force:?}"
         );
         assert!(force.z < 0.0);
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    struct FrameSensitiveAeroMethod {
+        force_n_body: Vector3<f64>,
+        moment_n_m_body: Vector3<f64>,
+        expected_alpha_deg: f64,
+        expected_beta_deg: f64,
+    }
+
+    impl AeroMethod for FrameSensitiveAeroMethod {
+        fn aero_force_moment_body(
+            &self,
+            ctx: &AeroContext,
+        ) -> Result<openbmp_aero::AeroForceMomentBody, AeroError> {
+            let tol = 1.0e-9;
+            assert!(
+                (ctx.alpha_deg - self.expected_alpha_deg).abs() < tol,
+                "alpha_deg = {}, expected {}",
+                ctx.alpha_deg,
+                self.expected_alpha_deg
+            );
+            assert!(
+                (ctx.beta_deg - self.expected_beta_deg).abs() < tol,
+                "beta_deg = {}, expected {}",
+                ctx.beta_deg,
+                self.expected_beta_deg
+            );
+            Ok(openbmp_aero::AeroForceMomentBody {
+                force_n_body: self.force_n_body,
+                moment_n_m_body: self.moment_n_m_body,
+            })
+        }
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    struct RateSensitiveAeroMethod {
+        expected_rates_rad_s: Vector3<f64>,
+        moment_n_m_body: Vector3<f64>,
+    }
+
+    impl AeroMethod for RateSensitiveAeroMethod {
+        fn aero_force_moment_body(
+            &self,
+            ctx: &AeroContext,
+        ) -> Result<openbmp_aero::AeroForceMomentBody, AeroError> {
+            let diff = ctx.body_angular_rates_rad_s - self.expected_rates_rad_s;
+            assert!(
+                diff.norm() < 1.0e-12,
+                "body angular rates = {:?}, expected {:?}",
+                ctx.body_angular_rates_rad_s,
+                self.expected_rates_rad_s
+            );
+            Ok(openbmp_aero::AeroForceMomentBody {
+                force_n_body: Vector3::zeros(),
+                moment_n_m_body: self.moment_n_m_body,
+            })
+        }
+    }
+
+    #[test]
+    fn aero_method_moment_adapter_passes_body_angular_rates() {
+        let expected_rates = Vector3::new(1.0, -2.0, 3.0);
+        let method = RateSensitiveAeroMethod {
+            expected_rates_rad_s: expected_rates,
+            moment_n_m_body: Vector3::new(4.0, 5.0, 6.0),
+        };
+        let adapter = AeroMethodMomentAdapter::new(
+            method,
+            IsothermalAtmosphere::ussa_sea_level(),
+            ModelId::new(997),
+            1.0,
+        );
+        let mut state = rigid_state_with_orientation(0.0, 0.0, identity_body_to_eci());
+        state.velocity = Velocity3::new(100.0, 0.0, 0.0);
+        state.angular_velocity =
+            AngularVelocity3::new(expected_rates.x, expected_rates.y, expected_rates.z);
+        let env = null_env();
+
+        let moment = adapter
+            .moment_n_m_body(rigid_moment_ctx_empty(&state, &env, None))
+            .unwrap();
+        assert_eq!(moment, Vector3::new(4.0, 5.0, 6.0));
+    }
+
+    #[test]
+    fn aero_method_adapters_use_transformed_descendant_frame() {
+        let owner = BodyId::from_path("test.owner");
+        let rot_owner_from_aero_body = Matrix3::new(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let transform = AeroFrameTransform {
+            rot_owner_from_aero_body,
+            translation_owner_from_aero_body_m: Vector3::new(0.0, 5.0, 0.0),
+        };
+        let method = FrameSensitiveAeroMethod {
+            force_n_body: Vector3::new(0.0, 10.0, 0.0),
+            moment_n_m_body: Vector3::new(0.0, 0.0, 3.0),
+            expected_alpha_deg: 45.0,
+            expected_beta_deg: 0.0,
+        };
+        let force_adapter = AeroMethodForceAdapter::new_owned_with_frame_transform(
+            method,
+            IsothermalAtmosphere::ussa_sea_level(),
+            ModelId::new(998),
+            1.0,
+            owner,
+            transform,
+        );
+        let moment_adapter = AeroMethodMomentAdapter::new_owned_with_frame_transform(
+            method,
+            IsothermalAtmosphere::ussa_sea_level(),
+            ModelId::new(999),
+            1.0,
+            owner,
+            transform,
+        );
+        let mut state = rigid_state_with_orientation(0.0, 0.0, identity_body_to_eci());
+        state.velocity = Velocity3::new(0.0, 100.0, 100.0);
+        let env = null_env();
+
+        let force = force_adapter
+            .force_n_eci(rigid_force_ctx_empty(&state, &env, Some(owner)))
+            .unwrap();
+        let moment = moment_adapter
+            .moment_n_m_body(rigid_moment_ctx_empty(&state, &env, Some(owner)))
+            .unwrap();
+
+        assert_eq!(force.x.to_bits(), (-10.0_f64).to_bits());
+        assert_eq!(force.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(force.z.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.z.to_bits(), 53.0_f64.to_bits());
     }
 
     // -----------------------------------------------------------------
@@ -3177,6 +4550,14 @@ mod tests {
                         thrust_body: Vector3::new(tx, ty, tz),
                         mass_flow_kg_per_s: 0.0,
                         consumed_kg: 0.0,
+                        gimbal_pitch_rad: 0.0,
+                        gimbal_yaw_rad: 0.0,
+                        gimbal_pitch_rate_rad_s: 0.0,
+                        gimbal_yaw_rate_rad_s: 0.0,
+                        tvc_pitch_load_torque_n_m: 0.0,
+                        tvc_yaw_load_torque_n_m: 0.0,
+                        tvc_pitch_inertial_reaction_torque_n_m: 0.0,
+                        tvc_yaw_inertial_reaction_torque_n_m: 0.0,
                         lifecycle_state_index: 2,
                     },
                 );
@@ -3208,6 +4589,167 @@ mod tests {
         }
     }
 
+    #[test]
+    fn engine_cluster_adapters_use_transformed_descendant_frame() {
+        let engine = EngineId::from_path("test.cluster.engine");
+        let owner = BodyId::from_path("test.owner");
+        let rot_owner_from_engine_body = Matrix3::new(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let transform = EngineClusterFrameTransform {
+            rot_owner_from_engine_body,
+            mount_point_owner_m: Vector3::new(0.0, 5.0, 0.0),
+        };
+        let force_adapter = EngineClusterForceAdapter::new_with_owners_and_frame_transforms(
+            vec![engine],
+            BTreeMap::from([(engine, owner)]),
+            BTreeMap::from([(engine, transform)]),
+            ModelId::new(998),
+        );
+        let moment_adapter = EngineClusterMomentAdapter::new_with_owners_and_frame_transforms(
+            vec![engine],
+            vec![Position3::<Body>::new(2.0, 0.0, 0.0)],
+            BTreeMap::from([(engine, owner)]),
+            BTreeMap::from([(engine, transform)]),
+            ModelId::new(999),
+        )
+        .unwrap();
+        let state = rigid_state_with_orientation(0.0, 0.0, identity_body_to_eci());
+        let env = null_env();
+        let snapshot = BTreeMap::from([(
+            engine,
+            EngineSnapshot {
+                thrust_body: Vector3::new(0.0, 10.0, 0.0),
+                mass_flow_kg_per_s: 0.0,
+                consumed_kg: 0.0,
+                gimbal_pitch_rad: 0.0,
+                gimbal_yaw_rad: 0.0,
+                gimbal_pitch_rate_rad_s: 0.0,
+                gimbal_yaw_rate_rad_s: 0.0,
+                tvc_pitch_load_torque_n_m: 0.0,
+                tvc_yaw_load_torque_n_m: 0.0,
+                tvc_pitch_inertial_reaction_torque_n_m: 0.0,
+                tvc_yaw_inertial_reaction_torque_n_m: 0.0,
+                lifecycle_state_index: 2,
+            },
+        )]);
+
+        let force = force_adapter
+            .force_n_eci(rigid_force_ctx_with_engines(
+                &state,
+                &env,
+                &snapshot,
+                Some(owner),
+            ))
+            .unwrap();
+        let moment = moment_adapter
+            .moment_n_m_body(rigid_moment_ctx(&state, &env, &snapshot))
+            .unwrap();
+
+        assert_eq!(force.x.to_bits(), (-10.0_f64).to_bits());
+        assert_eq!(force.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(force.z.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.z.to_bits(), 50.0_f64.to_bits());
+    }
+
+    #[test]
+    fn tank_rack_adapters_use_transformed_descendant_frame() {
+        let tank = TankId::from_path("test.rack.tank");
+        let owner = BodyId::from_path("test.owner");
+        let rot_owner_from_tank_body = Matrix3::new(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let transform = TankRackFrameTransform {
+            rot_owner_from_tank_body,
+            translation_owner_from_tank_body_m: Vector3::new(0.0, 5.0, 0.0),
+        };
+        let force_adapter = TankRackForceAdapter::new_with_owners_and_frame_transforms(
+            vec![tank],
+            BTreeMap::from([(tank, owner)]),
+            BTreeMap::from([(tank, transform)]),
+            ModelId::new(998),
+        );
+        let moment_adapter = TankRackMomentAdapter::new_with_owners_and_frame_transforms(
+            vec![tank],
+            BTreeMap::from([(tank, owner)]),
+            BTreeMap::from([(tank, transform)]),
+            ModelId::new(999),
+        );
+        let state = rigid_state_with_orientation(0.0, 0.0, identity_body_to_eci());
+        let env = null_env();
+        let snapshot = BTreeMap::from([(
+            tank,
+            TankSnapshot {
+                mass_kg: 0.0,
+                cg_offset_body_m: Vector3::zeros(),
+                inertia_delta_body_kg_m2: Matrix3::zeros(),
+                reaction_force_body_n: Vector3::new(0.0, 10.0, 0.0),
+                reaction_moment_body_n_m: Vector3::new(0.0, 0.0, 3.0),
+                fluid_remaining_kg: 0.0,
+                mass_rate_kg_s: 0.0,
+            },
+        )]);
+
+        let force = force_adapter
+            .force_n_eci(rigid_force_ctx_with_tanks(
+                &state,
+                &env,
+                &snapshot,
+                Some(owner),
+            ))
+            .unwrap();
+        let moment = moment_adapter
+            .moment_n_m_body(rigid_moment_ctx_with_tanks(
+                &state,
+                &env,
+                &snapshot,
+                Some(owner),
+            ))
+            .unwrap();
+
+        assert_eq!(force.x.to_bits(), (-10.0_f64).to_bits());
+        assert_eq!(force.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(force.z.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.z.to_bits(), 53.0_f64.to_bits());
+    }
+
+    #[test]
+    fn direct_torque_moment_adapter_uses_transformed_axis_vector() {
+        let owner = BodyId::from_path("test.direct_torque_owner");
+        let adapter = DirectTorqueMomentAdapter::new(
+            vec![DirectTorqueBinding {
+                snapshot_key: "pitch-torque".to_string(),
+                owner: Some(owner),
+                body_axis_index: 1,
+                moment_axis_body: Some(Vector3::new(2.0, 0.0, 0.0)),
+                effectiveness_n_m_per_rad: 10.0,
+            }],
+            ModelId::new(991),
+        );
+        let mut actuals = BTreeMap::new();
+        actuals.insert("pitch-torque".to_string(), 0.5);
+        let state = rigid_state_with_orientation(0.0, 0.0, identity_body_to_eci());
+        let env = null_env();
+
+        let got = adapter
+            .moment_n_m_body(MomentContext {
+                state: &state,
+                environment: &env,
+                time: SimTime::ZERO,
+                active_body: Some(owner),
+                phase_id: None,
+                effector_actuals: openbmp_models::EffectorActualsView::new(&actuals),
+                engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+                tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+                recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
+            })
+            .unwrap();
+
+        assert_eq!(got.x.to_bits(), 5.0_f64.to_bits());
+        assert_eq!(got.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(got.z.to_bits(), 0.0_f64.to_bits());
+    }
+
     // -----------------------------------------------------------------
     // RecoveryRackForceAdapter
     // -----------------------------------------------------------------
@@ -3229,6 +4771,7 @@ mod tests {
                         phase_index: if deployed { 2 } else { 0 },
                         c_d,
                         drag_area_m2,
+                        ..RecoverySnapshot::default()
                     },
                 )
             })
@@ -3252,6 +4795,80 @@ mod tests {
             engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
             tank_snapshot: openbmp_models::TankSnapshotView::empty(),
             recovery_snapshot: RecoverySnapshotView::new(snapshot),
+        }
+    }
+
+    fn mass_ctx<'a>(
+        time_s: f64,
+        snapshot: &'a BTreeMap<RecoveryId, RecoverySnapshot>,
+    ) -> MassContext<'a> {
+        MassContext {
+            time: SimTime::from_seconds(time_s),
+            active_body: None,
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+            recovery_snapshot: RecoverySnapshotView::new(snapshot),
+        }
+    }
+
+    fn recovery_moment_ctx<'a>(
+        state: &'a RigidBodyState,
+        env: &'a EnvironmentSample,
+        snapshot: &'a BTreeMap<RecoveryId, RecoverySnapshot>,
+    ) -> MomentContext<'a, RigidBodyState> {
+        MomentContext {
+            state,
+            environment: env,
+            time: SimTime::ZERO,
+            active_body: None,
+            phase_id: None,
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+            recovery_snapshot: RecoverySnapshotView::new(snapshot),
+        }
+    }
+
+    fn recovery_rigid_force_ctx<'a>(
+        state: &'a RigidBodyState,
+        env: &'a EnvironmentSample,
+        snapshot: &'a BTreeMap<RecoveryId, RecoverySnapshot>,
+    ) -> ForceContext<'a, RigidBodyState> {
+        ForceContext {
+            state,
+            environment: env,
+            mass_kg: state.mass_props.mass.get::<kilogram>(),
+            time: SimTime::ZERO,
+            active_body: None,
+            phase_id: None,
+            effector_actuals: openbmp_models::EffectorActualsView::empty(),
+            engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
+            tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+            recovery_snapshot: RecoverySnapshotView::new(snapshot),
+        }
+    }
+
+    #[derive(Debug)]
+    struct ConstantMassModel {
+        mass_kg: f64,
+        mass_rate_kg_s: f64,
+    }
+
+    impl MassModel for ConstantMassModel {
+        fn mass_kg(&self, _t: SimTime) -> Result<f64, ModelEvalError> {
+            Ok(self.mass_kg)
+        }
+
+        fn mass_rate_kg_s(&self, _t: SimTime) -> Result<f64, ModelEvalError> {
+            Ok(self.mass_rate_kg_s)
+        }
+
+        fn mass_kg_at(&self, _ctx: MassContext<'_>) -> Result<f64, ModelEvalError> {
+            Ok(self.mass_kg)
+        }
+
+        fn mass_rate_kg_s_at(&self, _ctx: MassContext<'_>) -> Result<f64, ModelEvalError> {
+            Ok(self.mass_rate_kg_s)
         }
     }
 
@@ -3349,6 +4966,37 @@ mod tests {
             .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
             .unwrap();
         assert_eq!(f, Vector3::zeros());
+    }
+
+    #[test]
+    fn recovery_rack_uses_wind_relative_velocity() {
+        let id_a = RecoveryId::from_path("recovery.main");
+        let atm = IsothermalAtmosphere::ussa_sea_level();
+        let adapter = RecoveryRackForceAdapter::new(vec![id_a], atm, ModelId::new(370));
+        let state = fixture_state(1000.0, 0.0);
+        let c_d = 1.5;
+        let area = 2.0;
+        let snapshot = recovery_snapshot_map(&[(id_a, true, c_d, area)]);
+
+        let no_wind_force = adapter
+            .force_n_eci(recovery_ctx(&state, &null_env(), 0.0, &snapshot))
+            .unwrap();
+        assert_eq!(no_wind_force, Vector3::zeros());
+
+        let env = env_with_wind_eci(Vector3::new(0.0, 0.0, -20.0));
+        let force = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+
+        let air_relative_z = 0.0_f64 - (-20.0);
+        let speed_sq = air_relative_z * air_relative_z;
+        let q = 0.5 * atm.sample(1000.0, SimTime::ZERO).unwrap().density_kg_m3 * speed_sq;
+        let drag_magnitude = q * (0.0_f64 + c_d * area);
+        let expected_z = -drag_magnitude * (air_relative_z / speed_sq.sqrt());
+        assert_eq!(force.x, 0.0);
+        assert_eq!(force.y, 0.0);
+        assert_eq!(force.z.to_bits(), expected_z.to_bits());
+        assert!(force.z < 0.0);
     }
 
     #[test]
@@ -3452,6 +5100,141 @@ mod tests {
     }
 
     #[test]
+    fn recovery_rack_skips_drag_when_riser_force_path_is_active() {
+        let id = RecoveryId::from_path("recovery.main");
+        let adapter =
+            RecoveryRackForceAdapter::new(vec![id], RejectingAtmosphere, ModelId::new(370));
+        let state = fixture_state(500.0, -40.0);
+        let env = null_env();
+        let mut snapshot = recovery_snapshot_map(&[(id, true, 1.5, 2.0)]);
+        snapshot
+            .get_mut(&id)
+            .expect("snapshot has recovery id")
+            .riser_force_path_active = true;
+
+        let force = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+
+        assert_eq!(force.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(force.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(force.z.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn recovery_riser_force_adapter_applies_body_force_for_point_mass() {
+        let id = RecoveryId::from_path("recovery.main");
+        let adapter = RecoveryRiserForceAdapter::new(vec![id], ModelId::new(372));
+        let state = fixture_state(0.0, 0.0);
+        let env = null_env();
+        let snapshot = BTreeMap::from([(
+            id,
+            RecoverySnapshot {
+                riser_force_body_n: Vector3::new(2.0, -3.0, 4.0),
+                ..RecoverySnapshot::default()
+            },
+        )]);
+
+        let force = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+
+        assert_eq!(force.x.to_bits(), 2.0_f64.to_bits());
+        assert_eq!(force.y.to_bits(), (-3.0_f64).to_bits());
+        assert_eq!(force.z.to_bits(), 4.0_f64.to_bits());
+    }
+
+    #[test]
+    fn recovery_riser_force_adapter_rotates_body_force_for_rigid_body() {
+        let id = RecoveryId::from_path("recovery.main");
+        let adapter = RecoveryRiserForceAdapter::new(vec![id], ModelId::new(383));
+        let body_to_eci = nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(Vector3::new(0.0, 0.0, 1.0)),
+            core::f64::consts::FRAC_PI_2,
+        );
+        let state =
+            rigid_state_with_orientation(0.0, 0.0, Quaternion::from_unit_quaternion(body_to_eci));
+        let env = null_env();
+        let snapshot = BTreeMap::from([(
+            id,
+            RecoverySnapshot {
+                riser_force_body_n: Vector3::new(2.0, 0.0, 0.0),
+                ..RecoverySnapshot::default()
+            },
+        )]);
+
+        let force = adapter
+            .force_n_eci(recovery_rigid_force_ctx(&state, &env, &snapshot))
+            .unwrap();
+
+        assert!(force.x.abs() <= 1.0e-12, "force.x = {}", force.x);
+        assert!((force.y - 2.0).abs() <= 1.0e-12, "force.y = {}", force.y);
+        assert!(force.z.abs() <= 1.0e-12, "force.z = {}", force.z);
+    }
+
+    #[test]
+    fn recovery_sequence_force_adapter_applies_mortar_impulse_force_for_point_mass() {
+        let id = RecoveryId::from_path("recovery.main");
+        let adapter = RecoverySequenceForceAdapter::new(vec![id], ModelId::new(373));
+        let state = fixture_state(0.0, 0.0);
+        let env = null_env();
+        let snapshot = BTreeMap::from([(
+            id,
+            RecoverySnapshot {
+                mortar_impulse_body_n_s: Vector3::new(0.0, 0.0, -12.0),
+                mortar_force_body_n: Vector3::new(0.0, 0.0, -48.0),
+                ..RecoverySnapshot::default()
+            },
+        )]);
+
+        let force = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+
+        assert_eq!(force.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(force.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(force.z.to_bits(), (-48.0_f64).to_bits());
+        assert_eq!(
+            (force.z * 0.25).to_bits(),
+            snapshot
+                .get(&id)
+                .expect("sequence snapshot present")
+                .mortar_impulse_body_n_s
+                .z
+                .to_bits()
+        );
+    }
+
+    #[test]
+    fn recovery_riser_moment_adapter_shifts_origin_moment_to_live_cg() {
+        let id = RecoveryId::from_path("recovery.main");
+        let adapter = RecoveryRiserMomentAdapter::new(vec![id], ModelId::new(382));
+        let mut state = rigid_state_with_orientation(0.0, 0.0, identity_body_to_eci());
+        state.mass_props = MassProperties::new(
+            Mass::new::<kilogram>(1.0),
+            Position3::<Body>::new(0.0, 1.0, 0.0),
+            nalgebra::Matrix3::identity(),
+        );
+        let env = null_env();
+        let snapshot = BTreeMap::from([(
+            id,
+            RecoverySnapshot {
+                riser_force_body_n: Vector3::new(10.0, 0.0, 0.0),
+                riser_moment_body_n_m: Vector3::new(0.0, 0.0, 100.0),
+                ..RecoverySnapshot::default()
+            },
+        )]);
+
+        let moment = adapter
+            .moment_n_m_body(recovery_moment_ctx(&state, &env, &snapshot))
+            .unwrap();
+
+        assert_eq!(moment.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(moment.z.to_bits(), 110.0_f64.to_bits());
+    }
+
+    #[test]
     fn recovery_rack_missing_owner_fails_for_active_body() {
         let id_upper = RecoveryId::from_path("recovery.upper");
         let id_lower = RecoveryId::from_path("recovery.lower");
@@ -3508,5 +5291,66 @@ mod tests {
         assert_eq!(f1.x.to_bits(), f2.x.to_bits());
         assert_eq!(f1.y.to_bits(), f2.y.to_bits());
         assert_eq!(f1.z.to_bits(), f2.z.to_bits());
+    }
+
+    #[test]
+    fn recovery_rack_applies_apparent_mass_rate_force() {
+        let id_a = RecoveryId::from_path("recovery.main");
+        let adapter =
+            RecoveryRackForceAdapter::new(vec![id_a], RejectingAtmosphere, ModelId::new(370));
+        let state = fixture_state(500.0, -40.0);
+        let env = null_env();
+        let mut snapshot = recovery_snapshot_map(&[(id_a, true, 0.0, 0.0)]);
+        snapshot
+            .get_mut(&id_a)
+            .expect("snapshot has recovery id")
+            .apparent_mass_rate_kg_s = 2.5;
+
+        let force = adapter
+            .force_n_eci(recovery_ctx(&state, &env, 0.0, &snapshot))
+            .unwrap();
+
+        let expected = -2.5 * state.velocity.vector;
+        assert_eq!(force.x.to_bits(), expected.x.to_bits());
+        assert_eq!(force.y.to_bits(), expected.y.to_bits());
+        assert_eq!(force.z.to_bits(), expected.z.to_bits());
+    }
+
+    #[test]
+    fn recovery_rack_mass_adapter_adds_apparent_mass_and_rate() {
+        let id_a = RecoveryId::from_path("recovery.drogue");
+        let id_b = RecoveryId::from_path("recovery.main");
+        let adapter = RecoveryRackMassAdapter::new(
+            Box::new(ConstantMassModel {
+                mass_kg: 120.0,
+                mass_rate_kg_s: -3.0,
+            }),
+            vec![id_a, id_b],
+            ModelId::new(371),
+        );
+        let mut snapshot = recovery_snapshot_map(&[(id_a, true, 0.0, 0.0), (id_b, true, 0.0, 0.0)]);
+        snapshot
+            .get_mut(&id_a)
+            .expect("drogue snapshot")
+            .apparent_mass_kg = 4.0;
+        snapshot
+            .get_mut(&id_a)
+            .expect("drogue snapshot")
+            .apparent_mass_rate_kg_s = 0.25;
+        snapshot
+            .get_mut(&id_b)
+            .expect("main snapshot")
+            .apparent_mass_kg = 6.0;
+        snapshot
+            .get_mut(&id_b)
+            .expect("main snapshot")
+            .apparent_mass_rate_kg_s = 0.75;
+
+        let ctx = mass_ctx(0.0, &snapshot);
+        let mass = adapter.mass_kg_at(ctx).unwrap();
+        let rate = adapter.mass_rate_kg_s_at(ctx).unwrap();
+
+        assert_eq!(mass.to_bits(), 130.0_f64.to_bits());
+        assert_eq!(rate.to_bits(), (-2.0_f64).to_bits());
     }
 }

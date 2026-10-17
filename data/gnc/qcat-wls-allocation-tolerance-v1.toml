@@ -1,0 +1,129 @@
+openbmp.gnc_allocation_reference = 1
+
+[meta]
+dataset_id = "openbmp.gnc.qcat_wls_allocation.v1"
+source_class = "public-open-source-tool"
+source_title = "QCAT wls_alloc ADMIRE and synthetic TVC control-allocation tolerance table"
+source_url = "https://www.mathworks.com/matlabcentral/fileexchange/4609-qcat"
+source_mirror_url = "https://github.com/mengchaoheng/qcat/tree/336f749ac036d2dbe825d8a34e98b90bc09d29ef"
+license_or_terms = "QCAT BSD-style license in mirrored package; compact numeric regression table derived from public toolbox fixtures and algorithm documentation."
+validation = "validated-toy"
+
+[tolerances]
+absolute_command = 1.0e-9
+absolute_residual = 2.0e-9
+
+[[problem]]
+name = "qcat_admire"
+source_fixture = "QCAT/qcat/admiredata.mat"
+source_algorithm = "QCAT/qcat/wls_alloc.m"
+row_order = ["roll", "pitch", "yaw"]
+effectors = ["admire_canard", "admire_elevon_right", "admire_elevon_left", "admire_rudder"]
+rows = 3
+gamma = 1.0e12
+virtual_weights = [1.0, 1.0, 1.0]
+effort_weights = [1.0, 1.0, 1.0, 1.0]
+preferred = [0.0, 0.0, 0.0, 0.0]
+u_prev = [0.0, 0.0, 0.0, 0.0]
+dt_s = 1.0
+u_min = [-9.59931088596881314e-1, -5.23598775598298816e-1, -5.23598775598298816e-1, -5.23598775598298816e-1]
+u_max = [4.36332312998582384e-1, 5.23598775598298816e-1, 5.23598775598298816e-1, 5.23598775598298816e-1]
+rate_limit = [10.0, 10.0, 10.0, 10.0]
+row_major = [
+  3.33066907387546962e-16, -4.24234424818371194e0, 4.24234424818371371e0, 1.48711598702071673e0,
+  1.65324473728538246e0, -1.27347014854164063e0, -1.27347014854164063e0, 2.38811030250793508e-3,
+  -5.55111512312578270e-17, -2.80465276651772012e-1, 2.80465276651772012e-1, -8.82327664451732498e-1,
+]
+
+[[problem.case]]
+name = "admire_t4s_interior"
+source_sample_index = 200
+scale = 1.0
+virtual_command = [2.83045875922882395e0, -4.17175048306681562e-1, 5.30586200287862075e-1]
+expected_u = [-1.15166067693962398e-1, -3.06272422903272779e-1, 4.83693885860956185e-1, -3.50241858444109933e-1]
+expected_residual = [6.08402217494585784e-14, -6.99440505513848620e-14, 4.97601959636995161e-13]
+expected_active_set = [0, 0, 0, 0]
+expected_iterations = 1
+expected_attainable = true
+
+[[problem.case]]
+name = "admire_t4s_scaled_upper_elevon"
+source_sample_index = 200
+scale = 1.2
+virtual_command = [3.39655051107458883e0, -5.00610057968017830e-1, 6.36703440345434468e-1]
+expected_u = [-2.25755899368623864e-1, -4.24360794918754558e-1, 5.23598775598298816e-1, -4.20290230132887743e-1]
+expected_residual = [9.81437153768638382e-14, -1.36557432028894254e-13, 6.42041975140728027e-13]
+expected_active_set = [0, 0, 1, 0]
+expected_iterations = 2
+expected_attainable = true
+
+[[problem.case]]
+name = "admire_t4s_scaled_split_elevon_boundary"
+source_sample_index = 200
+scale = 1.5
+virtual_command = [4.24568813884323593e0, -6.25762572460022315e-1, 7.95879300431793113e-1]
+expected_u = [-3.78150203266163998e-1, -5.23598775598298816e-1, 5.23598775598298816e-1, -2.46110494139638009e-1]
+expected_residual = [1.69110481220905662e-1, -2.28927987677707279e-13, 2.85026652035092587e-1]
+expected_active_set = [0, -1, 1, 0]
+expected_iterations = 3
+expected_attainable = false
+
+[[problem]]
+name = "synthetic_three_engine_tvc_loose"
+source_fixture = "synthetic OpenBMP 2x3 coupled TVC cluster"
+source_algorithm = "QCAT/qcat/wls_alloc.m"
+row_order = ["pitch", "yaw"]
+effectors = ["engine_left", "engine_right", "engine_center"]
+rows = 2
+gamma = 1.0e12
+virtual_weights = [1.0, 1.0]
+effort_weights = [1.0, 1.0, 1.0]
+preferred = [0.0, 0.0, 0.0]
+u_prev = [0.0, 0.0, 0.0]
+dt_s = 1.0
+u_min = [-10.0, -10.0, -10.0]
+u_max = [10.0, 10.0, 10.0]
+rate_limit = [100.0, 100.0, 100.0]
+row_major = [
+  1.0, 0.0, 1.0,
+  0.0, 1.0, 1.0,
+]
+
+[[problem.case]]
+name = "synthetic_tvc_minimum_effort_split"
+virtual_command = [1.0, 1.0]
+expected_u = [3.33333333333221682e-1, 3.33333333333222182e-1, 6.66666666666444585e-1]
+expected_residual = [3.33733041202322056e-13, 3.33288951992471993e-13]
+expected_active_set = [0, 0, 0]
+expected_iterations = 1
+expected_attainable = true
+
+[[problem]]
+name = "synthetic_three_engine_tvc_boxed"
+source_fixture = "synthetic OpenBMP 2x3 coupled TVC cluster with center-engine box bound"
+source_algorithm = "QCAT/qcat/wls_alloc.m"
+row_order = ["pitch", "yaw"]
+effectors = ["engine_left", "engine_right", "engine_center"]
+rows = 2
+gamma = 1.0e12
+virtual_weights = [1.0, 1.0]
+effort_weights = [1.0, 1.0, 1.0]
+preferred = [0.0, 0.0, 0.0]
+u_prev = [0.0, 0.0, 0.0]
+dt_s = 1.0
+u_min = [-10.0, -10.0, -0.25]
+u_max = [10.0, 10.0, 0.25]
+rate_limit = [100.0, 100.0, 100.0]
+row_major = [
+  1.0, 0.0, 1.0,
+  0.0, 1.0, 1.0,
+]
+
+[[problem.case]]
+name = "synthetic_tvc_center_engine_upper_bound"
+virtual_command = [1.0, 1.0]
+expected_u = [7.49999999999250155e-1, 7.49999999999250155e-1, 2.49999999999999972e-1]
+expected_residual = [7.49844630831830727e-13, 7.49844630831830727e-13]
+expected_active_set = [0, 0, 1]
+expected_iterations = 2
+expected_attainable = true

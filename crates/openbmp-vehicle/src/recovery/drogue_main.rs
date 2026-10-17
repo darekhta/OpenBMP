@@ -6,16 +6,17 @@
 //! `Stowed → Drogue → Main`. No re-entry: once `Main`, subsequent
 //! deploys are rejected.
 //!
-//! Drag area swap is instantaneous on the firing event; canopy-
-//! inflation transients are not modelled. Both stages publish
+//! By default the drag-area swap is instantaneous on the firing
+//! event. Opt-in stage inflation profiles ramp the effective area for
+//! the drogue and/or main stage independently. Both stages publish
 //! their own `(C_D, A)` pair through [`RecoveryModel::current_c_d`] /
 //! [`RecoveryModel::current_drag_area_m2`].
 
 use openbmp_core::RecoveryId;
 
 use super::{
-    RecoveryCommand, RecoveryError, RecoveryModel, RecoveryPhase, require_positive_area,
-    require_positive_c_d,
+    CanopyInflationSample, CanopyInflationState, InflationProfile, RecoveryCommand, RecoveryError,
+    RecoveryModel, RecoveryPhase, require_positive_area, require_positive_c_d,
 };
 
 /// Two-stage drogue + main parachute recovery.
@@ -31,6 +32,8 @@ pub struct DrogueMainRecovery {
     main_c_d: f64,
     main_area_m2: f64,
     phase: RecoveryPhase,
+    drogue_inflation: Option<CanopyInflationState>,
+    main_inflation: Option<CanopyInflationState>,
 }
 
 impl DrogueMainRecovery {
@@ -58,7 +61,31 @@ impl DrogueMainRecovery {
             main_c_d,
             main_area_m2,
             phase: RecoveryPhase::Stowed,
+            drogue_inflation: None,
+            main_inflation: None,
         })
+    }
+
+    /// Construct a stowed two-stage recovery device with optional
+    /// independent drogue/main fill-time profiles.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError::InvalidParameter`] when any drag
+    /// coefficient or area is non-finite or non-positive.
+    pub fn new_with_inflation(
+        id: RecoveryId,
+        drogue_c_d: f64,
+        drogue_area_m2: f64,
+        main_c_d: f64,
+        main_area_m2: f64,
+        drogue_inflation: Option<InflationProfile>,
+        main_inflation: Option<InflationProfile>,
+    ) -> Result<Self, RecoveryError> {
+        let mut recovery = Self::new(id, drogue_c_d, drogue_area_m2, main_c_d, main_area_m2)?;
+        recovery.drogue_inflation = drogue_inflation.map(CanopyInflationState::new);
+        recovery.main_inflation = main_inflation.map(CanopyInflationState::new);
+        Ok(recovery)
     }
 
     /// Drogue-stage drag coefficient.
@@ -84,6 +111,18 @@ impl DrogueMainRecovery {
     pub fn main_area_m2(&self) -> f64 {
         self.main_area_m2
     }
+
+    /// Drogue-stage inflation state, if configured.
+    #[must_use]
+    pub const fn drogue_inflation(&self) -> Option<CanopyInflationState> {
+        self.drogue_inflation
+    }
+
+    /// Main-stage inflation state, if configured.
+    #[must_use]
+    pub const fn main_inflation(&self) -> Option<CanopyInflationState> {
+        self.main_inflation
+    }
 }
 
 impl RecoveryModel for DrogueMainRecovery {
@@ -106,19 +145,63 @@ impl RecoveryModel for DrogueMainRecovery {
     fn current_drag_area_m2(&self) -> f64 {
         match self.phase {
             RecoveryPhase::Stowed => 0.0,
-            RecoveryPhase::Drogue => self.drogue_area_m2,
-            RecoveryPhase::Main => self.main_area_m2,
+            RecoveryPhase::Drogue => {
+                self.drogue_inflation
+                    .map_or(self.drogue_area_m2, |inflation| {
+                        inflation
+                            .effective_drag_area_m2(self.drogue_area_m2)
+                            .unwrap_or(f64::NAN)
+                    })
+            }
+            RecoveryPhase::Main => self.main_inflation.map_or(self.main_area_m2, |inflation| {
+                inflation
+                    .effective_drag_area_m2(self.main_area_m2)
+                    .unwrap_or(f64::NAN)
+            }),
         }
+    }
+
+    fn current_inflation_sample(
+        &self,
+        dynamic_pressure_pa: f64,
+    ) -> Result<Option<CanopyInflationSample>, RecoveryError> {
+        let stage = match self.phase {
+            RecoveryPhase::Stowed => None,
+            RecoveryPhase::Drogue => self
+                .drogue_inflation
+                .map(|inflation| (inflation, self.drogue_c_d, self.drogue_area_m2)),
+            RecoveryPhase::Main => self
+                .main_inflation
+                .map(|inflation| (inflation, self.main_c_d, self.main_area_m2)),
+        };
+        stage
+            .map(|(inflation, c_d, area_m2)| {
+                if !inflation.started() {
+                    return Ok(None);
+                }
+                inflation
+                    .profile()
+                    .sample(inflation.elapsed_s(), c_d, area_m2, dynamic_pressure_pa)
+                    .map(Some)
+            })
+            .transpose()
+            .map(Option::flatten)
     }
 
     fn apply_command(&mut self, command: RecoveryCommand) -> Result<(), RecoveryError> {
         match (self.phase, command) {
             (RecoveryPhase::Stowed, RecoveryCommand::DeployDrogue) => {
                 self.phase = RecoveryPhase::Drogue;
+                if let Some(inflation) = &mut self.drogue_inflation {
+                    inflation.start();
+                }
                 Ok(())
             }
             (RecoveryPhase::Drogue, RecoveryCommand::DeployMain) => {
                 self.phase = RecoveryPhase::Main;
+                if let Some(inflation) = &mut self.main_inflation {
+                    inflation.start();
+                }
                 Ok(())
             }
             (from_phase, command) => Err(RecoveryError::UnsupportedCommand {
@@ -129,7 +212,20 @@ impl RecoveryModel for DrogueMainRecovery {
         }
     }
 
-    fn step(&mut self, _dt_s: f64) -> Result<(), RecoveryError> {
+    fn step(&mut self, dt_s: f64) -> Result<(), RecoveryError> {
+        match self.phase {
+            RecoveryPhase::Stowed => {}
+            RecoveryPhase::Drogue => {
+                if let Some(inflation) = &mut self.drogue_inflation {
+                    inflation.step(dt_s)?;
+                }
+            }
+            RecoveryPhase::Main => {
+                if let Some(inflation) = &mut self.main_inflation {
+                    inflation.step(dt_s)?;
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -138,9 +234,20 @@ impl RecoveryModel for DrogueMainRecovery {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+    use crate::recovery::CanopyGrowthShape;
 
     fn dm() -> DrogueMainRecovery {
         DrogueMainRecovery::new(RecoveryId::new(7), 1.2, 0.5, 1.5, 4.0).unwrap()
+    }
+
+    fn linear_profile(fill_time_s: f64, opening_force_coeff_c_x: f64) -> InflationProfile {
+        InflationProfile::new(
+            fill_time_s,
+            0.0,
+            CanopyGrowthShape::polynomial(1.0).unwrap(),
+            opening_force_coeff_c_x,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -282,5 +389,47 @@ mod tests {
             d.step(0.01).unwrap();
         }
         assert_eq!(d.phase(), RecoveryPhase::Main);
+    }
+
+    #[test]
+    fn staged_inflation_ramps_drogue_then_main_independently() {
+        let mut d = DrogueMainRecovery::new_with_inflation(
+            RecoveryId::new(7),
+            1.2,
+            0.5,
+            1.5,
+            4.0,
+            Some(linear_profile(1.0, 1.1)),
+            Some(linear_profile(2.0, 1.2)),
+        )
+        .unwrap();
+
+        d.apply_command(RecoveryCommand::DeployDrogue).unwrap();
+        assert_eq!(d.phase(), RecoveryPhase::Drogue);
+        assert_eq!(d.current_drag_area_m2().to_bits(), 0.0_f64.to_bits());
+        let sample = d.current_inflation_sample(100.0).unwrap().unwrap();
+        assert_eq!(sample.progress.to_bits(), 0.0_f64.to_bits());
+        assert!((sample.infinite_mass_peak_load_n - 66.0).abs() < 1e-12);
+
+        d.step(0.25).unwrap();
+        assert_eq!(d.current_drag_area_m2().to_bits(), 0.125_f64.to_bits());
+        let sample = d.current_inflation_sample(100.0).unwrap().unwrap();
+        assert_eq!(sample.progress.to_bits(), 0.25_f64.to_bits());
+        assert_eq!(sample.effective_drag_area_m2.to_bits(), 0.125_f64.to_bits());
+        assert!((sample.instantaneous_infinite_mass_load_n - 16.5).abs() < 1e-12);
+
+        d.apply_command(RecoveryCommand::DeployMain).unwrap();
+        assert_eq!(d.phase(), RecoveryPhase::Main);
+        assert_eq!(d.current_drag_area_m2().to_bits(), 0.0_f64.to_bits());
+        let sample = d.current_inflation_sample(100.0).unwrap().unwrap();
+        assert_eq!(sample.progress.to_bits(), 0.0_f64.to_bits());
+        assert!((sample.infinite_mass_peak_load_n - 720.0).abs() < 1e-12);
+
+        d.step(0.5).unwrap();
+        assert_eq!(d.current_drag_area_m2().to_bits(), 1.0_f64.to_bits());
+        let sample = d.current_inflation_sample(100.0).unwrap().unwrap();
+        assert_eq!(sample.progress.to_bits(), 0.25_f64.to_bits());
+        assert_eq!(sample.effective_drag_area_m2.to_bits(), 1.0_f64.to_bits());
+        assert!((sample.instantaneous_infinite_mass_load_n - 180.0).abs() < 1e-12);
     }
 }

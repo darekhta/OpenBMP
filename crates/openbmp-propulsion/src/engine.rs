@@ -63,6 +63,10 @@ use crate::motor::{
     ChamberState, IdealNozzlePerformance, NozzlePerformance, NozzleSeparationCriterion,
     NozzleSolution,
 };
+use crate::tvc::{
+    TvcActuatorCommand, TvcActuatorParams, TvcActuatorPlant, TvcActuatorState, TvcActuatorStep,
+    TvcLoadTorque,
+};
 
 /// Standard gravity used for `Isp` → mass-flow conversion.
 /// Matches the [`crate::motor`] convention.
@@ -466,6 +470,22 @@ pub struct EngineSnapshot {
     /// Cumulative propellant consumed since construction, in kg.
     /// Non-decreasing.
     pub consumed_kg: f64,
+    /// Delivered pitch-axis gimbal angle, rad.
+    pub gimbal_pitch_rad: f64,
+    /// Delivered yaw-axis gimbal angle, rad.
+    pub gimbal_yaw_rad: f64,
+    /// Delivered pitch-axis gimbal rate, rad/s.
+    pub gimbal_pitch_rate_rad_s: f64,
+    /// Delivered yaw-axis gimbal rate, rad/s.
+    pub gimbal_yaw_rate_rad_s: f64,
+    /// External pitch-axis TVC load torque applied during this step, N*m.
+    pub tvc_pitch_load_torque_n_m: f64,
+    /// External yaw-axis TVC load torque applied during this step, N*m.
+    pub tvc_yaw_load_torque_n_m: f64,
+    /// Pitch-axis inertial reaction torque reported by the TVC plant, N*m.
+    pub tvc_pitch_inertial_reaction_torque_n_m: f64,
+    /// Yaw-axis inertial reaction torque reported by the TVC plant, N*m.
+    pub tvc_yaw_inertial_reaction_torque_n_m: f64,
     /// Engine state at this step.
     pub state: EngineState,
 }
@@ -480,6 +500,14 @@ impl EngineSnapshot {
             thrust_body: Vector3::zeros(),
             mass_flow_kg_per_s: 0.0,
             consumed_kg: 0.0,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            gimbal_pitch_rate_rad_s: 0.0,
+            gimbal_yaw_rate_rad_s: 0.0,
+            tvc_pitch_load_torque_n_m: 0.0,
+            tvc_yaw_load_torque_n_m: 0.0,
+            tvc_pitch_inertial_reaction_torque_n_m: 0.0,
+            tvc_yaw_inertial_reaction_torque_n_m: 0.0,
             state: EngineState::Idle,
         }
     }
@@ -645,6 +673,17 @@ pub struct LiquidEngine {
     latched_pitch_rad: f64,
     /// Latched (delivered) gimbal yaw (rad).
     latched_yaw_rad: f64,
+    /// Latched (delivered) gimbal pitch rate (rad/s).
+    latched_pitch_rate_rad_s: f64,
+    /// Latched (delivered) gimbal yaw rate (rad/s).
+    latched_yaw_rate_rad_s: f64,
+    /// Optional second-order TVC actuator plant. When absent, the
+    /// legacy gimbal slew latch remains authoritative.
+    tvc_actuator: Option<TvcActuatorPlant>,
+    /// External TVC load torque applied on the next actuator step.
+    tvc_load_torque: TvcLoadTorque,
+    /// Last TVC actuator step result, when the optional plant is enabled.
+    tvc_last_step: Option<TvcActuatorStep>,
     /// Thrust at the moment shutdown was commanded; the linear
     /// shutdown transient ramps from this value to 0.
     shutdown_start_thrust_n: f64,
@@ -684,6 +723,11 @@ impl LiquidEngine {
             commanded_yaw_rad: 0.0,
             latched_pitch_rad: 0.0,
             latched_yaw_rad: 0.0,
+            latched_pitch_rate_rad_s: 0.0,
+            latched_yaw_rate_rad_s: 0.0,
+            tvc_actuator: None,
+            tvc_load_torque: TvcLoadTorque::zero(),
+            tvc_last_step: None,
             shutdown_start_thrust_n: 0.0,
             consumed_kg: 0.0,
             feed_pressure_scale: 1.0,
@@ -718,6 +762,49 @@ impl LiquidEngine {
     pub fn with_restart_policy(mut self, restartable: bool) -> Self {
         self.restartable = restartable;
         self
+    }
+
+    /// Enable the deterministic second-order TVC actuator plant for this
+    /// engine.
+    ///
+    /// The plant starts at zero pitch/yaw angle and rate. Commands are still
+    /// clamped by [`EngineLimits::max_gimbal_rad`] at `apply_command`; the TVC
+    /// plant then applies its own bandwidth, load-torque, rate, and position
+    /// limits before the thrust vector is rotated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InvalidParameter`] when `params` fails
+    /// validation.
+    pub fn with_tvc_actuator(mut self, params: TvcActuatorParams) -> Result<Self, EngineError> {
+        self.tvc_actuator = Some(TvcActuatorPlant::new(params)?);
+        self.tvc_load_torque = TvcLoadTorque::zero();
+        self.tvc_last_step = None;
+        Ok(self)
+    }
+
+    /// Set the external TVC load torque applied on subsequent steps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::NonFiniteCommand`] if either torque component is
+    /// non-finite.
+    pub fn set_tvc_load_torque(&mut self, load_torque: TvcLoadTorque) -> Result<(), EngineError> {
+        load_torque.require_valid()?;
+        self.tvc_load_torque = load_torque;
+        Ok(())
+    }
+
+    /// Return the current optional TVC actuator state.
+    #[must_use]
+    pub fn tvc_actuator_state(&self) -> Option<TvcActuatorState> {
+        self.tvc_actuator.as_ref().map(TvcActuatorPlant::state)
+    }
+
+    /// Return the last optional TVC actuator step result.
+    #[must_use]
+    pub const fn tvc_last_step(&self) -> Option<TvcActuatorStep> {
+        self.tvc_last_step
     }
 
     /// Construction-time fault validator. Rejects non-finite,
@@ -1040,17 +1127,46 @@ impl EngineModel for LiquidEngine {
             dt_s,
         );
 
-        // Gimbal actuator slew. Real TVC gimbals move at a finite rate;
-        // an instantaneous latch lets the autopilot slam the gimbal
-        // ±max each step, producing a step-frequency bang-bang limit
-        // cycle. Slewing the delivered angle toward the command bounds
-        // the per-step change and stabilises the loop. `+∞` (the
-        // default) reproduces the instantaneous latch.
-        let max_gimbal_step = self.limits.gimbal_slew_rad_per_s * dt_s;
-        self.latched_pitch_rad += (self.commanded_pitch_rad - self.latched_pitch_rad)
-            .clamp(-max_gimbal_step, max_gimbal_step);
-        self.latched_yaw_rad += (self.commanded_yaw_rad - self.latched_yaw_rad)
-            .clamp(-max_gimbal_step, max_gimbal_step);
+        let previous_pitch_rad = self.latched_pitch_rad;
+        let previous_yaw_rad = self.latched_yaw_rad;
+        let mut tvc_pitch_load_torque_n_m = 0.0;
+        let mut tvc_yaw_load_torque_n_m = 0.0;
+        let mut tvc_pitch_inertial_reaction_torque_n_m = 0.0;
+        let mut tvc_yaw_inertial_reaction_torque_n_m = 0.0;
+        if let Some(tvc_actuator) = &mut self.tvc_actuator {
+            let tvc_step = tvc_actuator.step(
+                TvcActuatorCommand {
+                    pitch_rad: self.commanded_pitch_rad,
+                    yaw_rad: self.commanded_yaw_rad,
+                },
+                self.tvc_load_torque,
+                dt,
+            )?;
+            self.latched_pitch_rad = tvc_step.pitch.angle_rad;
+            self.latched_yaw_rad = tvc_step.yaw.angle_rad;
+            self.latched_pitch_rate_rad_s = tvc_step.pitch.rate_rad_s;
+            self.latched_yaw_rate_rad_s = tvc_step.yaw.rate_rad_s;
+            tvc_pitch_load_torque_n_m = tvc_step.pitch.load_torque_n_m;
+            tvc_yaw_load_torque_n_m = tvc_step.yaw.load_torque_n_m;
+            tvc_pitch_inertial_reaction_torque_n_m = tvc_step.pitch.inertial_reaction_torque_n_m;
+            tvc_yaw_inertial_reaction_torque_n_m = tvc_step.yaw.inertial_reaction_torque_n_m;
+            self.tvc_last_step = Some(tvc_step);
+        } else {
+            // Gimbal actuator slew. Real TVC gimbals move at a finite rate;
+            // an instantaneous latch lets the autopilot slam the gimbal
+            // ±max each step, producing a step-frequency bang-bang limit
+            // cycle. Slewing the delivered angle toward the command bounds
+            // the per-step change and stabilises the loop. `+∞` (the
+            // default) reproduces the instantaneous latch.
+            let max_gimbal_step = self.limits.gimbal_slew_rad_per_s * dt_s;
+            self.latched_pitch_rad += (self.commanded_pitch_rad - self.latched_pitch_rad)
+                .clamp(-max_gimbal_step, max_gimbal_step);
+            self.latched_yaw_rad += (self.commanded_yaw_rad - self.latched_yaw_rad)
+                .clamp(-max_gimbal_step, max_gimbal_step);
+            self.latched_pitch_rate_rad_s = (self.latched_pitch_rad - previous_pitch_rad) / dt_s;
+            self.latched_yaw_rate_rad_s = (self.latched_yaw_rad - previous_yaw_rad) / dt_s;
+            self.tvc_last_step = None;
+        }
 
         // Determine the un-gimballed scalar thrust along the engine
         // nominal axis based on state + elapsed.
@@ -1084,6 +1200,8 @@ impl EngineModel for LiquidEngine {
         // Apply faults (other than HardOff which is handled at the top).
         let mut effective_pitch_rad = self.latched_pitch_rad;
         let mut effective_yaw_rad = self.latched_yaw_rad;
+        let mut effective_pitch_rate_rad_s = self.latched_pitch_rate_rad_s;
+        let mut effective_yaw_rate_rad_s = self.latched_yaw_rate_rad_s;
         match self.fault {
             None | Some(EngineFault::HardOff) => {}
             Some(EngineFault::Stuck { at_throttle }) => {
@@ -1128,6 +1246,12 @@ impl EngineModel for LiquidEngine {
             Some(EngineFault::GimbalLocked { pitch_rad, yaw_rad }) => {
                 effective_pitch_rad = pitch_rad;
                 effective_yaw_rad = yaw_rad;
+                effective_pitch_rate_rad_s = 0.0;
+                effective_yaw_rate_rad_s = 0.0;
+                tvc_pitch_load_torque_n_m = 0.0;
+                tvc_yaw_load_torque_n_m = 0.0;
+                tvc_pitch_inertial_reaction_torque_n_m = 0.0;
+                tvc_yaw_inertial_reaction_torque_n_m = 0.0;
             }
         }
 
@@ -1184,6 +1308,14 @@ impl EngineModel for LiquidEngine {
             thrust_body,
             mass_flow_kg_per_s,
             consumed_kg: self.consumed_kg,
+            gimbal_pitch_rad: effective_pitch_rad,
+            gimbal_yaw_rad: effective_yaw_rad,
+            gimbal_pitch_rate_rad_s: effective_pitch_rate_rad_s,
+            gimbal_yaw_rate_rad_s: effective_yaw_rate_rad_s,
+            tvc_pitch_load_torque_n_m,
+            tvc_yaw_load_torque_n_m,
+            tvc_pitch_inertial_reaction_torque_n_m,
+            tvc_yaw_inertial_reaction_torque_n_m,
             state: self.state,
         };
         self.last_snapshot = snapshot;
@@ -1293,6 +1425,27 @@ mod tests {
 
     fn fresh_engine() -> LiquidEngine {
         LiquidEngine::new(EngineId::from_path("test.engine"), make_limits()).unwrap()
+    }
+
+    fn tvc_params() -> TvcActuatorParams {
+        TvcActuatorParams {
+            natural_frequency_rad_s: 20.0,
+            damping_ratio: 0.5,
+            max_angle_rad: 0.1,
+            max_rate_rad_s: f64::INFINITY,
+            gimbal_inertia_kg_m2: 2.0,
+        }
+    }
+
+    fn fresh_engine_with_tvc_actuator() -> LiquidEngine {
+        let limits = EngineLimits {
+            ignition_transient_s: 0.0,
+            ..make_limits()
+        };
+        LiquidEngine::new(EngineId::from_path("test.engine"), limits)
+            .unwrap()
+            .with_tvc_actuator(tvc_params())
+            .unwrap()
     }
 
     fn ignite_to_burning(engine: &mut LiquidEngine) {
@@ -1650,6 +1803,129 @@ mod tests {
         // Pitch was clamped to 0.1 rad, so x = 1000 * sin(0.1) ≈ 99.83.
         let expected_x = 1000.0_f64 * 0.1_f64.sin();
         assert!((snap.thrust_body.x - expected_x).abs() < 1e-9);
+    }
+
+    #[test]
+    fn liquid_engine_tvc_snapshot_reports_delivered_gimbal_without_thrust() {
+        let mut e = fresh_engine();
+        e.apply_command(EngineCommand {
+            throttle_unit: 0.0,
+            gimbal_pitch_rad: 0.05,
+            gimbal_yaw_rad: -0.02,
+            ignite: false,
+            shutdown: false,
+        })
+        .unwrap();
+
+        let snap = e.step(dt()).unwrap();
+
+        assert_eq!(snap.thrust_body, Vector3::zeros());
+        assert_eq!(snap.mass_flow_kg_per_s.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(snap.gimbal_pitch_rad.to_bits(), 0.05_f64.to_bits());
+        assert_eq!(snap.gimbal_yaw_rad.to_bits(), (-0.02_f64).to_bits());
+        assert_eq!(
+            snap.gimbal_pitch_rate_rad_s.to_bits(),
+            (0.05_f64 / dt().as_seconds()).to_bits()
+        );
+        assert_eq!(
+            snap.gimbal_yaw_rate_rad_s.to_bits(),
+            (-0.02_f64 / dt().as_seconds()).to_bits()
+        );
+    }
+
+    #[test]
+    fn liquid_engine_tvc_actuator_shapes_delivered_gimbal() {
+        let mut e = fresh_engine_with_tvc_actuator();
+        e.apply_command(EngineCommand {
+            throttle_unit: 1.0,
+            gimbal_pitch_rad: 0.05,
+            gimbal_yaw_rad: 0.0,
+            ignite: true,
+            shutdown: false,
+        })
+        .unwrap();
+
+        let snap = e.step(Duration::from_seconds(0.01)).unwrap();
+        let tvc_step = e.tvc_last_step().expect("TVC plant should step");
+        let delivered_pitch_rad = tvc_step.pitch.angle_rad;
+        let expected = apply_gimbal(1000.0, delivered_pitch_rad, 0.0);
+
+        assert!(delivered_pitch_rad > 0.0);
+        assert!(delivered_pitch_rad < 0.05);
+        assert_eq!(snap.thrust_body.x.to_bits(), expected.x.to_bits());
+        assert_eq!(snap.thrust_body.y.to_bits(), expected.y.to_bits());
+        assert_eq!(snap.thrust_body.z.to_bits(), expected.z.to_bits());
+        assert_eq!(
+            e.tvc_actuator_state().unwrap().pitch.angle_rad.to_bits(),
+            delivered_pitch_rad.to_bits()
+        );
+    }
+
+    #[test]
+    fn liquid_engine_tvc_load_torque_changes_thrust_and_reports_reaction() {
+        let mut unloaded = fresh_engine_with_tvc_actuator();
+        let mut loaded = fresh_engine_with_tvc_actuator();
+        loaded
+            .set_tvc_load_torque(TvcLoadTorque {
+                pitch_n_m: 10.0,
+                yaw_n_m: 0.0,
+            })
+            .unwrap();
+        assert!(matches!(
+            loaded.set_tvc_load_torque(TvcLoadTorque {
+                pitch_n_m: f64::NAN,
+                yaw_n_m: 0.0,
+            }),
+            Err(EngineError::NonFiniteCommand { .. })
+        ));
+        loaded
+            .set_tvc_load_torque(TvcLoadTorque {
+                pitch_n_m: 10.0,
+                yaw_n_m: 0.0,
+            })
+            .unwrap();
+
+        let command = EngineCommand {
+            throttle_unit: 1.0,
+            gimbal_pitch_rad: 0.08,
+            gimbal_yaw_rad: 0.0,
+            ignite: true,
+            shutdown: false,
+        };
+        unloaded.apply_command(command).unwrap();
+        loaded.apply_command(command).unwrap();
+
+        let unloaded_snap = unloaded.step(Duration::from_seconds(0.02)).unwrap();
+        let loaded_snap = loaded.step(Duration::from_seconds(0.02)).unwrap();
+        let loaded_tvc = loaded.tvc_last_step().expect("TVC plant should step");
+
+        assert!(loaded_snap.thrust_body.x < unloaded_snap.thrust_body.x);
+        assert_eq!(
+            loaded_tvc.pitch.load_torque_n_m.to_bits(),
+            10.0_f64.to_bits()
+        );
+        assert_eq!(
+            loaded_snap.tvc_pitch_load_torque_n_m.to_bits(),
+            loaded_tvc.pitch.load_torque_n_m.to_bits()
+        );
+        assert_eq!(
+            loaded_snap.tvc_yaw_load_torque_n_m.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            loaded_snap.tvc_pitch_inertial_reaction_torque_n_m.to_bits(),
+            loaded_tvc.pitch.inertial_reaction_torque_n_m.to_bits()
+        );
+        assert_eq!(
+            loaded_snap.tvc_yaw_inertial_reaction_torque_n_m.to_bits(),
+            loaded_tvc.yaw.inertial_reaction_torque_n_m.to_bits()
+        );
+        assert!(
+            (loaded_tvc.pitch.inertial_reaction_torque_n_m
+                + tvc_params().gimbal_inertia_kg_m2 * loaded_tvc.pitch.acceleration_rad_s2)
+                .abs()
+                < 1.0e-12
+        );
     }
 
     #[test]

@@ -1,0 +1,39 @@
+openbmp.acoustics_sp8072_apparent_source_curve = 1
+
+[meta]
+dataset_id = "openbmp.acoustics.sp8072_figure14_apparent_source.v1"
+source_manifest_id = "openbmp.acoustics.sp8072_source.v1"
+source_manifest_file = "data/acoustics/sp8072-source-v1.toml"
+source_figure_id = "figure_14"
+source_pdf_sha256 = "84f1483c2c8477810186e98765ea99e4b7f7cc71e0a47eb8f86977d3b02aabf8"
+digitization_method = "Coarse visual samples of the SP-8072 Figure 14 single-nozzle undeflected curve; rounded for parser/runtime evidence, not production calibration."
+license_or_terms = "Public NASA Technical Reports Server document"
+validation = "coarse-public-digitization"
+
+[[points]]
+strouhal = 0.003
+x_over_exit_diameter = 30.0
+
+[[points]]
+strouhal = 0.005
+x_over_exit_diameter = 29.0
+
+[[points]]
+strouhal = 0.01
+x_over_exit_diameter = 28.0
+
+[[points]]
+strouhal = 0.02
+x_over_exit_diameter = 25.0
+
+[[points]]
+strouhal = 0.05
+x_over_exit_diameter = 19.0
+
+[[points]]
+strouhal = 0.1
+x_over_exit_diameter = 14.0
+
+[[points]]
+strouhal = 0.2
+x_over_exit_diameter = 12.0

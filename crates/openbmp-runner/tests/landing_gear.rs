@@ -21,6 +21,26 @@ fn run_drop_fixture() -> openbmp_runner::RunOutcome {
     openbmp_runner::run(&scenario).expect("landing gear scenario runs")
 }
 
+fn run_prismatic_drop_fixture() -> openbmp_runner::RunOutcome {
+    let toml = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scenarios/landing-gear-four-leg-drop/scenario.toml"
+    ))
+    .replace("stop_s  = 10.0", "stop_s  = 1.0")
+    .replace("data_file = \"../../data/landing_gear/synthetic-four-leg-oleo-crush.toml\"\n", "")
+    .replace(
+        "data_file_sha256 = \"efef5b573d83551fecd724383c9420de712bd62665e5ff989642916bbf2a2d5b\"\n",
+        "",
+    )
+    .replace(
+        "crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }",
+        "crush = { f_crush_n = 40000.0, stroke_max_m = 0.25, k_elastic_n_m = 400000.0 }\nprismatic_dof = { stroke_max_m = 0.80 }",
+    );
+    let scenario = openbmp_scenario::Scenario::from_toml_str(&toml)
+        .expect("landing gear prismatic scenario parses");
+    openbmp_runner::run(&scenario).expect("landing gear prismatic scenario runs")
+}
+
 fn channel_id(outcome: &openbmp_runner::RunOutcome, name: &str) -> ChannelId {
     outcome
         .table
@@ -62,6 +82,15 @@ fn bool_column(outcome: &openbmp_runner::RunOutcome, name: &str) -> Vec<bool> {
 fn landing_gear_four_leg_drop_publishes_loads_and_leg_telemetry() {
     let outcome = run_drop_fixture();
 
+    assert!(
+        outcome
+            .table
+            .schema()
+            .channels()
+            .iter()
+            .all(|channel| !channel.name.contains(".prismatic_")),
+        "base landing-gear fixture should not publish opt-in prismatic channels"
+    );
     assert_eq!(outcome.final_step, 10_000);
     assert!((outcome.final_time_s - 10.0).abs() < 1.0e-12);
     assert_eq!(
@@ -175,4 +204,42 @@ fn landing_gear_four_leg_drop_publishes_loads_and_leg_telemetry() {
         has_four_leg_contact,
         "all four legs should contact simultaneously"
     );
+}
+
+#[test]
+fn landing_gear_prismatic_dof_publishes_opt_in_telemetry() {
+    let outcome = run_prismatic_drop_fixture();
+
+    let stroke = f64_column(&outcome, "landing_gear.front_left.stroke_m");
+    let compression_rate = f64_column(&outcome, "landing_gear.front_left.compression_rate_m_s");
+    let displacement = f64_column(&outcome, "landing_gear.front_left.prismatic_displacement_m");
+    let displacement_rate = f64_column(
+        &outcome,
+        "landing_gear.front_left.prismatic_displacement_rate_m_s",
+    );
+    let footpad_z = f64_column(
+        &outcome,
+        "landing_gear.front_left.prismatic_footpad_body_z_m",
+    );
+
+    assert!(stroke.iter().any(|value| *value > 0.0));
+    for index in 0..stroke.len() {
+        assert!(
+            displacement[index].is_finite()
+                && displacement_rate[index].is_finite()
+                && footpad_z[index].is_finite()
+        );
+        assert!(
+            (displacement[index] - (1.0 - stroke[index])).abs() <= 1.0e-12,
+            "displacement should be free_length - stroke at row {index}"
+        );
+        assert!(
+            (displacement_rate[index] + compression_rate[index]).abs() <= 1.0e-12,
+            "displacement rate should oppose compression rate at row {index}"
+        );
+        assert!(
+            (footpad_z[index] + displacement[index]).abs() <= 1.0e-12,
+            "front-left z footpad coordinate should follow the body -z strut axis at row {index}"
+        );
+    }
 }

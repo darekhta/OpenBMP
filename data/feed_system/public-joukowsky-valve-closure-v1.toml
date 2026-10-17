@@ -1,0 +1,47 @@
+openbmp.feed_moc_line_public_joukowsky = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.public_joukowsky_valve_closure.v1"
+source_class = "public-engineering-article"
+source_title = "Chemical Engineering: Can You Trust the Joukowsky Equation for Waterhammer?"
+source_url = "https://www.chemengonline.com/can-you-trust-the-joukowsky-equation-for-waterhammer/"
+provenance = "Manual extraction of Example 1 instantaneous valve closure values: 0.5 m pipe diameter, 0.4 m^3/s flow rate, oil density 900 kg/m^3, wave speed 1291 m/s, rounded reported velocity change 2.04 m/s, head rise 268 m, and pressure rise 2367 kPa."
+license_or_terms = "Public web article; small numeric facts used for validation provenance."
+validation = "research"
+
+[config]
+length_m = 40.0
+wave_speed_m_s = 1291.0
+density_kg_m3 = 900.0
+pipe_diameter_m = 0.5
+cross_section_area_m2 = 0.19634954084936207
+segment_count = 4
+
+[source_example]
+volumetric_flow_m3_per_s = 0.4
+reported_cross_section_area_m2 = 0.196
+reported_velocity_change_m_s = 2.04
+reported_head_rise_m = 268.0
+reported_pressure_rise_kpa = 2367.0
+
+[tolerances]
+absolute_head_m = 1.0e-12
+absolute_pressure_pa = 1.0e-6
+absolute_dt_s = 1.0e-15
+published_absolute_head_m = 1.0
+published_absolute_pressure_kpa = 1.0
+
+[[case]]
+name = "chemical_engineering_example_1_instant_valve_closure"
+initial_head_m = 0.0
+initial_velocity_m_s = 2.0371832715762603
+upstream_head_m = 0.0
+downstream_velocity_m_s = 0.0
+expected_dt_s = 0.0077459333849728895
+expected_downstream_head_m = 268.1857314786346
+expected_downstream_pressure_pa = 2367003.243244457
+expected_pressure_delta_pa = 2367003.243244457
+expected_joukowsky_head_delta_m = 268.1857314786346
+expected_min_head_m = 0.0
+expected_max_head_m = 268.1857314786346
+expected_validation = "validated-toy"

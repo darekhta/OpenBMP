@@ -307,6 +307,42 @@ jobs:
       - run: python3 scripts/check_requirements_traceability.py
 
   # ----------------------------------------------------------------------
+  # Run-data trend gate hook
+  #
+  # Keeps the WP-21.4 fail-on-drift hook visible in CI with a constructed
+  # deterministic fixture. Real run-data trend gates remain opt-in by the
+  # declared metric specs and committed run-index artifacts.
+  # ----------------------------------------------------------------------
+  run-data-trend-gate:
+    name: run-data trend hook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: cargo test -p openbmp-rundata trend --locked -j 1
+
+  # ----------------------------------------------------------------------
+  # Run-data campaign gate hook
+  #
+  # Keeps the WP-21.8 campaign fail-on-CI-gates path visible in CI. The
+  # checked test proves campaign artifacts are written before the CLI returns
+  # non-zero for an aggregate verdict failure.
+  # ----------------------------------------------------------------------
+  run-data-campaign-gate:
+    name: run-data campaign hook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.95"
+      - uses: Swatinem/rust-cache@v2.9.1
+      - run: cargo test -p openbmp-cli --test campaign_cli campaign_run_cli_fail_on_ci_gates_exits_after_writing_summary --locked
+
+  # ----------------------------------------------------------------------
   # FMI export schema gate
   #
   # Validates the generated point-mass exporter metadata against the

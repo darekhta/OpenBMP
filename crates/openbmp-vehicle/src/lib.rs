@@ -60,11 +60,14 @@ pub mod tank;
 pub mod vehicle;
 
 pub use adapters::{
-    AeroMethodForceAdapter, AeroMethodMomentAdapter, DeckDragForceAdapter, DirectTorqueBinding,
-    DirectTorqueMomentAdapter, EngineClusterForceAdapter, EngineClusterMassAdapter,
-    EngineClusterMomentAdapter, GravityForceAdapter, HalfSpaceContactForceAdapter,
-    MotorMassAdapter, MotorThrustForceAdapter, RecoveryRackForceAdapter, RigidMotorMassAdapter,
-    TankRackForceAdapter, TankRackMassAdapter, TankRackMomentAdapter,
+    AeroFrameTransform, AeroMethodForceAdapter, AeroMethodMomentAdapter, DeckDragForceAdapter,
+    DirectTorqueBinding, DirectTorqueMomentAdapter, EngineClusterForceAdapter,
+    EngineClusterFrameTransform, EngineClusterMassAdapter, EngineClusterMomentAdapter,
+    GravityForceAdapter, HalfSpaceContactForceAdapter, MotorMassAdapter, MotorThrustForceAdapter,
+    MotorThrustFrameTransform, RecoveryRackForceAdapter, RecoveryRackMassAdapter,
+    RecoveryRiserForceAdapter, RecoveryRiserMomentAdapter, RecoverySequenceForceAdapter,
+    RigidMotorMassAdapter, TankRackForceAdapter, TankRackFrameTransform, TankRackMassAdapter,
+    TankRackMomentAdapter,
 };
 pub use assembly::{
     Assembly, AssemblyBuilder, AssemblyError, Body, BodyGeometry, KernelModelBundle,
@@ -80,18 +83,25 @@ pub use effector::{
     rate_limit_backlash_describing_function,
 };
 pub use error::VehicleError;
-pub use landing_gear::{CrushCore, CrushCoreResponse, LandingGearError, LandingGearLeg, OleoStage};
+pub use landing_gear::{
+    CrushCore, CrushCoreResponse, LandingGearError, LandingGearLeg, LandingGearPrismaticDof,
+    LandingGearPrismaticState, OleoStage,
+};
 pub use propellant_budget::{
     EnginePropellantBinding, EnginePropellantUtilization, FeedMode, PropellantBudget,
     PropellantBudgetError, PropellantBudgetReport, PropellantTankState,
 };
 pub use recovery::{
-    DragDevice, DrogueMainRecovery, ParachuteDrag, RecoveryCommand, RecoveryError, RecoveryModel,
-    RecoveryPhase,
+    CanopyGrowthShape, CanopyInflationSample, CanopyInflationState, DragDevice, DrogueMainRecovery,
+    InflationProfile, ParachuteDrag, PflanzReductionTable, RecoveryCommand, RecoveryError,
+    RecoveryModel, RecoveryPhase, canopy_apparent_mass_kg, canopy_apparent_mass_rate_kg_s,
+    canopy_fill_time_s, canopy_projected_diameter_m, pflanz_ballistic_parameter_a,
+    pflanz_finite_mass_peak_load_n,
 };
 pub use tank::{
-    BaffleModel, BaffledPendulum, EquivalentPendulum, EquivalentSpringMass, ForceMomentBody,
-    MassContribution, MovingMassModel, PropellantSpec, RigidLiquid, Tank, TankError, TankGeometry,
+    AbramsonMultiMass, BaffleModel, BaffledPendulum, EquivalentPendulum, EquivalentSpringMass,
+    ForceMomentBody, MassContribution, MovingMassModel, PropellantSpec, RigidLiquid, Tank,
+    TankError, TankGeometry,
 };
 pub use vehicle::{
     BoxedMassModel, ForceBreakdown, KernelVehicle, MomentBreakdown, NamedForceModel,

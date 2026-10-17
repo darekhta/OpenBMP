@@ -1,0 +1,44 @@
+# Deterministic WP-21.2 verdict-rule fixture.
+
+[[rules]]
+kind = "limit"
+id = "altitude-max"
+channel = "altitude_m"
+metric = "max"
+max = 3.0
+
+[[rules]]
+kind = "tolerance_vs_golden"
+id = "altitude-final-golden"
+channel = "altitude_m"
+metric = "final"
+expected = 3.0
+abs_tol = 0.0
+
+[[rules]]
+kind = "monotonic"
+id = "altitude-increasing"
+channel = "altitude_m"
+direction = "increasing"
+
+[[rules]]
+kind = "event_window"
+id = "cutoff-window"
+channel = "cutoff"
+start_s = 2.0
+end_s = 2.0
+
+[[rules]]
+kind = "statistical_band"
+id = "altitude-mean-band"
+channel = "altitude_m"
+metric = "mean"
+lower = 2.0
+upper = 2.0
+
+[[rules]]
+kind = "cross_run_delta"
+id = "altitude-final-delta"
+channel = "altitude_m"
+metric = "final"
+max_abs_delta = 1.0

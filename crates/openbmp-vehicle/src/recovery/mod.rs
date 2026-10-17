@@ -18,17 +18,17 @@
 //! All three publish a [`openbmp_models::RecoverySnapshot`] each kernel base tick
 //! through the runner-side [`crate::recovery`]-rack adapter. Drag is
 //! evaluated by the [`crate::adapters::RecoveryRackForceAdapter`]
-//! using the kernel's atmosphere sample (density) and the body's ECI
-//! velocity.
+//! using the kernel's atmosphere sample (density) and the body's
+//! air-relative velocity in ECI components.
 //!
 //! # Force model
 //!
-//! `F_drag = -½ ρ |v|² C_D · A · v̂` per Knacke 1992 *Parachute
-//! Recovery Systems Design Manual* Chapter 5. Drag opposes the body's
-//! ECI velocity; the academic formulation ignores wind-relative
-//! velocity (matches the [`crate::adapters::DeckDragForceAdapter`]
-//! convention). Drag is applied at the body CG; recovery devices
-//! contribute zero moment (long risers are assumed to
+//! `F_drag = -½ ρ |v_air|² C_D · A · v̂_air` per Knacke 1992
+//! *Parachute Recovery Systems Design Manual* Chapter 5. Drag opposes
+//! the body's air-relative velocity in ECI components (matching the
+//! [`crate::adapters::DeckDragForceAdapter`] convention). Drag is
+//! applied at the body CG; recovery devices contribute zero moment
+//! (long risers are assumed to
 //! decouple body rotation from drag direction).
 //!
 //! # Determinism
@@ -52,11 +52,23 @@
 
 pub mod drag_device;
 pub mod drogue_main;
+pub mod inflation;
 pub mod parachute_drag;
+pub mod riser;
 
 pub use drag_device::DragDevice;
 pub use drogue_main::DrogueMainRecovery;
+pub use inflation::{
+    CanopyGrowthShape, CanopyInflationSample, CanopyInflationState, InflationProfile,
+    PflanzReductionTable, canopy_apparent_mass_kg, canopy_apparent_mass_rate_kg_s,
+    canopy_fill_time_s, canopy_projected_diameter_m, pflanz_ballistic_parameter_a,
+    pflanz_finite_mass_peak_load_n,
+};
 pub use parachute_drag::ParachuteDrag;
+pub use riser::{
+    RiserEndpointState, RiserLineElement, RiserLineSample, RiserSlackTautEvent,
+    riser_attach_moment_body_n_m,
+};
 
 use openbmp_core::RecoveryId;
 use thiserror::Error;
@@ -171,6 +183,21 @@ pub trait RecoveryModel: Send + std::fmt::Debug {
     /// Drag area `A` (m²) at the current phase. Zero in
     /// [`RecoveryPhase::Stowed`]; otherwise the phase-specific value.
     fn current_drag_area_m2(&self) -> f64;
+
+    /// Current canopy-inflation diagnostic sample, if this recovery
+    /// model owns an active inflation profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError`] if the supplied dynamic pressure or
+    /// model parameters are outside the profile envelope.
+    fn current_inflation_sample(
+        &self,
+        dynamic_pressure_pa: f64,
+    ) -> Result<Option<CanopyInflationSample>, RecoveryError> {
+        let _ = dynamic_pressure_pa;
+        Ok(None)
+    }
 
     /// Apply a deploy / stow command. Implementations validate the
     /// command against their state machine and reject mismatches with

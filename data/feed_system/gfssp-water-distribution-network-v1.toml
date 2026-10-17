@@ -1,0 +1,164 @@
+openbmp.feed_network_gfssp_water_distribution = 1
+
+[meta]
+dataset_id = "openbmp.feed_system.gfssp_water_distribution_network.v1"
+source_class = "public-nasa-gfssp-manual-worked-example"
+source_title = "GFSSP Version 6 Example 2 water distribution network"
+source_url = "https://www.nasa.gov/wp-content/uploads/2024/04/gfssp-v6-usermanual.pdf?emrc=67b605705809e"
+source_hash_sha256 = "340f4b208a4814d776ef020df7167304dd74c09d641fb006d352b958cad4bc8c"
+provenance = "Manual extraction from GFSSP Version 6 User's Manual section 6.2 and appendix I: boundary pressures, pipe lengths/diameters/roughness, reference internal node pressures, and reference branch mass flows."
+license_or_terms = "NASA public technical manual"
+validation = "research"
+
+[config]
+density_kg_m3 = 999.5521145351128
+dynamic_viscosity_pa_s = 0.0009821882027559058
+relative_roughness = 0.0018
+max_newton_iterations = 128
+residual_tolerance_kg_per_s = 1.0e-8
+
+[conversion]
+psi_to_pa = 6894.757293168
+inch_to_m = 0.0254
+lbm_per_s_to_kg_per_s = 0.45359237
+lbm_per_ft3_to_kg_per_m3 = 16.01846337396014
+lbm_per_ft_s_to_pa_s = 1.4881639435695542
+
+[tolerances]
+absolute_pressure_pa = 413.68543759007997
+absolute_mass_flow_kg_per_s = 0.09071847400000001
+absolute_residual_kg_per_s = 1.0e-8
+
+[[node]]
+id = 1
+kind = "pressure_boundary"
+pressure_pa = 344737.8646584
+expected_pressure_pa = 344737.8646584
+
+[[node]]
+id = 2
+kind = "junction"
+initial_pressure_pa = 341979.9617411328
+expected_pressure_pa = 343358.91319976636
+
+[[node]]
+id = 3
+kind = "pressure_boundary"
+pressure_pa = 330948.350072064
+expected_pressure_pa = 330948.350072064
+
+[[node]]
+id = 4
+kind = "pressure_boundary"
+pressure_pa = 310264.07819256
+expected_pressure_pa = 310264.07819256
+
+[[node]]
+id = 5
+kind = "junction"
+initial_pressure_pa = 333706.2529893312
+expected_pressure_pa = 331706.77337431244
+
+[[node]]
+id = 6
+kind = "junction"
+initial_pressure_pa = 326811.49569616315
+expected_pressure_pa = 312608.2956722371
+
+[[node]]
+id = 7
+kind = "junction"
+initial_pressure_pa = 339222.0588238656
+expected_pressure_pa = 333361.5151246728
+
+[[node]]
+id = 8
+kind = "junction"
+initial_pressure_pa = 319916.73840299516
+expected_pressure_pa = 317227.78305865964
+
+[[node]]
+id = 9
+kind = "pressure_boundary"
+pressure_pa = 317158.835485728
+expected_pressure_pa = 317158.835485728
+
+[[pipe_branch]]
+id = "12"
+from_node_id = 1
+to_node_id = 2
+length_m = 3.048
+diameter_m = 0.15239999999999998
+expected_mass_flow_kg_per_s = 45.431811779200004
+
+[[pipe_branch]]
+id = "25"
+from_node_id = 2
+to_node_id = 5
+length_m = 60.96
+diameter_m = 0.15239999999999998
+expected_mass_flow_kg_per_s = 28.621678547000002
+
+[[pipe_branch]]
+id = "27"
+from_node_id = 2
+to_node_id = 7
+length_m = 60.96
+diameter_m = 0.127
+expected_mass_flow_kg_per_s = 16.78291769
+
+[[pipe_branch]]
+id = "53"
+from_node_id = 5
+to_node_id = 3
+length_m = 3.048
+diameter_m = 0.127
+expected_mass_flow_kg_per_s = 20.153108999100002
+
+[[pipe_branch]]
+id = "57"
+from_node_id = 5
+to_node_id = 7
+length_m = 36.576
+diameter_m = 0.1016
+expected_mass_flow_kg_per_s = -4.7173606480000005
+
+[[pipe_branch]]
+id = "56"
+from_node_id = 5
+to_node_id = 6
+length_m = 60.96
+diameter_m = 0.1016
+expected_mass_flow_kg_per_s = 13.199537967000001
+
+[[pipe_branch]]
+id = "78"
+from_node_id = 7
+to_node_id = 8
+length_m = 60.96
+diameter_m = 0.1016
+expected_mass_flow_kg_per_s = 12.110916279
+
+[[pipe_branch]]
+id = "68"
+from_node_id = 6
+to_node_id = 8
+length_m = 36.576
+diameter_m = 0.1016
+expected_mass_flow_kg_per_s = -8.164662660000001
+
+[[pipe_branch]]
+id = "64"
+from_node_id = 6
+to_node_id = 4
+length_m = 3.048
+diameter_m = 0.1016
+expected_mass_flow_kg_per_s = 21.3505928559
+
+[[pipe_branch]]
+id = "89"
+from_node_id = 8
+to_node_id = 9
+length_m = 3.048
+diameter_m = 0.127
+expected_mass_flow_kg_per_s = 3.9281099242

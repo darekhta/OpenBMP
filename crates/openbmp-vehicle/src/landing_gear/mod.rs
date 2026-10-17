@@ -113,6 +113,234 @@ impl LandingGearLeg {
     }
 }
 
+/// Vehicle-side prismatic landing-gear DOF contract.
+///
+/// This maps a massless leg into the coordinate convention expected by a later
+/// multibody tree adapter. Stroke is positive in compression. The corresponding
+/// prismatic generalized displacement is `free_length_m - stroke_m` along the
+/// normalized strut axis from hardpoint to footpad.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LandingGearPrismaticDof {
+    attach_body_m: [f64; 3],
+    axis_body_unit: [f64; 3],
+    free_length_m: f64,
+    stroke_max_m: f64,
+    initial_stroke_m: f64,
+    initial_compression_rate_m_s: f64,
+}
+
+impl LandingGearPrismaticDof {
+    /// Creates a validated prismatic landing-gear DOF.
+    ///
+    /// `strut_axis_body` is normalized during construction. `stroke_max_m`
+    /// must not exceed `free_length_m` so the compressed footpad coordinate
+    /// stays on the declared strut segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LandingGearError`] when vectors are invalid, stroke limits are
+    /// non-physical, initial stroke is outside `[0, stroke_max_m]`, or the
+    /// initial compression rate is non-finite.
+    pub fn new(
+        attach_body_m: [f64; 3],
+        strut_axis_body: [f64; 3],
+        free_length_m: f64,
+        stroke_max_m: f64,
+        initial_stroke_m: f64,
+        initial_compression_rate_m_s: f64,
+    ) -> Result<Self, LandingGearError> {
+        let attach_body_m = finite_vector("attach_body_m", attach_body_m)?;
+        let axis_body_unit = unit_vector("strut_axis_body", strut_axis_body)?;
+        let free_length_m = require_positive("free_length_m", free_length_m)?;
+        let stroke_max_m = require_positive("stroke_max_m", stroke_max_m)?;
+        if stroke_max_m > free_length_m {
+            return Err(LandingGearError::InvalidParameter {
+                field: "stroke_max_m",
+                reason: "must not exceed free_length_m",
+            });
+        }
+        let initial_stroke_m =
+            require_bounded("initial_stroke_m", initial_stroke_m, 0.0, stroke_max_m)?;
+        let initial_compression_rate_m_s =
+            require_finite("initial_compression_rate_m_s", initial_compression_rate_m_s)?;
+        Ok(Self {
+            attach_body_m,
+            axis_body_unit,
+            free_length_m,
+            stroke_max_m,
+            initial_stroke_m,
+            initial_compression_rate_m_s,
+        })
+    }
+
+    /// Creates a prismatic DOF from an existing leg's hardpoint, axis, and
+    /// free-length geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LandingGearError`] for invalid stroke limits or initial
+    /// generalized state.
+    pub fn from_leg(
+        leg: LandingGearLeg,
+        stroke_max_m: f64,
+        initial_stroke_m: f64,
+        initial_compression_rate_m_s: f64,
+    ) -> Result<Self, LandingGearError> {
+        Self::new(
+            leg.attach_body_m(),
+            leg.strut_axis_body(),
+            leg.free_length_m(),
+            stroke_max_m,
+            initial_stroke_m,
+            initial_compression_rate_m_s,
+        )
+    }
+
+    /// Returns the body-frame hardpoint.
+    #[must_use]
+    pub const fn attach_body_m(self) -> [f64; 3] {
+        self.attach_body_m
+    }
+
+    /// Returns the unit prismatic joint axis in body coordinates.
+    #[must_use]
+    pub const fn axis_body_unit(self) -> [f64; 3] {
+        self.axis_body_unit
+    }
+
+    /// Returns the unloaded distance from hardpoint to footpad centre.
+    #[must_use]
+    pub const fn free_length_m(self) -> f64 {
+        self.free_length_m
+    }
+
+    /// Returns the maximum allowed compression stroke.
+    #[must_use]
+    pub const fn stroke_max_m(self) -> f64 {
+        self.stroke_max_m
+    }
+
+    /// Returns the initial compression stroke.
+    #[must_use]
+    pub const fn initial_stroke_m(self) -> f64 {
+        self.initial_stroke_m
+    }
+
+    /// Returns the initial compression-rate coordinate.
+    #[must_use]
+    pub const fn initial_compression_rate_m_s(self) -> f64 {
+        self.initial_compression_rate_m_s
+    }
+
+    /// Converts compression stroke to prismatic generalized displacement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LandingGearError`] when stroke is outside `[0, stroke_max_m]`.
+    pub fn displacement_m(self, stroke_m: f64) -> Result<f64, LandingGearError> {
+        Ok(self.free_length_m - require_bounded("stroke_m", stroke_m, 0.0, self.stroke_max_m)?)
+    }
+
+    /// Converts prismatic generalized displacement back to compression stroke.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LandingGearError`] when displacement is outside the valid
+    /// prismatic interval.
+    pub fn stroke_from_displacement_m(self, displacement_m: f64) -> Result<f64, LandingGearError> {
+        let displacement_m = require_bounded(
+            "displacement_m",
+            displacement_m,
+            self.free_length_m - self.stroke_max_m,
+            self.free_length_m,
+        )?;
+        Ok(self.free_length_m - displacement_m)
+    }
+
+    /// Converts compression rate to prismatic generalized velocity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LandingGearError`] when the rate is non-finite.
+    pub fn displacement_rate_m_s(self, compression_rate_m_s: f64) -> Result<f64, LandingGearError> {
+        Ok(-require_finite(
+            "compression_rate_m_s",
+            compression_rate_m_s,
+        )?)
+    }
+
+    /// Computes the body-frame footpad centre from compression stroke.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LandingGearError`] when stroke is outside `[0, stroke_max_m]`.
+    pub fn footpad_center_body_m(self, stroke_m: f64) -> Result<[f64; 3], LandingGearError> {
+        let displacement_m = self.displacement_m(stroke_m)?;
+        Ok([
+            self.attach_body_m[0] + self.axis_body_unit[0] * displacement_m,
+            self.attach_body_m[1] + self.axis_body_unit[1] * displacement_m,
+            self.attach_body_m[2] + self.axis_body_unit[2] * displacement_m,
+        ])
+    }
+
+    /// Materializes a bounded prismatic state from stroke and compression rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LandingGearError`] when stroke or compression rate is invalid.
+    pub fn state(
+        self,
+        stroke_m: f64,
+        compression_rate_m_s: f64,
+    ) -> Result<LandingGearPrismaticState, LandingGearError> {
+        let displacement_m = self.displacement_m(stroke_m)?;
+        let displacement_rate_m_s = self.displacement_rate_m_s(compression_rate_m_s)?;
+        Ok(LandingGearPrismaticState {
+            stroke_m,
+            compression_rate_m_s,
+            displacement_m,
+            displacement_rate_m_s,
+            footpad_center_body_m: [
+                self.attach_body_m[0] + self.axis_body_unit[0] * displacement_m,
+                self.attach_body_m[1] + self.axis_body_unit[1] * displacement_m,
+                self.attach_body_m[2] + self.axis_body_unit[2] * displacement_m,
+            ],
+        })
+    }
+
+    /// Materializes the validated initial prismatic state.
+    #[must_use]
+    pub fn initial_state(self) -> LandingGearPrismaticState {
+        let displacement_m = self.free_length_m - self.initial_stroke_m;
+        LandingGearPrismaticState {
+            stroke_m: self.initial_stroke_m,
+            compression_rate_m_s: self.initial_compression_rate_m_s,
+            displacement_m,
+            displacement_rate_m_s: -self.initial_compression_rate_m_s,
+            footpad_center_body_m: [
+                self.attach_body_m[0] + self.axis_body_unit[0] * displacement_m,
+                self.attach_body_m[1] + self.axis_body_unit[1] * displacement_m,
+                self.attach_body_m[2] + self.axis_body_unit[2] * displacement_m,
+            ],
+        }
+    }
+}
+
+/// Materialized prismatic landing-gear state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LandingGearPrismaticState {
+    /// Positive compression stroke.
+    pub stroke_m: f64,
+    /// Positive compression rate.
+    pub compression_rate_m_s: f64,
+    /// Prismatic generalized displacement along `axis_body_unit`.
+    pub displacement_m: f64,
+    /// Prismatic generalized velocity along `axis_body_unit`.
+    pub displacement_rate_m_s: f64,
+    /// Body-frame footpad centre implied by the displacement coordinate.
+    pub footpad_center_body_m: [f64; 3],
+}
+
 /// Polytropic oleo strut stage with quadratic orifice damping.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OleoStage {
@@ -523,5 +751,96 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn landing_gear_prismatic_dof_maps_stroke_to_displacement_and_footpad() {
+        let dof =
+            LandingGearPrismaticDof::new([1.0, 2.0, 3.0], [0.0, 0.0, -2.0], 0.8, 0.5, 0.1, 0.25)
+                .unwrap();
+
+        let state = dof.state(0.2, 1.25).unwrap();
+        assert_abs_diff_eq!(dof.axis_body_unit()[0], 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(dof.axis_body_unit()[1], 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(dof.axis_body_unit()[2], -1.0, epsilon = 0.0);
+        assert_abs_diff_eq!(state.stroke_m, 0.2, epsilon = 0.0);
+        assert_abs_diff_eq!(state.compression_rate_m_s, 1.25, epsilon = 0.0);
+        assert_abs_diff_eq!(state.displacement_m, 0.6, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(state.displacement_rate_m_s, -1.25, epsilon = 0.0);
+        assert_abs_diff_eq!(state.footpad_center_body_m[0], 1.0, epsilon = 0.0);
+        assert_abs_diff_eq!(state.footpad_center_body_m[1], 2.0, epsilon = 0.0);
+        assert_abs_diff_eq!(state.footpad_center_body_m[2], 2.4, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(
+            dof.stroke_from_displacement_m(state.displacement_m)
+                .unwrap(),
+            0.2,
+            epsilon = 1.0e-15
+        );
+
+        let initial = dof.initial_state();
+        assert_abs_diff_eq!(initial.stroke_m, 0.1, epsilon = 0.0);
+        assert_abs_diff_eq!(initial.displacement_m, 0.7, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(initial.displacement_rate_m_s, -0.25, epsilon = 0.0);
+    }
+
+    #[test]
+    fn landing_gear_prismatic_dof_derives_from_leg_geometry() {
+        let crush = CrushCore::new(1000.0, 0.2, 10_000.0).unwrap();
+        let leg = LandingGearLeg::new(
+            [0.5, -0.5, 1.0],
+            [2.0, 0.0, 0.0],
+            0.9,
+            None,
+            Some(crush),
+            ContactGeometry::Point,
+        )
+        .unwrap();
+
+        let dof = LandingGearPrismaticDof::from_leg(leg, 0.4, 0.05, -0.1).unwrap();
+        let center = dof.footpad_center_body_m(0.15).unwrap();
+
+        assert_abs_diff_eq!(dof.attach_body_m()[0], 0.5, epsilon = 0.0);
+        assert_abs_diff_eq!(dof.attach_body_m()[1], -0.5, epsilon = 0.0);
+        assert_abs_diff_eq!(dof.attach_body_m()[2], 1.0, epsilon = 0.0);
+        assert_abs_diff_eq!(dof.axis_body_unit()[0], 1.0, epsilon = 0.0);
+        assert_abs_diff_eq!(dof.free_length_m(), 0.9, epsilon = 0.0);
+        assert_abs_diff_eq!(dof.stroke_max_m(), 0.4, epsilon = 0.0);
+        assert_abs_diff_eq!(dof.initial_stroke_m(), 0.05, epsilon = 0.0);
+        assert_abs_diff_eq!(dof.initial_compression_rate_m_s(), -0.1, epsilon = 0.0);
+        assert_abs_diff_eq!(center[0], 1.25, epsilon = 1.0e-15);
+        assert_abs_diff_eq!(center[1], -0.5, epsilon = 0.0);
+        assert_abs_diff_eq!(center[2], 1.0, epsilon = 0.0);
+    }
+
+    #[test]
+    fn landing_gear_prismatic_dof_rejects_invalid_limits_and_state() {
+        assert!(
+            LandingGearPrismaticDof::new([0.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.5, 0.6, 0.0, 0.0,)
+                .is_err()
+        );
+        assert!(
+            LandingGearPrismaticDof::new([0.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.5, 0.4, 0.41, 0.0,)
+                .is_err()
+        );
+        assert!(
+            LandingGearPrismaticDof::new(
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                0.5,
+                0.4,
+                0.1,
+                f64::NAN,
+            )
+            .is_err()
+        );
+
+        let dof =
+            LandingGearPrismaticDof::new([0.0, 0.0, 0.0], [0.0, 0.0, -1.0], 0.5, 0.4, 0.1, 0.0)
+                .unwrap();
+
+        assert!(dof.state(0.41, 0.0).is_err());
+        assert!(dof.state(0.2, f64::INFINITY).is_err());
+        assert!(dof.stroke_from_displacement_m(0.09).is_err());
+        assert!(dof.stroke_from_displacement_m(0.51).is_err());
     }
 }

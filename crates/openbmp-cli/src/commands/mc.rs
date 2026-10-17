@@ -23,9 +23,13 @@ use openbmp_uq::{
     CorrelatedErrorBudget, CorrelationMatrix as UqCorrelationMatrix, CredibilityFactor,
     CredibilityLevel, CredibilityRecord, UncertaintyClass, UncertaintySource,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::CliError;
+use crate::commands::campaign;
+
+const ACOUSTICS_ASCENT_CAMPAIGN_DIMENSION_ID: u32 = 22_006;
 
 /// Summary report for `openbmp mc summarize`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -118,6 +122,366 @@ pub struct McSobolReport {
     /// Output CSV path.
     pub output_csv: PathBuf,
 }
+
+/// Deterministic design family for generated ascent acoustic trace rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum McAcousticsAscentTraceDesign {
+    /// Latin hypercube design keyed by campaign seed.
+    LatinHypercube,
+    /// Unscrambled Sobol base design.
+    Sobol,
+    /// Owen-scrambled Sobol design keyed by campaign seed.
+    OwenSobol,
+}
+
+/// Options for `openbmp mc acoustics-ascent-trace`.
+#[derive(Clone, Debug)]
+pub struct McAcousticsAscentTraceOptions<'a> {
+    /// Number of trace samples to materialize.
+    pub samples: u64,
+    /// Campaign seed for LHS or Owen-scrambled Sobol designs.
+    pub campaign_seed: u64,
+    /// Design family.
+    pub design: McAcousticsAscentTraceDesign,
+    /// Inclusive lower dynamic pressure bound, Pa.
+    pub dynamic_pressure_min_pa: f64,
+    /// Exclusive upper dynamic pressure bound in practice because unit-cube
+    /// design values lie in `[0, 1)`.
+    pub dynamic_pressure_max_pa: f64,
+    /// Inclusive lower Mach bound.
+    pub mach_min: f64,
+    /// Exclusive upper Mach bound in practice because unit-cube design values
+    /// lie in `[0, 1)`.
+    pub mach_max: f64,
+    /// Prefix for deterministic sample ids.
+    pub sample_prefix: &'a str,
+    /// Optional per-row class override.
+    pub class_id: Option<&'a str>,
+    /// Output TOML snippet path.
+    pub output_toml: &'a Path,
+}
+
+/// Summary report for `openbmp mc acoustics-ascent-trace`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct McAcousticsAscentTraceReport {
+    /// Number of generated trace samples.
+    pub samples: u64,
+    /// Design family.
+    pub design: McAcousticsAscentTraceDesign,
+    /// Output TOML snippet path.
+    pub output_toml: PathBuf,
+}
+
+/// Options for `openbmp mc acoustics-response-samples`.
+#[derive(Clone, Debug)]
+pub struct McAcousticsResponseSamplesOptions<'a> {
+    /// Number of response samples to materialize.
+    pub samples: u64,
+    /// Campaign seed for LHS or Owen-scrambled Sobol designs.
+    pub campaign_seed: u64,
+    /// Design family.
+    pub design: McAcousticsAscentTraceDesign,
+    /// Inclusive lower panel surface mass bound, kg/m^2.
+    pub surface_mass_min_kg_m2: f64,
+    /// Exclusive upper panel surface mass bound in practice because unit-cube
+    /// design values lie in `[0, 1)`.
+    pub surface_mass_max_kg_m2: f64,
+    /// Inclusive lower responding area bound, m^2.
+    pub area_min_m2: f64,
+    /// Exclusive upper responding area bound in practice because unit-cube
+    /// design values lie in `[0, 1)`.
+    pub area_max_m2: f64,
+    /// Inclusive lower modal shape participation factor bound.
+    pub mode_shape_min: f64,
+    /// Exclusive upper modal shape participation factor bound in practice
+    /// because unit-cube design values lie in `[0, 1)`.
+    pub mode_shape_max: f64,
+    /// Prefix for deterministic sample ids.
+    pub sample_prefix: &'a str,
+    /// Optional per-row response class override.
+    pub class_id: Option<&'a str>,
+    /// Output TOML snippet path.
+    pub output_toml: &'a Path,
+}
+
+/// Summary report for `openbmp mc acoustics-response-samples`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct McAcousticsResponseSamplesReport {
+    /// Number of generated response samples.
+    pub samples: u64,
+    /// Design family.
+    pub design: McAcousticsAscentTraceDesign,
+    /// Output TOML snippet path.
+    pub output_toml: PathBuf,
+}
+
+/// Options for `openbmp mc aero-deck-draw-overlays`.
+#[derive(Clone, Debug)]
+pub struct McAeroDeckDrawOverlaysOptions<'a> {
+    /// Number of deck-draw overlays to materialize.
+    pub samples: u64,
+    /// Campaign-level deterministic seed.
+    pub campaign_seed: u64,
+    /// First sample index to materialize.
+    pub first_sample_index: u64,
+    /// First RNG dimension id used by the draw.
+    pub dimension_id_base: u32,
+    /// Exponential Mach correlation length in Mach units. When omitted,
+    /// deck-declared uncertainty correlation metadata is used at runtime.
+    pub mach_correlation_length: Option<f64>,
+    /// Optional exponential angle-of-attack correlation length, in degrees.
+    pub alpha_correlation_length_deg: Option<f64>,
+    /// Optional exponential sideslip correlation length, in degrees.
+    pub beta_correlation_length_deg: Option<f64>,
+    /// Prefix for deterministic overlay ids and filenames.
+    pub overlay_prefix: &'a str,
+    /// Directory receiving per-sample overlay TOML files.
+    pub output_dir: &'a Path,
+    /// Campaign-manifest TOML fragment listing the generated overlays.
+    pub manifest_toml: &'a Path,
+}
+
+/// Summary report for `openbmp mc aero-deck-draw-overlays`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct McAeroDeckDrawOverlaysReport {
+    /// Number of generated deck-draw overlays.
+    pub samples: u64,
+    /// Campaign-level deterministic seed.
+    pub campaign_seed: u64,
+    /// First sample index materialized.
+    pub first_sample_index: u64,
+    /// Directory receiving per-sample overlay TOML files.
+    pub output_dir: PathBuf,
+    /// Campaign-manifest TOML fragment listing the generated overlays.
+    pub manifest_toml: PathBuf,
+    /// Generated overlay file paths.
+    pub overlay_paths: Vec<PathBuf>,
+}
+
+/// Options for `openbmp mc aero-deck-draw-campaign`.
+#[derive(Clone, Debug)]
+pub struct McAeroDeckDrawCampaignOptions<'a> {
+    /// Base scenario TOML path. The scenario must be schema-v3 and deck- or
+    /// buildup-backed for `[aero.deck_draw]` overlays to validate.
+    pub scenario_path: &'a Path,
+    /// Number of deck-draw samples to execute.
+    pub samples: u64,
+    /// Campaign-level deterministic deck-draw seed.
+    pub campaign_seed: u64,
+    /// First sample index to execute.
+    pub first_sample_index: u64,
+    /// First RNG dimension id used by the draw.
+    pub dimension_id_base: u32,
+    /// Exponential Mach correlation length in Mach units. When omitted,
+    /// deck-declared uncertainty correlation metadata is used at runtime.
+    pub mach_correlation_length: Option<f64>,
+    /// Optional exponential angle-of-attack correlation length, in degrees.
+    pub alpha_correlation_length_deg: Option<f64>,
+    /// Optional exponential sideslip correlation length, in degrees.
+    pub beta_correlation_length_deg: Option<f64>,
+    /// Prefix for deterministic overlay ids and filenames.
+    pub overlay_prefix: &'a str,
+    /// Stable generated campaign id.
+    pub campaign_id: &'a str,
+    /// Stable generated scenario id.
+    pub scenario_id: &'a str,
+    /// Scenario seed used for each campaign run.
+    pub run_seed: u64,
+    /// Output artifact root for generated overlays, manifest, and campaign run.
+    pub output_dir: &'a Path,
+    /// Stable code/config id recorded in generated campaign run-data records.
+    pub run_code_id: &'a str,
+    /// Code ordinal label recorded for trend-store consumers.
+    pub code_ordinal: u64,
+    /// Also write a deterministic Parquet mirror of the campaign run index.
+    pub write_index_parquet: bool,
+    /// Maximum worker threads used for generated campaign execution.
+    pub workers: u64,
+    /// Optional UQ credibility evidence for this generated campaign.
+    pub credibility: Option<McCredibilityOptions<'a>>,
+}
+
+/// Summary report for `openbmp mc aero-deck-draw-campaign`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct McAeroDeckDrawCampaignReport {
+    /// Number of executed deck-draw samples.
+    pub samples: u64,
+    /// Generated overlay report.
+    pub overlays: McAeroDeckDrawOverlaysReport,
+    /// Generated full campaign manifest path.
+    pub campaign_manifest_toml: PathBuf,
+    /// Output directory passed to the campaign runner.
+    pub campaign_output_dir: PathBuf,
+    /// Existing campaign-run report.
+    pub campaign: campaign::CampaignRunCliReport,
+    /// Optional campaign UQ/credibility evidence.
+    pub credibility: Option<CampaignCredibilityReport>,
+    /// Markdown report path, when written.
+    pub credibility_report_md: Option<PathBuf>,
+}
+
+/// Options for `openbmp mc acoustics-ascent-campaign`.
+#[derive(Clone, Debug)]
+pub struct McAcousticsAscentCampaignOptions<'a> {
+    /// Base scenario TOML path with an `[acoustics.ascent]` block.
+    pub scenario_path: &'a Path,
+    /// Number of generated trace samples to evaluate.
+    pub samples: u64,
+    /// Campaign seed for LHS or Owen-scrambled Sobol designs.
+    pub campaign_seed: u64,
+    /// Design family.
+    pub design: McAcousticsAscentTraceDesign,
+    /// Inclusive lower dynamic pressure bound, Pa.
+    pub dynamic_pressure_min_pa: f64,
+    /// Exclusive upper dynamic pressure bound in practice because unit-cube
+    /// design values lie in `[0, 1)`.
+    pub dynamic_pressure_max_pa: f64,
+    /// Inclusive lower Mach bound.
+    pub mach_min: f64,
+    /// Exclusive upper Mach bound in practice because unit-cube design values
+    /// lie in `[0, 1)`.
+    pub mach_max: f64,
+    /// Prefix for deterministic sample ids.
+    pub sample_prefix: &'a str,
+    /// Optional per-row class override.
+    pub class_id: Option<&'a str>,
+    /// Output CSV path for the evaluated ascent trace samples.
+    pub output_csv: &'a Path,
+    /// Optional directory for evaluated campaign CSV artifacts.
+    pub output_artifact_dir: Option<&'a Path>,
+    /// Optional full generated scenario path.
+    pub output_scenario_toml: Option<&'a Path>,
+    /// Optional scalar checkpoint JSON for resumable per-sample evaluation.
+    pub checkpoint_json: Option<&'a Path>,
+    /// Maximum missing samples to evaluate into the checkpoint this invocation.
+    pub max_new_samples: Option<u64>,
+    /// Worker threads for checkpointed sample evaluation.
+    pub workers: usize,
+    /// Toolchain/determinism profile bound into checkpoint metadata.
+    pub toolchain_profile: &'a str,
+}
+
+/// Summary report for `openbmp mc acoustics-ascent-campaign`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct McAcousticsAscentCampaignReport {
+    /// Base scenario TOML path.
+    pub scenario_path: PathBuf,
+    /// Number of generated/evaluated trace samples.
+    pub samples: u64,
+    /// Design family.
+    pub design: McAcousticsAscentTraceDesign,
+    /// Output CSV path.
+    pub output_csv: PathBuf,
+    /// Optional directory for evaluated campaign CSV artifacts.
+    pub output_artifact_dir: Option<PathBuf>,
+    /// Deterministic evaluated artifact paths written under `output_artifact_dir`.
+    pub artifact_paths: Vec<PathBuf>,
+    /// Deterministic JSON manifest for evaluated campaign artifacts.
+    pub artifact_manifest_json: Option<PathBuf>,
+    /// Optional full generated scenario path.
+    pub output_scenario_toml: Option<PathBuf>,
+    /// Optional scalar checkpoint path used for resumable sample evaluation.
+    pub checkpoint_json: Option<PathBuf>,
+    /// Number of samples recorded in the checkpoint or final run.
+    pub completed_samples: u64,
+    /// Whether the campaign completed and final outputs were written.
+    pub complete: bool,
+    /// P95/50 OASPL from the runner, when available.
+    pub p95_50_oaspl_db: Option<f64>,
+    /// One-sided Wilks sample count required for the P95/50 target.
+    pub p95_50_wilks_required_sample_count: Option<u64>,
+    /// Whether the generated sample count satisfies the P95/50 Wilks floor.
+    pub p95_50_wilks_sample_count_sufficient: Option<bool>,
+    /// Fairing-internal P95/50 OASPL from downstream transfer, when available.
+    pub fairing_internal_p95_50_oaspl_db: Option<f64>,
+    /// Fairing-internal one-sided Wilks sample count required for P95/50.
+    pub fairing_internal_p95_50_wilks_required_sample_count: Option<u64>,
+    /// Whether the generated sample count satisfies the fairing P95/50 Wilks floor.
+    pub fairing_internal_p95_50_wilks_sample_count_sufficient: Option<bool>,
+    /// Response P95/50 integrated acceleration mean-square, when available.
+    pub response_p95_50_total_mean_square_acceleration_m2_s4: Option<f64>,
+    /// Response P95/50 integrated modal-force mean-square, when available.
+    pub response_p95_50_total_mean_square_force_n2: Option<f64>,
+    /// Response one-sided Wilks sample count required for P95/50.
+    pub response_p95_50_wilks_required_sample_count: Option<u64>,
+    /// Whether the generated sample count satisfies the response P95/50 Wilks floor.
+    pub response_p95_50_wilks_sample_count_sufficient: Option<bool>,
+    /// Peak sample id selected by the runner.
+    pub peak_sample_id: Option<String>,
+    /// Peak sample OASPL selected by the runner.
+    pub peak_sample_oaspl_db: f64,
+}
+
+/// Optional response-side sample generator for
+/// `openbmp mc acoustics-response-campaign`.
+#[derive(Clone, Debug)]
+pub struct McAcousticsResponseCampaignSamplesOptions<'a> {
+    /// Inclusive lower panel surface mass bound, kg/m^2.
+    pub surface_mass_min_kg_m2: f64,
+    /// Exclusive upper panel surface mass bound in practice because unit-cube
+    /// design values lie in `[0, 1)`.
+    pub surface_mass_max_kg_m2: f64,
+    /// Inclusive lower responding area bound, m^2.
+    pub area_min_m2: f64,
+    /// Exclusive upper responding area bound in practice because unit-cube
+    /// design values lie in `[0, 1)`.
+    pub area_max_m2: f64,
+    /// Inclusive lower modal shape participation factor bound.
+    pub mode_shape_min: f64,
+    /// Exclusive upper modal shape participation factor bound in practice
+    /// because unit-cube design values lie in `[0, 1)`.
+    pub mode_shape_max: f64,
+    /// Prefix for deterministic response sample ids.
+    pub sample_prefix: &'a str,
+    /// Optional per-row response class override.
+    pub class_id: Option<&'a str>,
+}
+
+/// Options for `openbmp mc acoustics-response-campaign`.
+#[derive(Clone, Debug)]
+pub struct McAcousticsResponseCampaignOptions<'a> {
+    /// Base scenario TOML path with an `[acoustics.response]` block.
+    pub scenario_path: &'a Path,
+    /// Number of generated trace samples to evaluate.
+    pub samples: u64,
+    /// Campaign seed for LHS or Owen-scrambled Sobol designs.
+    pub campaign_seed: u64,
+    /// Design family.
+    pub design: McAcousticsAscentTraceDesign,
+    /// Inclusive lower dynamic pressure bound, Pa.
+    pub dynamic_pressure_min_pa: f64,
+    /// Exclusive upper dynamic pressure bound in practice because unit-cube
+    /// design values lie in `[0, 1)`.
+    pub dynamic_pressure_max_pa: f64,
+    /// Inclusive lower Mach bound.
+    pub mach_min: f64,
+    /// Exclusive upper Mach bound in practice because unit-cube design values
+    /// lie in `[0, 1)`.
+    pub mach_max: f64,
+    /// Prefix for deterministic ascent sample ids.
+    pub sample_prefix: &'a str,
+    /// Optional per-row ascent class override.
+    pub class_id: Option<&'a str>,
+    /// Optional response-side sample generator.
+    pub response_samples: Option<McAcousticsResponseCampaignSamplesOptions<'a>>,
+    /// Output CSV path for the evaluated ascent trace samples.
+    pub output_csv: &'a Path,
+    /// Optional directory for evaluated campaign CSV artifacts.
+    pub output_artifact_dir: Option<&'a Path>,
+    /// Optional full generated scenario path.
+    pub output_scenario_toml: Option<&'a Path>,
+    /// Optional scalar checkpoint JSON for resumable per-sample evaluation.
+    pub checkpoint_json: Option<&'a Path>,
+    /// Maximum missing samples to evaluate into the checkpoint this invocation.
+    pub max_new_samples: Option<u64>,
+    /// Worker threads for checkpointed sample evaluation.
+    pub workers: usize,
+    /// Toolchain/determinism profile bound into checkpoint metadata.
+    pub toolchain_profile: &'a str,
+}
+
+/// Summary report for `openbmp mc acoustics-response-campaign`.
+pub type McAcousticsResponseCampaignReport = McAcousticsAscentCampaignReport;
 
 /// Summary report for `openbmp mc iman-conover`.
 #[derive(Clone, Debug, PartialEq)]
@@ -309,6 +673,25 @@ struct UqBudgetDocument {
     correlation: Option<UqCorrelationDocument>,
 }
 
+#[derive(Debug)]
+struct CampaignArtifactWriteReport {
+    artifact_paths: Vec<PathBuf>,
+    manifest_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignArtifactManifest {
+    schema: &'static str,
+    artifacts: Vec<CampaignArtifactManifestEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignArtifactManifestEntry {
+    role: &'static str,
+    path: String,
+    sha256_hex: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct UqSourceDocument {
     id: String,
@@ -392,6 +775,755 @@ pub fn write_sobol(
         dimensions,
         scramble_seed,
         output_csv: output_csv.to_path_buf(),
+    })
+}
+
+/// Generate a deterministic schema-v3 ascent acoustics trace TOML snippet.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the design request or physical ranges are invalid,
+/// or when the output TOML cannot be written.
+pub fn write_acoustics_ascent_trace(
+    options: McAcousticsAscentTraceOptions<'_>,
+) -> Result<McAcousticsAscentTraceReport, CliError> {
+    validate_acoustics_ascent_trace_options(&options)?;
+    let design = acoustics_ascent_trace_design(&options)?;
+    let bytes = acoustics_ascent_trace_toml(&options, &design)?.into_bytes();
+    ensure_parent_dir(options.output_toml)?;
+    fs::write(options.output_toml, bytes).map_err(|source| CliError::Io {
+        path: options.output_toml.to_path_buf(),
+        source,
+    })?;
+    Ok(McAcousticsAscentTraceReport {
+        samples: options.samples,
+        design: options.design,
+        output_toml: options.output_toml.to_path_buf(),
+    })
+}
+
+/// Generate a deterministic schema-v3 vibroacoustic response TOML snippet.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the design request or physical ranges are invalid,
+/// or when the output TOML cannot be written.
+pub fn write_acoustics_response_samples(
+    options: McAcousticsResponseSamplesOptions<'_>,
+) -> Result<McAcousticsResponseSamplesReport, CliError> {
+    validate_acoustics_response_samples_options(&options)?;
+    let design = acoustics_response_samples_design(&options)?;
+    let bytes = acoustics_response_samples_toml(&options, &design)?.into_bytes();
+    ensure_parent_dir(options.output_toml)?;
+    fs::write(options.output_toml, bytes).map_err(|source| CliError::Io {
+        path: options.output_toml.to_path_buf(),
+        source,
+    })?;
+    Ok(McAcousticsResponseSamplesReport {
+        samples: options.samples,
+        design: options.design,
+        output_toml: options.output_toml.to_path_buf(),
+    })
+}
+
+/// Generate deterministic per-sample aero deck-draw campaign overlays.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the schedule request is invalid, when the sample
+/// index range overflows, or when any overlay/manifest TOML cannot be written.
+pub fn write_aero_deck_draw_overlays(
+    options: McAeroDeckDrawOverlaysOptions<'_>,
+) -> Result<McAeroDeckDrawOverlaysReport, CliError> {
+    validate_aero_deck_draw_overlays_options(&options)?;
+    create_dir_all(options.output_dir).map_err(|source| CliError::Io {
+        path: options.output_dir.to_path_buf(),
+        source,
+    })?;
+    ensure_parent_dir(options.manifest_toml)?;
+
+    let overlay_prefix = options.overlay_prefix.trim();
+    let mut overlay_paths = Vec::new();
+    let mut manifest = String::new();
+    let _ = writeln!(
+        manifest,
+        "# Generated by openbmp mc aero-deck-draw-overlays."
+    );
+    let _ = writeln!(
+        manifest,
+        "# Paste this fragment into an openbmp campaign manifest."
+    );
+    let _ = writeln!(manifest, "overlays = [");
+
+    for offset in 0..options.samples {
+        let sample_index = options
+            .first_sample_index
+            .checked_add(offset)
+            .ok_or_else(|| CliError::MonteCarlo {
+                summary: "aero deck-draw sample index range overflows u64".to_owned(),
+            })?;
+        let overlay_id = format!("{overlay_prefix}-{sample_index:06}");
+        let file_name = format!("{overlay_id}.toml");
+        let overlay_path = options.output_dir.join(&file_name);
+        let overlay_toml = aero_deck_draw_overlay_toml(&options, sample_index);
+        fs::write(&overlay_path, overlay_toml).map_err(|source| CliError::Io {
+            path: overlay_path.clone(),
+            source,
+        })?;
+        let _ = writeln!(manifest, "  {},", toml_string(&overlay_id));
+        overlay_paths.push(overlay_path);
+    }
+
+    let _ = writeln!(manifest, "]");
+    for (path_index, overlay_path) in overlay_paths.iter().enumerate() {
+        let sample_index = options.first_sample_index + path_index as u64;
+        let overlay_id = format!("{overlay_prefix}-{sample_index:06}");
+        let file_name = overlay_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| CliError::MonteCarlo {
+                summary: "generated aero deck-draw overlay filename is not UTF-8".to_owned(),
+            })?;
+        let path =
+            campaign_manifest_overlay_path(options.manifest_toml, options.output_dir, file_name);
+        let _ = writeln!(manifest);
+        let _ = writeln!(manifest, "[[overlay_files]]");
+        let _ = writeln!(manifest, "id = {}", toml_string(&overlay_id));
+        let _ = writeln!(manifest, "path = {}", toml_string(&path));
+        let _ = writeln!(manifest, "mode = \"merge\"");
+    }
+
+    fs::write(options.manifest_toml, manifest).map_err(|source| CliError::Io {
+        path: options.manifest_toml.to_path_buf(),
+        source,
+    })?;
+
+    Ok(McAeroDeckDrawOverlaysReport {
+        samples: options.samples,
+        campaign_seed: options.campaign_seed,
+        first_sample_index: options.first_sample_index,
+        output_dir: options.output_dir.to_path_buf(),
+        manifest_toml: options.manifest_toml.to_path_buf(),
+        overlay_paths,
+    })
+}
+
+/// Generate and execute a deterministic aero deck-draw campaign.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when schedule generation, generated-manifest writing,
+/// or the underlying campaign runner fails.
+pub fn run_aero_deck_draw_campaign(
+    options: McAeroDeckDrawCampaignOptions<'_>,
+) -> Result<McAeroDeckDrawCampaignReport, CliError> {
+    validate_aero_deck_draw_campaign_options(&options)?;
+    create_dir_all(options.output_dir).map_err(|source| CliError::Io {
+        path: options.output_dir.to_path_buf(),
+        source,
+    })?;
+
+    let base_scenario = Scenario::from_file(options.scenario_path)?;
+    let resolved_files = base_scenario.resolved_files()?;
+    if let Some(required_dimension_count) =
+        openbmp_runner::aero::correlated_deck_draw_required_dimensions(
+            &base_scenario.document,
+            &resolved_files,
+        )?
+    {
+        validate_aero_deck_draw_campaign_dimension_capacity(
+            options.dimension_id_base,
+            required_dimension_count,
+        )?;
+    }
+
+    let overlay_dir = options.output_dir.join("overlays");
+    let overlay_fragment_toml = options.output_dir.join("aero-deck-draw-overlays.toml");
+    let overlays = write_aero_deck_draw_overlays(McAeroDeckDrawOverlaysOptions {
+        samples: options.samples,
+        campaign_seed: options.campaign_seed,
+        first_sample_index: options.first_sample_index,
+        dimension_id_base: options.dimension_id_base,
+        mach_correlation_length: options.mach_correlation_length,
+        alpha_correlation_length_deg: options.alpha_correlation_length_deg,
+        beta_correlation_length_deg: options.beta_correlation_length_deg,
+        overlay_prefix: options.overlay_prefix,
+        output_dir: &overlay_dir,
+        manifest_toml: &overlay_fragment_toml,
+    })?;
+
+    let campaign_manifest_toml = options.output_dir.join("campaign.toml");
+    let manifest_text =
+        aero_deck_draw_campaign_manifest_toml(&options, &overlays, &campaign_manifest_toml)?;
+    fs::write(&campaign_manifest_toml, manifest_text).map_err(|source| CliError::Io {
+        path: campaign_manifest_toml.clone(),
+        source,
+    })?;
+
+    let upstream_uq = openbmp_runner::aero::upstream_uq_budget(&base_scenario.document)?;
+    let credibility = evaluate_campaign_credibility_contract(CampaignCredibilityInputs::new(
+        options.credibility,
+        &upstream_uq,
+    ))?;
+    let (credibility, credibility_report_md) = match credibility {
+        Some((report, report_path)) => (Some(report), report_path),
+        None => (None, None),
+    };
+
+    let campaign_output_dir = options.output_dir.join("campaign-run");
+    let campaign = campaign::run(
+        &campaign_manifest_toml,
+        &campaign_output_dir,
+        options.run_code_id,
+        options.code_ordinal,
+        options.write_index_parquet,
+        options.workers,
+    )?;
+    Ok(McAeroDeckDrawCampaignReport {
+        samples: options.samples,
+        overlays,
+        campaign_manifest_toml,
+        campaign_output_dir,
+        campaign,
+        credibility,
+        credibility_report_md,
+    })
+}
+
+/// Generate an MC-designed ascent trace, execute the normal scenario runner,
+/// and write the evaluated per-sample acoustic trace CSV.
+///
+/// # Errors
+///
+/// Returns [`CliError`] for invalid campaign options, malformed base scenario
+/// TOML, scenario/runner failures, missing ascent reports, or output IO
+/// failures.
+pub fn run_acoustics_ascent_campaign(
+    options: McAcousticsAscentCampaignOptions<'_>,
+) -> Result<McAcousticsAscentCampaignReport, CliError> {
+    run_acoustics_ascent_campaign_with_extra_overlay(options, None)
+}
+
+fn run_acoustics_ascent_campaign_with_extra_overlay(
+    options: McAcousticsAscentCampaignOptions<'_>,
+    extra_overlay_toml: Option<&str>,
+) -> Result<McAcousticsAscentCampaignReport, CliError> {
+    let trace_output_path = options.output_scenario_toml.unwrap_or(options.output_csv);
+    let trace_options = McAcousticsAscentTraceOptions {
+        samples: options.samples,
+        campaign_seed: options.campaign_seed,
+        design: options.design,
+        dynamic_pressure_min_pa: options.dynamic_pressure_min_pa,
+        dynamic_pressure_max_pa: options.dynamic_pressure_max_pa,
+        mach_min: options.mach_min,
+        mach_max: options.mach_max,
+        sample_prefix: options.sample_prefix,
+        class_id: options.class_id,
+        output_toml: trace_output_path,
+    };
+    validate_acoustics_ascent_trace_options(&trace_options)?;
+    validate_acoustics_ascent_campaign_checkpoint_options(&options)?;
+    let base_scenario =
+        fs::read_to_string(options.scenario_path).map_err(|source| CliError::Io {
+            path: options.scenario_path.to_path_buf(),
+            source,
+        })?;
+    validate_base_acoustics_ascent_campaign_scenario(&base_scenario)?;
+    let design = acoustics_ascent_trace_design(&trace_options)?;
+    let trace_toml = acoustics_ascent_trace_toml(&trace_options, &design)?;
+    let mut campaign_scenario = append_acoustics_ascent_trace_overlay(&base_scenario, &trace_toml);
+    if let Some(extra_overlay_toml) = extra_overlay_toml {
+        campaign_scenario =
+            append_acoustics_ascent_trace_overlay(&campaign_scenario, extra_overlay_toml);
+    }
+    let campaign_scenario_sha256_hex = sha256_bytes(campaign_scenario.as_bytes());
+    let source_dir = options.scenario_path.parent().map(Path::to_path_buf);
+
+    if let Some(checkpoint_json) = options.checkpoint_json {
+        return run_checkpointed_acoustics_ascent_campaign(
+            &options,
+            &trace_options,
+            &base_scenario,
+            &campaign_scenario,
+            &campaign_scenario_sha256_hex,
+            &source_dir,
+            &design,
+            checkpoint_json,
+        );
+    }
+
+    finish_acoustics_ascent_campaign(
+        &options,
+        &campaign_scenario,
+        &source_dir,
+        options.samples,
+        None,
+    )
+}
+
+/// Generate an MC-designed ascent acoustic trace, require a downstream
+/// `[acoustics.response]` declaration, and report response P95/50 evidence.
+///
+/// # Errors
+///
+/// Returns [`CliError`] for the same conditions as
+/// [`run_acoustics_ascent_campaign`], and additionally when the base scenario
+/// lacks `[acoustics.response]` or a completed run does not emit response
+/// P95/50 summary evidence.
+pub fn run_acoustics_response_campaign(
+    options: McAcousticsResponseCampaignOptions<'_>,
+) -> Result<McAcousticsResponseCampaignReport, CliError> {
+    let base_scenario =
+        fs::read_to_string(options.scenario_path).map_err(|source| CliError::Io {
+            path: options.scenario_path.to_path_buf(),
+            source,
+        })?;
+    validate_base_acoustics_response_campaign_scenario(
+        &base_scenario,
+        options.response_samples.is_some(),
+    )?;
+
+    let response_samples_toml = options
+        .response_samples
+        .as_ref()
+        .map(|response_samples| {
+            acoustics_response_campaign_samples_toml(&options, response_samples)
+        })
+        .transpose()?;
+    let ascent_options = acoustics_response_campaign_ascent_options(&options);
+    let report = run_acoustics_ascent_campaign_with_extra_overlay(
+        ascent_options,
+        response_samples_toml.as_deref(),
+    )?;
+    if report.complete
+        && (report
+            .response_p95_50_total_mean_square_acceleration_m2_s4
+            .is_none()
+            || report.response_p95_50_total_mean_square_force_n2.is_none()
+            || report.response_p95_50_wilks_required_sample_count.is_none())
+    {
+        return Err(CliError::MonteCarlo {
+            summary: "acoustics response campaign scenario did not emit response P95/50 evidence"
+                .to_owned(),
+        });
+    }
+    Ok(report)
+}
+
+fn acoustics_response_campaign_ascent_options<'a>(
+    options: &'a McAcousticsResponseCampaignOptions<'a>,
+) -> McAcousticsAscentCampaignOptions<'a> {
+    McAcousticsAscentCampaignOptions {
+        scenario_path: options.scenario_path,
+        samples: options.samples,
+        campaign_seed: options.campaign_seed,
+        design: options.design,
+        dynamic_pressure_min_pa: options.dynamic_pressure_min_pa,
+        dynamic_pressure_max_pa: options.dynamic_pressure_max_pa,
+        mach_min: options.mach_min,
+        mach_max: options.mach_max,
+        sample_prefix: options.sample_prefix,
+        class_id: options.class_id,
+        output_csv: options.output_csv,
+        output_artifact_dir: options.output_artifact_dir,
+        output_scenario_toml: options.output_scenario_toml,
+        checkpoint_json: options.checkpoint_json,
+        max_new_samples: options.max_new_samples,
+        workers: options.workers,
+        toolchain_profile: options.toolchain_profile,
+    }
+}
+
+fn acoustics_response_campaign_samples_toml(
+    options: &McAcousticsResponseCampaignOptions<'_>,
+    response_samples: &McAcousticsResponseCampaignSamplesOptions<'_>,
+) -> Result<String, CliError> {
+    let output_toml = options.output_scenario_toml.unwrap_or(options.output_csv);
+    let sample_options = McAcousticsResponseSamplesOptions {
+        samples: options.samples,
+        campaign_seed: options.campaign_seed,
+        design: options.design,
+        surface_mass_min_kg_m2: response_samples.surface_mass_min_kg_m2,
+        surface_mass_max_kg_m2: response_samples.surface_mass_max_kg_m2,
+        area_min_m2: response_samples.area_min_m2,
+        area_max_m2: response_samples.area_max_m2,
+        mode_shape_min: response_samples.mode_shape_min,
+        mode_shape_max: response_samples.mode_shape_max,
+        sample_prefix: response_samples.sample_prefix,
+        class_id: response_samples.class_id,
+        output_toml,
+    };
+    validate_acoustics_response_samples_options(&sample_options)?;
+    let design = acoustics_response_samples_design(&sample_options)?;
+    acoustics_response_samples_toml(&sample_options, &design)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_checkpointed_acoustics_ascent_campaign(
+    options: &McAcousticsAscentCampaignOptions<'_>,
+    trace_options: &McAcousticsAscentTraceOptions<'_>,
+    base_scenario: &str,
+    campaign_scenario: &str,
+    campaign_scenario_sha256_hex: &str,
+    source_dir: &Option<PathBuf>,
+    design: &DesignMatrix,
+    checkpoint_json: &Path,
+) -> Result<McAcousticsAscentCampaignReport, CliError> {
+    let max_new_samples = options.max_new_samples.unwrap_or(options.samples);
+    let store = FileCheckpointStore::new(checkpoint_json.to_path_buf());
+    let mut checkpoint = match store.load().map_err(checkpoint_store_error)? {
+        Some(checkpoint) => {
+            checkpoint
+                .validate_campaign(
+                    options.campaign_seed,
+                    options.samples,
+                    ACOUSTICS_ASCENT_CAMPAIGN_DIMENSION_ID,
+                    campaign_scenario_sha256_hex,
+                    options.toolchain_profile,
+                )
+                .map_err(monte_carlo_error)?;
+            checkpoint
+        }
+        None => ScalarCampaignCheckpoint::new(
+            options.campaign_seed,
+            options.samples,
+            ACOUSTICS_ASCENT_CAMPAIGN_DIMENSION_ID,
+            campaign_scenario_sha256_hex.to_owned(),
+            options.toolchain_profile.to_owned(),
+        )
+        .map_err(monte_carlo_error)?,
+    };
+
+    let checkpoint_report = run_scalar_campaign_resumable(
+        &mut checkpoint,
+        options.workers,
+        max_new_samples,
+        |sample_index, _rng| {
+            evaluate_acoustics_ascent_campaign_checkpoint_sample(
+                base_scenario,
+                source_dir.as_deref(),
+                trace_options,
+                design,
+                sample_index,
+            )
+        },
+    )
+    .map_err(monte_carlo_error)?;
+    store.save(&checkpoint).map_err(checkpoint_store_error)?;
+
+    let completed_samples = checkpoint.completed_count();
+    if checkpoint_report.is_none() {
+        return Ok(incomplete_acoustics_ascent_campaign_report(
+            options,
+            checkpoint_json,
+            completed_samples,
+        ));
+    }
+
+    finish_acoustics_ascent_campaign(
+        options,
+        campaign_scenario,
+        source_dir,
+        completed_samples,
+        Some(checkpoint_json),
+    )
+}
+
+fn finish_acoustics_ascent_campaign(
+    options: &McAcousticsAscentCampaignOptions<'_>,
+    campaign_scenario: &str,
+    source_dir: &Option<PathBuf>,
+    completed_samples: u64,
+    checkpoint_json: Option<&Path>,
+) -> Result<McAcousticsAscentCampaignReport, CliError> {
+    if let Some(path) = options.output_scenario_toml {
+        ensure_parent_dir(path)?;
+        fs::write(path, campaign_scenario.as_bytes()).map_err(|source| CliError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+
+    let scenario = Scenario::from_toml_str_with_source_dir(campaign_scenario, source_dir.clone())?;
+    let outcome = openbmp_runner::run(&scenario)?;
+    let ascent = outcome
+        .acoustics
+        .as_ref()
+        .and_then(|acoustics| acoustics.ascent.as_ref())
+        .ok_or_else(|| CliError::MonteCarlo {
+            summary: "acoustics ascent campaign scenario did not emit RunOutcome.acoustics.ascent"
+                .to_owned(),
+        })?;
+    let expected_samples = usize::try_from(options.samples).map_err(|_| CliError::MonteCarlo {
+        summary: "acoustics ascent campaign sample count does not fit usize".to_owned(),
+    })?;
+    if ascent.sample_count != expected_samples {
+        return Err(CliError::MonteCarlo {
+            summary: format!(
+                "acoustics ascent campaign emitted {} samples, expected {}",
+                ascent.sample_count, expected_samples
+            ),
+        });
+    }
+    let fairing_internal = outcome
+        .acoustics
+        .as_ref()
+        .and_then(|acoustics| acoustics.fairing_internal.as_ref());
+    let response = outcome
+        .acoustics
+        .as_ref()
+        .and_then(|acoustics| acoustics.response.as_ref());
+    ensure_parent_dir(options.output_csv)?;
+    fs::write(options.output_csv, &ascent.sample_trace_csv).map_err(|source| CliError::Io {
+        path: options.output_csv.to_path_buf(),
+        source,
+    })?;
+    let artifact_report = write_acoustics_ascent_campaign_artifacts(options, &outcome)?;
+
+    Ok(McAcousticsAscentCampaignReport {
+        scenario_path: options.scenario_path.to_path_buf(),
+        samples: options.samples,
+        design: options.design,
+        output_csv: options.output_csv.to_path_buf(),
+        output_artifact_dir: options.output_artifact_dir.map(Path::to_path_buf),
+        artifact_paths: artifact_report.artifact_paths,
+        artifact_manifest_json: artifact_report.manifest_path,
+        output_scenario_toml: options.output_scenario_toml.map(Path::to_path_buf),
+        checkpoint_json: checkpoint_json.map(Path::to_path_buf),
+        completed_samples,
+        complete: true,
+        p95_50_oaspl_db: ascent.p95_50_oaspl_db,
+        p95_50_wilks_required_sample_count: ascent.p95_50_wilks_required_sample_count,
+        p95_50_wilks_sample_count_sufficient: ascent.p95_50_wilks_sample_count_sufficient,
+        fairing_internal_p95_50_oaspl_db: fairing_internal
+            .and_then(|fairing| fairing.p95_50_oaspl_db),
+        fairing_internal_p95_50_wilks_required_sample_count: fairing_internal
+            .and_then(|fairing| fairing.p95_50_wilks_required_sample_count),
+        fairing_internal_p95_50_wilks_sample_count_sufficient: fairing_internal
+            .and_then(|fairing| fairing.p95_50_wilks_sample_count_sufficient),
+        response_p95_50_total_mean_square_acceleration_m2_s4: response
+            .and_then(|response| response.p95_50_total_mean_square_acceleration_m2_s4),
+        response_p95_50_total_mean_square_force_n2: response
+            .and_then(|response| response.p95_50_total_mean_square_force_n2),
+        response_p95_50_wilks_required_sample_count: response
+            .and_then(|response| response.p95_50_wilks_required_sample_count),
+        response_p95_50_wilks_sample_count_sufficient: response
+            .and_then(|response| response.p95_50_wilks_sample_count_sufficient),
+        peak_sample_id: ascent.peak_sample_id.clone(),
+        peak_sample_oaspl_db: ascent.peak_sample_oaspl_db,
+    })
+}
+
+fn incomplete_acoustics_ascent_campaign_report(
+    options: &McAcousticsAscentCampaignOptions<'_>,
+    checkpoint_json: &Path,
+    completed_samples: u64,
+) -> McAcousticsAscentCampaignReport {
+    McAcousticsAscentCampaignReport {
+        scenario_path: options.scenario_path.to_path_buf(),
+        samples: options.samples,
+        design: options.design,
+        output_csv: options.output_csv.to_path_buf(),
+        output_artifact_dir: options.output_artifact_dir.map(Path::to_path_buf),
+        artifact_paths: Vec::new(),
+        artifact_manifest_json: None,
+        output_scenario_toml: options.output_scenario_toml.map(Path::to_path_buf),
+        checkpoint_json: Some(checkpoint_json.to_path_buf()),
+        completed_samples,
+        complete: false,
+        p95_50_oaspl_db: None,
+        p95_50_wilks_required_sample_count: None,
+        p95_50_wilks_sample_count_sufficient: None,
+        fairing_internal_p95_50_oaspl_db: None,
+        fairing_internal_p95_50_wilks_required_sample_count: None,
+        fairing_internal_p95_50_wilks_sample_count_sufficient: None,
+        response_p95_50_total_mean_square_acceleration_m2_s4: None,
+        response_p95_50_total_mean_square_force_n2: None,
+        response_p95_50_wilks_required_sample_count: None,
+        response_p95_50_wilks_sample_count_sufficient: None,
+        peak_sample_id: None,
+        peak_sample_oaspl_db: f64::NAN,
+    }
+}
+
+fn write_acoustics_ascent_campaign_artifacts(
+    options: &McAcousticsAscentCampaignOptions<'_>,
+    outcome: &openbmp_runner::RunOutcome,
+) -> Result<CampaignArtifactWriteReport, CliError> {
+    let Some(base_dir) = options.output_artifact_dir else {
+        return Ok(CampaignArtifactWriteReport {
+            artifact_paths: Vec::new(),
+            manifest_path: None,
+        });
+    };
+    let Some(acoustics) = &outcome.acoustics else {
+        return write_campaign_artifact_manifest(base_dir, Vec::new(), Vec::new());
+    };
+    let mut written = Vec::new();
+    let mut manifest_entries = Vec::new();
+
+    if let Some(ascent) = &acoustics.ascent {
+        write_optional_campaign_artifact(
+            base_dir,
+            "acoustics_ascent_p95_50_environment_csv",
+            Path::new("ascent/p95_50_environment.csv"),
+            &ascent.p95_50_environment_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+        write_optional_campaign_artifact(
+            base_dir,
+            "acoustics_ascent_p95_50_wilks_sizing_csv",
+            Path::new("ascent/p95_50_wilks_sizing.csv"),
+            &ascent.p95_50_wilks_sizing_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+    }
+
+    if let Some(fairing) = &acoustics.fairing_internal {
+        write_optional_campaign_artifact(
+            base_dir,
+            "acoustics_fairing_internal_p95_50_environment_csv",
+            Path::new("fairing_internal/p95_50_environment.csv"),
+            &fairing.p95_50_environment_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+        write_optional_campaign_artifact(
+            base_dir,
+            "acoustics_fairing_internal_p95_50_sample_trace_csv",
+            Path::new("fairing_internal/p95_50_sample_trace.csv"),
+            &fairing.p95_50_sample_trace_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+        write_optional_campaign_artifact(
+            base_dir,
+            "acoustics_fairing_internal_p95_50_wilks_sizing_csv",
+            Path::new("fairing_internal/p95_50_wilks_sizing.csv"),
+            &fairing.p95_50_wilks_sizing_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+    }
+
+    if let Some(response) = &acoustics.response {
+        write_optional_campaign_artifact(
+            base_dir,
+            "acoustics_response_loads_handoff_csv",
+            Path::new("response/loads_handoff.csv"),
+            &response.loads_handoff_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+        write_optional_campaign_artifact(
+            base_dir,
+            "acoustics_response_p95_50_acceleration_psd_csv",
+            Path::new("response/p95_50_acceleration_psd.csv"),
+            &response.p95_50_acceleration_psd_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+        write_optional_campaign_artifact(
+            base_dir,
+            "acoustics_response_p95_50_modal_force_psd_csv",
+            Path::new("response/p95_50_modal_force_psd.csv"),
+            &response.p95_50_modal_force_psd_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+        write_optional_campaign_artifact(
+            base_dir,
+            "acoustics_response_p95_50_sample_trace_csv",
+            Path::new("response/p95_50_sample_trace.csv"),
+            &response.p95_50_sample_trace_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+        write_optional_campaign_artifact(
+            base_dir,
+            "acoustics_response_p95_50_wilks_sizing_csv",
+            Path::new("response/p95_50_wilks_sizing.csv"),
+            &response.p95_50_wilks_sizing_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+    }
+
+    if let Some(structural) = &outcome.structural_acoustics {
+        write_optional_campaign_artifact(
+            base_dir,
+            "structural_acoustics_first_bending_response_csv",
+            Path::new("structural/first_bending_response.csv"),
+            &structural.band_response_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+        write_optional_campaign_artifact(
+            base_dir,
+            "structural_acoustics_first_bending_line_load_recovery_csv",
+            Path::new("structural/first_bending_line_load_recovery.csv"),
+            &structural.line_load_recovery_csv,
+            &mut written,
+            &mut manifest_entries,
+        )?;
+    }
+
+    written.sort();
+    manifest_entries.sort_by(|left, right| left.path.cmp(&right.path));
+    write_campaign_artifact_manifest(base_dir, written, manifest_entries)
+}
+
+fn write_optional_campaign_artifact(
+    base_dir: &Path,
+    role: &'static str,
+    relative_path: &Path,
+    bytes: &[u8],
+    written: &mut Vec<PathBuf>,
+    manifest_entries: &mut Vec<CampaignArtifactManifestEntry>,
+) -> Result<(), CliError> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let path = base_dir.join(relative_path);
+    ensure_parent_dir(&path)?;
+    fs::write(&path, bytes).map_err(|source| CliError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    written.push(path);
+    manifest_entries.push(CampaignArtifactManifestEntry {
+        role,
+        path: relative_path.to_string_lossy().replace('\\', "/"),
+        sha256_hex: sha256_bytes(bytes),
+    });
+    Ok(())
+}
+
+fn write_campaign_artifact_manifest(
+    base_dir: &Path,
+    artifact_paths: Vec<PathBuf>,
+    manifest_entries: Vec<CampaignArtifactManifestEntry>,
+) -> Result<CampaignArtifactWriteReport, CliError> {
+    let manifest = CampaignArtifactManifest {
+        schema: "openbmp.acoustics_ascent_campaign_artifacts.v1",
+        artifacts: manifest_entries,
+    };
+    let mut bytes =
+        serde_json::to_vec_pretty(&manifest).map_err(|source| CliError::MonteCarlo {
+            summary: format!("could not serialize acoustics campaign artifact manifest: {source}"),
+        })?;
+    bytes.push(b'\n');
+    let manifest_path = base_dir.join("manifest.json");
+    ensure_parent_dir(&manifest_path)?;
+    fs::write(&manifest_path, bytes).map_err(|source| CliError::Io {
+        path: manifest_path.clone(),
+        source,
+    })?;
+    Ok(CampaignArtifactWriteReport {
+        artifact_paths,
+        manifest_path: Some(manifest_path),
     })
 }
 
@@ -1524,6 +2656,112 @@ fn toml_string(value: &str) -> String {
     out
 }
 
+fn aero_deck_draw_overlay_toml(
+    options: &McAeroDeckDrawOverlaysOptions<'_>,
+    sample_index: u64,
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# Generated by openbmp mc aero-deck-draw-overlays.");
+    let _ = writeln!(
+        out,
+        "# Merge this file into a schema-v3 scenario for sample_index {sample_index}."
+    );
+    let _ = writeln!(out, "[aero.deck_draw]");
+    let _ = writeln!(out, "campaign_seed = {}", options.campaign_seed);
+    let _ = writeln!(out, "sample_index = {sample_index}");
+    let _ = writeln!(out, "dimension_id_base = {}", options.dimension_id_base);
+    if let Some(mach_correlation_length) = options.mach_correlation_length {
+        let _ = writeln!(
+            out,
+            "mach_correlation_length = {mach_correlation_length:.17e}"
+        );
+    }
+    if let Some(alpha_correlation_length_deg) = options.alpha_correlation_length_deg {
+        let _ = writeln!(
+            out,
+            "alpha_correlation_length_deg = {alpha_correlation_length_deg:.17e}"
+        );
+    }
+    if let Some(beta_correlation_length_deg) = options.beta_correlation_length_deg {
+        let _ = writeln!(
+            out,
+            "beta_correlation_length_deg = {beta_correlation_length_deg:.17e}"
+        );
+    }
+    out
+}
+
+fn aero_deck_draw_campaign_manifest_toml(
+    options: &McAeroDeckDrawCampaignOptions<'_>,
+    overlays: &McAeroDeckDrawOverlaysReport,
+    manifest_toml: &Path,
+) -> Result<String, CliError> {
+    let overlay_prefix = options.overlay_prefix.trim();
+    let mut out = String::new();
+    let _ = writeln!(out, "# Generated by openbmp mc aero-deck-draw-campaign.");
+    let _ = writeln!(
+        out,
+        "campaign_id = {}",
+        toml_string(options.campaign_id.trim())
+    );
+    let _ = writeln!(out, "seeds = [{}]", options.run_seed);
+    let _ = writeln!(out, "overlays = [");
+    for offset in 0..options.samples {
+        let sample_index = options
+            .first_sample_index
+            .checked_add(offset)
+            .ok_or_else(|| CliError::MonteCarlo {
+                summary: "aero deck-draw sample index range overflows u64".to_owned(),
+            })?;
+        let overlay_id = format!("{overlay_prefix}-{sample_index:06}");
+        let _ = writeln!(out, "  {},", toml_string(&overlay_id));
+    }
+    let _ = writeln!(out, "]");
+
+    for (offset, overlay_path) in overlays.overlay_paths.iter().enumerate() {
+        let sample_index = options
+            .first_sample_index
+            .checked_add(offset as u64)
+            .ok_or_else(|| CliError::MonteCarlo {
+                summary: "aero deck-draw sample index range overflows u64".to_owned(),
+            })?;
+        let overlay_id = format!("{overlay_prefix}-{sample_index:06}");
+        let path = campaign_manifest_relative_path(manifest_toml, overlay_path);
+        let _ = writeln!(out);
+        let _ = writeln!(out, "[[overlay_files]]");
+        let _ = writeln!(out, "id = {}", toml_string(&overlay_id));
+        let _ = writeln!(out, "path = {}", toml_string(&path));
+        let _ = writeln!(out, "mode = \"merge\"");
+    }
+
+    let scenario_path = campaign_manifest_relative_path(manifest_toml, options.scenario_path);
+    let _ = writeln!(out);
+    let _ = writeln!(out, "[[scenarios]]");
+    let _ = writeln!(out, "id = {}", toml_string(options.scenario_id.trim()));
+    let _ = writeln!(out, "path = {}", toml_string(&scenario_path));
+    Ok(out)
+}
+
+fn campaign_manifest_overlay_path(
+    manifest_toml: &Path,
+    output_dir: &Path,
+    file_name: &str,
+) -> String {
+    let overlay_path = output_dir.join(file_name);
+    campaign_manifest_relative_path(manifest_toml, &overlay_path)
+}
+
+fn campaign_manifest_relative_path(manifest_toml: &Path, target_path: &Path) -> String {
+    if let Some(manifest_dir) = manifest_toml
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        && let Ok(relative_path) = target_path.strip_prefix(manifest_dir)
+    {
+        return relative_path.to_string_lossy().into_owned();
+    }
+    target_path.to_string_lossy().into_owned()
+}
+
 fn read_nested_scalar_samples(
     samples_csv: &Path,
     epistemic_column: &str,
@@ -1745,6 +2983,517 @@ fn unit_cube_headers(dimensions: u32) -> Vec<String> {
         header.push(format!("u{dimension}"));
     }
     header
+}
+
+fn validate_acoustics_ascent_trace_options(
+    options: &McAcousticsAscentTraceOptions<'_>,
+) -> Result<(), CliError> {
+    if options.samples < 2 {
+        return Err(CliError::MonteCarlo {
+            summary: "acoustics ascent trace generation requires at least two samples".to_owned(),
+        });
+    }
+    validate_positive_range(
+        "dynamic_pressure_pa",
+        options.dynamic_pressure_min_pa,
+        options.dynamic_pressure_max_pa,
+    )?;
+    validate_non_negative_range("mach", options.mach_min, options.mach_max)?;
+    if options.sample_prefix.trim().is_empty() {
+        return Err(CliError::MonteCarlo {
+            summary: "sample_prefix must not be empty".to_owned(),
+        });
+    }
+    if let Some(class_id) = options.class_id
+        && class_id.trim().is_empty()
+    {
+        return Err(CliError::MonteCarlo {
+            summary: "class_id must not be empty when provided".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_acoustics_response_samples_options(
+    options: &McAcousticsResponseSamplesOptions<'_>,
+) -> Result<(), CliError> {
+    if options.samples < 2 {
+        return Err(CliError::MonteCarlo {
+            summary: "acoustics response sample generation requires at least two samples"
+                .to_owned(),
+        });
+    }
+    validate_positive_range(
+        "surface_mass_kg_m2",
+        options.surface_mass_min_kg_m2,
+        options.surface_mass_max_kg_m2,
+    )?;
+    validate_positive_range("area_m2", options.area_min_m2, options.area_max_m2)?;
+    validate_finite_range(
+        "mode_shape_factor",
+        options.mode_shape_min,
+        options.mode_shape_max,
+    )?;
+    if options.sample_prefix.trim().is_empty() {
+        return Err(CliError::MonteCarlo {
+            summary: "sample_prefix must not be empty".to_owned(),
+        });
+    }
+    if let Some(class_id) = options.class_id
+        && class_id.trim().is_empty()
+    {
+        return Err(CliError::MonteCarlo {
+            summary: "class_id must not be empty when provided".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_aero_deck_draw_overlays_options(
+    options: &McAeroDeckDrawOverlaysOptions<'_>,
+) -> Result<(), CliError> {
+    if options.samples == 0 {
+        return Err(CliError::MonteCarlo {
+            summary: "aero deck-draw overlay generation requires at least one sample".to_owned(),
+        });
+    }
+    if options
+        .first_sample_index
+        .checked_add(options.samples - 1)
+        .is_none()
+    {
+        return Err(CliError::MonteCarlo {
+            summary: "aero deck-draw sample index range overflows u64".to_owned(),
+        });
+    }
+    validate_optional_aero_deck_draw_correlation_length(
+        "mach_correlation_length",
+        options.mach_correlation_length,
+    )?;
+    validate_optional_aero_deck_draw_correlation_length(
+        "alpha_correlation_length_deg",
+        options.alpha_correlation_length_deg,
+    )?;
+    validate_optional_aero_deck_draw_correlation_length(
+        "beta_correlation_length_deg",
+        options.beta_correlation_length_deg,
+    )?;
+    if options.dimension_id_base.checked_add(2).is_none() {
+        return Err(CliError::MonteCarlo {
+            summary: "dimension_id_base must leave room for CN, CD, and CM RNG dimensions"
+                .to_owned(),
+        });
+    }
+    validate_overlay_prefix(options.overlay_prefix)
+}
+
+fn validate_aero_deck_draw_campaign_options(
+    options: &McAeroDeckDrawCampaignOptions<'_>,
+) -> Result<(), CliError> {
+    if options.campaign_id.trim().is_empty() {
+        return Err(CliError::MonteCarlo {
+            summary: "campaign_id must not be empty".to_owned(),
+        });
+    }
+    if options.scenario_id.trim().is_empty() {
+        return Err(CliError::MonteCarlo {
+            summary: "scenario_id must not be empty".to_owned(),
+        });
+    }
+    if options.run_code_id.trim().is_empty() {
+        return Err(CliError::MonteCarlo {
+            summary: "run_code_id must not be empty".to_owned(),
+        });
+    }
+    validate_aero_deck_draw_overlays_options(&McAeroDeckDrawOverlaysOptions {
+        samples: options.samples,
+        campaign_seed: options.campaign_seed,
+        first_sample_index: options.first_sample_index,
+        dimension_id_base: options.dimension_id_base,
+        mach_correlation_length: options.mach_correlation_length,
+        alpha_correlation_length_deg: options.alpha_correlation_length_deg,
+        beta_correlation_length_deg: options.beta_correlation_length_deg,
+        overlay_prefix: options.overlay_prefix,
+        output_dir: options.output_dir,
+        manifest_toml: options.output_dir,
+    })
+}
+
+fn validate_optional_aero_deck_draw_correlation_length(
+    field: &str,
+    value: Option<f64>,
+) -> Result<(), CliError> {
+    if let Some(value) = value
+        && !(value.is_finite() && value > 0.0)
+    {
+        return Err(CliError::MonteCarlo {
+            summary: format!("{field} must be finite and positive when supplied"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_aero_deck_draw_campaign_dimension_capacity(
+    dimension_id_base: u32,
+    required_dimension_count: u32,
+) -> Result<(), CliError> {
+    let Some(highest_offset) = required_dimension_count.checked_sub(1) else {
+        return Err(CliError::MonteCarlo {
+            summary: "resolved aero deck reported zero required deck-draw dimensions".to_owned(),
+        });
+    };
+    if dimension_id_base.checked_add(highest_offset).is_none() {
+        return Err(CliError::MonteCarlo {
+            summary: format!(
+                "dimension_id_base must leave room for {required_dimension_count} aero deck-draw RNG dimensions required by the resolved deck"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_overlay_prefix(prefix: &str) -> Result<(), CliError> {
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return Err(CliError::MonteCarlo {
+            summary: "overlay_prefix must not be empty".to_owned(),
+        });
+    }
+    if prefix == "." || prefix == ".." {
+        return Err(CliError::MonteCarlo {
+            summary: "overlay_prefix must not be a relative path sentinel".to_owned(),
+        });
+    }
+    if !prefix
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+    {
+        return Err(CliError::MonteCarlo {
+            summary: "overlay_prefix may contain only ASCII letters, digits, '.', '-', or '_'"
+                .to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_base_acoustics_ascent_campaign_scenario(input: &str) -> Result<(), CliError> {
+    let parsed: toml::Value = toml::from_str(input).map_err(|err| CliError::MonteCarlo {
+        summary: format!("base scenario TOML error: {err}"),
+    })?;
+    let ascent = parsed
+        .get("acoustics")
+        .and_then(|value| value.get("ascent"))
+        .ok_or_else(|| CliError::MonteCarlo {
+            summary: "acoustics ascent campaign requires base scenario [acoustics.ascent]"
+                .to_owned(),
+        })?;
+    if ascent
+        .get("samples")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|samples| !samples.is_empty())
+    {
+        return Err(CliError::MonteCarlo {
+            summary: "acoustics ascent campaign base scenario must not already declare [[acoustics.ascent.samples]]".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_base_acoustics_response_campaign_scenario(
+    input: &str,
+    generating_response_samples: bool,
+) -> Result<(), CliError> {
+    let parsed: toml::Value = toml::from_str(input).map_err(|err| CliError::MonteCarlo {
+        summary: format!("base scenario TOML error: {err}"),
+    })?;
+    let response = parsed
+        .get("acoustics")
+        .and_then(|value| value.get("response"))
+        .ok_or_else(|| CliError::MonteCarlo {
+            summary: "acoustics response campaign requires base scenario [acoustics.response]"
+                .to_owned(),
+        })?;
+    if generating_response_samples
+        && response
+            .get("samples")
+            .and_then(toml::Value::as_array)
+            .is_some_and(|samples| !samples.is_empty())
+    {
+        return Err(CliError::MonteCarlo {
+            summary: "acoustics response campaign base scenario must not already declare [[acoustics.response.samples]] when response sample generation is enabled".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_acoustics_ascent_campaign_checkpoint_options(
+    options: &McAcousticsAscentCampaignOptions<'_>,
+) -> Result<(), CliError> {
+    if options.checkpoint_json.is_none() && options.max_new_samples.is_some() {
+        return Err(CliError::MonteCarlo {
+            summary: "acoustics ascent campaign --max-new-samples requires --checkpoint-json"
+                .to_owned(),
+        });
+    }
+    if options.checkpoint_json.is_some() && options.toolchain_profile.trim().is_empty() {
+        return Err(CliError::MonteCarlo {
+            summary: "acoustics ascent campaign toolchain_profile must not be empty".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_positive_range(field: &'static str, min: f64, max: f64) -> Result<(), CliError> {
+    if !min.is_finite() || !max.is_finite() || min <= 0.0 || max <= min {
+        return Err(CliError::MonteCarlo {
+            summary: format!("{field} range must be finite with 0 < min < max"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_non_negative_range(field: &'static str, min: f64, max: f64) -> Result<(), CliError> {
+    if !min.is_finite() || !max.is_finite() || min < 0.0 || max <= min {
+        return Err(CliError::MonteCarlo {
+            summary: format!("{field} range must be finite with 0 <= min < max"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_finite_range(field: &'static str, min: f64, max: f64) -> Result<(), CliError> {
+    if !min.is_finite() || !max.is_finite() || max <= min {
+        return Err(CliError::MonteCarlo {
+            summary: format!("{field} range must be finite with min < max"),
+        });
+    }
+    Ok(())
+}
+
+fn acoustics_ascent_trace_design(
+    options: &McAcousticsAscentTraceOptions<'_>,
+) -> Result<DesignMatrix, CliError> {
+    match options.design {
+        McAcousticsAscentTraceDesign::LatinHypercube => LatinHypercube
+            .generate(options.campaign_seed, options.samples, 2)
+            .map_err(monte_carlo_error),
+        McAcousticsAscentTraceDesign::Sobol => SobolSequence
+            .generate(options.samples, 2)
+            .map_err(monte_carlo_error),
+        McAcousticsAscentTraceDesign::OwenSobol => OwenScramble::new(options.campaign_seed)
+            .generate(options.samples, 2)
+            .map_err(monte_carlo_error),
+    }
+}
+
+fn acoustics_response_samples_design(
+    options: &McAcousticsResponseSamplesOptions<'_>,
+) -> Result<DesignMatrix, CliError> {
+    match options.design {
+        McAcousticsAscentTraceDesign::LatinHypercube => LatinHypercube
+            .generate(options.campaign_seed, options.samples, 3)
+            .map_err(monte_carlo_error),
+        McAcousticsAscentTraceDesign::Sobol => SobolSequence
+            .generate(options.samples, 3)
+            .map_err(monte_carlo_error),
+        McAcousticsAscentTraceDesign::OwenSobol => OwenScramble::new(options.campaign_seed)
+            .generate(options.samples, 3)
+            .map_err(monte_carlo_error),
+    }
+}
+
+fn acoustics_ascent_trace_toml(
+    options: &McAcousticsAscentTraceOptions<'_>,
+    design: &DesignMatrix,
+) -> Result<String, CliError> {
+    let mut out = String::new();
+    let _ = writeln!(out, "# Generated by openbmp mc acoustics-ascent-trace.");
+    let _ = writeln!(
+        out,
+        "# Paste these rows under a schema-v3 [acoustics.ascent] block."
+    );
+    for sample_index in 0..options.samples {
+        let row = acoustics_ascent_trace_sample_toml(options, design, sample_index)?;
+        let _ = writeln!(out);
+        out.push_str(&row);
+    }
+    Ok(out)
+}
+
+fn acoustics_response_samples_toml(
+    options: &McAcousticsResponseSamplesOptions<'_>,
+    design: &DesignMatrix,
+) -> Result<String, CliError> {
+    let mut out = String::new();
+    let _ = writeln!(out, "# Generated by openbmp mc acoustics-response-samples.");
+    let _ = writeln!(
+        out,
+        "# Paste these rows under a schema-v3 [acoustics.response] block."
+    );
+    for sample_index in 0..options.samples {
+        let row = acoustics_response_sample_toml(options, design, sample_index)?;
+        let _ = writeln!(out);
+        out.push_str(&row);
+    }
+    Ok(out)
+}
+
+fn acoustics_ascent_trace_sample_toml(
+    options: &McAcousticsAscentTraceOptions<'_>,
+    design: &DesignMatrix,
+    sample_index: u64,
+) -> Result<String, CliError> {
+    let q_unit = design
+        .get(sample_index, 0)
+        .ok_or_else(|| CliError::MonteCarlo {
+            summary: format!("internal ascent trace design is missing q sample {sample_index}"),
+        })?;
+    let mach_unit = design
+        .get(sample_index, 1)
+        .ok_or_else(|| CliError::MonteCarlo {
+            summary: format!("internal ascent trace design is missing Mach sample {sample_index}"),
+        })?;
+    let dynamic_pressure_pa = map_unit_interval(
+        q_unit,
+        options.dynamic_pressure_min_pa,
+        options.dynamic_pressure_max_pa,
+    );
+    let mach = map_unit_interval(mach_unit, options.mach_min, options.mach_max);
+    let mut out = String::new();
+    let _ = writeln!(out, "[[acoustics.ascent.samples]]");
+    let _ = writeln!(
+        out,
+        "sample_id = {}",
+        toml_string(&format!(
+            "{}-{sample_index:06}",
+            options.sample_prefix.trim()
+        ))
+    );
+    if let Some(class_id) = options.class_id {
+        let _ = writeln!(out, "class_id = {}", toml_string(class_id.trim()));
+    }
+    let _ = writeln!(out, "dynamic_pressure_pa = {dynamic_pressure_pa:.17e}");
+    let _ = writeln!(out, "mach = {mach:.17e}");
+    Ok(out)
+}
+
+fn acoustics_response_sample_toml(
+    options: &McAcousticsResponseSamplesOptions<'_>,
+    design: &DesignMatrix,
+    sample_index: u64,
+) -> Result<String, CliError> {
+    let surface_mass_unit = design
+        .get(sample_index, 0)
+        .ok_or_else(|| CliError::MonteCarlo {
+            summary: format!(
+                "internal response sample design is missing surface-mass sample {sample_index}"
+            ),
+        })?;
+    let area_unit = design
+        .get(sample_index, 1)
+        .ok_or_else(|| CliError::MonteCarlo {
+            summary: format!(
+                "internal response sample design is missing area sample {sample_index}"
+            ),
+        })?;
+    let mode_shape_unit = design
+        .get(sample_index, 2)
+        .ok_or_else(|| CliError::MonteCarlo {
+            summary: format!(
+                "internal response sample design is missing mode-shape sample {sample_index}"
+            ),
+        })?;
+    let surface_mass_kg_m2 = map_unit_interval(
+        surface_mass_unit,
+        options.surface_mass_min_kg_m2,
+        options.surface_mass_max_kg_m2,
+    );
+    let area_m2 = map_unit_interval(area_unit, options.area_min_m2, options.area_max_m2);
+    let mode_shape_factor = map_unit_interval(
+        mode_shape_unit,
+        options.mode_shape_min,
+        options.mode_shape_max,
+    );
+    let mut out = String::new();
+    let _ = writeln!(out, "[[acoustics.response.samples]]");
+    let _ = writeln!(
+        out,
+        "sample_id = {}",
+        toml_string(&format!(
+            "{}-{sample_index:06}",
+            options.sample_prefix.trim()
+        ))
+    );
+    if let Some(class_id) = options.class_id {
+        let _ = writeln!(out, "class_id = {}", toml_string(class_id.trim()));
+    }
+    let _ = writeln!(out, "surface_mass_kg_m2 = {surface_mass_kg_m2:.17e}");
+    let _ = writeln!(out, "area_m2 = {area_m2:.17e}");
+    let _ = writeln!(out, "mode_shape_factor = {mode_shape_factor:.17e}");
+    Ok(out)
+}
+
+fn evaluate_acoustics_ascent_campaign_checkpoint_sample(
+    base_scenario: &str,
+    source_dir: Option<&Path>,
+    trace_options: &McAcousticsAscentTraceOptions<'_>,
+    design: &DesignMatrix,
+    sample_index: u64,
+) -> Result<ScalarOutcome, MonteCarloError> {
+    let sample_toml = acoustics_ascent_trace_sample_toml(trace_options, design, sample_index)
+        .map_err(|_| MonteCarloError::InvalidInput {
+            field: "acoustics_ascent_campaign_sample",
+        })?;
+    let sample_scenario = append_acoustics_ascent_trace_overlay(base_scenario, &sample_toml);
+    let scenario = Scenario::from_toml_str_with_source_dir(
+        &sample_scenario,
+        source_dir.map(Path::to_path_buf),
+    )
+    .map_err(|_| MonteCarloError::InvalidInput {
+        field: "acoustics_ascent_campaign_scenario",
+    })?;
+    let outcome = openbmp_runner::run(&scenario).map_err(|_| MonteCarloError::InvalidInput {
+        field: "acoustics_ascent_campaign_runner",
+    })?;
+    let ascent = outcome
+        .acoustics
+        .as_ref()
+        .and_then(|acoustics| acoustics.ascent.as_ref())
+        .ok_or(MonteCarloError::InvalidInput {
+            field: "acoustics_ascent_campaign_ascent_report",
+        })?;
+    if ascent.sample_count != 1 {
+        return Err(MonteCarloError::InvalidInput {
+            field: "acoustics_ascent_campaign_sample_count",
+        });
+    }
+    ScalarOutcome::new(ascent.peak_sample_oaspl_db, true)
+}
+
+fn append_acoustics_ascent_trace_overlay(base_scenario: &str, trace_toml: &str) -> String {
+    let mut out = String::with_capacity(base_scenario.len() + trace_toml.len() + 2);
+    out.push_str(base_scenario.trim_end());
+    out.push_str("\n\n");
+    out.push_str(trace_toml.trim_start());
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn map_unit_interval(unit: f64, min: f64, max: f64) -> f64 {
+    min + unit * (max - min)
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 fn read_design_matrix(path: &Path) -> Result<(Vec<String>, DesignMatrix), CliError> {

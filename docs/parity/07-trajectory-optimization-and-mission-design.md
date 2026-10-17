@@ -1,8 +1,46 @@
 # Trajectory Optimization & Mission Design
 
 **Status:** `experimental` (WP-07.0 T0 offline two-body and scenario-backed
-corrector driver/CLI paths landed; WP-07.1 STM/multiple-shooting substrate and
-soft node/path penalties are partial; higher-tier methods remain design intent).
+corrector driver/CLI paths landed; WP-07.1 STM/multiple-shooting substrate is
+implemented; WP-07.2 Hermite-Simpson defect/cost transcription, fixed-mesh
+residual/objective/path/inequality/Jacobian assembly, MMS order evidence, and
+feature-gated dense Clarabel SQP substrate plus public benchmark fixtures, a
+public sparse-NLP backend contract/preflight substrate with a bounded dense-SQP
+adapter, and an FC
+optimized-reference tracking hook are partial; WP-07.3 has a first LGR grid,
+multi-segment residual/quadrature/continuity substrate, fixed-time decision
+layout decode/evaluate plus boundary/soft-path/quadratic-objective residual and
+hard/nonlinear path inequality substrate, finite-difference sparse columnwise
+and colored residual-Jacobian, analytic/autodiff residual-Jacobian,
+Mayer/Lagrange objective reporting, sparse Gauss-Newton normal-step, sparse
+augmented-KKT/LDL step evidence, active hard-path constrained-KKT step evidence,
+raw residual-multiplier/costate/Hamiltonian
+diagnostics including sparse-KKT step-derived diagnostics, residual-only
+sparse-KKT SQP outer-loop scalar/nonlinear hard-path feasibility, optional final
+active constrained-KKT report, final-multiplier evidence, and nonlinear
+path-inequality Jacobian reporting,
+optimized-reference/I-load output, fixed-time dense
+QP/SQP/constrained-SQP wrapper evidence, and reference-driven ph-refinement
+estimate/apply/loop substrate plus scalar-integrator, brachistochrone transcription and dense-SQP feasibility
+recovery, and Bryson-Denham active-arc dense-QP plus sparse constrained-KKT handoff benchmark evidence; WP-07.4 LCvx is satisfied; WP-07.5 has a first
+discrete-affine SCvx substrate with virtual-control, trust-region diagnostics,
+and state-triggered linear-constraint evidence, and WP-07.6 has a first PMP
+Hamiltonian/costate/control-stationarity witness substrate plus scalar dense-QP dual/costate
+convention evidence, explicit HS/LGR raw-costate convention adapters,
+solver-produced HS scalar-PMP-matched and LGR quadrature-normalized dense-QP
+dual handoff into those adapters, sparse augmented-KKT and constrained-KKT PMP
+costate/Hamiltonian wiring including public Bryson-Denham active-set diagnostics,
+direct constrained-KKT certificate I-load handoff, and LGR quadrature
+normalization, residual-only
+sparse-KKT SQP scalar/nonlinear hard-path feasibility, optional final active
+constrained-KKT report, final-multiplier PMP/KKT evidence, sparse-SQP PMP/KKT
+certificate payload round-trips with validated costate-comparison and
+control-stationarity summaries, and inline plus scalar-PMP, dense-SQP-certified,
+and sparse-SQP-certified file-backed optimized-reference closed-loop runner
+scenarios with auditable I-load certificates plus HS/LGR dense-SQP and
+sparse-SQP payload-certificate surfaces;
+nonlinear 6-DoF/aero closure and the production
+closed-loop optimality pipeline remain design intent).
 **Audience:** the engineer or LLM agent implementing the `openbmp-trajopt` work
 packages, and reviewers checking the forward-only locks.
 **One-line summary:** wire the dead differential corrector to the real
@@ -124,10 +162,12 @@ against):
   constraint), and `solve()` rejects it explicitly.
 - `src/iload.rs` — versioned postcard I-load producer:
   `ILoadPayload { header, metadata, event_bindings_postcard, gain_tables,
-  reference_profile }`, `ILoadSchemaVersion {1,0,0}`, `TerminalConditionKind`
-  (the recorded objective/terminal class for audit), `encode_iload_payload`
-  validates then `postcard::to_allocvec`. `TrajoptError` covers
-  `InvalidPayload`, `Serialize`, `SingularSystem`.
+  reference_profile, optimality_certificate }`, `ILoadSchemaVersion {1,3,0}`,
+  `TerminalConditionKind`, `ILoadObjectiveClass`, `ILoadOptimalityEvidenceKind`,
+  and `ILoadOptimalityCertificate` (the recorded terminal/objective classes plus
+  optional PMP/oracle optimality evidence for audit),
+  `encode_iload_payload` validates then `postcard::to_allocvec`. `TrajoptError`
+  covers `InvalidPayload`, `Serialize`, `SingularSystem`.
 - `src/driver.rs` — a T0 offline driver,
   `correct_two_body_apogee`, now gives `DifferentialCorrector::solve` a
   non-test caller. It varies a single tangential cutoff-speed variable, uses a
@@ -214,10 +254,56 @@ duration and control sensitivity checks, fixed-endpoint and fixed-initial
 terminal-condition correction, soft node/path penalties including
 qbar/q-alpha, free-duration and controlled terminal correction, a T0/T1
 cross-tier tolerance table, and a no-surface-coordinate compile-fail tripwire.
-The closed terminal-condition vocabulary still holds; a Clarabel SOCP epigraph
-smoke test, a forward propagator, and a PEG-style closed-loop ascent reference
-exist. No NLP transcription, pseudospectral method, LCvx/SCvx horizon problem,
-closed-loop wiring of an optimized reference, or indirect cross-check exists.
+WP-07.2 is partial through `collocation.rs` and feature-gated `sqp.rs`: it
+exposes Hermite-Simpson segment and fixed-mesh transcription defect/cost
+evaluation, a fixed-mesh decision layout with boundary residual assembly, soft
+exterior-penalty path residuals, dense hard scalar path inequality rows,
+hard scalar path decision-bound merges for the dense SQP lane,
+nonlinear vector hard path inequality rows with sparse CSC finite-difference
+Jacobian reports, Simpson-weighted quadratic control objective residuals,
+deterministic columnwise and colored central-finite-difference CSC sparse
+residual Jacobian reports, caller-supplied analytic and forward-mode autodiff
+CSC sparse residual Jacobian reports, sparse Gauss-Newton/KKT normal-block
+assembly plus sparse normal-equation RHS/matvec/conjugate-gradient solve
+evidence, sparse augmented-KKT assembly with deterministic LDL solve evidence,
+active scalar hard-path constrained sparse-KKT step evidence with active
+inequality multipliers and constrained sparse-KKT diagnostic handoff evidence,
+KKT residual-multiplier row-family slicing plus raw node-costate estimates for
+later PMP witnesses, raw Hamiltonian diagnostics, and fixed-mesh sparse
+Gauss-Newton/KKT step reports plus residual-only sparse-KKT SQP
+scalar/nonlinear hard-path feasibility enforcement and final-multiplier reports, a scalar sine MMS
+order tolerance table, a validated-toy scalar integrator minimum-energy
+benchmark, a public closed-form brachistochrone
+transcription/cost benchmark, a public Bryson-Denham state-constrained
+fixed-mesh dense-QP benchmark, a validated-toy T1/T2 shared-ascent
+Hermite-Simpson mesh cross-check, and a deterministic Clarabel dense-QP lane
+plus a bounded nonlinear least-squares SQP driver with a fixed-mesh solve
+wrapper, constrained dense-SQP nonlinear hard-path consumption, optimized
+reference-profile/I-load emission, finite-difference Jacobians, fixed-mesh
+repeat-determinism evidence, merit backtracking, and an FC-native optimized
+reference-profile guidance hook that revalidates/interpolates the same
+radius/speed/FPA shape and drives the existing autopilot trajectory loop through
+a focused tracking test. The closed
+terminal-condition vocabulary also feeds a public sparse-NLP backend contract in
+`nlp.rs` (`ProblemDims`, `DecisionLayout`, `SparseVec`, `CscMatrix`,
+`NlpResidual`, `NlpAssemblyReport`, `NlpSolveValidationSettings`,
+`NlpCheckedSolveReport`, `NlpSolution`, `OptimalControlProblem`,
+`Transcription`, `NlpSolver`, `assemble_sparse_nlp`, and checked solve wrappers),
+plus a feature-gated `DenseSqpNlpSolver` / `DenseSqpNlpSettings` adapter that
+uses the deterministic Clarabel dense-QP lane for bounded first-order SQP steps
+through the same checked solve wrapper, with fail-closed CSC, objective-gradient,
+residual/Jacobian, inequality-bound, closed `TerminalCondition`, positive-`mu`,
+backend output-shape, final assembly, and reported-objective consistency
+validation traced by `REQ-TRAJOPT-010`.
+The closed
+terminal-condition vocabulary still holds; a Clarabel SOCP epigraph smoke test,
+a forward propagator, and a PEG-style closed-loop ascent reference exist. Still
+missing: a production constrained large-sparse NLP backend adapter,
+production sparse KKT factorization,
+full public benchmark nonlinear-solver closure, general LGR nonlinear/Goddard
+benchmark closure,
+LCvx/SCvx horizon problem, production PMP/I-load optimality closure, and
+indirect cross-check.
 
 ---
 
@@ -231,29 +317,25 @@ hard dual-use placement lock (§6). `openbmp-fc` must never gain an edge to
 `fc_dependency_tripwire.rs`). The convex cone *primitives* live in `openbmp-fc`
 (`landing.rs`/`mpc.rs`) because they are FC-portable and already there; the
 *horizon assembly* (building the discretized SOCP/SQP matrices) lives in
-`openbmp-trajopt`, calling a small portable cone-solve surface. Two routes,
-decided in WP-07.4-a:
+`openbmp-trajopt`, calling the small portable cone-solve surface implemented in
+WP-07.4-a:
 
-- **Preferred:** factor the Clarabel call behind a thin
-  `openbmp-trajopt`-internal `ConicProblem`/`ConicSolve` wrapper that takes the
-  same CSC/cone description `landing.rs` uses, so `openbmp-trajopt` depends on
-  `clarabel` directly (it is host-side, no FC lock concern) and shares the
-  *deterministic settings constant* by re-exporting it from a portable location.
+- **Implemented:** `openbmp-convex` is the L2 portable home for shared
+  deterministic Clarabel settings and CSC row-building helpers. `openbmp-fc`
+  reaches it only under `mpc`; `openbmp-trajopt` reaches it only under `sqp`.
+  Both crates still depend on `clarabel` directly for their solver calls.
 - **Avoid:** making `openbmp-trajopt` depend on `openbmp-fc`. Do not; lift the
   shared `deterministic_settings()` into a portable home (e.g.
   `openbmp-models` or a tiny `openbmp-convex` portable crate) if reuse is needed,
   reviewed in the WP that first needs it.
 
-New crate, proposed and reviewed before building:
+Shared portable crate:
 
 | Crate | Layer | Purpose | Doc gate |
 |---|---|---|---|
-| `openbmp-convex` (optional) | L2 (portable) | shared deterministic conic-solve settings + CSC builders reused by `openbmp-fc` (FC-portable) and `openbmp-trajopt` (host) | WP-07.4-a |
+| `openbmp-convex` | L2 (portable) | shared deterministic conic-solve settings + CSC builders reused by `openbmp-fc` (FC-portable) and `openbmp-trajopt` (host) | WP-07.4-a |
 
-No new crate is *required* if the shared-settings refactor is small; the WP
-proposes the boundary and the reviewer rules before code lands (`13` §5).
-
-`Cargo.toml` additions (host-side only; never reachable from `openbmp-fc`):
+`Cargo.toml` additions: `openbmp-convex` as the shared portable helper crate,
 `clarabel` (already vendored), `nalgebra` (already a workspace dep — STMs,
 quaternions, dense LA), optionally `argmin` (MIT/Apache — line-search, trust-
 region, BFGS building blocks), `num-dual` (MIT/Apache — forward-mode AD for
@@ -580,10 +662,13 @@ tolerance → the team claims **"verified optimal", not just "NLP converged".**
   green; do not add a `trajopt` edge to `openbmp-fc` for the T4/T5 cone reuse —
   share the cone *primitive direction* (FC → portable home), never the reverse.
 - **Provenance (`00` §3.5).** I-loads carry `ILoadHeader { schema_version,
-  terminal_condition_kind, synthesis_seed, producer }` + `SynthesisMetadata
-  { scenario_digest, source_revision, method }`. **Extend the header to record
-  the objective class and terminal-condition class** so an audit can confirm no
-  aimpoint leaked in (§6.5). Any benchmark constants (Goddard parameters,
+  terminal_condition_kind, objective_class, synthesis_seed, producer }` +
+  `SynthesisMetadata { scenario_digest, source_revision, method }`, with an
+  optional fail-closed `ILoadOptimalityCertificate` for file-backed optimality
+  evidence. The terminal-condition/objective-class audit fields and optional
+  certificate let reviewers confirm no aimpoint leaked in (§6.5) and that any
+  attached PMP/oracle evidence satisfies its declared tolerances; broader
+  closed-loop consumption remains WP-07.6 work. Any benchmark constants (Goddard parameters,
   Acikmese-Ploen case parameters) live only in their declared source-of-truth
   data file with a sibling `provenance.md` + SHA-256 pin; no inline data in
   `*.rs` (`inline_data_tripwire.rs`). **No literal WGS84 `GM_earth`, `J2`,
@@ -802,32 +887,204 @@ gates green and answers the §3 per-PR checklist.
 ### WP-07.2 — Hermite-Simpson direct collocation + SQP on clarabel
 
 - **title:** Fixed-mesh HS transcription with sparse SQP (clarabel QP subproblem).
+- **implementation_status:** partial (2026-06-26) — `collocation.rs` exposes
+  Hermite-Simpson segment and fixed-mesh transcription evaluation with dynamics
+  defects, Hermite midpoint defects, Simpson Lagrange cost, fixed-mesh decision
+  layout, boundary residual assembly, soft path residuals, dense hard scalar
+  path inequality rows, hard scalar path decision-bound merges for the dense SQP
+  lane, nonlinear vector hard path inequality rows with sparse CSC
+  finite-difference Jacobian reports, Simpson-weighted quadratic control
+  objective residuals, columnwise and colored central-finite-difference CSC
+  sparse residual Jacobian reports, caller-supplied analytic dynamics-Jacobian
+  CSC sparse residual Jacobian reports, forward-mode autodiff dynamics-Jacobian
+  CSC sparse residual Jacobian reports, sparse Gauss-Newton/KKT normal-block
+  assembly plus sparse normal-equation RHS/matvec/conjugate-gradient solve
+  evidence, sparse augmented-KKT assembly with deterministic LDL solve evidence,
+active scalar hard-path constrained sparse-KKT step evidence with active
+  inequality multipliers and constrained sparse-KKT diagnostic handoff evidence,
+  KKT residual-multiplier row-family slicing plus raw node-costate estimates for
+  later PMP witnesses, raw Hamiltonian diagnostics, and fixed-mesh sparse
+  Gauss-Newton/KKT step reports plus a residual-only sparse-KKT SQP outer loop
+  that reports accepted step scales, scalar hard-path decision-bound enforcement, nonlinear hard-path feasibility preservation, convergence status, final bound violations, scalar hard-path violations, final nonlinear hard-path violations, and final multipliers,
+  sparse-SQP PMP/KKT certificate payload reports that prefer the final active
+  constrained-KKT report when present, can attach validated same-mesh
+  PMP-vs-KKT costate summaries, and round-trip through optimized-reference
+  I-load payloads,
+  validation, MMS
+  order evidence, and a validated-toy scalar integrator minimum-energy
+  benchmark that recovers analytic `x(t)=t`, `u(t)=1`, cost `1`; it checks a
+  public closed-form brachistochrone cycloid
+  transcription/cost fixture against the known optimal time, restores a
+  perturbed fixed-control brachistochrone state grid and free duration through
+  the dense SQP wrapper, checks a free-control brachistochrone
+  final-time-objective run against the public cycloid time/residual tolerances,
+  and checks a public Bryson-Denham state-constrained fixed-mesh
+  dense-QP wrapper benchmark with sparse constrained-KKT handoff and
+  repeat-deterministic Clarabel output; it
+  reuses the T0/T1
+  synthetic apogee tolerance table as a T1/T2 shared-ascent Hermite-Simpson mesh
+  cross-check; it emits optimized node/midpoint reference-profile samples and
+  deterministic I-load payloads from solved fixed-mesh decisions;
+  `openbmp-fc::guidance` exposes an FC-native
+  `OptimizedReferenceProfileGuidance` consumer that revalidates the same
+  radius/speed/FPA sample shape, phase-gates and interpolates it, publishes
+  `ReferenceState`, and proves the existing autopilot PID trajectory loop reacts
+  through a focused actuator-command test; `openbmp-testkit` also proves a
+  host-side postcard I-load round trip can convert decoded trajopt reference
+  samples into that FC-native guidance shape and publish an interpolated
+  `ReferenceState` without adding an `openbmp-fc -> openbmp-trajopt` edge, and
+  schema-v3 runner configs can select `guidance = "optimized_reference"` with
+  inline `[fc.optimized_reference]` samples or a resolved postcard I-load file
+  that instantiate the same FC-native guidance job and publish an interpolated
+  active-phase `ReferenceState` and validated-toy inline plus PMP-derived
+  file-backed optimized-reference runner scenarios export valid
+  `guidance.reference.*` telemetry plus nonempty FC actuator command-stream
+  evidence under `REQ-TRAJOPT-004`;
+  feature-gated `sqp.rs` exposes deterministic Clarabel dense QP solves,
+  box-bounded least-squares, linear-objective least-squares,
+  equality-constrained linear-objective, and linearized-inequality
+  least-squares SQP step conversion, plus bounded nonlinear
+  least-squares-plus-linear-objective, equality-constrained linear-objective,
+  and nonlinear least-squares SQP drivers with exact residual-penalty merit
+  globalization plus elastic residual-slack and residual-only restoration
+  fallback for equality-objective steps and with/without nonlinear inequality
+  rows; `collocation.rs` exposes
+  feature-gated fixed-mesh
+  quadratic-control dense-QP and dense-SQP solve wrappers with final residual,
+  bound-violation, and repeat-determinism reporting under
+  `REQ-TRAJOPT-003`/`V-TRAJOPT-003`, including a public
+  `solve_dense_sqp_with_free_final_time` wrapper for uniform-mesh final-time
+  restoration and a `solve_dense_sqp_with_free_final_time_objective`
+  equality-constrained linear-objective wrapper with scalar-integrator active
+  final-time-bound evidence and brachistochrone free-control time/residual
+  metric evidence; public sparse-NLP backend contracts plus preflight assembly
+  and checked backend-solve validation, plus a feature-gated deterministic
+  dense-SQP sparse-NLP adapter for bounded contract cases, are now exposed by
+  `nlp.rs` under `REQ-TRAJOPT-010`; full
+  production constrained large-sparse NLP backend adapters, production sparse KKT
+  factorization, fully stationary free-control public benchmark NLP closure,
+  and full PMP/costate optimality pipeline closure remain open.
 - **goal:** A general fixed-mesh OCP solver: min-fuel / min-time ascent with full
   path constraints, cross-checked against T1. The first `research`-label tier
   (MMS order-of-accuracy + known-optimal benchmark).
 - **fidelity_tier:** T2
 - **depends_on:** [WP-07.1]
-- **new_crates:** `openbmp-convex` *(optional, proposed in WP-07.4-a; only if the
-  shared-settings refactor is needed first — review the boundary before building)*
-- **touched:** `crates/openbmp-trajopt/src/` (+ `collocation.rs`, `sqp.rs`,
-  `sparse.rs`); the `Transcription` + `NlpSolver` traits (§3.2);
-  `Cargo.toml` (+ `clarabel`, `num-dual`, optional feature-gated `ipopt-sys`).
+- **new_crates:** `openbmp-convex` exists for WP-07.4-a shared conic settings and
+  CSC helpers; WP-07.2's full constrained large-sparse NLP backend remains open
+  separately.
+- **touched:** `crates/openbmp-trajopt/src/` (`collocation.rs` implemented;
+  feature-gated dense QP/SQP `sqp.rs` implemented; `nlp.rs` implements the
+  public sparse-NLP backend contract, assembly preflight, checked solve wrapper,
+  and bounded feature-gated dense-SQP adapter; production large-sparse/KKT NLP
+  backend adapters still open);
+  `crates/openbmp-fc/src/guidance.rs` (FC-native optimized-reference profile
+  consumer hook implemented; full postcard payload ingestion inside FC remains
+  intentionally out of scope);
+  `crates/openbmp-scenario/src/{document.rs,lib.rs,scenario.rs}` and
+  `crates/openbmp-runner/src/{fc.rs,fc_bridge.rs}` (v3 inline or file-backed
+  optimized-reference scenario config and runner guidance construction
+  implemented; full PMP/costate optimality closure still open);
+  `crates/openbmp-testkit/tests/optimized_reference_iload_to_fc.rs` (host
+  bridge evidence from decoded trajopt I-load samples into FC-native guidance);
+  `scenarios/trajopt-two-body-apogee/hermite-simpson-mms-tolerance.toml`;
+  `scenarios/trajopt-two-body-apogee/hermite-simpson-scalar-integrator-benchmark.toml`;
+  `scenarios/trajopt-brachistochrone/brachistochrone-cycloid-benchmark.toml`;
+  `scenarios/trajopt-bryson-denham/bryson-denham-state-constrained-benchmark.toml`;
+  future optional `Cargo.toml` additions such as feature-gated `ipopt-sys`.
 - **approach:** §3.3 T2. Separated HS defects + Hermite midpoint constraint;
-  Simpson Lagrange cost; block-banded sparse Jacobian via `num-dual` forward-mode
-  AD or sparsity-colored FD; SQP outer loop with `clarabel` solving the QP
-  subproblem and a merit-function line search; canonical-unit (DU/TU) scaling.
-  Optional `ipopt` feature flag for the large-sparse backend (EPL boundary
-  documented).
+  Simpson Lagrange cost; block-banded sparse Jacobian via the internal
+  forward-mode AD scalar or sparsity-colored FD; SQP outer loop with `clarabel` solving the QP
+  subproblem and a merit-function line search (**partial satisfied:** bounded
+  nonlinear least-squares driver plus colored finite-difference and
+  forward-mode autodiff residual Jacobian reports, sparse Gauss-Newton
+  normal-block assembly plus sparse normal-equation CG step mechanics,
+  augmented-KKT assembly plus deterministic LDL solve/step mechanics, active
+  scalar hard-path constrained sparse-KKT step/multiplier mechanics plus
+  constrained sparse-KKT residual-multiplier/costate/Hamiltonian diagnostic
+  handoff, and raw
+  residual-multiplier row-family slicing with unscaled node-costate estimates,
+  raw Hamiltonian diagnostics, residual-only sparse-KKT SQP scalar/nonlinear
+  hard-path feasibility and final-multiplier evidence, plus constrained
+  dense-SQP nonlinear inequality consumption and the public `Transcription` /
+  `NlpSolver` sparse-NLP contract plus validated `assemble_sparse_nlp`
+  preflight; full constrained large-sparse NLP backend adapters, production sparse KKT
+  factorization, and the PMP costate mapping/witness still open);
+  canonical-unit (DU/TU) scaling. Optional `ipopt` feature flag for the
+  large-sparse backend (EPL boundary documented).
 - **acceptance:**
   - Off by default; goldens byte-identical.
   - **MMS:** manufactured solution → HS defect residual decays at slope
-    `4.0 ± 0.3` (O(h⁴)) on a log-log mesh-refinement sweep, in a tolerance table.
-  - Brachistochrone optimal cost within `< 1e-4` relative to closed form;
+    `4.0 ± 0.3` (O(h⁴)) on a log-log mesh-refinement sweep, in a tolerance table
+    (**partial satisfied:** scalar sine midpoint residual table and focused
+    `hermite_simpson_midpoint_mms_residual_is_fourth_order` test).
+  - **Validated-toy benchmark:** scalar minimum-energy integrator QP recovers
+    analytic `x(t)=t`, `u(t)=1`, cost `1` from a provenance-pinned tolerance
+    table (**satisfied:** `fixed_mesh_ocp_scalar_integrator_min_energy_benchmark_matches_analytic_solution`
+    consumes `hermite-simpson-scalar-integrator-benchmark.toml`; it is a
+    validated-toy analytic OCP, not a public research benchmark).
+  - Brachistochrone optimal cost within `< 1e-4` relative to closed form
+    (**partial satisfied:** `hermite_simpson_brachistochrone_closed_form_benchmark_matches_cycloid`
+    evaluates the public cycloid solution from a provenance-pinned fixture and
+    checks the HS transcription residual plus time cost;
+    `fixed_mesh_ocp_brachistochrone_dense_sqp_restores_perturbed_cycloid`
+    restores a perturbed fixed-control public-cycloid state grid,
+    `linearized_least_squares_objective_step_adds_linear_term` proves the
+    dense-QP step can consume an explicit linear objective term needed by
+    free-time/free-control SQP work,
+    `linearized_equality_objective_step_moves_along_nullspace` proves the
+    dense-QP step can preserve linearized equality residuals while descending a
+    linear objective,
+    `dense_sqp_linear_objective_continues_from_feasible_residual` proves the
+    outer dense-SQP loop keeps optimizing that linear term even from a
+    residual-feasible starting point, and
+    `dense_sqp_equality_objective_preserves_linear_residual` proves the
+    equality-constrained objective SQP lane preserves a scalar residual while
+    optimizing through its nullspace, and
+    `dense_sqp_equality_objective_accepts_nonlinear_tangent_step` proves the
+    exact residual-penalty merit accepts a nonlinear equality tangent descent
+    step and then improves residual through restoration, and
+    `linearized_elastic_equality_objective_step_uses_slack_when_bounds_block_residual`
+    plus
+    `dense_sqp_equality_objective_elastic_fallback_handles_blocked_linearized_residual`
+    prove the equality-objective lane has a bounded residual-slack fallback for
+    blocked hard equality QPs, and
+    `fixed_mesh_ocp_free_final_time_objective_drives_scalar_integrator_to_bound`
+    proves the fixed-mesh free-final-time objective wrapper drives a scalar
+    integrator to an active final-time bound while maintaining the expected
+    least-squares residual tolerance, and
+    `fixed_mesh_ocp_brachistochrone_dense_sqp_restores_free_duration` recovers a
+    perturbed final time through `solve_dense_sqp_with_free_final_time`, and
+    `fixed_mesh_ocp_brachistochrone_free_control_time_objective_recovers_cycloid`
+    reaches the public cycloid time and residual tolerances with free controls
+    through `solve_dense_sqp_with_free_final_time_objective`; fully stationary
+    free-control NLP closure remains open);
     Bryson-Denham state-constrained case satisfies the constraint and matches the
-    published optimum.
-  - Cross-check vs T1 on a shared ascent case within mesh tolerance.
+    published optimum (**partial satisfied:**
+    `fixed_mesh_ocp_bryson_denham_state_constrained_benchmark_matches_active_arc`
+    and `fixed_mesh_ocp_bryson_denham_dense_quadratic_qp_wrapper_matches_active_arc`
+    and
+    `fixed_mesh_ocp_bryson_denham_dense_solution_feeds_sparse_constrained_kkt_report`
+    solve the normalized state-constrained fixed-mesh dense QP from a
+    provenance-pinned fixture through the exposed wrapper, feed its dense
+    solution into active sparse constrained-KKT row and residual-multiplier
+    handoff evidence, enforce the active hard state bound, and match objective
+    `4`; general nonlinear benchmark solve closure remains open).
+  - Cross-check vs T1 on a shared ascent case within mesh tolerance
+    (**partial satisfied:** `hermite_simpson_cross_checks_t1_shared_ascent_case`
+    reuses `multiple-shooting-tolerance.toml` and gates terminal deltas plus the
+    40 s HS collocation mesh-defect norm).
+  - Optimized fixed-mesh reference profile emits deterministic I-load samples
+    with strict time ordering and can be replayed by the FC-side
+    optimized-reference guidance hook (**partial satisfied:** output artifact
+    plus focused `OptimizedReferenceProfileGuidance` validation/interpolation,
+    host testkit postcard I-load bridge, v3 inline/file-backed
+    optimized-reference runner wiring, and autopilot trajectory-loop tracking
+    evidence; full PMP/costate optimality remains WP-07.6 work).
   - clarabel uses the pinned deterministic settings; result byte-stable across
-    two runs (determinism lane).
+    two runs (**partial satisfied:** dense QP repeated-solve test plus
+    `fixed_mesh_ocp_dense_sqp_wrapper_is_repeat_deterministic` and
+    `fixed_mesh_ocp_bryson_denham_benchmark_qp_is_repeat_deterministic`; broader
+    nonlinear public-benchmark OCP determinism remains open).
   - All §2 gates green; benchmark constants in a provenance-pinned data file.
 - **validation_label:** `research` (MMS + known-optimal benchmark)
 - **dual_use_note:** Objective is vehicle-intrinsic (fuel/time/energy); boundary
@@ -842,13 +1099,231 @@ gates green and answers the §3 per-PR checklist.
 ### WP-07.3 — LGR pseudospectral + ph-mesh refinement
 
 - **title:** Legendre-Gauss-Radau collocation with Patterson-Hager-Rao ph-mesh.
+- **implementation_status:** partial (2026-06-26) — `pseudospectral.rs` exposes
+  `LegendreGaussRadauGrid` and `legendre_gauss_radau_grid` as a deterministic
+  left-LGR grid substrate on `[-1, 1]`; the grid includes `-1` as the first
+  collocation node, excludes `+1` from collocation nodes, appends `+1` as the
+  terminal interpolation support node, reports positive quadrature weights,
+  exposes an `N x N+1` barycentric differentiation matrix, and provides helpers
+  for differentiating support-node values and integrating collocation-node
+  values. It also exposes `LgrPseudospectralSegment`,
+  `LgrPseudospectralSegmentReport`, `LgrPseudospectralTranscription`,
+  `LgrPseudospectralTranscriptionReport`,
+  `evaluate_lgr_pseudospectral_segment`, and
+  `evaluate_lgr_pseudospectral_transcription`, validating support states,
+  collocation controls, nonempty adjacent segments, and matching segment
+  dimensions, evaluating existing `CollocationDynamics`/`CollocationLagrange`
+  callbacks at LGR nodes, and reporting physical collocation times, physical
+  quadrature weights, differential residuals, segment-boundary continuity
+  residuals, residual counts, residual norms, and quadrature cost. It also
+  exposes `LgrPseudospectralDecisionLayout` and
+  `LgrPseudospectralDecisionReport` plus
+  `LgrPseudospectralDecisionBoundsReport`,
+  `LgrPseudospectralReferenceProfileMapping`, and
+  `LgrPseudospectralReferenceProfileReport` for fixed-time flat decision vectors,
+  validating per-segment LGR degrees, mesh times, state/control dimensions,
+  state/control block offsets, total variable counts, and finite decisions;
+  packing row-major support-state and collocation-control blocks; returning
+  segment support-state, collocation-control, and mesh-node state slices,
+  including zero-control slices; decoding decisions into validated multi-segment
+  transcriptions; and evaluating decoded decisions through the existing LGR
+  transcription evaluator. It also exposes
+  `LgrPseudospectralBoundaryConstraint`,
+  `LgrPseudospectralScalarVariable`,
+  `LgrPseudospectralSoftPathConstraint`,
+  `LgrPseudospectralHardPathConstraint`,
+  `LgrPseudospectralKktCollocationMultiplierSample`,
+  `LgrPseudospectralKktResidualMultiplierReport`,
+  `LgrPseudospectralKktCollocationCostateEstimate`,
+  `LgrPseudospectralKktCostateEstimateReport`,
+  `LgrPseudospectralKktHamiltonianSample`,
+  `LgrPseudospectralKktHamiltonianReport`,
+  `LgrPseudospectralNonlinearHardPathConstraint`,
+  `LgrPseudospectralPathInequalityReport`,
+  `LgrPseudospectralNonlinearPathInequalityReport`,
+  `LgrPseudospectralQuadraticControlCost`,
+  `LgrPseudospectralMayerCost`,
+  `LgrPseudospectralObjectiveReport`,
+  `LgrPseudospectralSparsePathInequalityJacobianReport`,
+  `LgrPseudospectralColoredSparseResidualJacobianReport`,
+  `LgrPseudospectralSparseResidualJacobianReport`,
+  `LgrPseudospectralSparseGaussNewtonHessianReport`,
+  `LgrPseudospectralSparseAugmentedKktReport`,
+  `LgrPseudospectralSparseConstrainedKktReport`,
+  `LgrPseudospectralSparseNormalSolveReport`,
+  `LgrPseudospectralSparseKktSolveReport`,
+  `LgrPseudospectralFixedMeshSparseGaussNewtonStepReport`,
+  `LgrPseudospectralFixedMeshSparseKktStepReport`,
+  `LgrPseudospectralFixedMeshSparseConstrainedKktStepReport`,
+  `LgrPseudospectralFixedMeshDenseConstrainedSqpReport`,
+  `LgrPseudospectralFixedMeshDenseQuadraticQpReport`,
+  `LgrPseudospectralFixedMeshDenseSqpReport`,
+  `LgrPseudospectralFixedMeshOcp`, and
+  `LgrPseudospectralFixedMeshResidualReport` for fixed-time boundary,
+  soft-path, quadratic control objective residual, hard scalar path inequality,
+  nonlinear hard path inequality assembly, finite-difference sparse columnwise
+  and colored residual-Jacobian reporting, analytic/autodiff residual-Jacobian
+  reporting, sparse Gauss-Newton normal-block/CG, sparse augmented-KKT/LDL
+  step reporting, active scalar hard-path constrained sparse-KKT step reporting
+  with constrained sparse-KKT diagnostic handoff,
+  Mayer/Lagrange objective reporting, raw residual-multiplier/
+  costate/Hamiltonian diagnostics including sparse-KKT step-derived diagnostics,
+  residual-only sparse-KKT SQP scalar/nonlinear hard-path feasibility, optional
+  final active constrained-KKT report, final-multiplier evidence,
+  quadrature-normalized sparse-SQP PMP/KKT certificate payload reports that
+  prefer the final active constrained-KKT report when present, can attach
+  validated same-mesh PMP-vs-KKT costate summaries, and round-trip
+  through optimized-reference I-load payloads, and nonlinear
+  path-inequality Jacobian reporting, plus
+  feature-gated fixed-time dense QP/SQP wrapping,
+  validating mesh-node boundary targets/components,
+  collocation-node scalar soft/hard path bounds/components, nonlinear hard vector
+  path bound dimensions/samples, nonlinear path outputs, finite-difference
+  sparse-Jacobian settings, stable residual/nonlinear-inequality row dimensions,
+  colored residual-Jacobian report consistency, analytic/autodiff
+  residual-Jacobian dynamics sample and report consistency, finite Mayer
+  objective values, objective report totals, CSC sparse residual/path-Jacobian
+  report shape, finite decision-bound reports, optimized-reference
+  mappings/reports/I-load payloads, and control-cost components,
+  appending boundary residuals after
+  differential and continuity rows, then path and objective residuals,
+  transcribing hard path bounds into dense `Aineq * decision <= rhs` rows with
+  lhs/violation helpers, merging hard scalar path bounds into dense solver
+  decision-bound reports, emitting strictly increasing optimized
+  `ReferenceProfileSample` sequences from LGR support-state samples while
+  skipping duplicate segment-boundary samples and packaging them into validated
+  postcard `ILoadPayload` artifacts, evaluating nonlinear hard path bounds as bound-split
+  `g(z) <= 0` rows with raw path values and max-violation reporting, evaluating
+  scalar objectives from LGR-quadrature Lagrange costs, configured quadratic
+  control costs, and arbitrary terminal Mayer callbacks, splitting
+  caller-supplied KKT residual multipliers by LGR row family, estimating raw
+  collocation costates from differential multipliers, evaluating raw Hamiltonian
+  diagnostics at LGR collocation samples, computing deterministic
+  central-finite-difference CSC sparse columnwise and colored residual Jacobians,
+  caller-supplied analytic dynamics-Jacobian and forward-mode autodiff CSC sparse
+  residual Jacobians, sparse Gauss-Newton Hessian/KKT normal blocks, sparse
+  `-J'r` right-hand sides, sparse normal-block matrix-vector products,
+  deterministic conjugate-gradient sparse normal solves, sparse augmented-KKT
+  matrices, sparse constrained-KKT systems for active scalar hard-path rows,
+  constrained sparse-KKT residual-multiplier/costate/Hamiltonian diagnostic
+  adapters, deterministic LDL KKT solves, fixed-mesh sparse Gauss-Newton/KKT step
+  reports with linearized residuals and residual multipliers, residual-only
+  sparse-KKT SQP accepted-step iteration reports with scalar hard-path decision-bound enforcement, final bound violations, scalar hard-path violations, final KKT multipliers, and optional final active constrained-KKT step reports, plus
+  nonlinear
+  path-inequality Jacobians with coefficient lookup and dense expansion helpers,
+  forming feature-gated dense Clarabel
+  equality-constrained quadratic-control QPs for affine LGR residual models,
+  calling the feature-gated `DenseSqpSolver` lanes for fixed-time residual
+  restoration, terminal-state linear objectives, and constrained nonlinear
+  hard-path row consumption, and reporting
+  row counts, residual norms, max residuals,
+  quadrature cost, quadratic control cost, scalar objective totals, final
+  dense-SQP residuals, terminal objective values, decision-bound violations,
+  scalar hard-path violations, and nonlinear hard-path violations. It also
+  exposes `LgrPseudospectralMeshRefinementSettings`,
+  `LgrPseudospectralSegmentErrorEstimate`,
+  `LgrPseudospectralMeshRefinementAction`,
+  `LgrPseudospectralSegmentRefinementRecommendation`,
+  `LgrPseudospectralMeshRefinementReport`, and
+  `estimate_lgr_pseudospectral_mesh_refinement` for candidate-vs-reference
+  support-state error estimates and deterministic accept/raise-degree/split
+  recommendations, plus `LgrPseudospectralRefinedSegmentMapping`,
+  `LgrPseudospectralMeshRefinementApplication`, and
+  `apply_lgr_pseudospectral_mesh_refinement` for seeded raised-degree and split
+  refined transcriptions, and `LgrPseudospectralMeshRefinementIterationReport`,
+  `LgrPseudospectralMeshRefinementLoopReport`, and
+  `refine_lgr_pseudospectral_mesh_with_reference` for a caller-supplied
+  reference-driven estimate/apply loop. Focused tests prove the three-point
+  nodes and weights against a closed-form reference, exact Radau quadrature for
+  monomials through degree `2N-2`, exact differentiation of a support
+  polynomial, exact single-segment and two-segment transcription/quadrature for
+  `x=t^2`, `x_dot=2t`, continuity stacking, two-segment flat decision
+  decode/evaluate exactness, zero-control decision-layout support, malformed
+  decision-layout rejection, fixed-time OCP boundary residual appending,
+  boundary mismatch reporting, soft path residual and LGR-weighted quadratic
+  control objective residual appending, hard path dense inequality
+  transcription and violation reporting, hard path decision-bound merge evidence
+  for dense solver consumption, feature-gated fixed-time dense SQP
+  scalar-integrator minimum-energy dense-QP benchmark evidence recovering
+  `x(t)=t`, `u(t)=1`, cost `1`, public closed-form LGR brachistochrone
+  transcription/time-cost evidence against the cycloid fixture,
+  public COPS/YAPSS Goddard fixture evidence pinning the dimensionless dynamics,
+  singular-arc relation, fixed-mesh LGR seed residual accounting,
+  residual-localized split-refinement seeding, and split-refined
+  terminal-objective handoff plus published final-altitude gap audit,
+  feature-gated public COPS/YAPSS Goddard fixed-mesh and split-refined
+  terminal-altitude objective dense-SQP evidence improving terminal altitude
+  and reducing equality residual from the seed while reporting the current
+  fixed-time handoff outside the published final-time, altitude, and residual
+  bands,
+  feature-gated moderate-mesh fixed-time LGR brachistochrone dense-SQP
+  free-control feasibility recovery from a perturbed cycloid control decision,
+  feature-gated fixed-time dense QP Bryson-Denham state-constrained benchmark
+  evidence recovering the active arc, objective `4`, hard-path feasibility, and
+  repeat determinism plus sparse constrained-KKT active-row/multiplier handoff
+  from the dense benchmark solution through
+  `scenarios/trajopt-bryson-denham/bryson-denham-state-constrained-benchmark.toml`,
+  feature-gated
+  fixed-time dense SQP scalar-integrator restoration plus repeat-determinism
+  evidence, feature-gated
+  fixed-time dense constrained SQP consumption of nonlinear hard-path rows,
+  optimized reference-profile and postcard I-load round-trip evidence,
+  nonlinear hard path inequality
+  evaluation and malformed nonlinear path rejection, sparse residual-Jacobian
+  numeric evidence against the LGR differentiation and boundary-row reference,
+  colored residual-Jacobian numeric evidence against the columnwise report,
+  analytic residual-Jacobian numeric evidence against the finite-difference
+  report, forward-mode autodiff residual-Jacobian numeric evidence against the
+  analytic report, sparse nonlinear path-inequality Jacobian numeric evidence
+  against a linear path-function derivative reference, Mayer/Lagrange objective
+  numeric evidence with terminal state reporting, raw residual-multiplier
+  row-family slicing plus raw collocation-costate and Hamiltonian diagnostic
+  evidence, sparse Gauss-Newton normal-step evidence against dense normal
+  references via
+  `lgr_fixed_mesh_ocp_sparse_gauss_newton_step_matches_dense_normal_system`,
+  sparse augmented-KKT assembly/LDL/step via
+  `lgr_fixed_mesh_ocp_sparse_augmented_kkt_step_reports_multipliers`,
+  active scalar hard-path constrained sparse-KKT multiplier and diagnostic
+  handoff evidence via
+  `lgr_fixed_mesh_ocp_sparse_constrained_kkt_step_reports_active_hard_path_multipliers`,
+  and sparse-KKT-derived multiplier diagnostic evidence,
+  residual-only sparse-KKT SQP convergence/final-multiplier plus optional final active constrained-KKT report, hard-bound
+  enforcement, and nonlinear hard-path feasibility evidence via
+  `lgr_fixed_mesh_ocp_sparse_kkt_sqp_solves_scalar_integrator_and_reports_final_multipliers`,
+  `lgr_fixed_mesh_ocp_sparse_kkt_sqp_enforces_hard_path_decision_bounds`, and
+  `lgr_fixed_mesh_ocp_sparse_kkt_sqp_preserves_nonlinear_hard_path_feasibility`, malformed
+  sparse/colored/analytic/autodiff residual, objective, and path-Jacobian
+  input/report rejection, malformed boundary/path/objective/decision rejection,
+  exact candidate-vs-reference ph convergence, degree-raise and split
+  recommendation behavior, seeded refined-transcription state/control
+  interpolation, reference-driven loop convergence/cap reporting, checked
+  `lgr-spectral-convergence-tolerance.toml` smooth-arc interpolation error
+  collapse for `x(t)=exp(t)`, the
+  `lgr-scalar-integrator-benchmark.toml` solved validated-toy scalar-integrator
+  benchmark fixture, the `brachistochrone-cycloid-benchmark.toml` public
+  closed-form LGR transcription/time-cost fixture, the
+  `bryson-denham-state-constrained-benchmark.toml` public active-arc LGR
+  dense-QP fixture, the `goddard-cops-benchmark.toml` public COPS/YAPSS
+  Goddard dynamics, singular-arc, fixed-mesh seed residual-accounting,
+  residual-localized split-refinement seeding, fixed-mesh terminal-objective
+  accounting, split-refined terminal-objective handoff, and published
+  final-altitude gap fixture, scalar-PMP LGR dense-QP quadrature-normalized
+  covector bridge evidence via
+  `lgr_dense_qp_duals_feed_pmp_costate_convention_bridge`,
+  and malformed
+  dimension/non-finite/transcription/refinement/loop input rejection under
+  `REQ-TRAJOPT-005`. General LGR nonlinear benchmark solver closure, full
+  Goddard nonlinear solver/final-altitude closure, full constrained external
+  sparse NLP integration, production nonlinear covector scaling/sign mapping
+  beyond the scalar dense-QP bridge, and production PMP witness integration
+  remain open.
 - **goal:** GPOPS-II-class accuracy with automatic mesh refinement and costate
   estimates from KKT multipliers (the optimality witness feeding T6), reusing the
   T2 NLP backend.
 - **fidelity_tier:** T3
 - **depends_on:** [WP-07.2]
 - **new_crates:** none
-- **touched:** `crates/openbmp-trajopt/src/` (+ `pseudospectral.rs`, `mesh.rs`).
+- **touched:** `crates/openbmp-trajopt/src/` (+ `pseudospectral.rs`).
 - **approach:** §3.3 T3. LGR nodes via Golub-Welsch (Jacobi-matrix eigenvalues)
   or Newton on `P_N`; barycentric differentiation/integration matrices; integral-
   form collocation; ph relative-error estimate `e_k` with degree-raise vs
@@ -856,14 +1331,115 @@ gates green and answers the §3 per-PR checklist.
   SQP/IPOPT backend.
 - **acceptance:**
   - Off by default; goldens byte-identical.
-  - LGR nodes/weights match a Gauss-quadrature reference to `< 1e-12`.
+  - LGR nodes/weights match a Gauss-quadrature reference to `< 1e-12`
+    (**partial satisfied:** `lgr_grid_matches_three_point_closed_form_reference`
+    checks the three-point left-LGR closed-form nodes/weights, while
+    `lgr_quadrature_is_exact_through_radau_degree` checks exact monomial
+    quadrature through degree `2N-2`).
+  - LGR differentiation matrix differentiates support polynomials at
+    collocation nodes (**partial satisfied:**
+    `lgr_differentiation_is_exact_for_support_polynomial`; not yet a full OCP
+    transcription).
+  - Single- and multi-interval LGR differential transcription and quadrature evaluate
+    against the same dynamics/Lagrange callback vocabulary as WP-07.2
+    (**partial satisfied:**
+    `lgr_segment_transcription_is_exact_for_polynomial_integrator` and
+    `lgr_transcription_stacks_segments_and_continuity_for_polynomial_integrator`,
+    plus `lgr_decision_layout_decodes_and_evaluates_polynomial_transcription`
+    for flat decision decode/evaluate and
+    `lgr_fixed_mesh_ocp_appends_boundary_residuals_to_polynomial_transcription`
+    for boundary rows, plus
+    `lgr_fixed_mesh_ocp_appends_path_and_quadratic_control_objective_residuals`
+    for soft scalar path residuals and LGR-weighted quadratic control objective
+    rows, and
+    `lgr_fixed_mesh_ocp_transcribes_hard_path_bounds_to_dense_inequalities`
+    for hard scalar path inequalities, plus
+    `lgr_fixed_mesh_ocp_evaluates_nonlinear_hard_path_inequalities` for
+    nonlinear hard path rows, and
+    `lgr_fixed_mesh_ocp_sparse_residual_jacobian_matches_linear_reference` for
+    finite-difference sparse residual derivatives,
+    `lgr_fixed_mesh_ocp_colored_sparse_residual_jacobian_matches_columnwise_report`
+    for colored residual derivatives,
+    `lgr_fixed_mesh_ocp_analytic_sparse_residual_jacobian_matches_finite_difference_report`
+    for analytic residual derivatives,
+    `lgr_fixed_mesh_ocp_autodiff_sparse_residual_jacobian_matches_analytic_report`
+    for autodiff residual derivatives, plus
+    `lgr_fixed_mesh_ocp_objective_report_transcribes_lagrange_mayer_and_quadratic_costs`
+    for Mayer/Lagrange objective reporting, plus
+    `lgr_fixed_mesh_ocp_slices_kkt_multipliers_and_reports_costate_hamiltonian_diagnostics`
+    for raw LGR residual-multiplier row-family slicing and raw
+    collocation-costate/Hamiltonian diagnostics, plus
+    `lgr_fixed_mesh_ocp_merges_hard_path_bounds_for_dense_solver` for dense
+    solver bound handoff,
+    `lgr_fixed_mesh_ocp_scalar_integrator_min_energy_benchmark_matches_analytic_solution`
+    for a feature-gated solved validated-toy LGR dense-QP benchmark, plus
+    `lgr_fixed_mesh_ocp_bryson_denham_dense_quadratic_qp_wrapper_matches_active_arc`
+    and
+    `lgr_fixed_mesh_ocp_bryson_denham_dense_solution_feeds_sparse_constrained_kkt_report`
+    and
+    `lgr_fixed_mesh_ocp_bryson_denham_benchmark_qp_is_repeat_deterministic`
+    for public Bryson-Denham state-constrained LGR dense-QP active-arc,
+    sparse constrained-KKT handoff, hard-path feasibility, objective, and
+    repeat-determinism evidence, plus
+    `lgr_brachistochrone_closed_form_benchmark_matches_cycloid`
+    for public closed-form LGR brachistochrone transcription/time-cost evidence,
+    plus
+    `lgr_brachistochrone_dense_sqp_restores_perturbed_cycloid`
+    for feature-gated moderate-mesh fixed-time LGR brachistochrone dense-SQP
+    free-control feasibility recovery from a perturbed cycloid control
+    decision, plus
+    `lgr_fixed_mesh_ocp_dense_sqp_wrapper_restores_scalar_integrator_and_is_repeat_deterministic`
+    for feature-gated fixed-time dense SQP restoration, plus
+    `lgr_fixed_mesh_ocp_dense_constrained_sqp_wrapper_consumes_nonlinear_hard_path_rows`
+    for feature-gated constrained dense SQP nonlinear hard-path row consumption,
+    plus
+    `lgr_fixed_mesh_ocp_emits_optimized_reference_profile_and_iload_payload`
+    for optimized reference-profile/I-load output, plus
+    `lgr_fixed_mesh_ocp_sparse_nonlinear_path_jacobian_matches_linear_reference`
+    for sparse nonlinear path derivatives; general nonlinear benchmark solver closure
+    remains open).
+  - ph relative-error estimate `e_k` with degree-raise vs subdivide logic
+    (**partial satisfied:**
+    `lgr_mesh_refinement_accepts_exact_candidate_against_reference` and
+    `lgr_mesh_refinement_recommends_degree_raise_then_split`;
+    `lgr_mesh_refinement_application_raises_degree_and_preserves_seed` and
+    `lgr_mesh_refinement_application_splits_segment_and_preserves_seed` seed
+    refined transcriptions from those recommendations; and
+    `lgr_mesh_refinement_loop_refines_until_reference_converges` plus
+    `lgr_mesh_refinement_loop_reports_iteration_cap_without_convergence` cover
+    the reference-driven estimate/apply loop. Solved-reference generation from a
+    full LGR OCP backend remains open).
   - Smooth-arc error decays faster than any algebraic order (spectral check) vs
-    the HS O(h⁴) baseline, in a tolerance table.
+    the HS O(h⁴) baseline, in a tolerance table (**partial satisfied:**
+    `lgr_interpolation_error_is_spectral_on_smooth_arc` reads
+    `scenarios/trajopt-two-body-apogee/lgr-spectral-convergence-tolerance.toml`
+    and checks LGR interpolation error collapse for `x(t)=exp(t)` with declared
+    ratio and finest-error tolerances; solved-OCP spectral convergence remains
+    open).
   - **Goddard max-altitude (singular arc):** ph-mesh resolves the bang-singular-
     bang structure; final altitude within the published-solution band (Betts /
-    PHR ph paper) with provenance.
+    PHR ph paper) with provenance (**partial satisfied:**
+    `lgr_goddard_cops_benchmark_pins_dynamics_and_singular_arc` pins the
+    COPS/YAPSS dimensionless dynamics and singular-arc relation,
+    `lgr_goddard_cops_fixed_mesh_seed_reports_dynamics_defect` and
+    `lgr_goddard_seed_residual_localizes_split_refinement` account for the seed
+    residual and localize a split-refinement recommendation, and
+    `lgr_goddard_terminal_altitude_objective_dense_sqp_improves_seed` plus
+    `lgr_goddard_split_refined_seed_feeds_terminal_altitude_objective_dense_sqp`
+    prove fixed-mesh and split-refined terminal-altitude dense-SQP handoff
+    improves altitude and equality residual from the seed, while
+    `lgr_goddard_split_refined_terminal_objective_reports_published_altitude_gap`
+    pins the COPS final-time/final-altitude band and reports the current
+    fixed-time handoff as not closed; published final-altitude band closure
+    remains open).
   - Costate estimate matches the PMP shooting costate (forward-link to T6) within
-    mesh tolerance on a case with a known analytic costate.
+    mesh tolerance on a case with a known analytic costate (**partial
+    satisfied:** raw LGR differential-residual multipliers are split by
+    collocation sample and exposed as raw collocation-costate/Hamiltonian
+    diagnostics by
+    `lgr_fixed_mesh_ocp_slices_kkt_multipliers_and_reports_costate_hamiltonian_diagnostics`;
+    analytic PMP shooting match and final covector sign/scaling convention remain
+    open).
   - All §2 gates green.
 - **validation_label:** `research` (Goddard + spectral-convergence benchmark)
 - **dual_use_note:** Same boundary lock; the costate is an optimality diagnostic,
@@ -882,12 +1458,19 @@ gates green and answers the §3 per-PR checklist.
   `trajopt → fc` or `fc → trajopt` edge — preserving the FC portability lock.
 - **fidelity_tier:** T4 (enabler)
 - **depends_on:** [WP-07.2]
-- **new_crates:** `openbmp-convex` L2 (portable) — *proposed; review the layer and
-  dependency edges before building (`13` §5). Skip if the refactor is trivial
-  enough to keep `deterministic_settings()` re-exported from an existing portable
-  crate.*
-- **touched:** `crates/openbmp-fc/src/mpc.rs` (move/re-export settings);
-  `crates/openbmp-trajopt/Cargo.toml` (+ `clarabel`).
+- **new_crates:** `openbmp-convex` L2 (portable) — implemented as the shared
+  deterministic Clarabel settings and CSC row-builder home.
+- **touched:** `Cargo.toml`, `crates/openbmp-convex/`,
+  `crates/openbmp-fc/{Cargo.toml,src/mpc.rs,src/landing.rs}`,
+  `crates/openbmp-trajopt/{Cargo.toml,src/sqp.rs}`.
+- **status:** **satisfied.** `openbmp-convex` exposes `ClarabelSettings`,
+  `deterministic_clarabel_settings`, `ConvexMatrixError`, and
+  `ClarabelCscMatrixBuilder` behind its `conic` feature. `openbmp-fc` preserves
+  `mpc::ClarabelSettings` and `mpc::deterministic_settings` by delegating to the
+  shared helper, and `landing.rs` assembles its SOCP epigraph matrix through the
+  shared CSC builder. `openbmp-trajopt` preserves
+  `TrajoptClarabelSettings` and `deterministic_sqp_settings` by delegating to
+  the same helper. This is traced by `REQ-TRAJOPT-007`.
 - **approach:** §3.1. Either a tiny portable `openbmp-convex` crate or a re-export
   from `openbmp-models`. The settings constant and CSC helpers move down; both
   consumers depend on the portable home; `openbmp-trajopt` depends on `clarabel`
@@ -895,8 +1478,8 @@ gates green and answers the §3 per-PR checklist.
 - **acceptance:**
   - `fc_dependency_tripwire.rs` green; **no** new `openbmp-fc → openbmp-trajopt`
     or reverse edge.
-  - `mpc.rs`/`landing.rs` byte-identical solver behavior (their tests unchanged).
-  - The new crate's layer/edges justified in the PR (`13` §5) and reviewed.
+  - `mpc.rs`/`landing.rs` behavior-preserving solver tests remain green.
+  - The new crate's layer/edges are justified here and in `REQ-TRAJOPT-007`.
   - All §2 gates green.
 - **validation_label:** `checked` (refactor, behavior-preserving)
 - **dual_use_note:** Placement lock — the shared surface is the *cone primitive*,
@@ -915,8 +1498,28 @@ gates green and answers the §3 per-PR checklist.
 - **fidelity_tier:** T4
 - **depends_on:** [WP-07.2, WP-07.4-a]
 - **new_crates:** none (or `openbmp-convex` from WP-07.4-a)
-- **touched:** `crates/openbmp-trajopt/src/` (+ `lcvx.rs`); reuse the
-  `openbmp-fc` cone primitive via the WP-07.4-a portable home.
+- **touched:** `crates/openbmp-trajopt/src/` (+ `lcvx.rs`); after WP-07.4-a,
+  reuse the shared portable cone primitive instead of duplicating settings.
+- **status:** **satisfied.** `crates/openbmp-trajopt/src/lcvx.rs` now exposes the
+  feature-gated `LcvxTerminalStateTarget`, `LcvxControlDiscretization`,
+  `LcvxPoweredDescentProblem`, `LcvxPoweredDescentSolution`,
+  `LcvxTaylorThrustBounds`, and
+  `solve_lcvx_powered_descent_fixed_time` fixed-time SOCP substrate, plus
+  `LcvxTimeOfFlightSearchSettings`, `LcvxTimeOfFlightSearchReport`, and
+  `solve_lcvx_powered_descent_time_of_flight_search` as a deterministic
+  golden-section outer loop over time of flight. It consumes the shared
+  deterministic Clarabel settings from WP-07.4-a and proves a toy vertical
+  powered-descent-to-state solve with tight `sigma = ||u||`, cone-violation
+  diagnostics, fixed-time and time-search repeated-solve determinism,
+  optional ZOH interval-control or FOH node-control dynamics, optional mass-log
+  Taylor thrust-force bounds with linear upper rows and SOC lower rows,
+  time-search bracket shrinkage with midpoint objective improvement,
+  malformed-input/settings rejection, a known-solution FOH node-control
+  vertical-descent regression, a provenance-pinned Acikmese-Ploen Mars
+  glideslope benchmark whose final mass is within `0.5%` of the published
+  fuel-use result with strict `< 1e-6` feasibility/lossless diagnostics and
+  repeated-solve bit determinism, and a compile-fail target-vocabulary
+  tripwire. This slice is traced by `REQ-TRAJOPT-006`.
 - **approach:** §3.3 T4. Assemble the discretized SOCP: FOH dynamics matrices,
   mass-log change of variables `(u, σ, z)`, the second-order Taylor thrust-bound
   linearization about `z0`, glideslope + pointing SOC cones, boundary at the site
@@ -954,6 +1557,207 @@ gates green and answers the §3 per-PR checklist.
 - **depends_on:** [WP-07.4]
 - **new_crates:** none
 - **touched:** `crates/openbmp-trajopt/src/` (+ `scvx.rs`, `discretize.rs`).
+- **status:** **partial (2026-06-26).** `src/scvx.rs` now exposes the
+  feature-gated `ScvxTerminalStateTarget`, `ScvxAffineDynamicsSegment`,
+  `ScvxLinearStateFunction`, `ScvxLinearControlFunction`, `ScvxStateTriggeredConstraint`,
+  `ScvxLinearStateConstraint`,
+  `ScvxLinearControlConstraint`,
+  `ScvxSecondOrderConeStateConstraint`,
+  `ScvxSecondOrderConeControlConstraint`,
+  `ScvxDiscreteAffineProblem`, `ScvxForwardEulerFohProblemDefinition`,
+  `ScvxSettings`,
+  `ScvxForwardEulerLinearizationSettings`, `ScvxContinuousFohSettings`,
+  `ScvxContinuousFohIterationReport`, `ScvxContinuousFohSolution`,
+  `ScvxContinuousFohTimeOfFlightSearchSettings`,
+  `ScvxContinuousFohTimeOfFlightCandidateReport`,
+  `ScvxContinuousFohTimeOfFlightSearchReport`,
+  `ScvxContinuousFohTimeOfFlightSweepSettings`,
+  `ScvxContinuousFohTimeOfFlightSweepWindowReport`,
+  `ScvxContinuousFohTimeOfFlightSweepReport`,
+  `ScvxRigidBodyStateLayout`,
+  `ScvxRigidBodyControlLayout`, `ScvxRigidBodyDynamicsParameters`,
+  `ScvxRigidBodyDynamicsSettings`, `ScvxPoweredLandingStateLayout`,
+  `ScvxPoweredLandingControlLayout`,
+  `ScvxPoweredLandingDynamicsParameters`,
+  `ScvxPoweredLandingEnvelopeLimits`, `ScvxPoweredLandingEnvelopeSample`,
+  `ScvxPoweredLandingEnvelopeReport`,
+  `ScvxPoweredLandingLinearEnvelopeConstraints`,
+  `ScvxPoweredLandingLinearizedEnvelopeSettings`,
+  `ScvxPoweredLandingConicEnvelopeConstraints`,
+  `ScvxPoweredLandingConicEnvelopeSettings`, `ScvxReducedAeroCoefficients`,
+  `ScvxReducedAeroParameters`, `ScvxReducedAeroForceMoment`,
+  `ScvxReducedAeroReferenceProfile`, `ScvxTimeOfFlightSearchSettings`,
+  `ScvxTimeOfFlightCandidateReport`, `ScvxTimeOfFlightSearchReport`,
+  `ScvxTimeOfFlightSweepSettings`, `ScvxTimeOfFlightSweepWindowReport`,
+  `ScvxTimeOfFlightSweepReport`, `ScvxTerminationStatus`,
+  `ScvxIterationReport`, `ScvxSolution`,
+  `build_scvx_forward_euler_foh_problem`,
+  `solve_scvx_forward_euler_foh`,
+  `solve_scvx_continuous_foh_time_of_flight_search`,
+  `solve_scvx_continuous_foh_time_of_flight_sweep`,
+  `solve_scvx_forward_euler_foh_with_reference_projection`,
+  `solve_scvx_forward_euler_foh_with_reference_update`,
+  `build_scvx_rigid_body_foh_problem`,
+  `build_scvx_powered_landing_foh_problem`,
+  `build_scvx_reduced_aero_powered_landing_foh_problem`,
+  `build_scvx_reduced_aero_rigid_body_foh_problem`,
+  `linearize_scvx_forward_euler_foh`, `evaluate_scvx_rigid_body_dynamics`,
+  `evaluate_scvx_powered_landing_dynamics`,
+  `evaluate_scvx_powered_landing_envelope`,
+  `build_scvx_powered_landing_linear_envelope_constraints`,
+  `build_scvx_powered_landing_linearized_envelope_constraints`,
+  `build_scvx_powered_landing_conic_envelope_constraints`,
+  `evaluate_scvx_reduced_aero_force_moment`,
+  `evaluate_scvx_reduced_aero_powered_landing_dynamics`,
+  `evaluate_scvx_aero_coupled_rigid_body_dynamics`,
+  `evaluate_scvx_continuous_foh_time_of_flight_candidate`, and
+  `evaluate_scvx_time_of_flight_candidate`,
+  `solve_scvx_time_of_flight_search`, `solve_scvx_discrete_affine`
+  substrate, plus feature-gated
+  `ScvxAeroMethodReferenceProfile`,
+  `build_scvx_aero_method_powered_landing_foh_problem`,
+  `build_scvx_aero_method_rigid_body_foh_problem`,
+  `evaluate_scvx_aero_method_force_moment`,
+  `evaluate_scvx_aero_method_coupled_rigid_body_dynamics`, and
+  `evaluate_scvx_aero_method_powered_landing_dynamics` when the
+  `openbmp-trajopt/aero` feature is enabled. `ScvxTerminalStateTarget` also
+  carries optional finite non-negative per-component weights so published
+  cases can leave components such as final mass free while still using a local
+  state-vector target. The current solver
+  assembles deterministic dense QP subproblems, upgraded to conic QP/SOCP subproblems when second-order-cone rows are present over node states, FOH node
+  controls, and interval virtual controls; applies initial-state equality,
+  weighted terminal objective/convergence norms, control bounds, box trust
+  regions, always-active per-node linear state/control path constraints,
+  always-active per-node second-order-cone state/control path constraints, and
+  active-on-reference state-triggered linear constraints; and emits
+  accepted/rejected iteration diagnostics
+  including `rho`, trust-region radius, merit, terminal error,
+  virtual-control norm, state-triggered violation, linear-state violation,
+  linear-control violation, and second-order-cone violation. The fixed-time
+  candidate diagnostic helper reports objective, terminal-error,
+  virtual-control, linear-state, linear-control, second-order-cone, iteration,
+  and termination diagnostics for one candidate even when it does not converge.
+  The time-of-flight search wrapper applies deterministic golden-section search
+  over caller-built fixed-time SCvx problems, ranks converged candidates by merit plus a
+  non-negative time penalty, and reports bracket/candidate diagnostics including
+  terminal-error and virtual-control norms for every accepted candidate. The
+  continuous-FOH time-of-flight wrapper applies the same deterministic search
+  over caller-built fixed-time continuous relinearization solves, ranks only
+  converged continuous candidates, and reports candidate outer-loop,
+  terminal-error, virtual-control, linear-path, and cone diagnostics; its sweep
+  wrapper records each continuous window's search report or stable failure
+  reason plus optional failed fixed-time continuous-candidate diagnostics. The
+  time-of-flight sweep wrapper evaluates an ordered set of center-time windows,
+  records each window's search report or stable failure reason plus optional
+  failed-candidate diagnostics, and ranks the best converged window without
+  hiding partial non-convergence. The
+  continuous FOH solver repeatedly rebuilds a forward-Euler/FOH affine problem
+  around the accepted trajectory, solves the existing discrete-affine SCvx
+  subproblem, reports outer-loop reference-update norms, and stops once the
+  affine solve and reference updates satisfy their declared tolerances. Its
+  projection and full-reference update variants let callers normalize state
+  references and refresh reference-dependent path rows before each affine
+  rebuild. The
+  FOH problem builders validate finite state/control/time references, local
+  state-vector targets with optional non-negative weights, ordered controls,
+  state-triggered rows, linear state/control path rows, second-order-cone
+  state/control path rows, rigid-body and powered-landing layouts, per-node
+  reduced-aero profiles, and
+  feature-gated per-node `openbmp-aero` method contexts, then assemble generic
+  continuous-dynamics, flat rigid-body, 14-state mass-depleting body-thrust
+  powered-landing, reduced-aero-coupled rigid-body, reduced-aero-coupled
+  powered-landing, and aero-method-coupled rigid-body and powered-landing
+  reference trajectories into discrete affine SCvx problems. The
+  linearization helper
+  central-differences caller-provided continuous dynamics at each reference
+  state and midpoint control, then emits forward-Euler row-major `A`, FOH
+  `B^-`/`B^+`, and affine-offset segments. The flat rigid-body helper evaluates
+  a 13-state/6-control 6-DoF model with ECI position/velocity, body-to-ECI
+  `wxyz` quaternion, body-frame angular velocity, ECI force, body-frame moment,
+  mass, body inertia, inertia-rate coupling, and external acceleration,
+  matching the simulator's quaternion kinematics and Euler angular-acceleration
+  convention. The powered-landing helper evaluates the Szmuk-style
+  mass-depleting 6-DoF body-thrust model with thrust rotation, thrust-arm
+  torque, gravity, mass-flow coefficient, quaternion kinematics, and Euler
+  angular acceleration. The powered-landing envelope evaluator checks finite
+  trajectory samples against mass, thrust, body-thrust gimbal, body tilt,
+  angular-rate, and glideslope bounds using the gravity-defined local-up axis
+  and reports per-sample plus maximum violations. The powered-landing
+  linear-envelope builder emits per-node mass-bound, glideslope-halfspace,
+  axial-thrust, and gimbal-halfspace rows that feed the existing linear
+  state/control constraint QP path. The reference-linearized envelope builder
+  extends those rows with finite-facet upper-thrust-norm rows, finite-facet
+  angular-rate-norm rows, and one body-tilt row linearized around each reference
+  state. The conic-envelope builder emits exact SOC rows for glideslope,
+  upper thrust norm, body-thrust gimbal, and angular-rate norm, keeps mass
+  bounds and minimum axial thrust on linear rows, and keeps body tilt
+  reference-linearized. Full published trajectory closure remains open. The
+  reduced-aero helper mirrors the `openbmp-aero` schema-1
+  `CN/CD/CM` convention, rotates body force into ECI with the SCvx quaternion,
+  and adds aero force/moment into the rigid-body control vector for
+  aero-coupled dynamics; it also feeds the powered-landing mass-depleting
+  body-thrust dynamics by adding aero ECI force to translational acceleration
+  and aero body moment to angular acceleration while keeping mass depletion
+  thrust-only. The feature-gated aero-method bridge consumes any
+  `openbmp-aero::AeroMethod` result, including deck, hypersonic, or hybrid
+  providers, and feeds it into the same SCvx rigid-body and powered-landing
+  load paths without a simulator/runner/scenario dependency. Focused tests
+  cover scalar
+  affine-integrator convergence with negligible virtual control,
+  repeated-solve bit determinism, inactive/active state-triggered behavior,
+  always-active linear state/control path enforcement, second-order-cone
+  state/control path enforcement, and
+  malformed-input rejection, weighted terminal targets leaving zero-weight
+  components untargeted, deterministic free-final-time bracket shrinkage and
+  repeatability on a scalar integrator, deterministic continuous-FOH
+  free-final-time bracket shrinkage with per-candidate outer-loop diagnostics
+  plus sweep partial-failure diagnostics on a scalar integrator, provenance-pinned Szmuk in-plane
+  powered-landing free-final-time bracket shrinkage to the published agreement
+  tolerance with per-candidate terminal/virtual-control diagnostics,
+  deterministic scalar time-sweep partial-failure diagnostics, provenance-pinned
+  Szmuk initial-time guess sweep diagnostics over every declared initial-time
+  window, continuous
+  FOH outer-loop reference refresh to convergence, affine continuous-dynamics
+  linearization numerics, rigid-body quaternion/Euler dynamics numerics,
+  rigid-body linearization handoff evidence, powered-landing dynamics numerics,
+  powered-landing FOH problem assembly, continuous-FOH solve convergence on a
+  14-state vertical-translation powered-landing toy with terminal/virtual-control
+  residual and solved-envelope tolerance evidence, provenance-pinned
+  Szmuk-Acikmese 6-DoF free-final-time constants and powered-landing reference
+  handoff with final mass untargeted plus envelope-bound satisfaction, powered-landing
+  linear, reference-linearized, and conic envelope row generation, solver-row
+  handoff, and full-budget conic-envelope affine-solve evidence that closes
+  the terminal residual, reports the remaining virtual-control gap, and
+  enforces envelope rows on the pinned Szmuk reference, one-window
+  conic-envelope free-final-time sweep diagnostics that report candidate
+  non-convergence on the virtual-control gap and retain fixed-time
+  terminal/virtual-control/linear/cone rows directly on the failed window, a pinned
+  in-plane single-linearization affine FOH solve that reduces
+  virtual-control/dynamics-defect norm, proves raw quaternion drift blocks
+  strict powered-landing relinearization until the exported reference-state
+  quaternion projection helper normalizes the handoff, proves the continuous
+  FOH reference-projection hook reaches the next Szmuk relinearization instead
+  of erroring on that drift, proves the continuous FOH full-reference update
+  hook refreshes conic envelope rows across Szmuk powered-landing
+  relinearizations, reduces the conic continuous-FOH virtual-control gap under
+  a relaxed affine tolerance, reports the remaining reference-update gap
+  honestly, proves the continuous-FOH free-final-time fixed-candidate diagnostic
+  reports that same conic reference-update gap at the pinned Szmuk center time,
+  proves failed continuous-FOH free-final-time sweep windows retain center
+  fixed-candidate diagnostics across every declared Szmuk initial-time window,
+  and continues reporting normalized-envelope violations honestly,
+  direct quaternion projection helper normalization and
+  malformed-input rejection, separate
+  powered-landing envelope violation reporting, rigid-body FOH problem assembly,
+  reduced-aero rigid-body and powered-landing FOH problem assembly with load
+  propagation, reduced-aero force/moment mapping and ECI rotation,
+  aero-coupled rigid-body and powered-landing load addition,
+  `openbmp-aero::DeckLookup` bridge, rigid-body and powered-landing FOH problem
+  assembly, and rigid-body plus powered-landing coupled-dynamics evidence,
+  malformed linearization/aero/builder rejection, plus a
+  compile-fail target-vocabulary tripwire for the SCvx terminal target type.
+  This slice is traced by `REQ-TRAJOPT-008` and does not yet claim full
+  published Szmuk trajectory closure or flight-real-time validation.
 - **approach:** §3.3 T5. FOH discretization of linearized dynamics (augmented STM
   / matrix-exponential sub-interval integration for `A_i, B_i^±, S_i, R_i`);
   virtual control `ν_i` with weight `w_ν`; trust region with the
@@ -993,10 +1797,123 @@ gates green and answers the §3 per-PR checklist.
 - **depends_on:** [WP-07.2 (KKT multipliers), WP-07.4 (or any optimized
   reference), WP-07.3 (costate cross-check, optional)]
 - **new_crates:** none
-- **touched:** `crates/openbmp-trajopt/src/` (+ `indirect.rs`, `iload.rs`
-  extension for objective-class metadata); `crates/openbmp-fc/src/guidance.rs` /
+- **touched:** `crates/openbmp-trajopt/src/` (`pmp.rs` partial witness landed;
+  `iload.rs` objective-class metadata extension landed; feature-gated `sqp.rs`
+  dense-QP dual exposure landed; `collocation.rs`/`pseudospectral.rs` raw
+  costate-to-PMP convention adapters landed);
+  `crates/openbmp-fc/src/guidance.rs` /
   `topics.rs` **only on the consuming side** (the FC re-validates the I-load — no
-  `trajopt` edge); a closed-loop scenario gated behind an explicit config block.
+  `trajopt` edge);
+  `crates/openbmp-runner/tests/fixtures/fc-reference-telemetry-optimized-reference.toml`,
+  `crates/openbmp-runner/tests/fixtures/fc-reference-telemetry-optimized-reference-iload.toml`,
+  and `crates/openbmp-runner/tests/fc_reference_telemetry.rs` (inline plus
+  PMP-derived file-backed optimized-reference closed-loop runner evidence);
+- **status:** **partial.** `pmp.rs` now exposes `PmpHamiltonianSample`,
+  `PmpHamiltonianReport`, `PmpHamiltonianProfile`,
+  `PmpHamiltonianControlStationaritySettings`,
+  `PmpHamiltonianControlStationaritySample`,
+  `PmpHamiltonianControlStationarityReport`,
+  `PmpCostateComparisonSettings`, `PmpCostateComparisonSample`,
+  `PmpCostateComparisonReport`,
+  `PmpScalarMinEnergyProblem`, `PmpScalarMinEnergyShootingSettings`,
+  `PmpScalarMinEnergyIteration`, `PmpScalarMinEnergySolution`,
+  `evaluate_pmp_hamiltonian_profile`,
+  `evaluate_pmp_hamiltonian_control_stationarity`,
+  `evaluate_pmp_hamiltonian_control_stationarity_from_report`,
+  `compare_pmp_costate_profiles`, and `solve_pmp_scalar_min_energy_shooting`.
+  The generic witness evaluates `H = L + lambda^T f` along finite local
+  state/control/costate profiles and reports maximum Hamiltonian drift from the
+  first sample. The control-stationarity witness central-differences `H` with
+  respect to each control component, reports per-sample `dH/du` gradients,
+  maximum gradient norms, and a tolerance verdict, with focused tests proving
+  zero stationarity residuals on the scalar min-energy optimum and nonzero
+  residuals for off-optimum controls. The costate-comparison
+  helper compares same-mesh PMP and direct-method/KKT costate profiles with
+  finite time/costate tolerances. The scalar validated-toy shooting witness solves
+  the fixed-time minimum-energy integrator by deterministic costate shooting,
+  reports per-iteration terminal residuals, returns a Hamiltonian constancy
+  report, proves PMP-vs-KKT same-mesh costate agreement on the analytic arc, and
+  proves repeated-solve bit determinism. `PmpDirectCostateConvention` and
+  `apply_pmp_direct_costate_convention` require an explicit finite nonzero
+  raw-to-PMP scale before comparing raw direct-method costate estimates, and the
+  Hermite-Simpson node-costate and LGR collocation-costate reports expose
+  `pmp_costate_convention_report` adapters into that shared PMP comparison
+  shape; focused tests cover generic convention scaling, an HS raw node-costate
+  bridge against the scalar PMP arc, and LGR raw collocation-costate scaling. The
+  feature-gated dense-QP lane now
+  exposes equality/inequality dual vectors, and a scalar fixed-time
+  minimum-energy dense-QP equality multiplier is checked against the PMP costate
+  on the same mesh with the expected sign/scaling convention. The
+  Hermite-Simpson dense-QP wrapper now feeds solver-produced equality duals
+  through raw KKT multiplier splits and an explicit PMP convention report that
+  matches the scalar PMP shooting costate on the same mesh; it also exposes
+  `dense_qp_pmp_hamiltonian_report` for constant scalar PMP Hamiltonian samples
+  from the solved state/control profile and round-trips that Hamiltonian/costate
+  certificate in a validated I-load payload. The LGR dense-QP wrapper now also
+  exposes a quadrature-weight-normalized PMP convention report, matches the same
+  scalar PMP costate at collocation nodes, and exposes
+  `dense_qp_pmp_quadrature_weight_normalized_hamiltonian_report` for the same
+  scalar PMP Hamiltonian constancy, with the same certificate round-trip through
+  a validated I-load payload. The Hermite-Simpson and LGR sparse
+  augmented-KKT reports also expose `sparse_kkt_pmp_costate_convention_report`
+  and `sparse_kkt_pmp_hamiltonian_report`; constrained sparse-KKT step reports
+  feed equivalent residual-multiplier/costate/Hamiltonian diagnostic adapters,
+  including public Bryson-Denham active-set PMP diagnostic handoff evidence and
+  PMP Hamiltonian adapters, while LGR sparse-KKT additionally exposes
+  `sparse_kkt_pmp_quadrature_weight_normalized_costate_convention_report` and
+  `sparse_kkt_pmp_quadrature_weight_normalized_hamiltonian_report`; current
+  tests run identity convention reports against the existing raw Hamiltonian
+  diagnostics, exercise HS/LGR public Bryson-Denham active constrained-KKT
+  diagnostic and direct certificate/I-load handoffs, and check the LGR
+  weight-normalized route to prove state/control
+  sampling and common PMP evaluator wiring without asserting final production
+  scaling. The residual-only sparse-KKT SQP reports now give Hermite-Simpson and
+  LGR scalar/nonlinear hard-path feasibility evidence plus accepted-iterate
+  final multipliers that feed the same PMP/KKT report path
+  for validated-toy residual-multiplier closure evidence. Accepted sparse-KKT
+  SQP report surfaces now build HS/LGR PMP/KKT certificates, prefer final
+  constrained active-row multipliers when available, and round-trip those
+  certificates through optimized-reference I-load payloads with optional
+  validated same-mesh costate-comparison summaries and report-derived
+  control-stationarity summaries attached to the I-load optimality certificate.
+  Direct active constrained-KKT report surfaces also build HS/LGR PMP/KKT
+  certificates and round-trip public Bryson-Denham active-set certificates
+  through optimized-reference I-load payloads.
+  These tests prove the
+  handoff path without inferring production covector scaling, and the constrained
+  sparse-KKT diagnostic adapters close the active scalar hard-path
+  step-report-to-PMP handoff without claiming production constrained
+  large-sparse NLP optimality. Validated-toy
+  runner scenarios now select inline `guidance = "optimized_reference"` and a
+  resolved postcard I-load file generated from the scalar PMP minimum-energy
+  witness, plus Hermite-Simpson dense-SQP and sparse-SQP PMP/KKT certified
+  I-load files, export valid reference telemetry, and emit FC actuator
+  command-stream reports, proving inline and certified file-backed
+  closed-loop optimized-reference paths through the runner.
+  `ILoadHeader` now
+  records `objective_class` via `ILoadObjectiveClass`, `new_with_objective` lets
+  optimized-reference and day-of-launch recentering paths set explicit audit
+  labels, `ILoadOptimalityCertificate` lets PMP-derived I-loads carry
+  fail-closed Hamiltonian/control-stationarity/costate tolerance evidence, and
+  `optimized_reference_iload_payload_with_optimality_certificate` lets
+  Hermite-Simpson and LGR optimized-reference emitters attach that evidence to
+  validated postcard payloads. Dense-SQP final sparse-KKT certificate reports
+  now let accepted Hermite-Simpson and quadrature-normalized LGR dense-SQP
+  solutions attach validated PMP/KKT Hamiltonian certificates to
+  optimized-reference postcard payloads and can attach validated same-mesh
+  PMP-vs-KKT costate summaries plus validated control-stationarity summaries
+  through `with_pmp_control_stationarity`. Sparse-SQP final report surfaces expose
+  the same validated certificate payload path, preferring constrained final
+  active-row reports when available and the same optional costate-comparison
+  and control-stationarity attachment paths, and the runner file-backed scenario
+  consumes Hermite-Simpson dense-SQP and sparse-SQP final sparse-KKT certified
+  I-loads through the normal closed-loop optimized-reference bridge. The schema version is
+  `1.3.0`. This is traced by `REQ-TRAJOPT-009`. Production Hermite-Simpson/LGR
+  constrained large-sparse NLP residual-multiplier closure and a production
+  indirect solver remain open beyond the explicit raw-costate convention
+  handoff, validated-toy runner evidence, scalar PMP I-load witness, scalar
+  dense-QP equality-dual witness, and dense-SQP/sparse-SQP final sparse-KKT
+  certificate surfaces.
 - **approach:** §3.3 T6. (a) Emit the optimized reference trajectory + feedforward
   as a postcard I-load (extend `ILoadHeader` with an objective-class field); the
   FC consumes and **re-validates** it, tracking the `ReferenceState`. (b) PMP

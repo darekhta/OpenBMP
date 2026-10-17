@@ -6,6 +6,8 @@
 
 use std::path::PathBuf;
 
+use openbmp_rundata::RundataError;
+use openbmp_rundata::verdict::VerdictError;
 use openbmp_runner::RunnerError;
 use openbmp_scenario::ScenarioError;
 use openbmp_sil::SilError;
@@ -83,6 +85,36 @@ pub enum CliError {
     /// serialization.
     #[error("trajectory optimization error")]
     TrajoptLib(#[from] TrajoptError),
+    /// A trajectory-optimization report could not be serialized.
+    #[error("trajectory optimization report json error: {path}")]
+    TrajoptReportJson {
+        /// Offending output path.
+        path: PathBuf,
+        /// Source JSON serialization error.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// Run-data record or index generation failed.
+    #[error("run-data error")]
+    Rundata(#[from] RundataError),
+    /// Run-data verdict generation failed.
+    #[error("run-data verdict error")]
+    RunDataVerdict(#[from] VerdictError),
+    /// Run-data CLI options are inconsistent.
+    #[error("run-data configuration: {summary}")]
+    RunDataConfig {
+        /// Short, human-readable configuration error.
+        summary: String,
+    },
+    /// A run-data campaign planning artifact could not be serialized.
+    #[error("run-data campaign json error: {path}")]
+    RunDataCampaignJson {
+        /// Offending output path.
+        path: PathBuf,
+        /// Source JSON serialization error.
+        #[source]
+        source: serde_json::Error,
+    },
     /// Two telemetry archives differ.
     #[error("telemetry diff: {summary}")]
     Diff {
@@ -121,6 +153,29 @@ pub enum CliError {
         #[source]
         source: serde_json::Error,
     },
+    /// A sys-id residual comparison exceeded its declared envelope.
+    #[error("sys-id residual comparison: {summary}")]
+    Sysid {
+        /// Short, human-readable comparison failure summary.
+        summary: String,
+    },
+    /// A sys-id mapping or input file is malformed.
+    #[error("sys-id config error: {path}: {summary}")]
+    SysidConfig {
+        /// Offending mapping or input path.
+        path: PathBuf,
+        /// Short, human-readable configuration error.
+        summary: String,
+    },
+    /// A sys-id report could not be serialized.
+    #[error("sys-id report json error: {path}")]
+    SysidReportJson {
+        /// Offending output path.
+        path: PathBuf,
+        /// Source JSON serialization error.
+        #[source]
+        source: serde_json::Error,
+    },
     /// CSV parsing failed.
     #[error("csv error: {path}")]
     Csv {
@@ -148,11 +203,13 @@ impl CliError {
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         match self {
-            Self::Diff { .. } | Self::TelemetryCompare { .. } => 1,
+            Self::Diff { .. } | Self::TelemetryCompare { .. } | Self::Sysid { .. } => 1,
             Self::CodeVerification { .. } => 1,
             Self::Trajopt { .. } => 1,
             Self::Scenario(_)
+            | Self::RunDataConfig { .. }
             | Self::TelemetryCompareConfig { .. }
+            | Self::SysidConfig { .. }
             | Self::MigrateToml { .. }
             | Self::Migrate { .. }
             | Self::MonteCarlo { .. }
@@ -160,9 +217,14 @@ impl CliError {
             Self::Run(err) => err.exit_code(),
             Self::Io { .. } | Self::Csv { .. } => 3,
             Self::Telemetry(_)
+            | Self::Rundata(_)
+            | Self::RunDataVerdict(_)
+            | Self::RunDataCampaignJson { .. }
             | Self::Sil(_)
             | Self::TrajoptLib(_)
+            | Self::TrajoptReportJson { .. }
             | Self::TelemetryCompareReportJson { .. }
+            | Self::SysidReportJson { .. }
             | Self::DiffReportJson { .. }
             | Self::Parquet(_)
             | Self::Arrow(_) => 4,

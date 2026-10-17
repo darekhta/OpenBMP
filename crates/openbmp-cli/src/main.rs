@@ -6,12 +6,13 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use openbmp_cli::cli::{
-    Cli, Command, DictCommand, McCommand, McWilksSide, MigrateCommand, PackageCommand,
-    ReconstructCommand, SilCommand, TrajoptCommand,
+    CampaignCommand, Cli, Command, DictCommand, McAcousticsAscentTraceDesign, McCommand,
+    McWilksSide, MigrateCommand, PackageCommand, ReconstructCommand, SilCommand, SysidCommand,
+    TrajoptCommand,
 };
 use openbmp_cli::commands::{
-    check, compare_telemetry, conform, dict, diff, footprint_mc, mc, migrate, package, provenance,
-    reconstruct, run, sil, trajopt, verify_order,
+    campaign, check, compare_telemetry, conform, dict, diff, footprint_mc, mc, migrate, package,
+    provenance, reconstruct, run, sil, sysid, trajopt, verify_order,
 };
 use openbmp_cli::tracing;
 
@@ -44,9 +45,23 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
             output_csv,
             output_json,
             output_parquet,
+            run_index_jsonl,
+            run_index_parquet,
+            run_code_id,
+            run_verdict_rules,
+            run_verdict_json,
+            run_verdict_baseline_jsonl,
         } => {
             let overrides = run::OutputOverrides::new(output_csv, output_json, output_parquet);
-            let report = run::run_with_overrides(&scenario, &overrides)?;
+            let run_data = run::RunDataOptions::new(
+                run_index_jsonl,
+                run_index_parquet,
+                run_code_id,
+                run_verdict_rules,
+                run_verdict_json,
+                run_verdict_baseline_jsonl,
+            );
+            let report = run::run_with_options(&scenario, &overrides, &run_data)?;
             println!(
                 "openbmp run: ok — {} steps, t = {:.6} s, stop = {}",
                 report.final_step, report.final_time_s, report.stop_label,
@@ -98,6 +113,18 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
             }
             for path in &report.written {
                 println!("  wrote {}", path.display());
+            }
+            if let Some(record) = &report.run_record {
+                println!(
+                    "  run record: id={}, sha256={}",
+                    record.run_id, record.record_sha256_hex
+                );
+            }
+            if let Some(verdict) = &report.verdict_report {
+                println!(
+                    "  verdict report: passed={}, count={}",
+                    verdict.passed, verdict.verdict_count
+                );
             }
             Ok(())
         }
@@ -395,6 +422,374 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                 println!("  wrote I-load {}", report.output_iload.display());
                 Ok(())
             }
+            TrajoptCommand::DolRedesign {
+                scenario,
+                target_apogee_radius_m,
+                load_window_min_altitude_m,
+                load_window_max_altitude_m,
+                airspeed_m_s,
+                alpha_reference_rad,
+                beta_reference_rad,
+                stale_pitch_bias_rad,
+                stale_yaw_bias_rad,
+                load_limit_angle_rad,
+                insertion_residual_norm_m,
+                insertion_residual_limit_m,
+                synthesis_seed,
+                scenario_digest,
+                design_profile_digest,
+                source_revision,
+                producer,
+                solver_provenance,
+                output_iload,
+                report_json,
+            } => {
+                let report = trajopt::run_dol_redesign(
+                    trajopt::DolRedesignArgs {
+                        scenario,
+                        target_apogee_radius_m,
+                        load_window_min_altitude_m,
+                        load_window_max_altitude_m,
+                        airspeed_m_s,
+                        alpha_reference_rad,
+                        beta_reference_rad,
+                        stale_pitch_bias_rad,
+                        stale_yaw_bias_rad,
+                        load_limit_angle_rad,
+                        insertion_residual_norm_m,
+                        insertion_residual_limit_m,
+                        synthesis_seed,
+                        scenario_digest,
+                        design_profile_digest,
+                        source_revision,
+                        producer,
+                        solver_provenance,
+                    },
+                    &output_iload,
+                    report_json.as_deref(),
+                )?;
+                println!(
+                    "openbmp trajopt dol-redesign: ok - stale_min_margin_rad={:.12e}, redesigned_min_margin_rad={:.12e}, not_worse_fraction={:.6}, load_window_samples={}, iload_bytes={}",
+                    report.artifact.stale_min_margin_rad,
+                    report.artifact.redesigned_min_margin_rad,
+                    report.artifact.redesigned_not_worse_fraction,
+                    report.artifact.load_window_sample_count,
+                    report.iload_bytes,
+                );
+                println!("  wrote I-load {}", report.output_iload.display());
+                if let Some(path) = report.report_json {
+                    println!("  wrote DOL report {}", path.display());
+                }
+                Ok(())
+            }
+            TrajoptCommand::DolReportCard {
+                update_report_json,
+                indicators_csv,
+                report_id,
+                verification_provenance,
+                min_required_margin_rad,
+                min_not_worse_fraction,
+                output_csv,
+                report_json,
+            } => {
+                let report = trajopt::run_dol_report_card(
+                    trajopt::DolReportCardArgs {
+                        update_report_json,
+                        indicators_csv,
+                        report_id,
+                        verification_provenance,
+                        min_required_margin_rad,
+                        min_not_worse_fraction,
+                    },
+                    &output_csv,
+                    report_json.as_deref(),
+                )?;
+                println!(
+                    "openbmp trajopt dol-report-card: {} - redesigned_min_margin_rad={:.12e}, not_worse_fraction={:.6}, indicators={}, binding={}",
+                    match report.report_card.verdict {
+                        openbmp_trajopt::DolReportVerdict::Go => "go",
+                        openbmp_trajopt::DolReportVerdict::NoGo => "no_go",
+                    },
+                    report.report_card.redesigned_min_margin_rad,
+                    report.report_card.redesigned_not_worse_fraction,
+                    report.report_card.indicators.len(),
+                    report
+                        .report_card
+                        .binding_indicator
+                        .as_deref()
+                        .unwrap_or(""),
+                );
+                println!(
+                    "  wrote DOL report card CSV {}",
+                    report.output_csv.display()
+                );
+                if let Some(path) = report.report_json {
+                    println!("  wrote DOL report card JSON {}", path.display());
+                }
+                if report.report_card.verdict == openbmp_trajopt::DolReportVerdict::NoGo {
+                    return Err(openbmp_cli::CliError::Trajopt {
+                        summary: format!(
+                            "DOL report card verdict is no_go: binding={}",
+                            report
+                                .report_card
+                                .binding_indicator
+                                .as_deref()
+                                .unwrap_or("unknown")
+                        ),
+                    });
+                }
+                Ok(())
+            }
+            TrajoptCommand::DolCommitReadiness {
+                report_card_json,
+                persistence_json,
+                cola_json,
+                readiness_id,
+                output_csv,
+                report_json,
+            } => {
+                let report = trajopt::run_dol_commit_readiness(
+                    trajopt::DolCommitReadinessArgs {
+                        report_card_json,
+                        persistence_json,
+                        cola_json,
+                        readiness_id,
+                    },
+                    &output_csv,
+                    report_json.as_deref(),
+                )?;
+                println!(
+                    "openbmp trajopt dol-commit-readiness: {} - gates={}, binding_gate={}, binding_detail={}",
+                    match report.readiness.verdict {
+                        openbmp_trajopt::DolReportVerdict::Go => "go",
+                        openbmp_trajopt::DolReportVerdict::NoGo => "no_go",
+                    },
+                    report.readiness.gates.len(),
+                    report.readiness.binding_gate.as_deref().unwrap_or(""),
+                    report.readiness.binding_detail.as_deref().unwrap_or(""),
+                );
+                println!(
+                    "  wrote DOL commit-readiness CSV {}",
+                    report.output_csv.display()
+                );
+                if let Some(path) = report.report_json {
+                    println!("  wrote DOL commit-readiness JSON {}", path.display());
+                }
+                if report.readiness.verdict == openbmp_trajopt::DolReportVerdict::NoGo {
+                    return Err(openbmp_cli::CliError::Trajopt {
+                        summary: format!(
+                            "DOL commit readiness verdict is no_go: gate={}, binding={}",
+                            report
+                                .readiness
+                                .binding_gate
+                                .as_deref()
+                                .unwrap_or("unknown"),
+                            report
+                                .readiness
+                                .binding_detail
+                                .as_deref()
+                                .unwrap_or("unknown")
+                        ),
+                    });
+                }
+                Ok(())
+            }
+            TrajoptCommand::DolMaterializeIndicators {
+                telemetry_csv,
+                spec_csv,
+                output_csv,
+            } => {
+                let report = trajopt::run_dol_materialize_indicators(
+                    trajopt::DolIndicatorMaterializationArgs {
+                        telemetry_csv,
+                        spec_csv,
+                    },
+                    &output_csv,
+                )?;
+                println!(
+                    "openbmp trajopt dol-materialize-indicators: ok - indicators={}",
+                    report.indicators.len()
+                );
+                println!("  wrote DOL indicator CSV {}", report.output_csv.display());
+                Ok(())
+            }
+            TrajoptCommand::DolVerifyRun {
+                scenario,
+                update_report_json,
+                updated_iload,
+                indicator_spec_csv,
+                verifier_design_profile_digest,
+                report_id,
+                verification_provenance,
+                min_required_margin_rad,
+                min_not_worse_fraction,
+                output_telemetry_csv,
+                output_indicators_csv,
+                output_report_csv,
+                report_json,
+            } => {
+                let report = trajopt::run_dol_verify_run(
+                    trajopt::DolVerifyRunArgs {
+                        scenario,
+                        update_report_json,
+                        updated_iload,
+                        verifier_design_profile_digest,
+                        indicator_spec_csv,
+                        report_id,
+                        verification_provenance,
+                        min_required_margin_rad,
+                        min_not_worse_fraction,
+                    },
+                    &output_telemetry_csv,
+                    &output_indicators_csv,
+                    &output_report_csv,
+                    report_json.as_deref(),
+                )?;
+                println!(
+                    "openbmp trajopt dol-verify-run: {} - steps={}, t={:.6} s, stop={}, indicators={}, binding={}, design_profile_digest={}, iload_sha256={}, iload_application={}, applied_refs={}, pitch_points={}, yaw_points={}",
+                    match report.report_card.verdict {
+                        openbmp_trajopt::DolReportVerdict::Go => "go",
+                        openbmp_trajopt::DolReportVerdict::NoGo => "no_go",
+                    },
+                    report.run_final_step,
+                    report.run_final_time_s,
+                    report.run_stop_label,
+                    report.indicators.len(),
+                    report
+                        .report_card
+                        .binding_indicator
+                        .as_deref()
+                        .unwrap_or(""),
+                    report.verifier_design_profile_digest,
+                    report.updated_iload_sha256_hex,
+                    report.iload_application.mode,
+                    report.iload_application.updated_ascent_reference_count,
+                    report.iload_application.pitch_bias_points,
+                    report.iload_application.yaw_bias_points,
+                );
+                println!(
+                    "  wrote verifier telemetry {}",
+                    report.telemetry_csv.display()
+                );
+                println!(
+                    "  wrote DOL indicator CSV {}",
+                    report.indicators_csv.display()
+                );
+                println!(
+                    "  wrote DOL report card CSV {}",
+                    report.report_csv.display()
+                );
+                if let Some(path) = report.report_json {
+                    println!("  wrote DOL report card JSON {}", path.display());
+                }
+                if report.report_card.verdict == openbmp_trajopt::DolReportVerdict::NoGo {
+                    return Err(openbmp_cli::CliError::Trajopt {
+                        summary: format!(
+                            "DOL verify-run report card verdict is no_go: binding={}",
+                            report
+                                .report_card
+                                .binding_indicator
+                                .as_deref()
+                                .unwrap_or("unknown")
+                        ),
+                    });
+                }
+                Ok(())
+            }
+            TrajoptCommand::DolVerifySil {
+                package,
+                case,
+                update_report_json,
+                updated_iload,
+                indicator_spec_csv,
+                verifier_design_profile_digest,
+                report_id,
+                verification_provenance,
+                min_required_margin_rad,
+                min_not_worse_fraction,
+                output_telemetry_csv,
+                output_indicators_csv,
+                output_report_csv,
+                output_evidence_dir,
+                report_json,
+            } => {
+                let report = trajopt::run_dol_verify_sil(
+                    trajopt::DolVerifySilArgs {
+                        package,
+                        case,
+                        update_report_json,
+                        updated_iload,
+                        verifier_design_profile_digest,
+                        indicator_spec_csv,
+                        report_id,
+                        verification_provenance,
+                        min_required_margin_rad,
+                        min_not_worse_fraction,
+                    },
+                    &output_telemetry_csv,
+                    &output_indicators_csv,
+                    &output_report_csv,
+                    &output_evidence_dir,
+                    report_json.as_deref(),
+                )?;
+                println!(
+                    "openbmp trajopt dol-verify-sil: {} - package={}, case={}, steps={}, t={:.6} s, stop={}, indicators={}, binding={}, design_profile_digest={}, iload_sha256={}, iload_application={}, applied_refs={}, pitch_points={}, yaw_points={}, sil_stimuli={}",
+                    match report.report_card.verdict {
+                        openbmp_trajopt::DolReportVerdict::Go => "go",
+                        openbmp_trajopt::DolReportVerdict::NoGo => "no_go",
+                    },
+                    report.package_id,
+                    report.case_id,
+                    report.run_final_step,
+                    report.run_final_time_s,
+                    report.run_stop_label,
+                    report.indicators.len(),
+                    report
+                        .report_card
+                        .binding_indicator
+                        .as_deref()
+                        .unwrap_or(""),
+                    report.verifier_design_profile_digest,
+                    report.updated_iload_sha256_hex,
+                    report.iload_application.mode,
+                    report.iload_application.updated_ascent_reference_count,
+                    report.iload_application.pitch_bias_points,
+                    report.iload_application.yaw_bias_points,
+                    report.sil_stimuli,
+                );
+                println!(
+                    "  wrote SIL verifier telemetry {}",
+                    report.telemetry_csv.display()
+                );
+                println!(
+                    "  wrote DOL indicator CSV {}",
+                    report.indicators_csv.display()
+                );
+                println!(
+                    "  wrote DOL report card CSV {}",
+                    report.report_csv.display()
+                );
+                println!(
+                    "  wrote SIL evidence manifest {}",
+                    report.evidence_manifest.display()
+                );
+                if let Some(path) = report.report_json {
+                    println!("  wrote DOL report card JSON {}", path.display());
+                }
+                if report.report_card.verdict == openbmp_trajopt::DolReportVerdict::NoGo {
+                    return Err(openbmp_cli::CliError::Trajopt {
+                        summary: format!(
+                            "DOL verify-sil report card verdict is no_go: binding={}",
+                            report
+                                .report_card
+                                .binding_indicator
+                                .as_deref()
+                                .unwrap_or("unknown")
+                        ),
+                    });
+                }
+                Ok(())
+            }
         },
         Command::CompareTelemetry {
             scenario,
@@ -456,6 +851,46 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                 })
             }
         }
+        Command::Sysid { command } => match command {
+            SysidCommand::Residuals {
+                reference_csv,
+                actual_csv,
+                mapping,
+                report_json,
+            } => {
+                let report =
+                    sysid::run_residuals(&reference_csv, &actual_csv, &mapping, &report_json)?;
+                println!(
+                    "openbmp sysid residuals: {} - {} channel(s), out_of_family={}",
+                    if report.any_out_of_family {
+                        "FAILED"
+                    } else {
+                        "ok"
+                    },
+                    report.channel_count,
+                    report.any_out_of_family,
+                );
+                for channel in &report.channels {
+                    println!(
+                        "  {}: compared={}, skipped={}, max_abs_error={:.6e}, rms_abs_error={:.6e}, exceedances={}",
+                        channel.id,
+                        channel.total.compared_samples,
+                        channel.total.skipped_samples,
+                        channel.total.max_abs_error,
+                        channel.total.rms_abs_error,
+                        channel.total.exceedances,
+                    );
+                }
+                println!("  wrote report {}", report_json.display());
+                if report.any_out_of_family {
+                    Err(openbmp_cli::CliError::Sysid {
+                        summary: report.failure_summary(),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        },
         Command::FootprintMc {
             scenario,
             checkpoint_json,
@@ -712,6 +1147,478 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                 );
                 Ok(())
             }
+            McCommand::AeroDeckDrawOverlays {
+                samples,
+                campaign_seed,
+                first_sample_index,
+                dimension_id_base,
+                mach_correlation_length,
+                alpha_correlation_length_deg,
+                beta_correlation_length_deg,
+                overlay_prefix,
+                output_dir,
+                manifest_toml,
+            } => {
+                let report =
+                    mc::write_aero_deck_draw_overlays(mc::McAeroDeckDrawOverlaysOptions {
+                        samples,
+                        campaign_seed,
+                        first_sample_index,
+                        dimension_id_base,
+                        mach_correlation_length,
+                        alpha_correlation_length_deg,
+                        beta_correlation_length_deg,
+                        overlay_prefix: &overlay_prefix,
+                        output_dir: &output_dir,
+                        manifest_toml: &manifest_toml,
+                    })?;
+                println!(
+                    "openbmp mc aero-deck-draw-overlays: ok - wrote {} overlays under {}",
+                    report.samples,
+                    report.output_dir.display(),
+                );
+                println!("  manifest fragment: {}", report.manifest_toml.display());
+                Ok(())
+            }
+            McCommand::AeroDeckDrawCampaign {
+                scenario,
+                samples,
+                campaign_seed,
+                first_sample_index,
+                dimension_id_base,
+                mach_correlation_length,
+                alpha_correlation_length_deg,
+                beta_correlation_length_deg,
+                overlay_prefix,
+                campaign_id,
+                scenario_id,
+                run_seed,
+                output_dir,
+                run_code_id,
+                code_ordinal,
+                write_index_parquet,
+                workers,
+                uq_toml,
+                credibility_floor,
+                credibility_report_md,
+            } => {
+                let credibility_options = build_mc_credibility_options(
+                    uq_toml.as_ref(),
+                    &credibility_floor,
+                    credibility_report_md.as_ref(),
+                )?;
+                let report = mc::run_aero_deck_draw_campaign(mc::McAeroDeckDrawCampaignOptions {
+                    scenario_path: &scenario,
+                    samples,
+                    campaign_seed,
+                    first_sample_index,
+                    dimension_id_base,
+                    mach_correlation_length,
+                    alpha_correlation_length_deg,
+                    beta_correlation_length_deg,
+                    overlay_prefix: &overlay_prefix,
+                    campaign_id: &campaign_id,
+                    scenario_id: &scenario_id,
+                    run_seed,
+                    output_dir: &output_dir,
+                    run_code_id: &run_code_id,
+                    code_ordinal,
+                    write_index_parquet,
+                    workers,
+                    credibility: credibility_options,
+                })?;
+                println!(
+                    "openbmp mc aero-deck-draw-campaign: ok - ran {} samples, wrote {}",
+                    report.samples,
+                    report.campaign.summary_json.display(),
+                );
+                println!(
+                    "  generated campaign manifest: {}",
+                    report.campaign_manifest_toml.display(),
+                );
+                println!(
+                    "  generated overlays: {}",
+                    report.overlays.output_dir.display(),
+                );
+                if let Some(credibility) = &report.credibility {
+                    println!(
+                        "  credibility: binding={}, floor={}, label={}, aggregate_1sigma={:.12e}, accepted={}",
+                        credibility.binding_level.as_label(),
+                        credibility.floor.as_label(),
+                        credibility.legacy_label.as_label(),
+                        credibility.aggregate_one_sigma,
+                        credibility.accepted,
+                    );
+                }
+                if let Some(path) = &report.credibility_report_md {
+                    println!("  wrote credibility report {}", path.display());
+                }
+                Ok(())
+            }
+            McCommand::AcousticsAscentTrace {
+                samples,
+                campaign_seed,
+                design,
+                dynamic_pressure_min_pa,
+                dynamic_pressure_max_pa,
+                mach_min,
+                mach_max,
+                sample_prefix,
+                class_id,
+                output_toml,
+            } => {
+                let design = match design {
+                    McAcousticsAscentTraceDesign::LatinHypercube => {
+                        mc::McAcousticsAscentTraceDesign::LatinHypercube
+                    }
+                    McAcousticsAscentTraceDesign::Sobol => mc::McAcousticsAscentTraceDesign::Sobol,
+                    McAcousticsAscentTraceDesign::OwenSobol => {
+                        mc::McAcousticsAscentTraceDesign::OwenSobol
+                    }
+                };
+                let report = mc::write_acoustics_ascent_trace(mc::McAcousticsAscentTraceOptions {
+                    samples,
+                    campaign_seed,
+                    design,
+                    dynamic_pressure_min_pa,
+                    dynamic_pressure_max_pa,
+                    mach_min,
+                    mach_max,
+                    sample_prefix: &sample_prefix,
+                    class_id: class_id.as_deref(),
+                    output_toml: &output_toml,
+                })?;
+                println!(
+                    "openbmp mc acoustics-ascent-trace: ok - wrote {} samples to {}",
+                    report.samples,
+                    report.output_toml.display(),
+                );
+                Ok(())
+            }
+            McCommand::AcousticsResponseSamples {
+                samples,
+                campaign_seed,
+                design,
+                surface_mass_min_kg_m2,
+                surface_mass_max_kg_m2,
+                area_min_m2,
+                area_max_m2,
+                mode_shape_min,
+                mode_shape_max,
+                sample_prefix,
+                class_id,
+                output_toml,
+            } => {
+                let design = match design {
+                    McAcousticsAscentTraceDesign::LatinHypercube => {
+                        mc::McAcousticsAscentTraceDesign::LatinHypercube
+                    }
+                    McAcousticsAscentTraceDesign::Sobol => mc::McAcousticsAscentTraceDesign::Sobol,
+                    McAcousticsAscentTraceDesign::OwenSobol => {
+                        mc::McAcousticsAscentTraceDesign::OwenSobol
+                    }
+                };
+                let report =
+                    mc::write_acoustics_response_samples(mc::McAcousticsResponseSamplesOptions {
+                        samples,
+                        campaign_seed,
+                        design,
+                        surface_mass_min_kg_m2,
+                        surface_mass_max_kg_m2,
+                        area_min_m2,
+                        area_max_m2,
+                        mode_shape_min,
+                        mode_shape_max,
+                        sample_prefix: &sample_prefix,
+                        class_id: class_id.as_deref(),
+                        output_toml: &output_toml,
+                    })?;
+                println!(
+                    "openbmp mc acoustics-response-samples: ok - wrote {} samples to {}",
+                    report.samples,
+                    report.output_toml.display(),
+                );
+                Ok(())
+            }
+            McCommand::AcousticsAscentCampaign {
+                scenario,
+                samples,
+                campaign_seed,
+                design,
+                dynamic_pressure_min_pa,
+                dynamic_pressure_max_pa,
+                mach_min,
+                mach_max,
+                sample_prefix,
+                class_id,
+                output_csv,
+                output_artifact_dir,
+                output_scenario_toml,
+                checkpoint_json,
+                max_new_samples,
+                workers,
+                toolchain_profile,
+            } => {
+                let design = match design {
+                    McAcousticsAscentTraceDesign::LatinHypercube => {
+                        mc::McAcousticsAscentTraceDesign::LatinHypercube
+                    }
+                    McAcousticsAscentTraceDesign::Sobol => mc::McAcousticsAscentTraceDesign::Sobol,
+                    McAcousticsAscentTraceDesign::OwenSobol => {
+                        mc::McAcousticsAscentTraceDesign::OwenSobol
+                    }
+                };
+                let report =
+                    mc::run_acoustics_ascent_campaign(mc::McAcousticsAscentCampaignOptions {
+                        scenario_path: &scenario,
+                        samples,
+                        campaign_seed,
+                        design,
+                        dynamic_pressure_min_pa,
+                        dynamic_pressure_max_pa,
+                        mach_min,
+                        mach_max,
+                        sample_prefix: &sample_prefix,
+                        class_id: class_id.as_deref(),
+                        output_csv: &output_csv,
+                        output_artifact_dir: output_artifact_dir.as_deref(),
+                        output_scenario_toml: output_scenario_toml.as_deref(),
+                        checkpoint_json: checkpoint_json.as_deref(),
+                        max_new_samples,
+                        workers,
+                        toolchain_profile: &toolchain_profile,
+                    })?;
+                if !report.complete {
+                    println!(
+                        "openbmp mc acoustics-ascent-campaign: ok - checkpointed {}/{} samples at {}",
+                        report.completed_samples,
+                        report.samples,
+                        report
+                            .checkpoint_json
+                            .as_ref()
+                            .map_or_else(|| "<none>".to_owned(), |path| path.display().to_string()),
+                    );
+                    println!("  checkpoint incomplete; final outputs were not written");
+                    return Ok(());
+                }
+                println!(
+                    "openbmp mc acoustics-ascent-campaign: ok - ran {} samples, peak {:.12e} dB, wrote {}",
+                    report.samples,
+                    report.peak_sample_oaspl_db,
+                    report.output_csv.display(),
+                );
+                if let Some(path) = &report.checkpoint_json {
+                    println!(
+                        "  checkpoint complete: {}/{} samples at {}",
+                        report.completed_samples,
+                        report.samples,
+                        path.display(),
+                    );
+                }
+                if let Some(p95_50_oaspl_db) = report.p95_50_oaspl_db {
+                    println!("  p95/50 OASPL = {p95_50_oaspl_db:.12e} dB");
+                }
+                if let Some(required) = report.p95_50_wilks_required_sample_count {
+                    println!(
+                        "  Wilks required samples = {}, sufficient = {}",
+                        required,
+                        report.p95_50_wilks_sample_count_sufficient.unwrap_or(false),
+                    );
+                }
+                if let Some(p95_50_oaspl_db) = report.fairing_internal_p95_50_oaspl_db {
+                    println!("  fairing p95/50 OASPL = {p95_50_oaspl_db:.12e} dB");
+                }
+                if let Some(required) = report.fairing_internal_p95_50_wilks_required_sample_count {
+                    println!(
+                        "  fairing Wilks required samples = {}, sufficient = {}",
+                        required,
+                        report
+                            .fairing_internal_p95_50_wilks_sample_count_sufficient
+                            .unwrap_or(false),
+                    );
+                }
+                if let Some(value) = report.response_p95_50_total_mean_square_acceleration_m2_s4 {
+                    println!("  response p95/50 acceleration mean-square = {value:.12e} m^2/s^4");
+                }
+                if let Some(value) = report.response_p95_50_total_mean_square_force_n2 {
+                    println!("  response p95/50 modal-force mean-square = {value:.12e} N^2");
+                }
+                if let Some(required) = report.response_p95_50_wilks_required_sample_count {
+                    println!(
+                        "  response Wilks required samples = {}, sufficient = {}",
+                        required,
+                        report
+                            .response_p95_50_wilks_sample_count_sufficient
+                            .unwrap_or(false),
+                    );
+                }
+                if let Some(path) = &report.output_scenario_toml {
+                    println!("  wrote generated scenario {}", path.display());
+                }
+                if let Some(path) = &report.output_artifact_dir {
+                    println!(
+                        "  wrote {} campaign artifacts under {}",
+                        report.artifact_paths.len(),
+                        path.display(),
+                    );
+                }
+                if let Some(path) = &report.artifact_manifest_json {
+                    println!("  wrote campaign artifact manifest {}", path.display());
+                }
+                Ok(())
+            }
+            McCommand::AcousticsResponseCampaign {
+                scenario,
+                samples,
+                campaign_seed,
+                design,
+                dynamic_pressure_min_pa,
+                dynamic_pressure_max_pa,
+                mach_min,
+                mach_max,
+                sample_prefix,
+                class_id,
+                response_surface_mass_min_kg_m2,
+                response_surface_mass_max_kg_m2,
+                response_area_min_m2,
+                response_area_max_m2,
+                response_mode_shape_min,
+                response_mode_shape_max,
+                response_sample_prefix,
+                response_class_id,
+                output_csv,
+                output_artifact_dir,
+                output_scenario_toml,
+                checkpoint_json,
+                max_new_samples,
+                workers,
+                toolchain_profile,
+            } => {
+                let design = match design {
+                    McAcousticsAscentTraceDesign::LatinHypercube => {
+                        mc::McAcousticsAscentTraceDesign::LatinHypercube
+                    }
+                    McAcousticsAscentTraceDesign::Sobol => mc::McAcousticsAscentTraceDesign::Sobol,
+                    McAcousticsAscentTraceDesign::OwenSobol => {
+                        mc::McAcousticsAscentTraceDesign::OwenSobol
+                    }
+                };
+                let response_samples = match (
+                    response_surface_mass_min_kg_m2,
+                    response_surface_mass_max_kg_m2,
+                    response_area_min_m2,
+                    response_area_max_m2,
+                    response_mode_shape_min,
+                    response_mode_shape_max,
+                ) {
+                    (
+                        Some(surface_mass_min_kg_m2),
+                        Some(surface_mass_max_kg_m2),
+                        Some(area_min_m2),
+                        Some(area_max_m2),
+                        Some(mode_shape_min),
+                        Some(mode_shape_max),
+                    ) => Some(mc::McAcousticsResponseCampaignSamplesOptions {
+                        surface_mass_min_kg_m2,
+                        surface_mass_max_kg_m2,
+                        area_min_m2,
+                        area_max_m2,
+                        mode_shape_min,
+                        mode_shape_max,
+                        sample_prefix: &response_sample_prefix,
+                        class_id: response_class_id.as_deref(),
+                    }),
+                    (None, None, None, None, None, None) => {
+                        if response_class_id.is_some() {
+                            return Err(openbmp_cli::CliError::MonteCarlo {
+                                summary: "acoustics response campaign --response-class-id requires response sample range flags".to_owned(),
+                            });
+                        }
+                        None
+                    }
+                    _ => {
+                        return Err(openbmp_cli::CliError::MonteCarlo {
+                            summary: "acoustics response campaign response sample generation requires all response range flags".to_owned(),
+                        });
+                    }
+                };
+                let report =
+                    mc::run_acoustics_response_campaign(mc::McAcousticsResponseCampaignOptions {
+                        scenario_path: &scenario,
+                        samples,
+                        campaign_seed,
+                        design,
+                        dynamic_pressure_min_pa,
+                        dynamic_pressure_max_pa,
+                        mach_min,
+                        mach_max,
+                        sample_prefix: &sample_prefix,
+                        class_id: class_id.as_deref(),
+                        response_samples,
+                        output_csv: &output_csv,
+                        output_artifact_dir: output_artifact_dir.as_deref(),
+                        output_scenario_toml: output_scenario_toml.as_deref(),
+                        checkpoint_json: checkpoint_json.as_deref(),
+                        max_new_samples,
+                        workers,
+                        toolchain_profile: &toolchain_profile,
+                    })?;
+                if !report.complete {
+                    println!(
+                        "openbmp mc acoustics-response-campaign: ok - checkpointed {}/{} samples at {}",
+                        report.completed_samples,
+                        report.samples,
+                        report
+                            .checkpoint_json
+                            .as_ref()
+                            .map_or_else(|| "<none>".to_owned(), |path| path.display().to_string()),
+                    );
+                    println!("  checkpoint incomplete; final response outputs were not written");
+                    return Ok(());
+                }
+                println!(
+                    "openbmp mc acoustics-response-campaign: ok - ran {} samples, wrote {}",
+                    report.samples,
+                    report.output_csv.display(),
+                );
+                if let Some(value) = report.response_p95_50_total_mean_square_acceleration_m2_s4 {
+                    println!("  response p95/50 acceleration mean-square = {value:.12e} m^2/s^4");
+                }
+                if let Some(value) = report.response_p95_50_total_mean_square_force_n2 {
+                    println!("  response p95/50 modal-force mean-square = {value:.12e} N^2");
+                }
+                if let Some(required) = report.response_p95_50_wilks_required_sample_count {
+                    println!(
+                        "  response Wilks required samples = {}, sufficient = {}",
+                        required,
+                        report
+                            .response_p95_50_wilks_sample_count_sufficient
+                            .unwrap_or(false),
+                    );
+                }
+                if let Some(path) = &report.checkpoint_json {
+                    println!(
+                        "  checkpoint complete: {}/{} samples at {}",
+                        report.completed_samples,
+                        report.samples,
+                        path.display(),
+                    );
+                }
+                if let Some(path) = &report.output_scenario_toml {
+                    println!("  wrote generated scenario {}", path.display());
+                }
+                if let Some(path) = &report.output_artifact_dir {
+                    println!(
+                        "  wrote {} campaign artifacts under {}",
+                        report.artifact_paths.len(),
+                        path.display(),
+                    );
+                }
+                if let Some(path) = &report.artifact_manifest_json {
+                    println!("  wrote campaign artifact manifest {}", path.display());
+                }
+                Ok(())
+            }
             McCommand::PropulsionFaults {
                 scenario,
                 library_toml,
@@ -891,6 +1798,89 @@ fn dispatch(command: Command) -> Result<(), openbmp_cli::CliError> {
                         sidecar.path.display(),
                         sidecar.sha256,
                     );
+                }
+                Ok(())
+            }
+        },
+        Command::Campaign { command } => match command {
+            CampaignCommand::Plan {
+                manifest,
+                output_plan_json,
+                output_shards_json,
+                workers,
+            } => {
+                let report = campaign::plan(
+                    &manifest,
+                    &output_plan_json,
+                    output_shards_json.as_deref(),
+                    workers,
+                )?;
+                println!(
+                    "openbmp campaign plan: ok - campaign={}, runs={}, wrote {}",
+                    report.campaign_id,
+                    report.run_count,
+                    report.plan_json.display(),
+                );
+                if let Some(path) = &report.shards_json {
+                    let worker_count = report.worker_count.unwrap_or(0);
+                    println!("  wrote {} shard(s) to {}", worker_count, path.display());
+                }
+                Ok(())
+            }
+            CampaignCommand::Run {
+                manifest,
+                output_dir,
+                run_code_id,
+                code_ordinal,
+                write_index_parquet,
+                workers,
+                fail_on_ci_gates,
+            } => {
+                let report = campaign::run(
+                    &manifest,
+                    &output_dir,
+                    &run_code_id,
+                    code_ordinal,
+                    write_index_parquet,
+                    workers,
+                )?;
+                if fail_on_ci_gates && !report.ci_failures.is_empty() {
+                    return Err(openbmp_cli::CliError::RunDataConfig {
+                        summary: format!(
+                            "campaign CI gates failed ({} failure(s)); summary={}; {}",
+                            report.ci_failures.len(),
+                            report.summary_json.display(),
+                            report.ci_failures.join("; "),
+                        ),
+                    });
+                }
+                println!(
+                    "openbmp campaign run: ok - campaign={}, runs={}, wrote {}",
+                    report.campaign_id,
+                    report.run_count,
+                    report.summary_json.display(),
+                );
+                println!("  run index {}", report.run_index_jsonl.display());
+                if let Some(path) = &report.run_index_parquet {
+                    println!("  run index parquet {}", path.display());
+                }
+                if let Some(summary) = &report.verdict_summary {
+                    println!(
+                        "  verdict summary: status={:?}, reports={}, failed={}",
+                        summary.status, summary.report_count, summary.failed_report_count,
+                    );
+                }
+                if let Some(trend) = &report.trend_summary {
+                    println!(
+                        "  trend summary: store={}, drift={}, scoreboard={}, ci_failures={}",
+                        trend.trend_store_json.display(),
+                        trend.drift_report_json.display(),
+                        trend.scoreboard_md.display(),
+                        trend.ci_failures.len(),
+                    );
+                }
+                if !report.ci_failures.is_empty() {
+                    println!("  campaign ci failures: {}", report.ci_failures.len());
                 }
                 Ok(())
             }

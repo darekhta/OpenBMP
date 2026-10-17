@@ -1,0 +1,71 @@
+# Public NACA Report 1048 body-I force/moment equation fixture.
+#
+# Uses equation (15) from the report for body I with the body geometry from
+# Figure 6. This checks body normal-force and bow pitching-moment coefficients
+# only; it does not digitize the scanned Figure 7 plot points. Incremental
+# foredrag is checked by the companion incremental-foredrag fixture.
+
+openbmp.aero_datcom_validation = 1
+
+reference_reynolds_at_mach1 = 1.0e6
+
+[provenance]
+dataset_id = "openbmp.aero.naca_report_1048_body_i_force_moment.v1"
+source_class = "public-domain-naca"
+validation_label = "research"
+
+[geometry]
+body_diameter_m = 1.0
+body_length_m = 21.1
+surface_roughness_m = 0.0
+reference_area_m2 = 0.7853981633974483
+reference_length_m = 1.0
+center_of_gravity_from_nose_m = 0.0
+
+[geometry.nose]
+kind = "ogive"
+fineness = 5.752
+
+[tolerances]
+max_abs_error = 2.0e-2
+max_relative_error = 7.0e-2
+
+[[samples]]
+id = "body-i-mach198-alpha4"
+mach = 1.98
+alpha_deg = 4.0
+reynolds_length = 1.0e6
+
+[samples.expected]
+cn = 0.2481053724747756
+cm = -1.6168179396947742
+
+[[samples]]
+id = "body-i-mach198-alpha8"
+mach = 1.98
+alpha_deg = 8.0
+reynolds_length = 1.0e6
+
+[samples.expected]
+cn = 0.7155412850741488
+cm = -5.746713955103147
+
+[[samples]]
+id = "body-i-mach198-alpha12"
+mach = 1.98
+alpha_deg = 12.0
+reynolds_length = 1.0e6
+
+[samples.expected]
+cn = 1.4058143106382115
+cm = -12.429866177917685
+
+[[samples]]
+id = "body-i-mach198-alpha16"
+mach = 1.98
+alpha_deg = 16.0
+reynolds_length = 1.0e6
+
+[samples.expected]
+cn = 2.3223157192198003
+cm = -21.70513160641034

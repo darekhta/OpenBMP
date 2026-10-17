@@ -10,6 +10,8 @@
 
 use thiserror::Error;
 
+use crate::allocation::AllocatorError;
+
 use std::string::String;
 
 /// Errors raised by the internal pub/sub bus.
@@ -312,6 +314,9 @@ pub enum ControllerError {
     /// A guidance job failed.
     #[error(transparent)]
     Guidance(#[from] GuidanceError),
+    /// A control allocator failed.
+    #[error(transparent)]
+    Allocator(#[from] AllocatorError),
     /// A commander failed.
     #[error(transparent)]
     Commander(#[from] CommanderError),

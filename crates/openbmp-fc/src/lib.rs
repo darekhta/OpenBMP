@@ -108,6 +108,7 @@ pub mod bus;
 pub mod clock;
 pub mod commander;
 pub mod controller;
+pub mod csi;
 pub mod dictionary;
 pub mod error;
 pub mod estimator;
@@ -124,6 +125,7 @@ pub mod indi;
 pub mod l1_adaptive_full;
 #[cfg(feature = "mpc")]
 pub mod landing;
+pub mod loadrelief;
 #[cfg(feature = "lqr")]
 pub mod lqr;
 pub mod mixer;
@@ -132,6 +134,7 @@ pub mod mpc;
 mod nav_metrics;
 pub mod params;
 pub mod replay;
+pub mod schedule;
 pub mod scheduler;
 pub mod sensor_ingest;
 pub mod sr_ukf;

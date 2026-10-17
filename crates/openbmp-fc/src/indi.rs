@@ -11,7 +11,10 @@
 //!
 //! with the standard project assumption of diagonal `J` (rocket-class
 //! body-axis inertia ellipsoid) and diagonal `G_eff` (decoupled
-//! direct-torque effectors), each axis is an independent SISO loop.
+//! direct-torque effectors), the legacy runtime path is an independent
+//! SISO loop. The dense-INCA helpers below lift the increment relation
+//! to `B_eff Δu ≈ Δω̇` for coupled gimbaled clusters while reusing the
+//! FC-local dense WLS allocator.
 //! Taking time differences between consecutive samples and assuming
 //! the disturbance varies slowly relative to the loop step gives
 //!
@@ -63,6 +66,15 @@
 
 use thiserror::Error;
 
+use openbmp_core::EffectorId;
+
+#[cfg(not(feature = "std"))]
+use alloc::vec;
+use std::vec::Vec;
+
+use crate::allocation::{
+    AllocatorError, EffectivenessMatrix, EffectorBounds, WlsActiveSetAllocator,
+};
 use crate::filters::Biquad;
 
 /// Low-pass filter shape applied identically to `ω` and the prior
@@ -170,6 +182,42 @@ pub enum IndiError {
     },
 }
 
+/// Errors raised by dense-INCA and pseudo-control hedging helpers.
+#[derive(Clone, Debug, Error, PartialEq)]
+pub enum DenseIncaError {
+    /// The dense allocator rejected the request.
+    #[error("dense INCA allocator rejected request: {0}")]
+    Allocator(AllocatorError),
+    /// Vector dimensions do not match the configured effectiveness matrix.
+    #[error("dense INCA dimension mismatch: {reason}")]
+    DimensionMismatch {
+        /// Human-readable reason.
+        reason: &'static str,
+    },
+    /// A scalar is NaN or infinite.
+    #[error("dense INCA field {field} must be finite; got {value}")]
+    NonFinite {
+        /// Field name.
+        field: &'static str,
+        /// Offending value.
+        value: f64,
+    },
+    /// A scalar must be positive and finite.
+    #[error("dense INCA field {field} must be positive and finite; got {value}")]
+    NonPositive {
+        /// Field name.
+        field: &'static str,
+        /// Offending value.
+        value: f64,
+    },
+}
+
+impl From<AllocatorError> for DenseIncaError {
+    fn from(value: AllocatorError) -> Self {
+        Self::Allocator(value)
+    }
+}
+
 impl IndiParams {
     /// Validate INDI parameters against the loop step `dt_s`.
     ///
@@ -265,6 +313,68 @@ pub struct IndiChannel {
     u_prev: f64,
 }
 
+/// Result of one scalar INDI channel step.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct IndiStep {
+    /// Clamped actuator command.
+    pub command: f64,
+    /// `true` when the unclamped command exceeded the supplied bounds.
+    pub saturated: bool,
+    /// Desired angular acceleration, rad/s².
+    pub omega_dot_des_rad_s2: f64,
+    /// Measured filtered angular acceleration, rad/s².
+    pub omega_dot_meas_rad_s2: f64,
+}
+
+/// Dense incremental-control-allocation controller state.
+///
+/// `WlsActiveSetAllocator` solves absolute commands, so the INCA wrapper
+/// shifts the virtual target by the prior achieved pseudo-control:
+///
+/// `B u_next = B u_prev + (omega_dot_des - omega_dot_meas)`.
+///
+/// The pseudo-control deficit returned in [`DenseIncaOutput`] is the portion
+/// of the requested angular-acceleration increment that could not be achieved
+/// because of position/rate bounds. A downstream pseudo-control hedger can
+/// subtract that deficit from the reference-model input.
+#[derive(Clone, Debug)]
+pub struct DenseIncaController {
+    allocator: WlsActiveSetAllocator,
+    bounds: EffectorBounds,
+    u_prev: Vec<f64>,
+    dt_s: f64,
+}
+
+/// Result of one dense INCA step.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DenseIncaOutput {
+    /// Absolute per-effector command after applying the increment.
+    pub u: Vec<(EffectorId, f64)>,
+    /// `true` where the allocator pinned an effector at a tightened bound.
+    pub active_at_bound: Vec<bool>,
+    /// Requested angular-acceleration increment, row order.
+    pub requested_increment: Vec<f64>,
+    /// Achieved angular-acceleration increment, row order.
+    pub achieved_increment: Vec<f64>,
+    /// Requested minus achieved increment, row order.
+    pub pseudo_control_deficit: Vec<f64>,
+    /// `true` if a bound, residual, or nonzero deficit shows unavailable authority.
+    pub saturated: bool,
+    /// Active-set iterations used by the dense WLS allocator.
+    pub iterations: u16,
+}
+
+/// Pseudo-control hedging reference-model integrator.
+///
+/// The helper integrates `commanded_pseudo_control - pseudo_control_deficit`.
+/// In a saturated actuator case where the dense-INCA output reports that all of
+/// the requested pseudo-control was unavailable, this state does not wind up on
+/// the unavailable command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PseudoControlHedger {
+    integral_state: Vec<f64>,
+}
+
 impl IndiChannel {
     /// Construct a channel with the configured filter pair seeded at
     /// zero state.
@@ -325,7 +435,7 @@ impl IndiChannel {
     /// effector and `saturated` is `true` when the unclamped
     /// candidate exceeded `[u_min, u_max]`.
     #[allow(clippy::too_many_arguments)]
-    pub fn step(
+    pub fn step_diagnostic(
         &mut self,
         params: &IndiParams,
         axis: usize,
@@ -334,7 +444,7 @@ impl IndiChannel {
         u_min: f64,
         u_max: f64,
         dt: f64,
-    ) -> (f64, bool) {
+    ) -> IndiStep {
         // 1. Filter the gyro sample.
         let omega_filtered = self.omega_filter.step(omega_meas);
         // 2. Filtered finite difference for ω̇_meas.
@@ -361,8 +471,302 @@ impl IndiChannel {
         let u_clamped = u_raw.clamp(u_min, u_max);
         let saturated = (u_raw - u_clamped).abs() > 0.0;
         self.u_prev = u_clamped;
-        (u_clamped, saturated)
+        IndiStep {
+            command: u_clamped,
+            saturated,
+            omega_dot_des_rad_s2: omega_dot_des,
+            omega_dot_meas_rad_s2: omega_dot_meas,
+        }
     }
+
+    /// One INDI rate-loop step on a single axis.
+    ///
+    /// Returns `(u_clamped, saturated)` for existing callers. Use
+    /// [`IndiChannel::step_diagnostic`] when the caller also needs the
+    /// desired/measured pseudo-control terms for dense-INCA allocation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(
+        &mut self,
+        params: &IndiParams,
+        axis: usize,
+        omega_meas: f64,
+        rate_cmd: f64,
+        u_min: f64,
+        u_max: f64,
+        dt: f64,
+    ) -> (f64, bool) {
+        let step = self.step_diagnostic(params, axis, omega_meas, rate_cmd, u_min, u_max, dt);
+        (step.command, step.saturated)
+    }
+}
+
+impl DenseIncaController {
+    /// Construct a dense INCA wrapper around the FC dense WLS allocator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DenseIncaError`] when dimensions are inconsistent, `dt_s` is
+    /// non-positive/non-finite, or the initial command contains non-finite
+    /// values. Detailed bound validation is delegated to the dense allocator on
+    /// each step so the same fail-closed path is used at runtime.
+    pub fn new(
+        allocator: WlsActiveSetAllocator,
+        bounds: EffectorBounds,
+        initial_u: Vec<f64>,
+        dt_s: f64,
+    ) -> Result<Self, DenseIncaError> {
+        let columns = allocator.matrix().columns();
+        if initial_u.len() != columns
+            || bounds.u_min_pos.len() != columns
+            || bounds.u_max_pos.len() != columns
+            || bounds.rate_limit.len() != columns
+        {
+            return Err(DenseIncaError::DimensionMismatch {
+                reason: "initial command and bounds lengths must match effectiveness columns",
+            });
+        }
+        require_dense_inca_positive("dt_s", dt_s)?;
+        for value in &initial_u {
+            require_dense_inca_finite("initial_u", *value)?;
+        }
+        Ok(Self {
+            allocator,
+            bounds,
+            u_prev: initial_u,
+            dt_s,
+        })
+    }
+
+    /// Borrow the configured dense effectiveness matrix.
+    #[must_use]
+    pub const fn matrix(&self) -> &EffectivenessMatrix {
+        self.allocator.matrix()
+    }
+
+    /// Previous absolute effector command in matrix-column order.
+    #[must_use]
+    pub fn previous_command(&self) -> &[f64] {
+        &self.u_prev
+    }
+
+    /// One dense INCA step.
+    ///
+    /// `omega_dot_des` and `omega_dot_meas` are angular-acceleration
+    /// pseudo-control vectors in the effectiveness matrix row order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DenseIncaError`] when dimensions, scalars, bounds, or the dense
+    /// WLS solve fail validation.
+    pub fn step(
+        &mut self,
+        omega_dot_des: &[f64],
+        omega_dot_meas: &[f64],
+    ) -> Result<DenseIncaOutput, DenseIncaError> {
+        let step_prev = self.u_prev.clone();
+        let step_bounds = self.bounds.clone();
+        self.step_inner(omega_dot_des, omega_dot_meas, &step_prev, &step_bounds)
+    }
+
+    /// One dense INCA step while treating disallowed effectors as fixed-zero
+    /// columns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DenseIncaError`] when dimensions, scalars, bounds, or the dense
+    /// WLS solve fail validation.
+    pub fn step_with_allowed_effectors(
+        &mut self,
+        omega_dot_des: &[f64],
+        omega_dot_meas: &[f64],
+        allowed_effectors: &[EffectorId],
+    ) -> Result<DenseIncaOutput, DenseIncaError> {
+        let mut step_prev = self.u_prev.clone();
+        let mut step_bounds = self.bounds.clone();
+        for (column, effector_id) in self.matrix().effectors().iter().enumerate() {
+            if !allowed_effectors.contains(effector_id) {
+                step_prev[column] = 0.0;
+                step_bounds.u_min_pos[column] = 0.0;
+                step_bounds.u_max_pos[column] = 0.0;
+                step_bounds.rate_limit[column] = 0.0;
+            }
+        }
+        self.step_inner(omega_dot_des, omega_dot_meas, &step_prev, &step_bounds)
+    }
+
+    fn step_inner(
+        &mut self,
+        omega_dot_des: &[f64],
+        omega_dot_meas: &[f64],
+        step_prev: &[f64],
+        step_bounds: &EffectorBounds,
+    ) -> Result<DenseIncaOutput, DenseIncaError> {
+        let rows = self.matrix().rows();
+        validate_dense_inca_vector("omega_dot_des", omega_dot_des, rows)?;
+        validate_dense_inca_vector("omega_dot_meas", omega_dot_meas, rows)?;
+        let prior_pseudo_control = effectiveness_multiply(self.matrix(), step_prev)?;
+        let requested_increment = omega_dot_des
+            .iter()
+            .zip(omega_dot_meas)
+            .map(|(desired, measured)| desired - measured)
+            .collect::<Vec<_>>();
+        let target_pseudo_control = prior_pseudo_control
+            .iter()
+            .zip(&requested_increment)
+            .map(|(prior, increment)| prior + increment)
+            .collect::<Vec<_>>();
+
+        let allocation =
+            self.allocator
+                .allocate(&target_pseudo_control, step_prev, step_bounds, self.dt_s)?;
+        let next_u = allocation
+            .u
+            .iter()
+            .map(|(_, command)| *command)
+            .collect::<Vec<_>>();
+        let achieved_pseudo_control = effectiveness_multiply(self.matrix(), &next_u)?;
+        let achieved_increment = achieved_pseudo_control
+            .iter()
+            .zip(&prior_pseudo_control)
+            .map(|(next, prior)| next - prior)
+            .collect::<Vec<_>>();
+        let pseudo_control_deficit = requested_increment
+            .iter()
+            .zip(&achieved_increment)
+            .map(|(requested, achieved)| requested - achieved)
+            .collect::<Vec<_>>();
+        let saturated = allocation.active_at_bound.iter().any(|active| *active)
+            || !allocation.attainable
+            || pseudo_control_deficit
+                .iter()
+                .any(|deficit| deficit.abs() > 1.0e-9);
+        self.u_prev = next_u;
+        Ok(DenseIncaOutput {
+            u: allocation.u,
+            active_at_bound: allocation.active_at_bound,
+            requested_increment,
+            achieved_increment,
+            pseudo_control_deficit,
+            saturated,
+            iterations: allocation.iterations,
+        })
+    }
+}
+
+impl PseudoControlHedger {
+    /// Construct a hedger with zero integral state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DenseIncaError`] when `dimension == 0`.
+    pub fn new(dimension: usize) -> Result<Self, DenseIncaError> {
+        if dimension == 0 {
+            return Err(DenseIncaError::DimensionMismatch {
+                reason: "pseudo-control hedger dimension must be nonzero",
+            });
+        }
+        Ok(Self {
+            integral_state: vec![0.0; dimension],
+        })
+    }
+
+    /// Integrate one hedged reference-model input.
+    ///
+    /// Returns the hedged pseudo-control vector
+    /// `commanded_pseudo_control - pseudo_control_deficit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DenseIncaError`] when dimensions mismatch, values are
+    /// non-finite, or `dt_s` is non-positive.
+    pub fn step(
+        &mut self,
+        commanded_pseudo_control: &[f64],
+        pseudo_control_deficit: &[f64],
+        dt_s: f64,
+    ) -> Result<Vec<f64>, DenseIncaError> {
+        let dimension = self.integral_state.len();
+        validate_dense_inca_vector(
+            "commanded_pseudo_control",
+            commanded_pseudo_control,
+            dimension,
+        )?;
+        validate_dense_inca_vector("pseudo_control_deficit", pseudo_control_deficit, dimension)?;
+        require_dense_inca_positive("dt_s", dt_s)?;
+        let mut hedged = vec![0.0; dimension];
+        for i in 0..dimension {
+            hedged[i] = commanded_pseudo_control[i] - pseudo_control_deficit[i];
+            require_dense_inca_finite("hedged_pseudo_control", hedged[i])?;
+            self.integral_state[i] += hedged[i] * dt_s;
+        }
+        Ok(hedged)
+    }
+
+    /// Current integrated hedged reference-model input.
+    #[must_use]
+    pub fn integral_state(&self) -> &[f64] {
+        &self.integral_state
+    }
+}
+
+fn effectiveness_multiply(
+    matrix: &EffectivenessMatrix,
+    u: &[f64],
+) -> Result<Vec<f64>, DenseIncaError> {
+    if u.len() != matrix.columns() {
+        return Err(DenseIncaError::DimensionMismatch {
+            reason: "command length must match effectiveness columns",
+        });
+    }
+    validate_dense_inca_vector("u", u, matrix.columns())?;
+    let mut out = vec![0.0; matrix.rows()];
+    for (row, out_value) in out.iter_mut().enumerate() {
+        let mut sum = 0.0;
+        for (column, command) in u.iter().enumerate() {
+            let coefficient =
+                matrix
+                    .coefficient(row, column)
+                    .ok_or(DenseIncaError::DimensionMismatch {
+                        reason: "effectiveness coefficient index out of range",
+                    })?;
+            sum += coefficient * command;
+        }
+        require_dense_inca_finite("effectiveness product", sum)?;
+        *out_value = sum;
+    }
+    Ok(out)
+}
+
+fn validate_dense_inca_vector(
+    field: &'static str,
+    values: &[f64],
+    expected_len: usize,
+) -> Result<(), DenseIncaError> {
+    if values.len() != expected_len {
+        return Err(DenseIncaError::DimensionMismatch {
+            reason: "vector length does not match configured dense INCA dimension",
+        });
+    }
+    for value in values {
+        require_dense_inca_finite(field, *value)?;
+    }
+    Ok(())
+}
+
+fn require_dense_inca_finite(field: &'static str, value: f64) -> Result<(), DenseIncaError> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(DenseIncaError::NonFinite { field, value })
+    }
+}
+
+fn require_dense_inca_positive(field: &'static str, value: f64) -> Result<(), DenseIncaError> {
+    require_dense_inca_finite(field, value)?;
+    if value <= 0.0 {
+        return Err(DenseIncaError::NonPositive { field, value });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -374,8 +778,56 @@ impl IndiChannel {
 )]
 mod tests {
     use approx::assert_abs_diff_eq;
+    use toml::Value;
 
     use super::*;
+
+    const TVC_TWD_INCA_TOLERANCE_TABLE: &str =
+        include_str!("../../../data/gnc/tvc-twd-inca-tolerance-v1.toml");
+
+    fn fixture() -> Value {
+        toml::from_str(TVC_TWD_INCA_TOLERANCE_TABLE).expect("TVC/TWD/INCA fixture parses")
+    }
+
+    fn toml_table<'a>(value: &'a Value, key: &str) -> &'a toml::map::Map<String, Value> {
+        value
+            .get(key)
+            .and_then(Value::as_table)
+            .unwrap_or_else(|| panic!("missing TOML table {key}"))
+    }
+
+    fn toml_f64(value: &toml::map::Map<String, Value>, key: &str) -> f64 {
+        value
+            .get(key)
+            .and_then(Value::as_float)
+            .unwrap_or_else(|| panic!("missing TOML float {key}"))
+    }
+
+    fn toml_usize(value: &toml::map::Map<String, Value>, key: &str) -> usize {
+        value
+            .get(key)
+            .and_then(Value::as_integer)
+            .and_then(|raw| usize::try_from(raw).ok())
+            .unwrap_or_else(|| panic!("missing TOML usize {key}"))
+    }
+
+    fn toml_f64_array(value: &toml::map::Map<String, Value>, key: &str) -> Vec<f64> {
+        value
+            .get(key)
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("missing TOML array {key}"))
+            .iter()
+            .map(|entry| {
+                entry
+                    .as_float()
+                    .unwrap_or_else(|| panic!("TOML array {key} contains non-float"))
+            })
+            .collect()
+    }
+
+    fn eid(path: &str) -> EffectorId {
+        EffectorId::from_path(path)
+    }
 
     fn nominal_params() -> IndiParams {
         IndiParams {
@@ -615,5 +1067,196 @@ mod tests {
         // which for ω_meas == ω_ref is zero. The dt-zero guard
         // prevents division by zero in ω̇_meas.
         assert!(u_zero_dt.is_finite());
+    }
+
+    #[test]
+    fn dense_inca_controller_cancels_synthetic_twd_reaction() {
+        let matrix = EffectivenessMatrix::new(
+            2,
+            vec![
+                eid("vehicle.assembly.effectors.engine-left"),
+                eid("vehicle.assembly.effectors.engine-right"),
+            ],
+            vec![
+                1.0, 0.35, //
+                -0.20, 0.90,
+            ],
+        )
+        .expect("matrix constructs");
+        let allocator = WlsActiveSetAllocator::new(
+            matrix,
+            vec![1.0, 1.0],
+            vec![1.0e-6, 1.0e-6],
+            1.0e12,
+            vec![0.0, 0.0],
+        )
+        .expect("allocator constructs");
+        let bounds = EffectorBounds {
+            u_min_pos: vec![-10.0, -10.0],
+            u_max_pos: vec![10.0, 10.0],
+            rate_limit: vec![1000.0, 1000.0],
+        };
+        let mut inca = DenseIncaController::new(allocator, bounds, vec![0.0, 0.0], 0.01).unwrap();
+
+        let twd_reaction = [0.45, -0.20];
+        let out = inca.step(&[0.0, 0.0], &twd_reaction).unwrap();
+
+        for (achieved, measured) in out.achieved_increment.iter().zip(twd_reaction) {
+            assert_abs_diff_eq!(*achieved + measured, 0.0, epsilon = 1.0e-8);
+        }
+        for deficit in out.pseudo_control_deficit {
+            assert_abs_diff_eq!(deficit, 0.0, epsilon = 1.0e-8);
+        }
+        assert!(!out.saturated);
+        assert_eq!(out.active_at_bound, vec![false, false]);
+    }
+
+    #[test]
+    fn dense_inca_recovers_effective_authority_against_twd_reaction_series() {
+        let data = fixture();
+        let tolerances = toml_table(&data, "tolerances");
+        let series = toml_table(&data, "inca_recovery_series");
+        let rows = toml_usize(series, "rows");
+        let effectors = toml_usize(series, "effectors");
+        assert_eq!(rows, 2);
+        assert_eq!(effectors, 2);
+        let matrix = EffectivenessMatrix::new(
+            rows,
+            vec![
+                eid("vehicle.assembly.effectors.engine-left"),
+                eid("vehicle.assembly.effectors.engine-right"),
+            ],
+            toml_f64_array(series, "b_row_major"),
+        )
+        .expect("matrix constructs");
+        let allocator = WlsActiveSetAllocator::new(
+            matrix,
+            vec![1.0, 1.0],
+            vec![1.0e-6, 1.0e-6],
+            1.0e12,
+            vec![0.0, 0.0],
+        )
+        .expect("allocator constructs");
+        let bounds = EffectorBounds {
+            u_min_pos: toml_f64_array(series, "u_min"),
+            u_max_pos: toml_f64_array(series, "u_max"),
+            rate_limit: toml_f64_array(series, "rate_limit"),
+        };
+        let dt_s = toml_f64(series, "dt_s");
+        let mut inca = DenseIncaController::new(allocator, bounds, vec![0.0, 0.0], dt_s).unwrap();
+
+        let samples_total = toml_usize(series, "samples");
+        let disturbances = (0..samples_total)
+            .map(|k| {
+                let t = k as f64 * dt_s;
+                let envelope = (-toml_f64(series, "disturbance_envelope_decay_per_s") * t).exp();
+                [
+                    envelope
+                        * (toml_f64(series, "pitch_sine_amplitude")
+                            * (toml_f64(series, "pitch_sine_frequency_rad_s") * t).sin()
+                            + toml_f64(series, "pitch_cosine_amplitude")
+                                * (toml_f64(series, "pitch_cosine_frequency_rad_s") * t).cos()),
+                    envelope
+                        * (toml_f64(series, "yaw_cosine_amplitude")
+                            * (toml_f64(series, "yaw_cosine_frequency_rad_s") * t).cos()
+                            + toml_f64(series, "yaw_sine_amplitude")
+                                * (toml_f64(series, "yaw_sine_frequency_rad_s") * t).sin()),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let mut uncompensated_sum_sq = 0.0;
+        let mut compensated_sum_sq = 0.0;
+        let mut samples = 0usize;
+        let discard_samples = toml_usize(series, "discard_samples");
+
+        for k in 0..(disturbances.len() - 1) {
+            let prior = effectiveness_multiply(inca.matrix(), inca.previous_command()).unwrap();
+            let measured = [prior[0] + disturbances[k][0], prior[1] + disturbances[k][1]];
+            let out = inca.step(&[0.0, 0.0], &measured).unwrap();
+            assert!(!out.saturated);
+            let commands = out
+                .u
+                .iter()
+                .map(|(_, command)| *command)
+                .collect::<Vec<_>>();
+            let compensated = effectiveness_multiply(inca.matrix(), &commands).unwrap();
+            let residual_next = [
+                compensated[0] + disturbances[k + 1][0],
+                compensated[1] + disturbances[k + 1][1],
+            ];
+
+            if k >= discard_samples {
+                uncompensated_sum_sq += disturbances[k + 1][0] * disturbances[k + 1][0]
+                    + disturbances[k + 1][1] * disturbances[k + 1][1];
+                compensated_sum_sq +=
+                    residual_next[0] * residual_next[0] + residual_next[1] * residual_next[1];
+                samples += 1;
+            }
+        }
+
+        let uncompensated_rms = (uncompensated_sum_sq / samples as f64).sqrt();
+        let compensated_rms = (compensated_sum_sq / samples as f64).sqrt();
+        let compensated_ratio = compensated_rms / uncompensated_rms;
+        assert_eq!(samples, toml_usize(series, "expected_rms_samples"));
+        assert_abs_diff_eq!(
+            uncompensated_rms,
+            toml_f64(series, "expected_uncompensated_rms_rad_s2"),
+            epsilon = toml_f64(tolerances, "inca_rms_abs_rad_s2")
+        );
+        assert_abs_diff_eq!(
+            compensated_rms,
+            toml_f64(series, "expected_compensated_rms_rad_s2"),
+            epsilon = toml_f64(tolerances, "inca_rms_abs_rad_s2")
+        );
+        assert_abs_diff_eq!(
+            compensated_ratio,
+            toml_f64(series, "expected_compensated_rms_ratio"),
+            epsilon = toml_f64(tolerances, "inca_rms_abs_rad_s2")
+        );
+        assert!(uncompensated_rms > 1.0e-2);
+        assert!(
+            compensated_ratio < toml_f64(tolerances, "inca_max_compensated_rms_ratio"),
+            "dense INCA should recover effective authority against the TWD series: compensated_rms={compensated_rms:.17e}, uncompensated_rms={uncompensated_rms:.17e}"
+        );
+    }
+
+    #[test]
+    fn dense_inca_reports_pseudo_control_deficit_under_rate_limited_actuator() {
+        let matrix =
+            EffectivenessMatrix::new(1, vec![eid("vehicle.assembly.effectors.engine")], vec![1.0])
+                .expect("matrix constructs");
+        let allocator = WlsActiveSetAllocator::new(matrix, vec![1.0], vec![1.0], 1.0e9, vec![0.0])
+            .expect("allocator constructs");
+        let bounds = EffectorBounds {
+            u_min_pos: vec![-10.0],
+            u_max_pos: vec![10.0],
+            rate_limit: vec![1.0],
+        };
+        let mut inca = DenseIncaController::new(allocator, bounds, vec![0.0], 0.1).unwrap();
+
+        let out = inca.step(&[2.0], &[0.0]).unwrap();
+
+        assert_abs_diff_eq!(out.u[0].1, 0.1, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(out.requested_increment[0], 2.0, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(out.achieved_increment[0], 0.1, epsilon = 1.0e-12);
+        assert_abs_diff_eq!(out.pseudo_control_deficit[0], 1.9, epsilon = 1.0e-12);
+        assert!(out.saturated);
+        assert_eq!(out.active_at_bound, vec![true]);
+    }
+
+    #[test]
+    fn pseudo_control_hedging_prevents_unavailable_command_integration() {
+        let dt_s = 0.01;
+        let mut hedger = PseudoControlHedger::new(1).unwrap();
+        let mut unhedged_integral = 0.0;
+
+        for _ in 0..1_000 {
+            unhedged_integral += 5.0 * dt_s;
+            let hedged = hedger.step(&[5.0], &[5.0], dt_s).unwrap();
+            assert_abs_diff_eq!(hedged[0], 0.0, epsilon = 1.0e-12);
+        }
+
+        assert!(unhedged_integral > 49.0);
+        assert_abs_diff_eq!(hedger.integral_state()[0], 0.0, epsilon = 1.0e-12);
     }
 }

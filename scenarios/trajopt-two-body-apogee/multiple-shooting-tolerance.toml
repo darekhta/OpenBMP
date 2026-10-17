@@ -5,7 +5,10 @@
 # orbit. T0 first solves for the perigee tangential speed that reaches the
 # target apogee. T1 then starts from that corrected state, solves a perturbed
 # three-segment mesh back to the same T0 terminal rendezvous state, and gates
-# the resulting terminal and continuity deltas.
+# the resulting terminal and continuity deltas. WP-07.2 also reuses the same
+# shared mesh as a Hermite-Simpson T2 cross-tier check; the collocation defect
+# tolerance is a mesh-accuracy tolerance for the declared 40 s intervals, not an
+# exact-flow claim.
 
 case       = "trajopt-two-body-apogee-cross-tier"
 source     = "Synthetic WGS84 point-mass cross-tier regression; see scenarios/trajopt-two-body-apogee/provenance.md."
@@ -55,4 +58,22 @@ relative_tolerance = 0.0
 name = "t1_terminal_residual_norm"
 expected = 0.0
 absolute_tolerance = 1.0e-6
+relative_tolerance = 0.0
+
+[[metric]]
+name = "t2_terminal_position_delta_norm_m"
+expected = 0.0
+absolute_tolerance = 1.0e-6
+relative_tolerance = 0.0
+
+[[metric]]
+name = "t2_terminal_velocity_delta_norm_m_s"
+expected = 0.0
+absolute_tolerance = 1.0e-6
+relative_tolerance = 0.0
+
+[[metric]]
+name = "t2_hs_collocation_residual_norm"
+expected = 0.0
+absolute_tolerance = 2.5e-1
 relative_tolerance = 0.0

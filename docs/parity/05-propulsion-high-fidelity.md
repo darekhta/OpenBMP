@@ -118,7 +118,7 @@ this exactly.
 with the T1 pressure-thrust correction plus algebraic nozzle separation and a
 synthetic/toy transient solid-chamber regression path from T2 available behind
 explicit config. The next propulsion gap is external thermochemistry evidence
-from CEARUN/Cantera tolerance tables and higher-fidelity validation, not the
+from CEA/Cantera tolerance tables and higher-fidelity validation, not the
 ambient pressure term.
 
 ---
@@ -568,7 +568,7 @@ Per the five-layer ladder (`docs/verification.md`) and the solver-consumer rule
 | **T1** | optimum-CF reduces to current code at `pₐ=pₑ` (regression); Joukowsky-free analytic vacuum ceiling `F_vac = CF_vac·pc·At` | — | published sea-level vs vacuum thrust/Isp (RS-25, RL10, Merlin 1D public figures, F-1) — match the **altitude lift** trend | thrust/Isp shape within published band; vacuum/SL ratio within ~2–5% | `validated-toy` |
 | **T2** | analytic constant-`Kn` end-burner gives near-constant `pc` (extends existing test `grain.rs:656`); MMS on the `pc(t)` ODE (impose analytic forcing) | OpenMotor BATES/finocyl `Kn(web)`, `pc(t)`, thrust | thrustcurve.org certified static-fire curves (e.g. Cesaroni M1670 already pinned); Stark/Frey separation-location vs NPR | `pc(t)` and total impulse within a few % of OpenMotor; separation onset within published scatter | `validated-toy`→`research` |
 | **T3** | `c*` from `Tc, γ, MW` matches the closed-form `c* = sqrt(R_sp·Tc)/Γ(γ)` for the deck corners | (optional) in-repo min-G tier vs CEA on a shared case | CEARUN `c*, Tc, Isp_vac, Isp_sl` for LOX/RP-1 (MR ~2.3–2.7), LOX/LH2 (MR ~5–6), NTO/MMH, LOX/LCH4 at `pc`=1–30 MPa, `ε`=10–100 | `c*`/`Isp` within **<1%** of CEARUN (ideal); efficiency band documented separately | `research` |
-| **T4** | MMS on the network Newton residual + the MOC grid (impose analytic transient, confirm order); Joukowsky bound for instantaneous closure | **GFSSP V6 manual worked cases** (blowdown tank, flow-with-heat-transfer, pressurization) — match node pressures / branch flows | Wylie & Streeter single-pipe valve-closure surge | node pressures / branch flows within a few % of GFSSP; surge within ~5% of Joukowsky | `validated-toy` (network) / `research` (vs GFSSP) |
+| **T4** | MMS on the network Newton residual + the MOC grid (impose analytic transient, confirm order); Joukowsky bound for instantaneous closure | **GFSSP V6 manual worked cases** (water distribution network, Example 8 choked tank blowdown, and digitized Example 10 propellant-tank pressurization pressure history + residual gate and reduced calibrated pressure-history closure landed; flow-with-heat-transfer and a physical finite-volume pressurization solver still needed) — match node pressures / branch flows / analytic pressure history | Wylie & Streeter single-pipe valve-closure surge | node pressures / branch flows within a few % of GFSSP; surge within ~5% of Joukowsky | `validated-toy` (network) / `research` (vs GFSSP) |
 | **T5** | MMS on the linear closed-loop assembly (impose a known transfer function, confirm eigenvalues) | — | **Saturn V S-II / Titan II POGO case histories** (Rubin 1966, SP-8055) — qualitative match of the **unstable frequency band** and the accumulator-stabilized boundary | frequency band qualitatively matched; **no amplitude/point claim** (ceiling §1.2) | `research` (method-level) |
 
 **Tolerance tables.** Every numeric claim ships a tolerance-table TOML under the
@@ -621,7 +621,7 @@ data" claim.
 
 | Tool | License | Mode | Use |
 |---|---|---|---|
-| **NASA CEA** (modernized, github.com/nasa/cea) | US-Gov public domain | **INGEST** | Run offline over a `(pc, MR, ε)` grid per propellant pair → `c*, Tc, γ, MW, Isp_vac/sl` decks; ship table + interpolator in Rust. **Do not FFI-link the Fortran into the flight loop.** |
+| **NASA CEA** (modernized, github.com/nasa/cea) | Apache-2.0 | **INGEST** | Run offline over a `(pc, MR, ε)` grid per propellant pair → `c*, Tc, γ, MW, Isp_vac/sl` decks; ship table + interpolator in Rust. **Do not FFI-link the Fortran into the flight loop.** |
 | **Cantera** (cantera.org) | BSD-3-Clause | **INGEST / PORT-ref** | Alternative equilibrium source (`equilibrate('HP'/'TP')`); its NASA9 thermo DB is the source of the 9-coeff polynomials if porting a reduced min-G tier. Generates the same decks for cross-check. |
 | **RocketCEA / RoCt** | BSD-style / BSD-3 | **INGEST helper** | Python wrappers to batch-generate the T3 decks. Build-time tooling only, not a runtime dependency. |
 | **GFSSP** (NASA) | request-access / US-only | **REFERENCE / V&V oracle** | The authoritative code-to-code comparison for the T4 feed network (node pressures, branch flows, transient response) and the source of the finite-volume node/branch *method* to re-implement. **Not redistributable — re-implement the published algorithm, do not vendor.** |
@@ -761,13 +761,15 @@ Effort sizes are from the research ladder.
   band; the deck interpolator preserves it and the liquid-engine bridge uses
   its nominal value for deterministic mass flow/`Isp` while retaining min/max
   mass-flow and `Isp` envelope evidence. Provenance-recorded Cantera 3.2.0
-  LOX/LCH4, LOX/LH2, and LOX/RP-1 n-dodecane-surrogate reference decks and
-  tolerance tables now span 1-30 MPa chamber pressure with pair-appropriate MR
+  LOX/LCH4, LOX/LH2, LOX/RP-1 n-dodecane-surrogate, and N2O4/N2H4
+  hydrazine-hypergolic reference decks and tolerance tables, plus NASA CEA
+  3.2.1 true NTO/MMH and non-surrogate LOX/RP-1 rocket-equilibrium decks and
+  tolerance tables, now span 1-30 MPa chamber pressure with pair-appropriate MR
   bands, checking every generated grid point plus multiple committed in-deck
   interpolation cases against independently generated liquid-engine
-  mass-flow/thrust/`Isp` values (`REQ-PROP-030` / `V-PROP-030`). The full
-  CEARUN/Cantera tolerance-table matrix for NTO/MMH, plus non-surrogate RP-1
-  evidence, remains future evidence before this WP is complete.
+  mass-flow/thrust/`Isp` values (`REQ-PROP-030` / `V-PROP-030`). The N2O4/N2H4
+  table is retained as an explicit Cantera hypergolic bridge; the true MMH and
+  non-surrogate RP-1 evidence is carried by the official NASA CEA tables.
 - **goal:** Derive `c*(pc,MR)`, `Tc`, `γ`, `MW` from a CEA/Cantera deck instead
   of hardcoded constants; enable mixture-ratio-aware liquid performance and the
   documented efficiency band.
@@ -787,8 +789,8 @@ Effort sizes are from the research ladder.
 - **acceptance:**
   - Off by default (constant-`c*` path preserved); goldens byte-identical.
   - Deck SHA-pinned; `openbmp check-provenance` green; no inline TOML in `*.rs`.
-  - `c*`/`Isp` within **<1%** of CEARUN for LOX/RP-1, LOX/LH2, NTO/MMH, LOX/LCH4
-    across the deck grid (tolerance table).
+  - `c*`/`Isp` reference evidence for LOX/RP-1, LOX/LH2, NTO/MMH, and LOX/LCH4
+    across the deck grid (tolerance table) from Cantera and official NASA CEA.
   - Closed-form `c* = sqrt(R_sp·Tc)/Γ(γ)` matches the deck corners.
   - Out-of-envelope queries fail closed (no extrapolation).
   - All §2 gates green.
@@ -808,12 +810,14 @@ Effort sizes are from the research ladder.
   `[[propulsion.feed_network]]` scenario parsing and runner-side feed-scale
   override for tank-coupled liquid engines are implemented and traced by
   `REQ-PROP-007` / `V-PROP-007`. A steady node/branch graph with fixed-pressure,
-  junction, and chamber nodes, signed valve branches, and fixed-cap Newton mass
-  balance is implemented and traced by `REQ-PROP-008` / `V-PROP-008`. A lumped
+  junction, and chamber nodes, signed valve branches, Darcy-Weisbach/Colebrook
+  pipe branches, and fixed-cap Newton mass balance is implemented and traced by
+  `REQ-PROP-008` / `V-PROP-008`. A lumped
   transient chamber-pressure stepper with inlet/outlet mass-flow and optional
-  mixture-ratio reporting is implemented and traced by `REQ-PROP-009` /
-  `V-PROP-009`. A bounded dual-valve throttle/MR controller primitive is
-  implemented and traced by `REQ-PROP-010` / `V-PROP-010`. A stateful transient
+  mixture-ratio reporting plus a choked isentropic tank-blowdown sampler are
+  implemented and traced by `REQ-PROP-009` / `V-PROP-009`. A bounded dual-valve
+  throttle/MR controller primitive is implemented and traced by `REQ-PROP-010` /
+  `V-PROP-010`. A stateful transient
   dual-valve feed network coupling oxidizer/fuel tank-valve legs to the chamber
   pressure stepper is implemented and traced by `REQ-PROP-011` / `V-PROP-011`.
   Scenario parsing and runner-side chamber-state advancement for that transient
@@ -822,13 +826,30 @@ Effort sizes are from the research ladder.
   implemented and traced by `REQ-PROP-015` / `V-PROP-015`. A synthetic
   provenance-backed steady feed-network tolerance table now covers the reduced
   tank-valve-chamber balance and the two-valve node/branch ladder through
-  `data/feed_system/generic-steady-feed-network-v1.toml`. A companion synthetic
+  `data/feed_system/generic-steady-feed-network-v1.toml`. A public NASA GFSSP
+  Version 6 water-distribution-network worked example anchors the pipe-branch
+  graph solve against published node pressures and branch flows through
+  `data/feed_system/gfssp-water-distribution-network-v1.toml`. GFSSP Version 6
+  Example 8 now anchors the choked tank-blowdown pressure history against the
+  public Moody analytic solution through
+  `data/feed_system/gfssp-tank-blowdown-example8-v1.toml`. GFSSP Version 6
+  Example 10 now anchors public propellant-tank pressurization setup,
+  plot-digitized tank-bottom/ullage pressure-history samples, pressure-trend,
+  and temperature-trend evidence through
+  `data/feed_system/gfssp-propellant-tank-pressurization-example10-v1.toml`,
+  with a deterministic residual gate for model-vs-reference pressure-history
+  closure plus a reduced calibrated startup-ramp and ullage/head power-law
+  pressure-history model and a lumped finite-volume ideal-gas ullage solver
+  with compressible pressurant inflow, heat transfer, expansion work, propellant
+  drawdown, and hydrostatic tank-bottom pressure that close that gate within the
+  digitization bounds. A companion synthetic
   transient table covers exact lumped chamber-pressure steps plus dual-valve
   start-of-step feed coupling through
   `data/feed_system/generic-transient-chamber-v1.toml`; a controller table covers
   PI accumulation, mixture-ratio biasing, clamp, and slew behavior through
-  `data/feed_system/generic-feed-controller-v1.toml`. GFSSP worked-case
-  evidence remains future work before this WP is complete.
+  `data/feed_system/generic-feed-controller-v1.toml`. WP-05.4-a is implemented;
+  richer downstream feed-network validation continues in the dependent pump,
+  line-transient, and POGO WPs.
 - **goal:** GFSSP-style finite-volume network (tanks → valves → injector →
   chamber) producing transient `pc(t)`, `ṁ_ox/ṁ_fuel`, MR excursions, and
   throttle response; replaces the quasi-static blowdown scalar.
@@ -846,9 +867,12 @@ Effort sizes are from the research ladder.
 - **acceptance:**
   - Off by default; existing blowdown path byte-identical when the network block
     is absent.
-  - GFSSP V6 worked cases (blowdown tank, flow-with-heat-transfer, pressurization)
-    matched on node pressures / branch flows within a few % (code-to-code table +
-    provenance).
+  - GFSSP V6 worked cases matched on node pressures / branch flows within a few
+    % (code-to-code table + provenance); the steady water-distribution network
+    Example 8 choked tank-blowdown analytic pressure history, and digitized
+    Example 10 propellant-tank pressurization pressure trends plus a residual
+    gate, reduced calibrated pressure-history model closure, and physical
+    finite-volume pressurization solver closure are landed.
   - MMS on the Newton residual confirms convergence; non-convergence fails closed.
   - All §2 gates green.
 - **validation_label:** `validated-toy` (network) → `research` (vs GFSSP cases).
@@ -865,10 +889,14 @@ Effort sizes are from the research ladder.
   and specific-speed metadata are implemented in `openbmp-feedsystem` and traced
   by `REQ-PROP-012` / `V-PROP-012`; a provenance-backed synthetic tolerance
   table under `data/feed_system/` now covers affinity scaling, NPSH thresholding,
-  cavitation derating, efficiency, and power. Scenario-facing turbopump blocks
-  for transient feed-network legs are implemented and traced by `REQ-PROP-016`
-  / `V-PROP-016`. Public real-pump calibration remains future work before this
-  WP is complete.
+  cavitation derating, efficiency, and power, and
+  `data/feed_system/public-topflo-pump-duty-point-v1.toml` anchors the generic
+  design-point calibration to a public TOP-FLO catalog curve-reading example
+  with 75 GPM, 35 ft head, 9 ft NPSHr, and 1.5 hp motor sizing. Scenario-facing
+  turbopump blocks for transient feed-network legs are implemented and traced
+  by `REQ-PROP-016` / `V-PROP-016`. The remaining ceiling is proprietary real
+  rocket turbopump map shape and cavitation-test calibration, not the public
+  design-point calibration implemented here.
 - **goal:** Set pump-fed feed pressure from a normalized turbopump map + affinity
   laws + NPSH cavitation gate, feeding cavitation compliance into POGO.
 - **fidelity_tier:** T4
@@ -885,29 +913,52 @@ Effort sizes are from the research ladder.
     law scaling verified analytically (tolerance table).
   - NPSH gate triggers the cavitation state at the documented margin.
   - All §2 gates green.
-- **validation_label:** `validated-toy` (map shape is the generic substitute).
+- **validation_label:** `research` for public design-point anchoring;
+  `validated-toy` for the generic map-shape substitute.
 - **dual_use_note:** far from line.
 - **est_effort:** 1–2 weeks.
-- **parity_ceiling:** real proprietary pump maps; only the generic `Ns`-keyed
-  shape calibrated to a published design point.
+- **parity_ceiling:** real proprietary rocket pump maps and cavitation-test
+  calibration; only the generic `Ns`-keyed shape calibrated to published design
+  points.
 
 ---
 
 **WP-05.4-c — Water-hammer / line transients (Method of Characteristics)**
 - **status:** a frictionless fixed-grid MOC line primitive with Courant-exact
-  step sizing, upstream fixed-head/downstream valve-velocity boundaries, and a
-  Joukowsky valve-closure verification case is implemented in
-  `openbmp-feedsystem` and traced by `REQ-PROP-013` / `V-PROP-013`; a
-  provenance-backed synthetic tolerance table under `data/feed_system/` now
-  covers Courant step size, downstream surge head/pressure, and the Joukowsky
-  pressure/head delta.
+  step sizing, upstream fixed-head/downstream valve-velocity boundaries,
+  generalized downstream velocity-or-head boundary conditions, generalized
+  endpoint boundaries with upstream head-or-velocity and downstream
+  velocity/head/linear-accumulator options, and a Joukowsky valve-closure
+  verification case is implemented in `openbmp-feedsystem` and
+  traced by `REQ-PROP-013` / `V-PROP-013` plus `REQ-PROP-031` /
+  `V-PROP-031`; a provenance-backed synthetic tolerance table under
+  `data/feed_system/` now covers Courant step size, downstream surge
+  head/pressure, and the Joukowsky pressure/head delta, and
+  `data/feed_system/public-joukowsky-valve-closure-v1.toml` anchors the same
+  instantaneous valve-closure relation to a public Chemical Engineering
+  example. A local standalone `MocLineTopology` substrate now manages named
+  line elements with unique ids, common Courant-step validation, boundary
+  updates by id, all-or-nothing stepping, state/boundary lookup, and per-line
+  snapshots. `MocLineGraphTopology` adds zero-storage multi-line junctions
+  that solve a common head and zero net signed flow across connected upstream
+  or downstream endpoints.
   Scenario-facing `oxidizer_line` / `fuel_line` blocks for
   `transient_dual_valve_chamber` feed-network legs are implemented and traced
   by `REQ-PROP-017` / `V-PROP-017`; the runner enforces the line Courant time
   step and applies downstream pressure perturbations to the transient
-  tank-valve-chamber update. Richer boundary-condition library, standalone
-  `[propulsion.lines]` topology wiring, and public water-hammer benchmark
-  tables remain future work before this WP is complete.
+  tank-valve-chamber update. Standalone `[[propulsion.lines]]` declarations
+  now parse into named line configs with upstream head/velocity/nonlinear
+  gas-source and downstream velocity/head/linear-accumulator/nonlinear
+  gas-accumulator endpoint boundaries; the runner builds one standalone
+  topology, optional `[[propulsion.line_junctions]]` declarations connect
+  line endpoints into zero-storage graph junctions, and the runner enforces
+  the scenario Courant step, advances the independent or graph topology once
+  per feed-network rack tick, lets transient feed-network legs reference named
+  standalone lines through `oxidizer_line_id` / `fuel_line_id`, applies the
+  referenced downstream pressure perturbation to the valve/chamber update, and
+  retains the latest per-line snapshot for diagnostics. The remaining ceiling
+  is broader lossy GFSSP-style branch/minor-loss network semantics, not the
+  frictionless MOC junction substrate implemented here.
 - **goal:** Capture acoustic/inertial line surges on valve open/close and engine
   start — the physical substrate of POGO and the accumulator-sizing driver.
 - **fidelity_tier:** T4
@@ -942,9 +993,18 @@ Effort sizes are from the research ladder.
   Scenario-facing `[propulsion.pogo]` parsing and runner startup gating are
   implemented and traced by `REQ-PROP-019` / `V-PROP-019`, including
   `mode_source = "vehicle_bending"` consumption of the parsed
-  `[vehicle.bending]` first-mode frequency and damping. Full transfer-matrix
-  assembly and public Saturn V/Titan case-history evidence remain future work
-  before this WP is complete.
+  `[vehicle.bending]` first-mode frequency and damping, optional
+  `[propulsion.pogo.feedline]` references to standalone `[[propulsion.lines]]`,
+  and `RunOutcome.pogo.feedline_coupled` emission from the lumped
+  feedline-coupled eigen analyzer. Public qualitative Titan/Gemini and Saturn
+  case-history fixture coverage is landed for observed bands, mitigation
+  outcomes, and accumulator/suppressor trends. The
+  `openbmp-structdyn::pogo` half now provides lossless 1-D feedline
+  transfer-matrix assembly, distributed-line analytic benchmark evidence, pump
+  dispersion boxes, sampled Nyquist margin reports, and finite-dimensional
+  lumped feedline-coupled eigen reports. This completes the scenario-facing
+  deterministic POGO feed-half implementation while keeping calibrated vehicle
+  margin claims out of scope.
 - **goal:** Assemble `G_feed(s)` from the linearized feed network + pump
   cavitation compliance/mass-flow-gain, couple to the longitudinal structural
   mode from `02`, and run complex-eigenvalue / Nyquist stability + accumulator
@@ -954,7 +1014,8 @@ Effort sizes are from the research ladder.
 - **new_crates:** none (extends `openbmp-feedsystem` with `PogoStability`).
 - **touched:** `openbmp-feedsystem` (transfer-matrix/state-space assembly, complex
   eigen/Nyquist via `faer`); consumes `LongitudinalModalModel` (doc 02) as plain
-  data; `[propulsion.pogo]` block carrying the cavitation dispersion box.
+  data; `[propulsion.pogo]` block carrying the cavitation dispersion box and
+  optional standalone-line feedline adapter.
 - **approach:** §3.3 **(M8)**. Linear transfer-function stability check first;
   time-domain limit cycle second. SP-8055 margin criteria.
 - **acceptance:**
@@ -972,7 +1033,9 @@ Effort sizes are from the research ladder.
 - **est_effort:** 4–8 weeks (the hardest item).
 - **parity_ceiling:** `C_b`/`M_b` are the least-known parameters in rocketry —
   only the frequency band and the suppression *effect* are claimed, never a
-  specific vehicle's margin.
+  specific vehicle's margin. Calibrated pump-parameter reconstruction and
+  quantitative Titan/Saturn vehicle-specific margin closure remain validation
+  ceilings, not open deterministic implementation requirements.
 
 ---
 
@@ -980,8 +1043,11 @@ Effort sizes are from the research ladder.
 - **status:** a deterministic `[propulsion.faults]` scheduled engine-fault
   block is implemented and traced by `REQ-PROP-020` / `V-PROP-020`. It validates
   ordered one-shot rules, rejects unknown engine ids, routes scheduled faults
-  through `EngineCluster::inject_fault`, and applies them in both point-mass and
-  rigid-body runner loops before the engine rack steps. A deterministic
+  through `EngineCluster::inject_fault`, parser-verifies the documented scheduled
+  payload set (`stuck`, `hard_off`, `over_thrust`, `hard_start_overpressure`,
+  `cavitation_thrust_loss`, `gimbal_locked`), maps those typed payloads in the
+  runner, and applies them in both point-mass and rigid-body runner loops before
+  the engine rack steps. A deterministic
   ignition-only hard-start over-pressure fault is implemented and traced by
   `REQ-PROP-021` / `V-PROP-021`. Pump-cavitation-triggered one-shot fault rules
   are implemented and traced by `REQ-PROP-022` / `V-PROP-022`; the runner latches
@@ -992,19 +1058,21 @@ Effort sizes are from the research ladder.
   and observe the resulting engine telemetry response (`REQ-PROP-024` /
   `V-PROP-024`). `openbmp-mc` now has deterministic scheduled-propulsion fault
   libraries that materialize parser-validated `[propulsion.faults]` overlays for
-  sampled cases (`REQ-PROP-025` / `V-PROP-025`). Native SIL observed runs can
-  now combine stimulation with the EKF estimate-vs-truth monitor, and the
+  sampled cases across the scheduled engine-fault payload set (`REQ-PROP-025` /
+  `V-PROP-025`). Native SIL observed runs can now combine stimulation with the
+  EKF estimate-vs-truth monitor, and the
   shortened Phalcon TVC probe records an engine-out response through thrust,
   velocity, and EKF residual evidence (`REQ-PROP-026` / `V-PROP-026`). The
   `openbmp mc propulsion-faults` CLI path now executes deterministic sampled
   overlays through the normal scenario parser and runner, writes one sample CSV
   row per terminal metric, and reports Welford plus Clopper-Pearson summaries
   (`REQ-PROP-027` / `V-PROP-027`). The remaining ceiling is calibrated failure
-  probabilities and vehicle-specific FMEA data, not the fault-execution
-  mechanism.
-- **goal:** Discrete fault modes (engine-out, valve stuck/leaking, cavitation,
-  hard-start over-pressure, MR runaway, sensor bias) injected at the FC/sensor
-  boundary into the SIL/EKF loop and Monte Carlo.
+  probabilities, physical leak-flow calibration, and vehicle-specific FMEA data,
+  not the deterministic fault-execution mechanism.
+- **goal:** Discrete fault modes (engine-out, throttle stuck/over-thrust,
+  cavitation, hard-start over-pressure, MR runaway valve drift, gimbal lock, and
+  FC-transport sensor bias) injected at the FC/sensor boundary into the SIL/EKF
+  loop and Monte Carlo.
 - **fidelity_tier:** T5
 - **depends_on:** [WP-05.4-a]
 - **new_crates:** none

@@ -19,6 +19,10 @@
 //!   filter per MIL-STD-1797A.
 //! * [`Hwm14Wind`] — HWM14 quiet-time plus DWM07 disturbance winds
 //!   evaluated from bundled public HWM14 data files.
+//! * [`MeasuredWindProfile`] / [`SplicedWindProfile`] — offline
+//!   day-of-launch measured-profile ingestion, QC, splicing,
+//!   Martin-Graham-style filtering, and seeded synthetic profile
+//!   families.
 //!
 //! # Frame convention
 //!
@@ -46,12 +50,20 @@ pub mod constant;
 pub mod hwm14;
 #[cfg(feature = "std")]
 pub mod layered;
+#[cfg(feature = "std")]
+pub mod measured;
 
 pub use constant::{ConstantWind, NoWind};
 #[cfg(feature = "std")]
 pub use hwm14::{HWM14_REFERENCE_MAX_ALTITUDE_M, Hwm14Inputs, Hwm14ReferenceRow, Hwm14Wind};
 #[cfg(feature = "std")]
 pub use layered::{LayerEntry, LayeredWind};
+#[cfg(feature = "std")]
+pub use measured::{
+    MartinGrahamFilterConfig, MeasuredWindProfile, MeasuredWindSample, SpliceRule,
+    SplicedWindProfile, SplicedWindSample, SyntheticWindFamilyConfig, WindProfileProvenance,
+    WindQcConfig, WindQcReport, WindSource,
+};
 
 // `GustWind` is the synthetic-noise wind model
 // (Dryden filter driven by `DeterministicRng`). Gated by the

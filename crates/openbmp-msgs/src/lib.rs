@@ -177,8 +177,12 @@ pub mod topic_index {
     pub const HEALTH_STORAGE_STATUS: usize = 36;
     pub const SENSOR_AIRDATA: usize = 37;
     pub const SENSOR_IMU_INCREMENTS: usize = 38;
+    pub const ESTIMATOR_WIND: usize = 39;
+    pub const AUTOPILOT_PSEUDO_CONTROL_CMD: usize = 40;
+    pub const ACTUATOR_EFFECTOR_AVAILABILITY: usize = 41;
+    pub const PROPULSION_PROPELLANT_SAFING_CMD: usize = 42;
     #[allow(dead_code)]
-    pub const COUNT: usize = 39;
+    pub const COUNT: usize = 43;
 }
 
 // ---------------------------------------------------------------------
@@ -466,6 +470,20 @@ impl Topic for EnvironmentEstimate {
     const INDEX: usize = topic_index::ESTIMATOR_ENVIRONMENT;
 }
 
+/// Modeled wind estimate at the vehicle, published by the simulator bridge.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct WindEstimate {
+    /// Estimate timestamp.
+    pub time: SimTime,
+    /// Wind velocity in ECI components (m/s), excluding local still-air frame motion.
+    pub wind_eci_m_s: Vector3<f64>,
+}
+
+impl Topic for WindEstimate {
+    const NAME: &'static str = "estimator.wind";
+    const INDEX: usize = topic_index::ESTIMATOR_WIND;
+}
+
 /// Onboard propellant estimate used by mission triggers such as
 /// `AtMassFraction`.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -486,6 +504,42 @@ pub struct PropellantState {
 impl Topic for PropellantState {
     const NAME: &'static str = "propulsion.propellant_state";
     const INDEX: usize = topic_index::PROPULSION_PROPELLANT_STATE;
+}
+
+/// Propellant-system safing intent emitted by the flight controller
+/// when the commander requests SAFE.
+///
+/// This is intentionally an intent topic, not a low-level hardware
+/// valve map: downstream HAL or runner adapters translate it into
+/// vehicle-specific feed-system commands. The fields are forward-only
+/// safing verbs and carry no target, aimpoint, range, or redirect
+/// vocabulary.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct PropellantSafingCommand {
+    /// Command timestamp.
+    pub time: SimTime,
+    /// `true` when the FC has requested the propellant system be in a
+    /// safed state.
+    pub safed: bool,
+    /// `true` requests tank/feed isolation from engine consumers.
+    pub isolate_feeds: bool,
+    /// `true` requests engine feed valves be driven closed.
+    pub close_engine_valves: bool,
+    /// `false` requests active pressurization be disabled.
+    pub pressurization_enabled: bool,
+    /// `false` requests commanded tank/feed drain paths be disabled.
+    pub drain_enabled: bool,
+    /// `true` requests configured propellant dump paths be opened.
+    ///
+    /// This is separate from [`PropellantSafingCommand::drain_enabled`]:
+    /// SAFE can close ordinary commanded drains while opening only
+    /// scenario-declared dump paths.
+    pub dump_enabled: bool,
+}
+
+impl Topic for PropellantSafingCommand {
+    const NAME: &'static str = "propulsion.propellant_safing_cmd";
+    const INDEX: usize = topic_index::PROPULSION_PROPELLANT_SAFING_CMD;
 }
 
 /// Diagnostic snapshot of estimator health.
@@ -933,6 +987,25 @@ impl Topic for ActuatorCommand {
     const INDEX: usize = topic_index::AUTOPILOT_ACTUATOR_CMD;
 }
 
+/// Desired and measured angular-acceleration pseudo-control emitted by
+/// INDI-style autopilot paths before dense-INCA allocation.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct PseudoControlCommand {
+    /// Demand timestamp.
+    pub time: SimTime,
+    /// Desired body angular acceleration in `[roll, pitch, yaw]` order,
+    /// rad/s².
+    pub omega_dot_des_rad_s2: Vector3<f64>,
+    /// Measured / filtered body angular acceleration in `[roll, pitch, yaw]`
+    /// order, rad/s².
+    pub omega_dot_meas_rad_s2: Vector3<f64>,
+}
+
+impl Topic for PseudoControlCommand {
+    const NAME: &'static str = "autopilot.pseudo_control_cmd";
+    const INDEX: usize = topic_index::AUTOPILOT_PSEUDO_CONTROL_CMD;
+}
+
 /// Diagnostic status emitted by the autopilot.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct AutopilotStatus {
@@ -941,6 +1014,9 @@ pub struct AutopilotStatus {
     /// `true` when the flat-output attitude reference was suppressed
     /// because the desired specific force had no well-defined direction.
     pub differential_flatness_reference_suppressed: bool,
+    /// `true` when SAFE has replaced normal guidance tracking with a
+    /// target-free hold of the attitude measured at SAFE entry.
+    pub safe_attitude_hold_active: bool,
 }
 
 impl Topic for AutopilotStatus {
@@ -949,10 +1025,72 @@ impl Topic for AutopilotStatus {
 }
 
 /// Maximum number of effector-specific commands published by the FC
-/// mixer in one tick. Kept above the legacy four-channel surface so
-/// over-actuated direct-torque demos do not silently truncate as soon
-/// as future scenarios add modest redundancy.
-pub const MAX_EFFECTOR_COMMANDS: usize = 16;
+/// mixer in one tick. Sized to cover dual-axis TVC commands on a
+/// Super-Heavy-class engine cluster with headroom. This is a hard
+/// capacity: FC mixers must fail closed rather than silently truncate
+/// dense allocation output.
+pub const MAX_EFFECTOR_COMMANDS: usize = 128;
+
+/// Per-tick effector availability mask consumed by the mixer before
+/// allocation. The runner publishes unavailable physical aliases here
+/// when a live actuator/engine failure should remove a dense matrix
+/// column from the current solve.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct EffectorAvailability {
+    /// Availability timestamp.
+    pub time: SimTime,
+    /// Number of valid entries in
+    /// [`EffectorAvailability::unavailable_effectors`].
+    pub unavailable_count: u8,
+    /// Effector ids that must be treated as unavailable for this tick.
+    pub unavailable_effectors: [u64; MAX_EFFECTOR_COMMANDS],
+    /// Number of valid entries in
+    /// [`EffectorAvailability::unavailable_engines`].
+    pub unavailable_engine_count: u8,
+    /// Engine ids that must be treated as unavailable for this tick.
+    ///
+    /// This keeps engine-out throttle retrim FC-portable: the runner
+    /// publishes engine ids directly instead of requiring the mixer to parse
+    /// simulator-owned gimbal-alias path strings.
+    pub unavailable_engines: [u64; MAX_ENGINE_COMMANDS],
+}
+
+impl EffectorAvailability {
+    /// Returns `true` if `effector_id` is listed as unavailable.
+    #[must_use]
+    pub fn is_unavailable(&self, effector_id: u64) -> bool {
+        self.unavailable_effectors
+            .iter()
+            .take(usize::from(self.unavailable_count))
+            .any(|id| *id == effector_id)
+    }
+
+    /// Returns `true` if `engine_id` is listed as unavailable.
+    #[must_use]
+    pub fn is_engine_unavailable(&self, engine_id: u64) -> bool {
+        self.unavailable_engines
+            .iter()
+            .take(usize::from(self.unavailable_engine_count))
+            .any(|id| *id == engine_id)
+    }
+}
+
+impl Default for EffectorAvailability {
+    fn default() -> Self {
+        Self {
+            time: SimTime::ZERO,
+            unavailable_count: 0,
+            unavailable_effectors: [0; MAX_EFFECTOR_COMMANDS],
+            unavailable_engine_count: 0,
+            unavailable_engines: [0; MAX_ENGINE_COMMANDS],
+        }
+    }
+}
+
+impl Topic for EffectorAvailability {
+    const NAME: &'static str = "actuator.effector_availability";
+    const INDEX: usize = topic_index::ACTUATOR_EFFECTOR_AVAILABILITY;
+}
 
 /// One effector-specific command after mixer phase gating.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -1269,6 +1407,10 @@ pub const CANONICAL_TOPIC_DESCRIPTORS: [TopicDescriptor; topic_index::COUNT] = [
     TopicDescriptor::of::<StorageStatus>(),
     TopicDescriptor::of::<AirDataSample>(),
     TopicDescriptor::of::<ImuIncrementWindow>(),
+    TopicDescriptor::of::<WindEstimate>(),
+    TopicDescriptor::of::<PseudoControlCommand>(),
+    TopicDescriptor::of::<EffectorAvailability>(),
+    TopicDescriptor::of::<PropellantSafingCommand>(),
 ];
 
 /// Borrow the canonical OpenBMP command/telemetry topic dictionary.

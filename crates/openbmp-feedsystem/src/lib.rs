@@ -6,10 +6,12 @@
 //! has no dependency on `openbmp-sim`, `openbmp-runner`, or `openbmp-fc`.
 //!
 //! The first shipped models are intentionally small: single-fluid
-//! tank-valve-chamber equilibrium solves, a steady node/branch graph, and a
-//! lumped transient chamber-pressure stepper. They stay off the runner hot path
-//! unless a scenario block opts into them.
+//! tank-valve-chamber equilibrium solves, a steady node/branch graph, a
+//! lumped transient chamber-pressure stepper, and a choked tank-blowdown
+//! sampler, plus sampled pressurization pressure-history residual gates. They
+//! stay off the runner hot path unless a scenario block opts into them.
 
+pub mod blowdown;
 pub mod chamber;
 pub mod control;
 pub mod error;
@@ -20,6 +22,9 @@ pub mod pogo;
 pub mod pump;
 pub mod transient;
 
+pub use blowdown::{
+    IsentropicTankBlowdown, IsentropicTankBlowdownConfig, IsentropicTankBlowdownSample,
+};
 pub use chamber::{
     ChamberFeedInput, TransientChamber, TransientChamberConfig, TransientChamberSnapshot,
     TransientChamberState,
@@ -31,10 +36,17 @@ pub use control::{
 };
 pub use error::FeedSystemError;
 pub use graph::{
-    FeedGraphNode, FeedGraphNodeKind, SteadyFeedGraph, SteadyFeedGraphConfig,
+    FeedGraphNode, FeedGraphNodeKind, PipeBranch, SteadyFeedGraph, SteadyFeedGraphConfig,
     SteadyFeedGraphSnapshot, ValveBranch,
 };
-pub use line::{MocLine, MocLineBoundary, MocLineConfig, MocLineSnapshot, MocLineState};
+pub use line::{
+    MocLine, MocLineBoundary, MocLineBoundaryConditions, MocLineConfig, MocLineDownstreamBoundary,
+    MocLineElementConfig, MocLineEndpointBoundaryConditions, MocLineEndpointKind,
+    MocLineGraphTopology, MocLineGraphTopologyConfig, MocLineGraphTopologySnapshot,
+    MocLineJunctionConfig, MocLineJunctionConnection, MocLineJunctionConnectionSnapshot,
+    MocLineJunctionSnapshot, MocLineSnapshot, MocLineState, MocLineTopology, MocLineTopologyConfig,
+    MocLineTopologyLineSnapshot, MocLineTopologySnapshot, MocLineUpstreamBoundary,
+};
 pub use network::{
     FeedCommand, FeedNetwork, FeedNetworkSnapshot, TankValveChamberConfig, TankValveChamberNetwork,
 };
@@ -47,6 +59,12 @@ pub use pump::{
     TurbopumpOperatingPoint, TurbopumpSnapshot,
 };
 pub use transient::{
-    FeedLegPressures, TransientDualValveFeedNetwork, TransientDualValveFeedNetworkConfig,
-    TransientDualValveFeedNetworkSnapshot, TransientDualValveFeedNetworkState, ValveFeedLegConfig,
+    FeedLegPressures, FiniteVolumePressurizationConfig, FiniteVolumePressurizationModel,
+    FiniteVolumePressurizationSnapshot, FiniteVolumePressurizationState,
+    PressurizationPressureResidualReport, PressurizationPressureResidualSample,
+    PressurizationPressureSample, ReducedPressurizationPressureModel,
+    ReducedPressurizationPressureModelConfig, TransientDualValveFeedNetwork,
+    TransientDualValveFeedNetworkConfig, TransientDualValveFeedNetworkSnapshot,
+    TransientDualValveFeedNetworkState, ValveFeedLegConfig,
+    evaluate_pressurization_pressure_residuals,
 };

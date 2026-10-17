@@ -13,14 +13,23 @@
 //!   `BTreeMap<&str, f64>` for deflections. The internal
 //!   representation is N-D (3 ≤ N ≤ 6); at N = 3 the multilinear
 //!   reduction is bit-identical to the Schema-1 trilinear path,
-//!   per a 1024-case property test. Locked-order operand reduction
-//!   per Demmel & Nguyen 2020; FMA disabled.
+//!   per a 1024-case property test. Decks may optionally carry
+//!   per-node one-sigma `(CN, CD, CM)` uncertainty tables and optional
+//!   explicit body-axis six-coefficient `(CX, CY, CZ, Cl, Cm, Cn)` tables.
+//!   Locked-order operand reduction per Demmel & Nguyen 2020; FMA disabled.
 //! * [`parser`] — TOML deck-file parser. Coefficient decks
 //!   auto-detect schema 1 vs. schema 2 from the `openbmp.aero_deck`
 //!   integer marker and dispatch to strict per-schema parsers. A
 //!   separate strict `openbmp.panel_mesh_aero = 1` parser handles
-//!   [`hypersonic::LocalInclinationPanels`]. All parsers use
+//!   [`hypersonic::LocalInclinationPanels`]. The parser feature also
+//!   exposes strict ASCII STL string/file and binary STL byte/file ingestion for
+//!   [`hypersonic::PanelMesh`]. All TOML parsers use
 //!   `serde(deny_unknown_fields)`.
+//! * [`validation`] — parser-gated offline tolerance-fixture helpers for
+//!   aerodynamic method validation cases.
+//! * [`vlm`] — First attached-flow fin lifting-surface, grid-fin authority, and
+//!   horseshoe-vortex substrates for lift/normal force, drag, pitching moment,
+//!   and hinge-moment checks.
 //! * [`method`] — [`method::AeroMethod`] trait, [`method::AeroContext`]
 //!   input, [`method::AeroForceMomentBody`] output, and the
 //!   [`method::DeckLookup`] implementation that composes
@@ -29,11 +38,9 @@
 //!   surface (out-of-envelope, non-finite, invalid parameter,
 //!   malformed deck, deck I/O).
 //!
-//! The full six-coefficient `CX/CY/CZ/Cl/Cm/Cn` deck remains future
-//! work; schema-2 ships only `(CN, CD, CM)`. Hypersonic
-//! methods (`ModifiedNewtonian`, `TangentCone`, `LocalInclinationPanels`,
-//! `FreeMolecular`) and the `HybridAeroMethod` dispatch are documented
-//! in `docs/hypersonic-extensions.md`.
+//! Hypersonic methods (`ModifiedNewtonian`, `TangentCone`,
+//! `LocalInclinationPanels`, `FreeMolecular`) and the `HybridAeroMethod`
+//! dispatch are documented in `docs/hypersonic-extensions.md`.
 //!
 //! # Determinism
 //!
@@ -63,16 +70,24 @@ pub mod knudsen;
 pub mod method;
 #[cfg(feature = "parser")]
 pub mod parser;
+#[cfg(feature = "parser")]
+pub mod validation;
+pub mod vlm;
 
 pub use buildup::{
-    Afterbody, BodyGeometry, BuildupGrid, ComponentBuildup, DragBuildupModel, FinSet,
-    FlowCondition, NoseShape,
+    Afterbody, BodyGeometry, BuildupGrid, ComponentBuildup, DatcomComponentBuildup,
+    DragBuildupModel, FinSet, FlowCondition, NoseShape, ProtuberanceSet,
 };
-pub use deck::{AeroCoefficients, AeroDeck, ExtrapolationPolicy};
+pub use deck::{
+    AeroCoefficientSigmas, AeroCoefficients, AeroDeck, AeroDynamicDerivativeTableSet,
+    AeroDynamicDerivatives, AeroSixCoefficientSigmas, AeroSixCoefficients,
+    AeroUncertaintyCorrelation, ExtrapolationPolicy,
+};
 pub use error::AeroError;
 pub use hypersonic::{
-    LocalInclinationPanels, ModifiedNewtonian, PanelInclination, PanelMesh, PanelMethod,
-    TangentCone, TangentWedge, hypersonic_similarity_parameter,
+    AxialLineLoad, LocalInclinationPanels, ModifiedNewtonian, PanelInclination, PanelMesh,
+    PanelMeshBvh, PanelMethod, PanelSkinFriction, PanelSolution, TangentCone, TangentWedge,
+    hypersonic_similarity_parameter,
 };
 pub use knudsen::{
     AccommodationCoeffs, BridgeFunction, ChengBridge, ErfcBridge, FreeMolecularAero, GasRegime,
@@ -80,3 +95,24 @@ pub use knudsen::{
     mean_free_path_m,
 };
 pub use method::{AeroContext, AeroForceMomentBody, AeroMethod, DeckLookup};
+#[cfg(feature = "parser")]
+pub use validation::{
+    DatcomBuildupValidationDeck, DatcomBuildupValidationReport,
+    DatcomBuildupValidationSampleReport, DatcomFinBodyCarryoverValidationDeck,
+    DatcomFinBodyCarryoverValidationReport, DatcomProtuberanceDragValidationDeck,
+    DatcomProtuberanceDragValidationReport, NacaReport1048CrossflowDragRatioValidationDeck,
+    NacaReport1048CrossflowDragRatioValidationReport, NacaReport1048CrossflowValidationDeck,
+    NacaReport1048CrossflowValidationReport, NacaReport1048IncrementalForedragValidationDeck,
+    NacaReport1048IncrementalForedragValidationReport, SearsHaackWaveDragValidationDeck,
+    SearsHaackWaveDragValidationReport,
+};
+pub use vlm::{
+    VlmFinFlow, VlmFinGeometry, VlmFinSolution, VlmFinSurface, VlmGridFinFlow, VlmGridFinGeometry,
+    VlmGridFinSolution, VlmGridFinSurface, VlmHorseshoeDerivatives, VlmHorseshoeLattice,
+    VlmHorseshoePanel, VlmHorseshoeSolution,
+};
+#[cfg(feature = "parser")]
+pub use vlm::{
+    VlmHorseshoeDerivativeComparisonDeck, VlmHorseshoeDerivativeComparisonReport,
+    VlmHorseshoeDerivativeComparisonSampleReport,
+};

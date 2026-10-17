@@ -1,0 +1,38 @@
+openbmp.dol_cola_screening_deck = 1
+
+[deck]
+schema_version = 1
+deck_hash = "sha256:openbmp-dol-cola-screening-v1"
+provenance = "synthetic-openbmp-wp19.6-geometric-fixture"
+vehicle_keepout_radius_m = 120.0
+
+[[catalog_objects]]
+object_id = "synthetic-catalog-001"
+epoch_s = 0.0
+position_eci_m = [500.0, 100.0, 0.0]
+velocity_eci_m_s = [0.0, 0.0, 0.0]
+hard_body_radius_m = 10.0
+
+[[slots]]
+slot_id = "clear-slot"
+launch_time_s = 0.0
+
+[[slots.trajectory]]
+time_s = 0.0
+position_eci_m = [0.0, 500.0, 0.0]
+
+[[slots.trajectory]]
+time_s = 100.0
+position_eci_m = [1000.0, 500.0, 0.0]
+
+[[slots]]
+slot_id = "blocked-slot"
+launch_time_s = 0.0
+
+[[slots.trajectory]]
+time_s = 0.0
+position_eci_m = [0.0, 0.0, 0.0]
+
+[[slots.trajectory]]
+time_s = 100.0
+position_eci_m = [1000.0, 0.0, 0.0]

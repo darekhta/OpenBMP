@@ -1,0 +1,80 @@
+openbmp_structdyn_cla_event_library = 1
+
+[meta]
+dataset_id = "openbmp.structdyn.cla_event_library.v1"
+source_class = "openbmp-local-event-library"
+validation = "validated-toy"
+provenance = "data/structdyn/provenance.md#cla-event-library-v1"
+multiplier_abs_tolerance_1 = 1.0e-12
+stiffness_abs_tolerance_1 = 1.0e-12
+
+[[event]]
+id = "liftoff_hold_down_release"
+flight_event_kind = "liftoff_release"
+profile_kind = "ramp_release"
+start_s = 1.0
+duration_s = 0.4
+physical_force_n = [120000.0, -8000.0]
+sample_times_s = [0.5, 1.2, 1.4]
+expected_multiplier_1 = [1.0, 0.5, 0.0]
+
+[[event]]
+id = "max_q_dryden_gust"
+flight_event_kind = "max_q_gust"
+profile_kind = "dryden_gust"
+start_s = 30.0
+duration_s = 6.0
+gust_length_scale_s = 3.0
+physical_force_n = [0.0, 18000.0]
+sample_times_s = [29.9, 30.0, 33.0, 36.1]
+expected_multiplier_1 = [0.0, 1.0, 0.36787944117144233, 0.0]
+
+[[event]]
+id = "main_engine_ignition_impulse"
+flight_event_kind = "engine_ignition"
+profile_kind = "half_sine_impulse"
+start_s = 5.0
+duration_s = 0.2
+physical_force_n = [4500.0, 0.0]
+modal_stiffness_scale_1 = [1.15, 0.90]
+sample_times_s = [5.0, 5.1, 5.2]
+expected_multiplier_1 = [0.0, 7.853981633974483, 0.0]
+stiffness_sample_times_s = [5.0, 5.1, 5.2]
+expected_modal_stiffness_scale_1 = [
+  [1.0, 1.0],
+  [2.178097245096172, 0.21460183660255172],
+  [1.0, 1.0],
+]
+
+[[event]]
+id = "stage_separation_impulse"
+flight_event_kind = "stage_separation"
+profile_kind = "rectangular_impulse"
+start_s = 75.0
+duration_s = 0.05
+physical_force_n = [-2500.0, 600.0]
+modal_stiffness_scale_1 = [1.02, 0.99]
+sample_times_s = [74.9, 75.01, 75.06]
+expected_multiplier_1 = [0.0, 20.0, 0.0]
+stiffness_sample_times_s = [74.9, 75.01, 75.06]
+expected_modal_stiffness_scale_1 = [
+  [1.0, 1.0],
+  [1.4000000000000004, 0.7999999999999998],
+  [1.0, 1.0],
+]
+
+[[event]]
+id = "main_engine_cutoff_step"
+flight_event_kind = "meco"
+profile_kind = "step"
+start_s = 140.0
+physical_force_n = [-90000.0, 0.0]
+modal_stiffness_scale_1 = [0.85, 1.05]
+sample_times_s = [139.9, 140.0, 141.0]
+expected_multiplier_1 = [0.0, 1.0, 1.0]
+stiffness_sample_times_s = [139.9, 140.0, 141.0]
+expected_modal_stiffness_scale_1 = [
+  [1.0, 1.0],
+  [0.85, 1.05],
+  [0.85, 1.05],
+]

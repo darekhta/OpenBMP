@@ -1,0 +1,5 @@
+error[E0599]: no variant named `DayOfLaunchLoadRatio` found for enum `TerminalCondition`
+ --> tests/ui/dol_terminal_condition_extension.rs:4:32
+  |
+4 |     let _ = TerminalCondition::DayOfLaunchLoadRatio {
+  |                                ^^^^^^^^^^^^^^^^^^^^ variant not found in `TerminalCondition`

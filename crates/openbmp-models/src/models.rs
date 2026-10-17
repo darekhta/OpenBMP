@@ -126,6 +126,25 @@ pub struct EngineSnapshot {
     pub mass_flow_kg_per_s: f64,
     /// Cumulative propellant consumed since rack construction, in kg.
     pub consumed_kg: f64,
+    /// Delivered pitch-axis gimbal angle in the propulsion convention, rad.
+    ///
+    /// This is the actuator/latch output used to form `thrust_body`; it is
+    /// zero for engines without gimbal authority.
+    pub gimbal_pitch_rad: f64,
+    /// Delivered yaw-axis gimbal angle in the propulsion convention, rad.
+    pub gimbal_yaw_rad: f64,
+    /// Delivered pitch-axis gimbal rate, rad/s.
+    pub gimbal_pitch_rate_rad_s: f64,
+    /// Delivered yaw-axis gimbal rate, rad/s.
+    pub gimbal_yaw_rate_rad_s: f64,
+    /// External pitch-axis TVC load torque applied during this step, N*m.
+    pub tvc_pitch_load_torque_n_m: f64,
+    /// External yaw-axis TVC load torque applied during this step, N*m.
+    pub tvc_yaw_load_torque_n_m: f64,
+    /// Pitch-axis inertial reaction torque reported by the TVC plant, N*m.
+    pub tvc_pitch_inertial_reaction_torque_n_m: f64,
+    /// Yaw-axis inertial reaction torque reported by the TVC plant, N*m.
+    pub tvc_yaw_inertial_reaction_torque_n_m: f64,
     /// Stable lifecycle-state index for diagnostics / telemetry
     /// surfaces that need it without importing a propulsion enum.
     ///
@@ -144,6 +163,14 @@ impl EngineSnapshot {
             thrust_body: Vector3::zeros(),
             mass_flow_kg_per_s: 0.0,
             consumed_kg: 0.0,
+            gimbal_pitch_rad: 0.0,
+            gimbal_yaw_rad: 0.0,
+            gimbal_pitch_rate_rad_s: 0.0,
+            gimbal_yaw_rate_rad_s: 0.0,
+            tvc_pitch_load_torque_n_m: 0.0,
+            tvc_yaw_load_torque_n_m: 0.0,
+            tvc_pitch_inertial_reaction_torque_n_m: 0.0,
+            tvc_yaw_inertial_reaction_torque_n_m: 0.0,
             lifecycle_state_index: 0,
         }
     }
@@ -246,6 +273,9 @@ pub struct TankSnapshot {
     /// contributions in the kernel use `mass_kg`, which equals
     /// `fluid_remaining_kg` for the tank implementations.
     pub fluid_remaining_kg: f64,
+    /// Realized moving-mass rate over the most recent tank step,
+    /// kg/s. Negative for drain, zero when the tank did not change.
+    pub mass_rate_kg_s: f64,
 }
 
 /// Read-only view of the kernel's per-step tank snapshot.
@@ -318,12 +348,19 @@ impl<'a> TankSnapshotView<'a> {
 /// recovery-rack adapter (`openbmp-vehicle::adapters::
 /// RecoveryRackForceAdapter`) can compute drag without depending on
 /// `openbmp-vehicle::recovery`. The runner's `RecoveryRack` packs the
-/// `RecoveryModel::phase`, `current_c_d`, and `current_drag_area_m2`
-/// observations into this struct each kernel base tick.
+/// `RecoveryModel::phase`, `current_c_d`, `current_drag_area_m2`,
+/// and optional inflation diagnostic observations into this struct
+/// each kernel base tick.
 ///
 /// `phase_index` is the `openbmp_vehicle::RecoveryPhase` discriminant
 /// reproduced as a `u8` (0 = Stowed, 1 = Drogue, 2 = Main) so the
 /// `openbmp-sim` layer doesn't need to depend on `openbmp-vehicle`.
+///
+/// Inflation/opening-load fields are zero/false for recovery devices
+/// without an active inflation profile. Apparent-mass fields are zero
+/// unless the scenario opts into scalar canopy apparent mass. Riser
+/// fields are zero unless the scenario declares recovery risers and
+/// the device is deployed.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct RecoverySnapshot {
     /// `true` for any non-`Stowed` phase. Drag evaluation derives
@@ -337,6 +374,55 @@ pub struct RecoverySnapshot {
     pub c_d: f64,
     /// Current drag area `A` (m²) at this phase. Zero in `Stowed`.
     pub drag_area_m2: f64,
+    /// Canopy fill progress in `[0, 1]` for an inflating stage.
+    pub inflation_progress: f64,
+    /// `true` once the active inflation profile has reached full area.
+    pub inflation_complete: bool,
+    /// Dynamic pressure used by the opening-load diagnostic, Pa.
+    pub opening_dynamic_pressure_pa: f64,
+    /// Current infinite-mass opening-load diagnostic, N.
+    pub opening_load_n: f64,
+    /// Full-area infinite-mass peak opening-load diagnostic, N.
+    pub opening_peak_load_n: f64,
+    /// Pflanz ballistic parameter `A` used for finite-mass reduction.
+    pub opening_ballistic_parameter_a: f64,
+    /// Pflanz finite-mass reduction factor `X1(A, j)`.
+    pub opening_pflanz_reduction_factor_x1: f64,
+    /// Full-area finite-mass peak opening-load diagnostic, N.
+    pub opening_finite_mass_peak_load_n: f64,
+    /// Scalar canopy apparent / added mass, kg.
+    pub apparent_mass_kg: f64,
+    /// Time derivative of scalar canopy apparent / added mass, kg/s.
+    pub apparent_mass_rate_kg_s: f64,
+    /// Relative velocity term used by the deployment snatch diagnostic, m/s.
+    pub snatch_delta_v_m_s: f64,
+    /// Equivalent parallel line stiffness used by the snatch diagnostic, N/m.
+    pub snatch_stiffness_n_m: f64,
+    /// Effective decelerated mass used by the snatch diagnostic, kg.
+    pub snatch_effective_mass_kg: f64,
+    /// Pack drag load term added to the snatch diagnostic, N.
+    pub snatch_pack_drag_load_n: f64,
+    /// Peak snatch-load diagnostic from the deployment-sequence model, N.
+    pub snatch_peak_load_n: f64,
+    /// Discrete mortar reaction impulse applied to the vehicle for this tick, body frame, N s.
+    pub mortar_impulse_body_n_s: Vector3<f64>,
+    /// Constant force equivalent of the mortar reaction impulse for this tick, body frame, N.
+    pub mortar_force_body_n: Vector3<f64>,
+    /// Sum of declared riser tensions, N.
+    pub riser_tension_sum_n: f64,
+    /// Maximum declared riser tension, N.
+    pub riser_tension_max_n: f64,
+    /// Sum of forces applied by declared risers at vehicle attach points, body frame, N.
+    pub riser_force_body_n: Vector3<f64>,
+    /// Sum of moments from declared riser forces about the body origin, body frame, N m.
+    pub riser_moment_body_n_m: Vector3<f64>,
+    /// Sum of elastic potential energy stored in declared risers, J.
+    pub riser_elastic_energy_j: f64,
+    /// `true` when the runner has moved this recovery device's aerodynamic
+    /// `C_D A` drag load into the declared riser force/moment totals for this
+    /// snapshot. The recovery drag adapter then skips this device's drag term
+    /// to avoid double-counting.
+    pub riser_force_path_active: bool,
 }
 
 /// Read-only view of the kernel's per-step recovery snapshot.
@@ -801,6 +887,10 @@ pub struct MomentContext<'a, S: SimState> {
     /// `TankRackMomentAdapter` reads per-tank reaction moments from
     /// this view.
     pub tank_snapshot: TankSnapshotView<'a>,
+    /// Read-only recovery snapshot view. The rigid-body recovery-riser
+    /// moment adapter reads aggregate per-device riser moments from
+    /// this view.
+    pub recovery_snapshot: RecoverySnapshotView<'a>,
 }
 
 /// Trait implemented by moment-providing models.
@@ -882,6 +972,11 @@ pub struct MassContext<'a> {
     /// scenarios; populated by the runner before each `step()` for
     /// scenarios that declare `[[vehicle.assembly.tanks]]`.
     pub tank_snapshot: TankSnapshotView<'a>,
+    /// Read-only recovery snapshot view. Empty for legacy scenarios
+    /// with no `[[vehicle.assembly.recovery]]` block; populated by the
+    /// runner before each `step()` for scenarios that declare recovery
+    /// devices.
+    pub recovery_snapshot: RecoverySnapshotView<'a>,
 }
 
 /// Trait implemented by mass-property-providing models.

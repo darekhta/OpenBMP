@@ -119,6 +119,7 @@ openbmp/
 │   ├── openbmp-mission/                 # L1: mission graph, events, HSM
 │   ├── openbmp-sim/                     # L1: kernel, scheduler, integrators
 │   ├── openbmp-uq/                      # L1: uncertainty budgets + credibility
+│   ├── openbmp-modelio/                 # L1: external reduced-model assets
 │   ├── openbmp-physics/                 # L2: atmosphere, gravity, wind, magnetic, error
 │   ├── openbmp-vehicle/                 # L2: rigid body, mass models,
 │   │   ├── assembly/                    #     VehicleAssembly tree
@@ -131,6 +132,7 @@ openbmp/
 │   ├── openbmp-thermochem/              # L2: thermochemistry decks
 │   ├── openbmp-feedsystem/              # L2: feed-network primitives
 │   ├── openbmp-propulsion/              # L2: motors, EngineModel + EngineCluster
+│   ├── openbmp-structdyn/               # L2: structural recovery numerics
 │   ├── openbmp-sensors/                 # L3: synthetic sensors, fault models
 │   ├── openbmp-fc/                      # L4: flight controller
 │   │   ├── clock                        #     lockstep clock contract
@@ -901,6 +903,49 @@ path stays flat-list and synchronous as today.
 > runner paths. The `[vehicle.assembly]` scenario block is documented in
 > [`scenario-format.md § Vehicle assembly`](scenario-format.md#vehicle-assembly).
 
+### External Model I/O
+
+`openbmp-modelio` is the L1 ingestion boundary for external reduced-model
+assets. It owns deterministic schemas, parsers, and code-to-code reference
+checks, and deliberately has no runner, simulator, or vehicle dependency edge.
+The first shipped asset is `ModalAsset` CSV v1, carrying mode frequencies,
+modal mass, station shape/slope samples, and source-reference values used for
+frequency tolerance and MAC checks. OP2/OP4 readers are deferred behind this
+crate and are not part of the current shipped surface.
+
+### Structural Dynamics Numerics
+
+`openbmp-structdyn` is the L2 home for structural-dynamics numerical kernels
+that are below scenario parsing and runner telemetry. Its shipped modules cover
+deterministic station line-load recovery, dense Craig-Bampton transform /
+reduction algebra, sparse shift-invert fixed-interface mode extraction, and
+frequency/MAC modal correlation helpers plus full MAC and mass-weighted
+cross-orthogonality matrix evidence helpers, plus constant-step
+Newmark-beta/generalized-alpha modal transient integration with precomputed
+effective-stiffness Cholesky factors. It also carries the first native
+beam/shell-FEM/event-forcing substrate: Euler-Bernoulli beam mass/stiffness
+assembly, constant-strain triangle plus bilinear quadrilateral plane-stress
+membrane mass/stiffness assembly, Reissner-Mindlin triangular plate-bending
+mass/stiffness assembly, combined six-DOF triangular shell assembly with drilling-rotation
+regularization, clamped-free Blevins frequency references, event-force time
+profiles including Dryden gust envelopes, modal projection, and max-absolute
+modal force envelopes. The runner wires the native
+transient schemes through the explicit v3 `[vehicle.transient]` byte-lock while
+omitted configs keep the legacy modal step, and separately exposes declared
+`[loads.events]` modal-force envelope reports on `RunOutcome` while injecting
+those projected event loads, plus optional legacy-step modal stiffness
+multipliers, into the live structural rack modal state. Explicit native
+Newmark/generalized-alpha transients handle those stiffness multipliers through
+per-step variable-stiffness modal systems. It also
+exposes a partial structural POGO substrate that evaluates longitudinal modal
+receptance, sampled open-loop Nyquist clearance against caller-provided feed
+transfer samples, lossless 1-D feedline transfer-matrix assembly, deterministic
+pump Cb/Mb dispersion-box corner evaluation, feed-transfer scaling for
+accumulator or dispersion sweeps, finite-dimensional lumped feedline-coupled
+eigenvalue/RHP checks, and reduced first-order feed closed-loop eigenvalue/RHP
+checks. The numerics crate has no scenario, runner, simulator, vehicle, or
+flight-controller dependency edge.
+
 ### Propulsion: EngineModel and EngineCluster
 
 Solid motors keep the existing `Motor: ForceModel + MassModel` shape from
@@ -1320,14 +1365,59 @@ Trilinear interpolation is the default. Out-of-grid samples produce a
 `ValidationError` (fail-closed) unless the deck explicitly opts into
 extrapolation with a documented strategy (e.g., `extrapolation = "clamp"`).
 
-Schema 1 is the reduced axisymmetric form. `beta_deg` may be present as a
-grid axis for deck-family continuity, but there is no separate `CY`, yaw
-moment, or body-`y` force channel in this schema: the body-frame mapping is
+Schema 1's baseline coefficients are the reduced axisymmetric form. `beta_deg`
+may be present as a grid axis for deck-family continuity. When no explicit
+six-channel block is present, the body-frame mapping is
 `F_body = q · S · (-CD, 0, -CN)` and `M_body = q · S · L · (0, CM, 0)`.
 For non-zero beta grids, a deck author either encodes the intended reduced
-normal-force behaviour into `CN(M, alpha, beta)` or accepts that Schema 1 does
-not model side force/yaw moment. Full six-coefficient decks are a
-schema-2 extension.
+normal-force behaviour into `CN(M, alpha, beta)` or accepts that the reduced
+fallback does not model side force/yaw moment. Decks may optionally add explicit
+body-axis six-coefficient tables:
+
+```toml
+[six_coefficients.cx]
+data = [ /* row-major CX */ ]
+
+[six_coefficients.cy]
+data = [ /* row-major CY */ ]
+
+[six_coefficients.cz]
+data = [ /* row-major CZ */ ]
+
+[six_coefficients.cl]
+data = [ /* row-major Cl */ ]
+
+[six_coefficients.cm]
+data = [ /* row-major Cm */ ]
+
+[six_coefficients.cn]
+data = [ /* row-major Cn */ ]
+```
+
+When present, `DeckLookup` maps them directly as
+`F_body = q · S · (CX, CY, CZ)` and
+`M_body = q · S · L · (Cl, Cm, Cn)`.
+
+Decks may also carry optional dynamic stability derivative tables, stored in
+the same row-major order as the coefficient tables and queried through the deck
+API as non-dimensional rate derivatives. When present, `DeckLookup` adds the
+body-rate moment contribution `qSL*D*(pL/2V, qL/2V, rL/2V)`, where `D` maps
+body rates into `(Cl, Cm, Cn)`, using the `AeroContext` airspeed and body
+angular-rate fields. Missing derivative tables default to zero:
+
+```toml
+[dynamic_derivatives.cl_p]
+data = [ /* row-major Cl_p */ ]
+
+[dynamic_derivatives.cm_q]
+data = [ /* row-major Cm_q */ ]
+
+[dynamic_derivatives.cn_r]
+data = [ /* row-major Cn_r */ ]
+
+# Optional cross-coupling tables use the same pattern:
+# cl_q, cl_r, cm_p, cm_r, cn_p, cn_q
+```
 
 Decks must include provenance and a validation label. **Real fielded-vehicle
 aero decks are explicitly rejected.** The MVP ships only synthetic textbook
@@ -1337,6 +1427,78 @@ Users may also pre-process aero coefficients into the deck format using
 public semi-empirical methods. OpenBMP's built-in `ComponentBuildup`
 implements the conservative launch-vehicle subset; more specialised
 datasets still cross the same deck/provenance boundary.
+
+Decks can also carry optional per-node coefficient sigma tables for the reduced
+`CN`, `CD`, and `CM` channels, plus optional deck-level uncertainty-correlation
+metadata:
+
+```toml
+[uncertainty.cn]
+data = [ /* row-major one-sigma CN values */ ]
+
+[uncertainty.cd]
+data = [ /* row-major one-sigma CD values */ ]
+
+[uncertainty.cm]
+data = [ /* row-major one-sigma CM values */ ]
+
+[uncertainty.correlation]
+mach_length = 1.5
+coefficient = [
+  [1.0, 0.25, 0.0],
+  [0.25, 1.0, 0.0],
+  [0.0, 0.0, 1.0],
+]
+```
+
+The table layout is identical to the nominal coefficient layout over the active
+schema-1 or schema-2 axes. `openbmp-aero` validates the tables as finite,
+non-negative, and length-matched, then exposes `AeroDeck::lookup_sigma` using the
+same locked-order multilinear interpolation as nominal coefficient lookup. The
+optional `mach_length` records an exponential Mach-axis covariance length for
+higher-layer sampling code, and `coefficient` records an optional reduced
+`CN/CD/CM` correlation matrix while `six_coefficient` records an optional
+`CX/CY/CZ/Cl/Cm/Cn` correlation matrix. This is the deck-side substrate for
+doc-03 database UQ; it does not by itself claim a GCI/RSS assembly or a full
+campaign UQ workflow.
+Six-channel sigma tables can be stored and interpolated when nominal six tables
+are present, and the deck-draw path perturbs them with Mach-correlated streams
+plus optional six-channel coefficient-correlation mixing when `[aero.deck_draw]`
+is declared. The offline `openbmp-aerodb` layer now provides the reduced and
+six-channel GCI/RSS assembly helpers that populate these sigma tables before
+runtime consumption, plus strict normalized six-coefficient solver CSV baking
+for nominal `CX/CY/CZ/Cl/Cm/Cn` deck tables.
+It also validates recorded external-solver command plans as direct argv/env
+metadata and projects their expected outputs into SHA-pinned artifact manifests;
+the same offline layer can execute those direct commands with timeout handling,
+stdout/stderr digest capture, output SHA verification, and explicit bounded
+retry evidence for configured transient execution failures. It can also render
+deterministic Slurm `sbatch` array scripts for MPI-rank case scheduling without
+submitting jobs, submit those rendered scripts through direct command vectors,
+parse Slurm job ids from submit output, and query scheduler state output into
+coarse status evidence. It also polls scheduler state with bounded attempts to
+successful completion and verifies planned output artifact SHA pins under the
+solver root. For recorded OpenFOAM data, it can parse scalar and vector field
+dictionaries with `FoamFile`, `dimensions`, `internalField`, and named
+`boundaryField` patch values, validate recorded scalar/vector field sets by
+expected object name, load declared field files from safe relative paths under
+a recorded case root, discover supported scalar/vector fields in a selected
+recorded time directory, parse recorded `polyMesh/boundary` patch metadata,
+validate field patch names against that metadata, parse recorded
+`polyMesh` points/faces/owner/neighbour connectivity metadata, reconstruct
+face/cell geometry from that connectivity, parse recorded optional
+point/face/cell zone metadata, validate zone labels against that connectivity,
+parse recorded `turbulenceProperties` metadata for common RAS/LES field-set
+semantics plus calibrated scalar coefficient checks, and bake boundary Cp fields
+in panel order through the same load-report path. It also validates calibrated
+six-coefficient AeroDeck cases through existing deck interpolation with
+per-channel tolerances. The same layer now renders deterministic SU2-Euler case
+configs from a condition-only `RunMatrix`, records config SHA evidence, and
+materializes only those generated configs under a caller root. It also provides
+a direct-command remote artifact staging hook that lets callers use
+site-specific transfer tooling while openbmp-aerodb captures transfer evidence
+and verifies planned output SHA pins under the solver root. Built-in SSH/S3
+backend ownership remains outside this substrate.
 
 ### Deck Format Extensions: Control-Effector Axes
 
@@ -1426,8 +1588,8 @@ body_flap_right / grid_fin_<n>`; the deck declares names and units, the
 >   `RunnerError::AeroEffectorMismatch` at runner build time, before
 >   any kernel step.
 > - Schema-2 supports up to 3 effector axes (6 axes total).
->   The full six-coefficient `(CY, Cl, Cn-yaw)` deck is not yet
->   shipped; schema-2 ships only `(CN, CD, CM)`. Point-mass vehicles
+>   It can carry the same optional explicit `(CX, CY, CZ, Cl, Cm, Cn)`
+>   tables as schema-1 decks. Point-mass vehicles
 >   still query at `(alpha, beta) = (0, 0)`. Rigid-body vehicles
 >   resolve the velocity vector into body axes, query the deck's
 >   alpha/beta axes, and rotate the reduced force back to ECI.
@@ -1723,10 +1885,14 @@ pub struct ThreeLoopAutopilot {
 The three-loop architecture (inner rate, outer attitude, outer command) is
 the canonical academic formulation in Stevens, B. L. and Lewis, F. L.,
 *Aircraft Control and Simulation* (Wiley, 3rd ed., 2015). The autopilot adds
-optional gyro notch filtering, minimum-snap
-differential-flatness attitude-reference generation, and
-feature-gated Cao-Hovakimyan L1 adaptive rate-loop augmentation. Gains are
-scenario-supplied. The OpenBMP repository ships only **academic** gain
+optional gyro notch filtering, while `openbmp-fc::csi` provides FC-portable
+frozen-time margin analysis over plain coefficient arrays plus continuous
+bending-notch and unity-magnitude lead/lag design helpers that export existing
+filter-friendly coefficient shapes. Minimum-snap differential-flatness
+attitude-reference generation and feature-gated Cao-Hovakimyan L1 adaptive
+rate-loop augmentation are also available. Gains are scenario-supplied. The
+OpenBMP repository ships only
+**academic** gain
 sets for canonical toy vehicles; no real fielded tuning data is included.
 The trait surface, however, accepts any scenario-supplied gain table —
 downstream consumers may integrate production gain sets in their own
@@ -1844,8 +2010,10 @@ variants, textbook materials only). Full design and validation suite in
 [hypersonic-extensions.md](hypersonic-extensions.md).
 
 Aerothermal output flows through dedicated telemetry channels
-(`aerothermal.q_stag_conv`, `aerothermal.q_stag_rad`,
-`aerothermal.surface_temp[i]`, etc.) defined in the telemetry schema.
+(`aerothermal.q_conv_w_m2`, `aerothermal.q_rad_w_m2`,
+`aerothermal.stagnation_temperature_k`, wall/backwall temperatures, optional
+`aerothermal.electron_number_density_m3`, etc.) defined in the telemetry
+schema.
 
 ## Telemetry
 
@@ -1876,6 +2044,13 @@ CSV and JSON exporters remain available for human readability and
 golden-test diffability. Parquet is the **canonical archive format** because
 it preserves typed columns, units, frames, and version metadata; CSV/JSON are
 **lossy exports** of the canonical archive.
+
+With the off-by-default `openbmp-telemetry/interop-export` feature,
+`TelemetryTable` can also emit explicitly non-conformant CCSDS-shaped binary
+frame streams and channel dictionaries in OpenBMP JSON or XTCE-shaped XML.
+Those artifacts are deterministic host-side interchange aids only; frame
+round trips are checked back against the canonical Parquet table bytes, and
+OpenBMP still makes no CCSDS, XTCE, or PUS conformance claim.
 
 ### Schema Versioning
 

@@ -862,6 +862,7 @@ mod tests {
                 effector_actuals: openbmp_models::EffectorActualsView::empty(),
                 engine_snapshot: openbmp_models::EngineSnapshotView::empty(),
                 tank_snapshot: openbmp_models::TankSnapshotView::empty(),
+                recovery_snapshot: openbmp_models::RecoverySnapshotView::empty(),
             })
             .unwrap();
         assert_eq!(m, Vector3::zeros());

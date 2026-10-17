@@ -1,0 +1,46 @@
+openbmp.scenario = 3
+
+[meta]
+name = "structural-rack-test"
+description = "Synthetic structural rack test."
+validation = "validated-toy"
+
+[time]
+start_s = 0.0
+stop_s = 0.1
+dt_s = 0.01
+seed = 11
+
+[vehicle]
+kind = "rigid_body"
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
+initial_quaternion_body_to_eci_xyzw = [0.0, 0.0, 0.0, 1.0]
+initial_angular_velocity_body_rad_s = [0.0, 0.0, 0.0]
+
+[vehicle.assembly]
+id = "structural-rack-test"
+
+[[vehicle.assembly.bodies]]
+id = "core"
+geometry = { kind = "reference", length_m = 1.0, area_m2 = 1.0 }
+dry_mass_kg = 100.0
+dry_cg_body_m = [0.0, 0.0, 0.0]
+dry_inertia_body_kg_m2 = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 0.0
+atmosphere = "none"
+wind = "none"
+
+[forces]
+models = ["gravity"]
+
+[telemetry]
+output.csv = "out/structural-rack-test.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true

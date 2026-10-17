@@ -1,0 +1,93 @@
+schema = "openbmp.aerothermal.tauber_sutton_earth.v1"
+dataset_id = "tauber-sutton-earth-air-radiative-v1"
+validation_label = "checked"
+
+source_primary = "Tauber, M. E.; Sutton, K., Stagnation-point radiative heating relations for Earth and Mars entries, Journal of Spacecraft and Rockets 28(1), 1991, doi:10.2514/3.26206"
+source_secondary = "Brykina et al., Journal of Applied Mechanics and Technical Physics, 2019, reproduces the Tauber-Sutton Earth-entry equation and tabulated f(V)"
+retrieval_path = "https://sciencejournals.ru/view-article/?a=MekhZhG1904003Brykina&j=mekhzhg&n=4&v=0&y=2019"
+
+# Tauber-Sutton Earth-air form:
+# q_rad[W/cm^2] = coefficient_w_cm2 * R_n^a * rho_inf^density_exponent * f(V)
+# a = min(radius_exponent_coefficient * V^velocity_power * rho_inf^density_power, radius cap)
+coefficient_w_cm2 = 47360.0
+density_exponent = 1.22
+radius_exponent_coefficient = 1072000.0
+radius_exponent_velocity_power = -1.88
+radius_exponent_density_power = -0.325
+floor_velocity_m_s = 9000.0
+ceiling_velocity_m_s = 16000.0
+
+[reference_case]
+density_kg_m3 = 0.0001
+velocity_m_s = 11000.0
+nose_radius_m = 1.5
+wall_temperature_k = 1500.0
+reference_radius_exponent = 0.5399785859586729
+reference_f_v = 151.0
+reference_q_rad_w_m2 = 1173475.8331859312
+relative_tolerance = 1.0e-12
+
+[[velocity_function]]
+velocity_m_s = 9000.0
+f_v = 0.0
+kind = "floor-sentinel"
+
+[[velocity_function]]
+velocity_m_s = 10000.0
+f_v = 35.0
+
+[[velocity_function]]
+velocity_m_s = 10250.0
+f_v = 55.0
+
+[[velocity_function]]
+velocity_m_s = 10500.0
+f_v = 81.0
+
+[[velocity_function]]
+velocity_m_s = 10750.0
+f_v = 115.0
+
+[[velocity_function]]
+velocity_m_s = 11000.0
+f_v = 151.0
+
+[[velocity_function]]
+velocity_m_s = 11500.0
+f_v = 238.0
+
+[[velocity_function]]
+velocity_m_s = 12000.0
+f_v = 359.0
+
+[[velocity_function]]
+velocity_m_s = 12500.0
+f_v = 495.0
+
+[[velocity_function]]
+velocity_m_s = 13000.0
+f_v = 660.0
+
+[[velocity_function]]
+velocity_m_s = 13500.0
+f_v = 850.0
+
+[[velocity_function]]
+velocity_m_s = 14000.0
+f_v = 1065.0
+
+[[velocity_function]]
+velocity_m_s = 14500.0
+f_v = 1313.0
+
+[[velocity_function]]
+velocity_m_s = 15000.0
+f_v = 1550.0
+
+[[velocity_function]]
+velocity_m_s = 15500.0
+f_v = 1780.0
+
+[[velocity_function]]
+velocity_m_s = 16000.0
+f_v = 2040.0

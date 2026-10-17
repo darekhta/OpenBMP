@@ -1,0 +1,100 @@
+[openbmp]
+gnc_bending_filter_tustin_reference = 1
+
+[tolerances]
+absolute_coefficient = 1.0e-12
+absolute_magnitude = 1.0e-12
+absolute_margin_db = 1.0e-9
+absolute_margin_deg = 1.0e-9
+
+[schedule]
+variable = "Mach"
+interp = "Linear"
+dt_s = 0.01
+
+[[schedule.node]]
+node_id = "mach0"
+schedule_value = 0.0
+
+[[schedule.node.section]]
+mode_frequency_rad_s = 20.0
+zero_frequency_rad_s = 20.0
+zero_damping_ratio = 0.02
+pole_frequency_rad_s = 20.0
+pole_damping_ratio = 0.20
+
+[[schedule.node]]
+node_id = "mach1"
+schedule_value = 1.0
+
+[[schedule.node.section]]
+mode_frequency_rad_s = 26.0
+zero_frequency_rad_s = 26.0
+zero_damping_ratio = 0.025
+pole_frequency_rad_s = 26.0
+pole_damping_ratio = 0.22
+
+[query]
+schedule_value = 0.5
+dt_s = 0.01
+mode_frequency_rad_s = 23.0
+zero_frequency_rad_s = 23.0
+zero_damping_ratio = 0.0225
+pole_frequency_rad_s = 23.0
+pole_damping_ratio = 0.21
+expected_b = [
+  0.95920718192226273,
+  -1.8583631347022622,
+  0.94941690558360592,
+]
+expected_a = [
+  1.0,
+  -1.8583631347022622,
+  0.90862408750586865,
+]
+expected_mode_magnitude = 0.10714285714285714
+
+[margin_sweep]
+sample_values = [0.0, 0.5, 1.0]
+expected_mode_frequencies_rad_s = [20.0, 23.0, 26.0]
+expected_mode_magnitudes = [
+  0.09999999999999999,
+  0.10714285714285714,
+  0.11363636363636365,
+]
+min_notch_attenuation_db = 18.0
+
+[analytic_margin]
+loop_gain = 10.0
+frequency_start_rad_s = 0.2
+frequency_step_rad_s = 0.05
+frequency_count = 1597
+min_gain_margin_db = 6.0
+min_phase_margin_deg = 30.0
+
+[[analytic_margin.sample]]
+schedule_value = 0.0
+bending_frequency_rad_s = 20.0
+bending_damping_ratio = 0.02
+slosh_frequency_rad_s = 4.0
+slosh_damping_ratio = 0.06
+expected_gain_margin_db = 9.192842190555693
+expected_phase_margin_deg = 171.23666118888406
+
+[[analytic_margin.sample]]
+schedule_value = 0.5
+bending_frequency_rad_s = 23.0
+bending_damping_ratio = 0.02
+slosh_frequency_rad_s = 4.5
+slosh_damping_ratio = 0.06
+expected_gain_margin_db = 10.949989380122878
+expected_phase_margin_deg = 167.3561135658719
+
+[[analytic_margin.sample]]
+schedule_value = 1.0
+bending_frequency_rad_s = 26.0
+bending_damping_ratio = 0.02
+slosh_frequency_rad_s = 5.0
+slosh_damping_ratio = 0.06
+expected_gain_margin_db = 12.55069177983942
+expected_phase_margin_deg = 163.34875837995435

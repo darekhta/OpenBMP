@@ -1,6 +1,7 @@
 # Postflight Reconstruction, System Identification & Model Correlation
 
-**Status:** `experimental` (design intent; no code shipped by this document).
+**Status:** `experimental` (WP-24.1 file-fed residual harness implemented;
+remaining work packages are design intent).
 **Audience:** the engineer or LLM agent implementing the parity work packages.
 **Prerequisite reading:** `00-overview.md`, `13-agent-execution-playbook.md`,
 `11-monte-carlo-uq-and-validation.md` (whose BET machinery this document
@@ -352,6 +353,20 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
 ### WP-24.1 — `openbmp-sysid` skeleton + differencing harness
 
 - **title:** L6 analysis crate with time registration, resampling, unit/frame reconciliation, phase-segmented residual reports, out-of-family flags.
+- **status:** implemented and traced by `REQ-SYSID-001` / `V-SYSID-001`.
+  `openbmp-sysid` now provides the L6 standalone differencing substrate:
+  validated scalar time-series metadata/samples, strict monotonic timestamp
+  checks, unit/frame reconciliation, actual-to-reference linear interpolation,
+  absolute/relative tolerance envelopes, total and phase-window residual
+  statistics, out-of-family flags, deterministic local CSV ingestion, and
+  deterministic JSON report shapes. The CLI exposes `openbmp sysid residuals`
+  with `--reference`, `--actual`, `--mapping`, and `--report-json` for the
+  file-fed WP-24.1 front door. Focused tests prove
+  exact constructed-signal resampling, hand-computed statistics,
+  phase-segmented flags, unit/frame fail-closed behavior, invalid-series
+  rejection, CSV loading, JSON report emission, and CLI mapping mismatch
+  rejection. This does not claim the WP-24.2 parameter registry, output-error
+  estimation, identifiability analysis, or governance/deck-ingestion flow.
 - **goal:** Sim-vs-anything comparison becomes a disciplined artifact
   instead of an eyeball: the front door for regression diffing,
   pseudo-flight work, and the LOCAL workflow.

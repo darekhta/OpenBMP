@@ -1,0 +1,54 @@
+dataset_id = "szmuk-acikmese-6dof-free-final-time-v1"
+schema_version = 1
+source_class = "published-paper"
+source_title = "Successive Convexification for 6-DoF Mars Rocket Powered Landing with Free-Final-Time"
+source_authors = ["M. Szmuk", "B. Acikmese"]
+source_venue = "AIAA SciTech Forum, 2018, AIAA 2018-0617"
+source_doi = "10.2514/6.2018-0617"
+source_arxiv = "1802.03827"
+source_url = "https://arxiv.org/abs/1802.03827"
+notes = "Published notional non-dimensional 6-DoF free-final-time powered-landing benchmark constants from Tables 1 and 2. The paper reports convergence behavior and plots but does not publish machine-readable trajectory samples."
+
+[scaling]
+length_unit = "UL"
+time_unit = "UT"
+mass_unit = "UM"
+
+[vehicle]
+wet_mass = 2.0
+dry_mass = 1.0
+minimum_thrust = 0.30
+maximum_thrust = 5.00
+maximum_gimbal_angle_deg = 20.0
+maximum_tilt_angle_deg = 90.0
+maximum_angular_rate_deg_per_time_unit = 60.0
+inertia_body = [
+  0.01, 0.0, 0.0,
+  0.0, 0.01, 0.0,
+  0.0, 0.0, 0.01,
+]
+thrust_application_point_body = [-0.01, 0.0, 0.0]
+
+[environment]
+gravity = [-1.0, 0.0, 0.0]
+glideslope_angle_deg = 20.0
+
+[algorithm]
+virtual_control_weight = 1.0e5
+state_control_trust_region_weight = 1.0e-3
+time_trust_region_weight = 1.0e-1
+virtual_control_tolerance = 1.0e-10
+trust_region_tolerance = 1.0e-3
+maximum_iterations = 15
+discretization_points = 50
+initial_time_guesses = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+published_in_plane_convergence_iteration = 6
+published_out_of_plane_convergence_iteration = 9
+published_time_of_flight_agreement = 0.01
+
+[boundary_conditions]
+initial_position = [4.0, 4.0, 0.0]
+in_plane_initial_velocity = [0.0, -4.0, 0.0]
+final_velocity = [-0.1, 0.0, 0.0]
+initial_angular_velocity = [0.0, 0.0, 0.0]
+final_quaternion_body_to_inertial_wxyz = [1.0, 0.0, 0.0, 0.0]

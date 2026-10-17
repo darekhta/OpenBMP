@@ -41,6 +41,7 @@ openbmp-fc/
 ├── commander      # mission FSM + arming chain
 ├── autopilot      # three-loop autopilot, gain-scheduled
 ├── filters        # deterministic biquad / notch filters
+├── csi            # modal CSI plant assembly, margin/trajectory, and filter-design helpers
 ├── mixer          # phase-gated actuator authority
 ├── health         # failsafe-flag publisher (bus-sequence staleness)
 ├── fdir           # residual-based detection (publishes status)
@@ -65,7 +66,8 @@ Implemented in this crate today:
   MEKF covariance reset, Gauss-Markov bias dynamics, iterated
   magnetometer update, WGS84-J2 gravity via `openbmp-physics`, and a
   real 6-state sigma-point UKF for attitude + gyro bias.
-- **Autopilot upgrades** — optional gyro notch filters,
+- **Autopilot / CSI upgrades** — optional gyro notch filters,
+  FC-portable modal CSI plant assembly, frozen-time margin/trajectory, notch, and lead-lag helpers,
   minimum-snap differential-flatness attitude-reference generation, and
   feature-gated Cao-Hovakimyan L1 adaptive rate-loop augmentation.
 - **FDIR / voter upgrades** — burst-counter / single-sample GLRT /

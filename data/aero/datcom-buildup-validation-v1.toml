@@ -1,0 +1,109 @@
+# Synthetic DATCOM-style buildup validation fixture.
+#
+# This is not public DATCOM/AGARD validation data. It is a checked
+# OpenBMP-authored fixture that pins the validation harness, geometry
+# parser, coefficient comparison path, and dynamic-derivative comparison
+# path before public digitized NACA/AGARD rows are added.
+
+openbmp.aero_datcom_validation = 1
+
+reference_reynolds_at_mach1 = 4.0e6
+
+[provenance]
+dataset_id = "openbmp.aero.datcom_buildup_validation.v1"
+source_class = "synthetic-openbmp"
+validation_label = "checked"
+
+[geometry]
+body_diameter_m = 0.2
+body_length_m = 2.4
+surface_roughness_m = 6.0e-5
+reference_area_m2 = 0.031415926535897934
+reference_length_m = 0.2
+center_of_gravity_from_nose_m = 1.25
+
+[geometry.nose]
+kind = "ogive"
+fineness = 3.5
+
+[geometry.afterbody]
+exit_diameter_m = 0.14
+length_m = 0.25
+
+[geometry.fins]
+count = 4
+root_chord_m = 0.30
+tip_chord_m = 0.12
+span_m = 0.16
+thickness_ratio = 0.06
+sweep_deg = 29.79380534680281
+
+[tolerances]
+max_abs_error = 1.0e-12
+max_relative_error = 1.0e-12
+
+[[samples]]
+id = "subsonic-alpha5"
+mach = 0.5
+alpha_deg = 5.0
+reynolds_length = 2.0e6
+
+[samples.expected]
+cn = 1.5210554487349282
+cd = 0.5153568570688235
+cm = -5.211568840465396
+
+[samples.expected_derivatives]
+cl_p = -1.49076166429326
+cl_q = 0.0
+cl_r = 0.0
+cm_p = 0.0
+cm_q = -430.61939222494664
+cm_r = 0.0
+cn_p = 0.0
+cn_q = 0.0
+cn_r = -430.61939222494664
+
+[[samples]]
+id = "supersonic-alpha10"
+mach = 2.0
+alpha_deg = 10.0
+reynolds_length = 8.0e6
+
+[samples.expected]
+cn = 2.775836315359133
+cd = 0.5140424612920925
+cm = -8.390305092183466
+
+[samples.expected_derivatives]
+cl_p = -1.2338526862078964
+cl_q = 0.0
+cl_r = 0.0
+cm_p = 0.0
+cm_q = -325.504106168206
+cm_r = 0.0
+cn_p = 0.0
+cn_q = 0.0
+cn_r = -325.504106168206
+
+[[samples]]
+id = "supersonic-alpha15"
+mach = 2.5
+alpha_deg = 15.0
+reynolds_length = 1.0e7
+
+[samples.expected]
+cn = 4.032533165560091
+cd = 0.6291837593036262
+cm = -10.873835916791617
+
+[samples.expected_derivatives]
+cl_p = -1.0879621298460267
+cl_q = 0.0
+cl_r = 0.0
+cm_p = 0.0
+cm_q = -267.16031869626084
+cm_r = 0.0
+cn_p = 0.0
+cn_q = 0.0
+cn_r = -267.16031869626084

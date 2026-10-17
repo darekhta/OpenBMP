@@ -4,12 +4,19 @@
 //! and a caller-supplied edge-state assembly path for the 1958
 //! equilibrium-air catalytic-wall axisymmetric formula. [`SuttonGraves`]
 //! is the engineering simplification that needs only freestream density,
-//! nose radius, and velocity. [`TauberSuttonRadiative`] is typed-reserved
-//! until the published piecewise-polynomial Tauber-Sutton coefficients
-//! are imported with provenance.
+//! nose radius, and velocity; [`SuttonGravesGas`] provides the NASA
+//! TR R-376 base-gas / Earth-air coefficient presets normalized to the
+//! existing SI Earth-air constant. [`DetraKempRiddell`] exposes the
+//! classic DKR imperial-reference stagnation heating cross-check with
+//! an SI wrapper. [`TauberSuttonRadiative`] is off by default, and can
+//! be explicitly constructed with the provenance-pinned Earth-air
+//! Tauber-Sutton velocity-function package.
 
 pub use openbmp_physics::sutherland_viscosity;
-use openbmp_physics::{AirComposition, AllenEggers, AtmosphereSample, PhysicsError};
+use openbmp_physics::{
+    AirComposition, AllenEggers, AtmosphereSample, EnvelopeBounds, ExternalReferencePackage,
+    PhysicsError, ProvenanceBlock, ReferencePackageKind,
+};
 
 use crate::error::AerothermalError;
 
@@ -190,6 +197,52 @@ pub trait HeatTransferModel {
     fn stagnation(&self, ctx: &AerothermalContext) -> Result<StagnationHeating, AerothermalError>;
 }
 
+/// Composite stagnation model that sums a convective and radiative model.
+///
+/// The convective model owns the thermodynamic diagnostics (`h_aw`, `h_w`,
+/// recovery temperature); the radiative model contributes `q_rad_w_m2`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TotalStagnationHeating<C, R> {
+    convective: C,
+    radiative: R,
+}
+
+impl<C, R> TotalStagnationHeating<C, R> {
+    /// Construct a total-heating model from separate convective and radiative models.
+    #[must_use]
+    pub const fn new(convective: C, radiative: R) -> Self {
+        Self {
+            convective,
+            radiative,
+        }
+    }
+}
+
+impl<C, R> HeatTransferModel for TotalStagnationHeating<C, R>
+where
+    C: HeatTransferModel,
+    R: HeatTransferModel,
+{
+    fn stagnation(&self, ctx: &AerothermalContext) -> Result<StagnationHeating, AerothermalError> {
+        let convective = self.convective.stagnation(ctx)?;
+        let radiative = self.radiative.stagnation(ctx)?;
+        let q_conv_w_m2 = convective.q_conv_w_m2 + radiative.q_conv_w_m2;
+        let q_rad_w_m2 = convective.q_rad_w_m2 + radiative.q_rad_w_m2;
+        if !q_conv_w_m2.is_finite() || !q_rad_w_m2.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "total stagnation heat flux non-finite",
+            });
+        }
+        Ok(StagnationHeating {
+            q_conv_w_m2,
+            q_rad_w_m2,
+            h_aw_j_kg: convective.h_aw_j_kg,
+            h_w_j_kg: convective.h_w_j_kg,
+            recovery_temperature_k: convective.recovery_temperature_k,
+        })
+    }
+}
+
 /// Reference air heat capacity (perfect-gas, cold-air) used for
 /// `h = c_p · T` shortcuts. Real-gas h(T,p) is the
 /// [`openbmp_physics::EquilibriumAir`] consumer's job; the
@@ -200,6 +253,178 @@ const C_P_AIR_J_KG_K: f64 = 1005.0;
 /// Sutton-Graves engineering stagnation-point convective heating
 /// constant for Earth atmosphere (SI units).
 pub const SUTTON_GRAVES_K_EARTH_SI: f64 = 1.7415e-4;
+
+/// DKR reference heat flux coefficient in `Btu/(ft²·s)`.
+pub const DETRA_KEMP_RIDDELL_REFERENCE_HEAT_FLUX_BTU_FT2_S: f64 = 17_600.0;
+
+/// DKR reference velocity in `ft/s`.
+pub const DETRA_KEMP_RIDDELL_REFERENCE_VELOCITY_FT_S: f64 = 26_000.0;
+
+/// DKR velocity exponent.
+pub const DETRA_KEMP_RIDDELL_VELOCITY_EXPONENT: f64 = 3.15;
+
+/// DKR hot-wall correction reference wall temperature.
+pub const DETRA_KEMP_RIDDELL_REFERENCE_WALL_TEMPERATURE_K: f64 = 300.0;
+
+/// Sea-level density used by the SI DKR wrapper.
+pub const DETRA_KEMP_RIDDELL_SEA_LEVEL_DENSITY_KG_M3: f64 = 1.225;
+
+/// SHA-256 hash of `data/aerothermal/radiative/tauber-sutton-earth-v1.toml`.
+pub const TAUBER_SUTTON_EARTH_AIR_PAYLOAD_SHA256_HEX: &str =
+    "06d66cbd2ee2fa70ebcfbf9cf7f0aedee727dc06bc79d90d2c0a01936342b870";
+
+/// Tauber-Sutton Earth-air radiative coefficient in `W/(cm²)` formula units.
+pub const TAUBER_SUTTON_EARTH_AIR_COEFFICIENT_W_CM2: f64 = 47_360.0;
+
+/// Tauber-Sutton Earth-air density exponent.
+pub const TAUBER_SUTTON_EARTH_AIR_DENSITY_EXPONENT: f64 = 1.22;
+
+/// Tauber-Sutton Earth-air radius-exponent coefficient.
+pub const TAUBER_SUTTON_EARTH_AIR_RADIUS_EXPONENT_COEFFICIENT: f64 = 1_072_000.0;
+
+/// Tauber-Sutton Earth-air velocity power in the radius exponent.
+pub const TAUBER_SUTTON_EARTH_AIR_RADIUS_EXPONENT_VELOCITY_POWER: f64 = -1.88;
+
+/// Tauber-Sutton Earth-air density power in the radius exponent.
+pub const TAUBER_SUTTON_EARTH_AIR_RADIUS_EXPONENT_DENSITY_POWER: f64 = -0.325;
+
+/// Tabulated Tauber-Sutton Earth-air velocity function, including the
+/// model-floor zero sentinel at 9 km/s.
+pub static TAUBER_SUTTON_EARTH_AIR_VELOCITY_FUNCTION: [TauberSuttonVelocityFunctionPoint; 16] = [
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 9_000.0,
+        value: 0.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 10_000.0,
+        value: 35.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 10_250.0,
+        value: 55.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 10_500.0,
+        value: 81.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 10_750.0,
+        value: 115.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 11_000.0,
+        value: 151.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 11_500.0,
+        value: 238.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 12_000.0,
+        value: 359.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 12_500.0,
+        value: 495.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 13_000.0,
+        value: 660.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 13_500.0,
+        value: 850.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 14_000.0,
+        value: 1_065.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 14_500.0,
+        value: 1_313.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 15_000.0,
+        value: 1_550.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 15_500.0,
+        value: 1_780.0,
+    },
+    TauberSuttonVelocityFunctionPoint {
+        velocity_m_s: 16_000.0,
+        value: 2_040.0,
+    },
+];
+
+const M_PER_FT: f64 = 0.3048;
+const BTU_FT2_S_TO_W_M2: f64 = 1_055.055_852_62 / (M_PER_FT * M_PER_FT);
+const W_CM2_TO_W_M2: f64 = 10_000.0;
+
+/// NASA TR R-376 tabulated Sutton-Graves heat-transfer coefficient for
+/// Earth air, used only as a dimensionless normalization anchor for
+/// converting the public base-gas table into the existing OpenBMP SI
+/// constant scale.
+pub const SUTTON_GRAVES_TABLE_K_EARTH_AIR: f64 = 0.1113;
+
+/// Gas preset for the Sutton-Graves stagnation heating coefficient.
+///
+/// The table values are from Sutton & Graves, NASA TR R-376, Table II
+/// ("Heat-transfer coefficients from correlation of present computer
+/// results"). OpenBMP keeps the historical SI Earth-air constant as
+/// the absolute anchor and scales other gases by `K_table(gas) /
+/// K_table(earth_air)`. This avoids silently changing legacy Earth-air
+/// heating while exposing the report's per-gas trend.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SuttonGravesGas {
+    /// Earth air, `0.232 O2 + 0.768 N2` by mass in TR R-376.
+    EarthAir,
+    /// Nitrogen, N2.
+    Nitrogen,
+    /// Oxygen, O2.
+    Oxygen,
+    /// Hydrogen, H2.
+    Hydrogen,
+    /// Helium, He.
+    Helium,
+    /// Neon, Ne.
+    Neon,
+    /// Argon, Ar.
+    Argon,
+    /// Carbon dioxide, CO2.
+    CarbonDioxide,
+    /// Ammonia, NH3.
+    Ammonia,
+    /// Methane, CH4.
+    Methane,
+}
+
+impl SuttonGravesGas {
+    /// TR R-376 Table II heat-transfer coefficient in the report's
+    /// tabulated units.
+    #[must_use]
+    pub const fn table_heat_transfer_coefficient(self) -> f64 {
+        match self {
+            Self::EarthAir => SUTTON_GRAVES_TABLE_K_EARTH_AIR,
+            Self::Nitrogen => 0.1112,
+            Self::Oxygen => 0.1201,
+            Self::Hydrogen => 0.0395,
+            Self::Helium => 0.0797,
+            Self::Neon => 0.1474,
+            Self::Argon => 0.1495,
+            Self::CarbonDioxide => 0.1210,
+            Self::Ammonia => 0.0990,
+            Self::Methane => 0.0807,
+        }
+    }
+
+    /// Sutton-Graves coefficient on OpenBMP's SI Earth-air scale.
+    #[must_use]
+    pub fn coefficient_si(self) -> f64 {
+        SUTTON_GRAVES_K_EARTH_SI * self.table_heat_transfer_coefficient()
+            / SUTTON_GRAVES_TABLE_K_EARTH_AIR
+    }
+}
 
 /// Sutton-Graves engineering correlation.
 ///
@@ -223,6 +448,21 @@ impl Default for SuttonGraves {
 }
 
 impl SuttonGraves {
+    /// Construct a Sutton-Graves model from an explicit SI coefficient.
+    ///
+    /// This preserves the legacy public field while giving callers a
+    /// named constructor for non-default coefficient values.
+    #[must_use]
+    pub const fn with_coefficient_si(k_si: f64) -> Self {
+        Self { k_earth_si: k_si }
+    }
+
+    /// Construct a Sutton-Graves model using a TR R-376 gas preset.
+    #[must_use]
+    pub fn for_gas(gas: SuttonGravesGas) -> Self {
+        Self::with_coefficient_si(gas.coefficient_si())
+    }
+
     /// Evaluate the Sutton-Graves correlation and apply a finite wall
     /// enthalpy correction, `max(0, 1 - h_w / h_aw)`.
     ///
@@ -344,6 +584,134 @@ impl HeatTransferModel for SuttonGraves {
             recovery_temperature_k: recovery,
         })
     }
+}
+
+/// Detra-Kemp-Riddell stagnation-point convective heating cross-check.
+///
+/// The implementation wraps the classic engineering form
+/// `q = 17600 / sqrt(R_n_ft) * sqrt(rho_inf / rho_sl)
+/// * (V_inf_ft_s / 26000)^3.15 * wall_factor`, returning SI `W/m²`.
+/// It is intended as a code-to-code/handbook cross-check alongside
+/// [`SuttonGraves`], not as a replacement for real-gas Fay-Riddell or CFD.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct DetraKempRiddell {
+    /// Sea-level density normalization for the density ratio.
+    pub sea_level_density_kg_m3: f64,
+}
+
+impl Default for DetraKempRiddell {
+    fn default() -> Self {
+        Self {
+            sea_level_density_kg_m3: DETRA_KEMP_RIDDELL_SEA_LEVEL_DENSITY_KG_M3,
+        }
+    }
+}
+
+impl DetraKempRiddell {
+    /// Construct a DKR model with an explicit sea-level density
+    /// normalization.
+    #[must_use]
+    pub const fn with_sea_level_density(sea_level_density_kg_m3: f64) -> Self {
+        Self {
+            sea_level_density_kg_m3,
+        }
+    }
+
+    /// Evaluate the DKR cold-reference heat flux before SI conversion and
+    /// wall-enthalpy correction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError`] if the context or density normalization
+    /// is non-finite or outside the correlation envelope.
+    pub fn cold_reference_heat_flux_btu_ft2_s(
+        &self,
+        ctx: &AerothermalContext,
+    ) -> Result<f64, AerothermalError> {
+        validate_context_for_stagnation(ctx)?;
+        self.validate()?;
+
+        let radius_ft = ctx.nose_radius_m / M_PER_FT;
+        let velocity_ft_s = ctx.airspeed_m_s / M_PER_FT;
+        let density_ratio = ctx.freestream.density_kg_m3 / self.sea_level_density_kg_m3;
+        let q = DETRA_KEMP_RIDDELL_REFERENCE_HEAT_FLUX_BTU_FT2_S / radius_ft.sqrt()
+            * density_ratio.sqrt()
+            * (velocity_ft_s / DETRA_KEMP_RIDDELL_REFERENCE_VELOCITY_FT_S)
+                .powf(DETRA_KEMP_RIDDELL_VELOCITY_EXPONENT);
+        if !q.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Detra-Kemp-Riddell heat flux is non-finite",
+            });
+        }
+        Ok(q)
+    }
+
+    fn validate(&self) -> Result<(), AerothermalError> {
+        if !self.sea_level_density_kg_m3.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Detra-Kemp-Riddell density normalization is NaN or Inf",
+            });
+        }
+        if self.sea_level_density_kg_m3 <= 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Detra-Kemp-Riddell density normalization must be positive",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl HeatTransferModel for DetraKempRiddell {
+    fn stagnation(&self, ctx: &AerothermalContext) -> Result<StagnationHeating, AerothermalError> {
+        let q_cold_reference = self.cold_reference_heat_flux_btu_ft2_s(ctx)? * BTU_FT2_S_TO_W_M2;
+        let adiabatic_wall_enthalpy = 0.5 * ctx.airspeed_m_s * ctx.airspeed_m_s
+            + C_P_AIR_J_KG_K * ctx.freestream.temperature_k;
+        let wall_enthalpy = C_P_AIR_J_KG_K * ctx.wall_temperature_k;
+        let reference_wall_enthalpy =
+            C_P_AIR_J_KG_K * DETRA_KEMP_RIDDELL_REFERENCE_WALL_TEMPERATURE_K;
+        let correction = detra_kemp_riddell_wall_enthalpy_correction(
+            adiabatic_wall_enthalpy,
+            wall_enthalpy,
+            reference_wall_enthalpy,
+        )?;
+        let q = q_cold_reference * correction;
+        let recovery = ctx.freestream.temperature_k
+            + 0.5 * ctx.airspeed_m_s * ctx.airspeed_m_s / C_P_AIR_J_KG_K;
+        if !q.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Detra-Kemp-Riddell corrected heat flux is non-finite",
+            });
+        }
+        Ok(StagnationHeating {
+            q_conv_w_m2: q,
+            q_rad_w_m2: 0.0,
+            h_aw_j_kg: adiabatic_wall_enthalpy,
+            h_w_j_kg: wall_enthalpy,
+            recovery_temperature_k: recovery,
+        })
+    }
+}
+
+fn detra_kemp_riddell_wall_enthalpy_correction(
+    adiabatic_enthalpy_j_kg: f64,
+    wall_enthalpy_j_kg: f64,
+    reference_wall_enthalpy_j_kg: f64,
+) -> Result<f64, AerothermalError> {
+    if !adiabatic_enthalpy_j_kg.is_finite()
+        || !wall_enthalpy_j_kg.is_finite()
+        || !reference_wall_enthalpy_j_kg.is_finite()
+    {
+        return Err(AerothermalError::NonFinite {
+            reason: "Detra-Kemp-Riddell wall correction input is NaN or Inf",
+        });
+    }
+    let denominator = adiabatic_enthalpy_j_kg - reference_wall_enthalpy_j_kg;
+    if denominator <= 0.0 {
+        return Err(AerothermalError::InvalidParameter {
+            reason: "Detra-Kemp-Riddell wall correction requires stagnation enthalpy above reference wall enthalpy",
+        });
+    }
+    Ok(((adiabatic_enthalpy_j_kg - wall_enthalpy_j_kg) / denominator).max(0.0))
 }
 
 fn wall_enthalpy_correction(
@@ -607,29 +975,319 @@ impl HeatTransferModel for FayRiddell {
     }
 }
 
-/// Tauber-Sutton radiative heating typed-reserved surface.
-///
-/// # Honest Scope
-///
-/// Reserved until the published Earth-entry piecewise-polynomial
-/// velocity function and coefficients are imported with provenance.
-/// An earlier implementation used a tuned power law; the
-/// audit removed that executable approximation rather than shipping
-/// an unverifiable radiative-heating value.
+/// One point in the Tauber-Sutton tabulated velocity function.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct TauberSuttonRadiative;
+pub struct TauberSuttonVelocityFunctionPoint {
+    /// Freestream velocity (m/s).
+    pub velocity_m_s: f64,
+    /// Dimensionless Tauber-Sutton `f(V)` value.
+    pub value: f64,
+}
 
-impl Default for TauberSuttonRadiative {
-    fn default() -> Self {
-        Self
+/// Provenance-pinned Tauber-Sutton coefficient and velocity-function package.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TauberSuttonPackage {
+    /// Stable package identifier.
+    pub source_id: &'static str,
+    /// Payload SHA-256 hash as a lowercase hexadecimal string.
+    pub payload_sha256_hex: &'static str,
+    /// Retrieval path for the public table used by this package.
+    pub retrieval_path: &'static str,
+    /// Radiative coefficient in the Tauber-Sutton `W/cm²` formula units.
+    pub coefficient_w_cm2: f64,
+    /// Density exponent in `rho_inf^b`.
+    pub density_exponent: f64,
+    /// Coefficient in the uncapped radius-exponent law.
+    pub radius_exponent_coefficient: f64,
+    /// Velocity power in the uncapped radius-exponent law.
+    pub radius_exponent_velocity_power: f64,
+    /// Density power in the uncapped radius-exponent law.
+    pub radius_exponent_density_power: f64,
+    /// Ordered, monotone velocity function table.
+    pub velocity_function: &'static [TauberSuttonVelocityFunctionPoint],
+}
+
+impl TauberSuttonPackage {
+    /// Validate coefficient, exponent, provenance, and velocity-function shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError::InvalidParameter`] when the package is
+    /// malformed.
+    pub fn validate(&self) -> Result<(), AerothermalError> {
+        if self.source_id.trim().is_empty()
+            || self.payload_sha256_hex.trim().is_empty()
+            || self.retrieval_path.trim().is_empty()
+        {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Tauber-Sutton package provenance fields must be non-empty",
+            });
+        }
+        if self.payload_sha256_hex.len() != 64
+            || !self
+                .payload_sha256_hex
+                .chars()
+                .all(|c| c.is_ascii_hexdigit())
+        {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Tauber-Sutton payload hash must be 64 hex chars",
+            });
+        }
+        if self.velocity_function.len() < 2 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Tauber-Sutton velocity function needs at least two points",
+            });
+        }
+        if !self.coefficient_w_cm2.is_finite()
+            || !self.density_exponent.is_finite()
+            || !self.radius_exponent_coefficient.is_finite()
+            || !self.radius_exponent_velocity_power.is_finite()
+            || !self.radius_exponent_density_power.is_finite()
+        {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Tauber-Sutton coefficient or exponent is NaN or Inf",
+            });
+        }
+        if self.coefficient_w_cm2 <= 0.0 || self.radius_exponent_coefficient <= 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Tauber-Sutton coefficient and radius-exponent coefficient must be positive",
+            });
+        }
+
+        let mut previous_velocity = f64::NEG_INFINITY;
+        let mut previous_value = 0.0;
+        for (index, point) in self.velocity_function.iter().enumerate() {
+            if !point.velocity_m_s.is_finite() || !point.value.is_finite() {
+                return Err(AerothermalError::InvalidParameter {
+                    reason: "Tauber-Sutton velocity-function point is NaN or Inf",
+                });
+            }
+            if point.velocity_m_s <= previous_velocity {
+                return Err(AerothermalError::InvalidParameter {
+                    reason: "Tauber-Sutton velocity function must be strictly increasing",
+                });
+            }
+            if point.value < 0.0 {
+                return Err(AerothermalError::InvalidParameter {
+                    reason: "Tauber-Sutton velocity-function values must be non-negative",
+                });
+            }
+            if index == 0 && point.value.abs() > f64::EPSILON {
+                return Err(AerothermalError::InvalidParameter {
+                    reason: "Tauber-Sutton velocity-function floor must be zero",
+                });
+            }
+            if index > 0 && point.value + f64::EPSILON < previous_value {
+                return Err(AerothermalError::InvalidParameter {
+                    reason: "Tauber-Sutton velocity function must be monotone nondecreasing",
+                });
+            }
+            previous_velocity = point.velocity_m_s;
+            previous_value = point.value;
+        }
+        Ok(())
+    }
+
+    /// Return a provenance package carrying the payload hash and radiation-reference kind.
+    #[must_use]
+    pub fn reference_package(&self) -> ExternalReferencePackage {
+        ExternalReferencePackage {
+            kind: ReferencePackageKind::RadiationReference,
+            envelope: EnvelopeBounds {
+                mach_lo: 0.0,
+                mach_hi: 100.0,
+                altitude_lo_m: 0.0,
+                altitude_hi_m: 250_000.0,
+                alpha_lo_rad: -core::f64::consts::PI,
+                alpha_hi_rad: core::f64::consts::PI,
+            },
+            provenance: ProvenanceBlock {
+                solver_name: String::from(self.source_id),
+                solver_version: String::from("table-v1"),
+                license: String::from("public bibliographic reproduction"),
+                retrieval_path: String::from(self.retrieval_path),
+                governing_equations: String::from(
+                    "Tauber-Sutton Earth-air stagnation-point radiative heating relation",
+                ),
+                content_hash_sha256_hex: String::from(self.payload_sha256_hex),
+            },
+        }
+    }
+
+    /// Interpolate the Tauber-Sutton velocity function in locked table order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError::OutOfEnvelope`] outside the tabulated
+    /// velocity range and [`AerothermalError::InvalidParameter`] for malformed
+    /// package data.
+    pub fn velocity_function_value(&self, velocity_m_s: f64) -> Result<f64, AerothermalError> {
+        self.validate()?;
+        if !velocity_m_s.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Tauber-Sutton velocity query is NaN or Inf",
+            });
+        }
+        let first = self.velocity_function[0];
+        let last = self.velocity_function[self.velocity_function.len() - 1];
+        if velocity_m_s < first.velocity_m_s || velocity_m_s > last.velocity_m_s {
+            return Err(AerothermalError::OutOfEnvelope {
+                reason: "Tauber-Sutton velocity outside f(V) table",
+            });
+        }
+        if (velocity_m_s - first.velocity_m_s).abs() <= f64::EPSILON {
+            return Ok(first.value);
+        }
+        for window in self.velocity_function.windows(2) {
+            let lo = window[0];
+            let hi = window[1];
+            if velocity_m_s <= hi.velocity_m_s {
+                let span = hi.velocity_m_s - lo.velocity_m_s;
+                let fraction = (velocity_m_s - lo.velocity_m_s) / span;
+                return Ok(lo.value + fraction * (hi.value - lo.value));
+            }
+        }
+        Ok(last.value)
+    }
+
+    /// Evaluate the capped Tauber-Sutton nose-radius exponent `a`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError::InvalidParameter`] for non-finite or
+    /// non-positive velocity, density, or nose radius.
+    pub fn radius_exponent(
+        &self,
+        velocity_m_s: f64,
+        density_kg_m3: f64,
+        nose_radius_m: f64,
+    ) -> Result<f64, AerothermalError> {
+        self.validate()?;
+        if !velocity_m_s.is_finite() || !density_kg_m3.is_finite() || !nose_radius_m.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Tauber-Sutton radius-exponent input is NaN or Inf",
+            });
+        }
+        if velocity_m_s <= 0.0 || density_kg_m3 <= 0.0 || nose_radius_m <= 0.0 {
+            return Err(AerothermalError::InvalidParameter {
+                reason: "Tauber-Sutton radius exponent requires positive velocity, density, and nose radius",
+            });
+        }
+        let uncapped = self.radius_exponent_coefficient
+            * velocity_m_s.powf(self.radius_exponent_velocity_power)
+            * density_kg_m3.powf(self.radius_exponent_density_power);
+        if !uncapped.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Tauber-Sutton radius exponent non-finite",
+            });
+        }
+        let cap = if nose_radius_m < 1.0 {
+            1.0
+        } else if nose_radius_m <= 2.0 {
+            0.6
+        } else {
+            0.5
+        };
+        Ok(uncapped.min(cap))
+    }
+}
+
+/// Return the built-in Tauber-Sutton Earth-air package.
+#[must_use]
+pub const fn tauber_sutton_earth_air_package() -> TauberSuttonPackage {
+    TauberSuttonPackage {
+        source_id: "tauber-sutton-earth-air-radiative-v1",
+        payload_sha256_hex: TAUBER_SUTTON_EARTH_AIR_PAYLOAD_SHA256_HEX,
+        retrieval_path: "https://sciencejournals.ru/view-article/?a=MekhZhG1904003Brykina&j=mekhzhg&n=4&v=0&y=2019",
+        coefficient_w_cm2: TAUBER_SUTTON_EARTH_AIR_COEFFICIENT_W_CM2,
+        density_exponent: TAUBER_SUTTON_EARTH_AIR_DENSITY_EXPONENT,
+        radius_exponent_coefficient: TAUBER_SUTTON_EARTH_AIR_RADIUS_EXPONENT_COEFFICIENT,
+        radius_exponent_velocity_power: TAUBER_SUTTON_EARTH_AIR_RADIUS_EXPONENT_VELOCITY_POWER,
+        radius_exponent_density_power: TAUBER_SUTTON_EARTH_AIR_RADIUS_EXPONENT_DENSITY_POWER,
+        velocity_function: &TAUBER_SUTTON_EARTH_AIR_VELOCITY_FUNCTION,
+    }
+}
+
+/// Tauber-Sutton radiative heating model.
+///
+/// The default constructor is intentionally inert and returns the same
+/// fail-closed deferred error as the old typed-reserved surface. Call
+/// [`Self::earth_air`] or [`Self::with_package`] to opt into an explicit
+/// provenance-pinned package.
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct TauberSuttonRadiative {
+    package: Option<TauberSuttonPackage>,
+}
+
+impl TauberSuttonRadiative {
+    /// Construct the off-by-default deferred surface.
+    #[must_use]
+    pub const fn deferred() -> Self {
+        Self { package: None }
+    }
+
+    /// Construct the built-in Earth-air Tauber-Sutton radiative model.
+    #[must_use]
+    pub const fn earth_air() -> Self {
+        Self {
+            package: Some(tauber_sutton_earth_air_package()),
+        }
+    }
+
+    /// Construct a Tauber-Sutton model from an explicit package.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AerothermalError::InvalidParameter`] when the package is malformed.
+    pub fn with_package(package: TauberSuttonPackage) -> Result<Self, AerothermalError> {
+        package.validate()?;
+        Ok(Self {
+            package: Some(package),
+        })
+    }
+
+    /// Return the configured package, if this model is enabled.
+    #[must_use]
+    pub const fn package(&self) -> Option<TauberSuttonPackage> {
+        self.package
     }
 }
 
 impl HeatTransferModel for TauberSuttonRadiative {
     fn stagnation(&self, ctx: &AerothermalContext) -> Result<StagnationHeating, AerothermalError> {
         validate_context_for_stagnation(ctx)?;
-        Err(AerothermalError::OutOfEnvelope {
-            reason: "Tauber-Sutton radiative heating is deferred pending published coefficients",
+        let Some(package) = self.package else {
+            return Err(AerothermalError::OutOfEnvelope {
+                reason: "Tauber-Sutton radiative heating is deferred pending explicit package selection",
+            });
+        };
+        if ctx.freestream.density_kg_m3 <= 0.0 {
+            return Err(AerothermalError::OutOfEnvelope {
+                reason: "Tauber-Sutton radiative heating requires positive freestream density",
+            });
+        }
+        let f_v = package.velocity_function_value(ctx.airspeed_m_s)?;
+        let radius_exponent = package.radius_exponent(
+            ctx.airspeed_m_s,
+            ctx.freestream.density_kg_m3,
+            ctx.nose_radius_m,
+        )?;
+        let q_rad_w_m2 = package.coefficient_w_cm2
+            * W_CM2_TO_W_M2
+            * ctx.nose_radius_m.powf(radius_exponent)
+            * ctx.freestream.density_kg_m3.powf(package.density_exponent)
+            * f_v;
+        if !q_rad_w_m2.is_finite() {
+            return Err(AerothermalError::NonFinite {
+                reason: "Tauber-Sutton radiative heat flux non-finite",
+            });
+        }
+        Ok(StagnationHeating {
+            q_conv_w_m2: 0.0,
+            q_rad_w_m2,
+            h_aw_j_kg: 0.0,
+            h_w_j_kg: 0.0,
+            recovery_temperature_k: 0.0,
         })
     }
 }
@@ -705,6 +1363,7 @@ fn validate_context_for_stagnation(ctx: &AerothermalContext) -> Result<(), Aerot
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use sha2::{Digest, Sha256};
 
     fn sample_atmos(rho: f64, p: f64, t: f64) -> AtmosphereSample {
         AtmosphereSample::new(rho, p, t, (1.4 * 287.05 * t).sqrt()).unwrap()
@@ -724,6 +1383,63 @@ mod tests {
         }
     }
 
+    fn dkr_fixture_value(key: &str) -> f64 {
+        include_str!("../../../data/aerothermal/stagnation/detra-kemp-riddell-v1.toml")
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once('=')?;
+                if name.trim() == key {
+                    value.trim().parse::<f64>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| panic!("missing DKR fixture value {key}"))
+    }
+
+    const TAUBER_SUTTON_FIXTURE: &str =
+        include_str!("../../../data/aerothermal/radiative/tauber-sutton-earth-v1.toml");
+
+    fn tauber_sutton_fixture_value(key: &str) -> f64 {
+        TAUBER_SUTTON_FIXTURE
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once('=')?;
+                if name.trim() == key {
+                    value.trim().parse::<f64>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| panic!("missing Tauber-Sutton fixture value {key}"))
+    }
+
+    fn tauber_sutton_fixture_velocity_function() -> Vec<(f64, f64)> {
+        let mut points = Vec::new();
+        let mut velocity_m_s = None;
+        for line in TAUBER_SUTTON_FIXTURE.lines() {
+            let Some((name, value)) = line.split_once('=') else {
+                continue;
+            };
+            match name.trim() {
+                "velocity_m_s" => {
+                    velocity_m_s = value.trim().parse::<f64>().ok();
+                }
+                "f_v" => {
+                    if let Some(velocity) = velocity_m_s.take() {
+                        let f_v = value
+                            .trim()
+                            .parse::<f64>()
+                            .unwrap_or_else(|_| panic!("malformed f_v value {value}"));
+                        points.push((velocity, f_v));
+                    }
+                }
+                _ => {}
+            }
+        }
+        points
+    }
+
     #[test]
     fn sutton_graves_at_textbook_apollo_point() {
         // Textbook Apollo-class re-entry sanity point:
@@ -739,6 +1455,161 @@ mod tests {
             "q_conv = {} W/m²",
             h.q_conv_w_m2
         );
+    }
+
+    #[test]
+    fn sutton_graves_earth_air_preset_preserves_legacy_constant() {
+        let default = SuttonGraves::default();
+        let preset = SuttonGraves::for_gas(SuttonGravesGas::EarthAir);
+        assert_eq!(
+            preset.k_earth_si.to_bits(),
+            SUTTON_GRAVES_K_EARTH_SI.to_bits()
+        );
+
+        let context = ctx(1.0e-4, 8_000.0, 1.0, 1500.0);
+        let q_default = default.stagnation(&context).unwrap().q_conv_w_m2;
+        let q_preset = preset.stagnation(&context).unwrap().q_conv_w_m2;
+        assert_eq!(q_default.to_bits(), q_preset.to_bits());
+    }
+
+    #[test]
+    fn sutton_graves_gas_presets_scale_from_tr_r376_table() {
+        let co2 = SuttonGravesGas::CarbonDioxide.coefficient_si();
+        let h2 = SuttonGravesGas::Hydrogen.coefficient_si();
+        let ar = SuttonGravesGas::Argon.coefficient_si();
+
+        assert_relative_eq!(
+            co2 / SUTTON_GRAVES_K_EARTH_SI,
+            0.1210 / SUTTON_GRAVES_TABLE_K_EARTH_AIR,
+            max_relative = 1.0e-15
+        );
+        assert_relative_eq!(
+            h2 / SUTTON_GRAVES_K_EARTH_SI,
+            0.0395 / SUTTON_GRAVES_TABLE_K_EARTH_AIR,
+            max_relative = 1.0e-15
+        );
+        assert_relative_eq!(
+            ar / SUTTON_GRAVES_K_EARTH_SI,
+            0.1495 / SUTTON_GRAVES_TABLE_K_EARTH_AIR,
+            max_relative = 1.0e-15
+        );
+    }
+
+    #[test]
+    fn sutton_graves_for_gas_changes_heat_flux_by_coefficient_ratio() {
+        let context = ctx(1.0e-4, 8_000.0, 1.0, 1500.0);
+        let air = SuttonGraves::for_gas(SuttonGravesGas::EarthAir)
+            .stagnation(&context)
+            .unwrap()
+            .q_conv_w_m2;
+        let co2 = SuttonGraves::for_gas(SuttonGravesGas::CarbonDioxide)
+            .stagnation(&context)
+            .unwrap()
+            .q_conv_w_m2;
+
+        assert_relative_eq!(
+            co2 / air,
+            SuttonGravesGas::CarbonDioxide.table_heat_transfer_coefficient()
+                / SuttonGravesGas::EarthAir.table_heat_transfer_coefficient(),
+            max_relative = 1.0e-15
+        );
+    }
+
+    #[test]
+    fn detra_kemp_riddell_constants_match_fixture() {
+        assert_eq!(
+            DETRA_KEMP_RIDDELL_REFERENCE_HEAT_FLUX_BTU_FT2_S,
+            dkr_fixture_value("reference_heat_flux_btu_ft2_s")
+        );
+        assert_eq!(
+            DETRA_KEMP_RIDDELL_REFERENCE_VELOCITY_FT_S,
+            dkr_fixture_value("reference_velocity_ft_s")
+        );
+        assert_eq!(
+            DETRA_KEMP_RIDDELL_VELOCITY_EXPONENT,
+            dkr_fixture_value("velocity_exponent")
+        );
+        assert_eq!(
+            DETRA_KEMP_RIDDELL_SEA_LEVEL_DENSITY_KG_M3,
+            dkr_fixture_value("sea_level_density_kg_m3")
+        );
+        assert_eq!(
+            DETRA_KEMP_RIDDELL_REFERENCE_WALL_TEMPERATURE_K,
+            dkr_fixture_value("reference_wall_temperature_k")
+        );
+    }
+
+    #[test]
+    fn detra_kemp_riddell_matches_synthetic_conversion_fixture() {
+        let model = DetraKempRiddell::default();
+        let context = ctx(
+            dkr_fixture_value("synthetic_density_kg_m3"),
+            dkr_fixture_value("synthetic_velocity_m_s"),
+            dkr_fixture_value("synthetic_nose_radius_m"),
+            dkr_fixture_value("synthetic_wall_temperature_k"),
+        );
+
+        let q_btu = model.cold_reference_heat_flux_btu_ft2_s(&context).unwrap();
+        assert_relative_eq!(
+            q_btu,
+            dkr_fixture_value("synthetic_cold_reference_heat_flux_btu_ft2_s"),
+            max_relative = 1.0e-14
+        );
+
+        let heating = model.stagnation(&context).unwrap();
+        assert_relative_eq!(
+            heating.q_conv_w_m2,
+            dkr_fixture_value("synthetic_cold_reference_heat_flux_w_m2"),
+            max_relative = 1.0e-14
+        );
+    }
+
+    #[test]
+    fn detra_kemp_riddell_hot_wall_correction_reduces_flux() {
+        let model = DetraKempRiddell::default();
+        let cold_context = ctx(
+            dkr_fixture_value("synthetic_density_kg_m3"),
+            dkr_fixture_value("synthetic_velocity_m_s"),
+            dkr_fixture_value("synthetic_nose_radius_m"),
+            dkr_fixture_value("synthetic_wall_temperature_k"),
+        );
+        let hot_context = ctx(
+            dkr_fixture_value("synthetic_density_kg_m3"),
+            dkr_fixture_value("synthetic_velocity_m_s"),
+            dkr_fixture_value("synthetic_nose_radius_m"),
+            dkr_fixture_value("synthetic_hot_wall_temperature_k"),
+        );
+
+        let cold = model.stagnation(&cold_context).unwrap();
+        let hot = model.stagnation(&hot_context).unwrap();
+        assert!(hot.q_conv_w_m2 < cold.q_conv_w_m2);
+        assert_relative_eq!(
+            hot.q_conv_w_m2 / cold.q_conv_w_m2,
+            dkr_fixture_value("synthetic_hot_wall_correction"),
+            max_relative = 1.0e-14
+        );
+        assert_relative_eq!(
+            hot.q_conv_w_m2,
+            dkr_fixture_value("synthetic_hot_wall_heat_flux_w_m2"),
+            max_relative = 1.0e-14
+        );
+    }
+
+    #[test]
+    fn detra_kemp_riddell_rejects_invalid_inputs() {
+        let context = ctx(1.0e-4, 8_000.0, 1.0, 300.0);
+        assert!(matches!(
+            DetraKempRiddell::with_sea_level_density(0.0).stagnation(&context),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+        assert!(matches!(
+            DetraKempRiddell::with_sea_level_density(f64::NAN).stagnation(&context),
+            Err(AerothermalError::NonFinite { .. })
+        ));
+        assert!(matches!(
+            DetraKempRiddell::default().stagnation(&ctx(1.0e-4, 0.0, 1.0, 300.0)),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
     }
 
     #[test]
@@ -1071,8 +1942,8 @@ mod tests {
     }
 
     #[test]
-    fn tauber_sutton_is_deferred_until_coefficients_land() {
-        let t = TauberSuttonRadiative;
+    fn tauber_sutton_default_is_off_by_default() {
+        let t = TauberSuttonRadiative::default();
         assert!(matches!(
             t.stagnation(&ctx(1.0e-4, 11_000.0, 1.5, 1500.0)),
             Err(AerothermalError::OutOfEnvelope { .. })
@@ -1081,13 +1952,163 @@ mod tests {
 
     #[test]
     fn tauber_sutton_validates_context_before_deferred_error() {
-        let t = TauberSuttonRadiative;
+        let t = TauberSuttonRadiative::default();
         let mut context = ctx(1.0e-4, 11_000.0, 1.5, 1500.0);
         context.mach = f64::NAN;
         assert!(matches!(
             t.stagnation(&context),
             Err(AerothermalError::NonFinite { .. })
         ));
+    }
+
+    #[test]
+    fn tauber_sutton_payload_hash_matches_fixture() {
+        let digest = Sha256::digest(TAUBER_SUTTON_FIXTURE.as_bytes());
+        let digest_hex = format!("{digest:x}");
+        assert_eq!(digest_hex, TAUBER_SUTTON_EARTH_AIR_PAYLOAD_SHA256_HEX);
+
+        let package = tauber_sutton_earth_air_package();
+        package
+            .reference_package()
+            .validate_payload_hash_hex(TAUBER_SUTTON_EARTH_AIR_PAYLOAD_SHA256_HEX)
+            .unwrap();
+    }
+
+    #[test]
+    fn tauber_sutton_package_matches_fixture_table() {
+        let package = tauber_sutton_earth_air_package();
+        assert_relative_eq!(
+            package.coefficient_w_cm2,
+            tauber_sutton_fixture_value("coefficient_w_cm2"),
+            max_relative = 1.0e-15
+        );
+        assert_relative_eq!(
+            package.density_exponent,
+            tauber_sutton_fixture_value("density_exponent"),
+            max_relative = 1.0e-15
+        );
+        assert_relative_eq!(
+            package.radius_exponent_coefficient,
+            tauber_sutton_fixture_value("radius_exponent_coefficient"),
+            max_relative = 1.0e-15
+        );
+
+        let table = tauber_sutton_fixture_velocity_function();
+        assert_eq!(table.len(), TAUBER_SUTTON_EARTH_AIR_VELOCITY_FUNCTION.len());
+        for (point, (velocity_m_s, f_v)) in
+            TAUBER_SUTTON_EARTH_AIR_VELOCITY_FUNCTION.iter().zip(table)
+        {
+            assert_relative_eq!(point.velocity_m_s, velocity_m_s, max_relative = 1.0e-15);
+            assert_relative_eq!(point.value, f_v, max_relative = 1.0e-15);
+        }
+    }
+
+    #[test]
+    fn tauber_sutton_velocity_function_interpolates_and_refuses_envelope() {
+        let package = tauber_sutton_earth_air_package();
+        assert_relative_eq!(
+            package.velocity_function_value(9_000.0).unwrap(),
+            0.0,
+            epsilon = 0.0
+        );
+        assert_relative_eq!(
+            package.velocity_function_value(10_125.0).unwrap(),
+            45.0,
+            max_relative = 1.0e-15
+        );
+        assert_relative_eq!(
+            package.velocity_function_value(16_000.0).unwrap(),
+            2_040.0,
+            max_relative = 1.0e-15
+        );
+        assert!(matches!(
+            package.velocity_function_value(8_999.0),
+            Err(AerothermalError::OutOfEnvelope { .. })
+        ));
+        assert!(matches!(
+            package.velocity_function_value(16_001.0),
+            Err(AerothermalError::OutOfEnvelope { .. })
+        ));
+    }
+
+    #[test]
+    fn tauber_sutton_earth_air_matches_reference_case() {
+        let package = tauber_sutton_earth_air_package();
+        let density = tauber_sutton_fixture_value("density_kg_m3");
+        let velocity = tauber_sutton_fixture_value("velocity_m_s");
+        let nose_radius = tauber_sutton_fixture_value("nose_radius_m");
+        let wall_temperature = tauber_sutton_fixture_value("wall_temperature_k");
+        let tolerance = tauber_sutton_fixture_value("relative_tolerance");
+
+        assert_relative_eq!(
+            package
+                .radius_exponent(velocity, density, nose_radius)
+                .unwrap(),
+            tauber_sutton_fixture_value("reference_radius_exponent"),
+            max_relative = tolerance
+        );
+        assert_relative_eq!(
+            package.velocity_function_value(velocity).unwrap(),
+            tauber_sutton_fixture_value("reference_f_v"),
+            max_relative = tolerance
+        );
+
+        let heating = TauberSuttonRadiative::earth_air()
+            .stagnation(&ctx(density, velocity, nose_radius, wall_temperature))
+            .unwrap();
+        assert_eq!(heating.q_conv_w_m2.to_bits(), 0.0_f64.to_bits());
+        assert_relative_eq!(
+            heating.q_rad_w_m2,
+            tauber_sutton_fixture_value("reference_q_rad_w_m2"),
+            max_relative = tolerance
+        );
+    }
+
+    #[test]
+    fn tauber_sutton_rejects_malformed_package() {
+        static NONMONOTONE_TABLE: [TauberSuttonVelocityFunctionPoint; 2] = [
+            TauberSuttonVelocityFunctionPoint {
+                velocity_m_s: 9_000.0,
+                value: 0.0,
+            },
+            TauberSuttonVelocityFunctionPoint {
+                velocity_m_s: 8_500.0,
+                value: 35.0,
+            },
+        ];
+        let mut package = tauber_sutton_earth_air_package();
+        package.velocity_function = &NONMONOTONE_TABLE;
+        assert!(matches!(
+            TauberSuttonRadiative::with_package(package),
+            Err(AerothermalError::InvalidParameter { .. })
+        ));
+    }
+
+    #[test]
+    fn tauber_sutton_total_stagnation_heating_sums_convective_and_radiative_terms() {
+        let context = ctx(1.0e-4, 11_000.0, 1.5, 1500.0);
+        let convective = SuttonGraves::default().stagnation(&context).unwrap();
+        let radiative = TauberSuttonRadiative::earth_air()
+            .stagnation(&context)
+            .unwrap();
+        let total = TotalStagnationHeating::new(
+            SuttonGraves::default(),
+            TauberSuttonRadiative::earth_air(),
+        )
+        .stagnation(&context)
+        .unwrap();
+        assert_relative_eq!(
+            total.q_conv_w_m2,
+            convective.q_conv_w_m2,
+            max_relative = 1.0e-15
+        );
+        assert_relative_eq!(
+            total.q_rad_w_m2,
+            radiative.q_rad_w_m2,
+            max_relative = 1.0e-15
+        );
+        assert_eq!(total.h_aw_j_kg.to_bits(), convective.h_aw_j_kg.to_bits());
+        assert_eq!(total.h_w_j_kg.to_bits(), convective.h_w_j_kg.to_bits());
     }
 
     #[test]

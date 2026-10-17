@@ -1,0 +1,12 @@
+format = "openbmp.recovery.pflanz_x1.v1"
+provenance = "OpenBMP synthetic Pflanz X1 fixture for parser/runtime wiring; see data/recovery/provenance.md#openbmp.recovery.pflanz_x1.synthetic.v1"
+
+ballistic_parameter_a = [0.01, 1.0, 3.0, 100.0]
+exponent_j = [0.5, 1.0, 2.0]
+
+# Row-major X1(A, j), rows ordered by exponent_j and columns by ballistic_parameter_a.
+reduction_factors = [
+  0.20, 0.45, 0.62, 0.95,
+  0.25, 0.50, 0.75, 0.97,
+  0.30, 0.58, 0.82, 0.99,
+]

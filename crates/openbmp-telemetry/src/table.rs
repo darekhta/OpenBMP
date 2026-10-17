@@ -4,6 +4,8 @@
 use std::io::Write;
 
 use crate::error::TelemetryError;
+#[cfg(feature = "interop-export")]
+use crate::export;
 use crate::row::TelemetryRow;
 use crate::schema::TelemetrySchema;
 use crate::{csv_writer, json_writer, parquet_writer};
@@ -98,6 +100,62 @@ impl TelemetryTable {
     /// Returns [`TelemetryError::Io`] when writing fails.
     pub fn write_json<W: Write>(&self, writer: W) -> Result<(), TelemetryError> {
         json_writer::write(self, writer)
+    }
+
+    /// Export this table as an experimental CCSDS-shaped, non-conformant
+    /// binary frame stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryError`] when writing fails or when the supplied
+    /// virtual-channel id is outside the supported shaped-frame range.
+    #[cfg(feature = "interop-export")]
+    pub fn write_ccsds_shaped_frames<W: Write>(
+        &self,
+        virtual_channel_id: u8,
+        writer: W,
+    ) -> Result<(), TelemetryError> {
+        export::write_ccsds_shaped_frame_stream(self, virtual_channel_id, writer)
+    }
+
+    /// Export this table as deterministic CCSDS-shaped frame bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryError`] when frame writing fails.
+    #[cfg(feature = "interop-export")]
+    pub fn to_ccsds_shaped_frame_bytes(
+        &self,
+        virtual_channel_id: u8,
+    ) -> Result<Vec<u8>, TelemetryError> {
+        let mut bytes = Vec::new();
+        self.write_ccsds_shaped_frames(virtual_channel_id, &mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Export the table schema as deterministic OpenBMP channel-dictionary
+    /// JSON. The artifact is explicitly labeled as non-conformant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryError::Io`] when writing fails.
+    #[cfg(feature = "interop-export")]
+    pub fn write_channel_dictionary_json<W: Write>(&self, writer: W) -> Result<(), TelemetryError> {
+        export::write_channel_dictionary_json(self.schema(), writer)
+    }
+
+    /// Export the table schema as deterministic XTCE-shaped XML. The
+    /// artifact is explicitly labeled as non-conformant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryError::Io`] when writing fails.
+    #[cfg(feature = "interop-export")]
+    pub fn write_xtce_shaped_dictionary_xml<W: Write>(
+        &self,
+        writer: W,
+    ) -> Result<(), TelemetryError> {
+        export::write_xtce_shaped_dictionary_xml(self.schema(), writer)
     }
 
     /// Export this table as canonical Parquet bytes.

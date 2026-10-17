@@ -1,0 +1,37 @@
+# Public NACA Report 1048 finite-length crossflow drag-ratio fixture.
+#
+# The report appendix gives finite-length circular-cylinder drag ratios for
+# the two ogival bodies used in Figures 7 through 10: 0.755 for body I and
+# 0.692 for body II. It also states the low-Mach circular-cylinder drag
+# coefficient used for this estimate is 1.2. This fixture checks only that
+# source-backed transform, not the scanned force/moment plot points.
+
+openbmp.naca_1048_crossflow_drag_ratio_validation = 1
+
+[provenance]
+dataset_id = "openbmp.aero.naca_report_1048_crossflow_drag_ratio.v1"
+source_class = "public-domain-naca"
+validation_label = "checked"
+source_title = "NACA Report 1048, A Study of Effects of Viscosity on Flow Over Slender Inclined Bodies of Revolution"
+source_url = "https://ntrs.nasa.gov/citations/19930090962"
+report_page = 13
+
+[tolerances]
+max_abs_error = 1.0e-12
+max_relative_error = 1.0e-12
+
+[[samples]]
+id = "body-i-fineness-21p1"
+body_label = "body I"
+fineness_ratio = 21.1
+cylinder_section_cd_low_mach = 1.2
+finite_length_drag_ratio = 0.755
+expected_cd_alpha_90_low_mach = 0.906
+
+[[samples]]
+id = "body-ii-fineness-13p1"
+body_label = "body II"
+fineness_ratio = 13.1
+cylinder_section_cd_low_mach = 1.2
+finite_length_drag_ratio = 0.692
+expected_cd_alpha_90_low_mach = 0.8304

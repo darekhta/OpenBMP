@@ -9,6 +9,7 @@ use clarabel::{
     algebra::CscMatrix,
     solver::{DefaultSolver, IPSolver, SecondOrderConeT, SolverStatus, ZeroConeT},
 };
+use openbmp_convex::ClarabelCscMatrixBuilder;
 
 use crate::mpc::deterministic_settings;
 
@@ -47,13 +48,7 @@ pub fn solve_accel_norm_epigraph(
 
     let p = CscMatrix::new(4, 4, vec![0, 0, 0, 0, 0], Vec::new(), Vec::new());
     let q = vec![1.0, 0.0, 0.0, 0.0];
-    let a = CscMatrix::new(
-        7,
-        4,
-        vec![0, 1, 3, 5, 7],
-        vec![3, 0, 4, 1, 5, 2, 6],
-        vec![-1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0],
-    );
+    let a = accel_norm_epigraph_matrix()?;
     let b = vec![
         desired_accel_eci_m_s2[0],
         desired_accel_eci_m_s2[1],
@@ -79,6 +74,24 @@ pub fn solve_accel_norm_epigraph(
         ],
         status: solver.solution.status,
     })
+}
+
+fn accel_norm_epigraph_matrix() -> Result<CscMatrix<f64>, &'static str> {
+    let mut builder = ClarabelCscMatrixBuilder::new(4);
+    for row in [
+        &[(1, 1.0)][..],
+        &[(2, 1.0)][..],
+        &[(3, 1.0)][..],
+        &[(0, -1.0)][..],
+        &[(1, -1.0)][..],
+        &[(2, -1.0)][..],
+        &[(3, -1.0)][..],
+    ] {
+        builder
+            .try_push_row(row)
+            .map_err(|_| "landing SOCP matrix assembly failed")?;
+    }
+    Ok(builder.finish())
 }
 
 #[cfg(test)]

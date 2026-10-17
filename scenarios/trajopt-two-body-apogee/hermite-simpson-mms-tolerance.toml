@@ -1,0 +1,15 @@
+# Hermite-Simpson MMS tolerance table for WP-07.2 partial.
+#
+# The case evaluates the direct-collocation transcription on the manufactured
+# scalar solution x(t) = sin(t), x_dot = cos(t), t in [0, 1]. Exact endpoint
+# and midpoint states are supplied as decision variables. The Hermite midpoint
+# residual is expected to decay at fourth order under uniform mesh refinement.
+
+case = "hermite-simpson-sine-mms"
+source = "Synthetic scalar manufactured solution; see scenarios/trajopt-two-body-apogee/provenance.md."
+validation = "validated-toy"
+
+mesh_segment_counts = [8, 16, 32, 64]
+expected_midpoint_slope = 4.0
+slope_tolerance = 0.3
+max_finest_midpoint_defect = 2.0e-10
