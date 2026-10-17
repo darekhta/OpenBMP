@@ -114,6 +114,7 @@ detector_kind          = "burst_counter" # "burst_counter" | "single_sample_glrt
 innovation_threshold   = 25.0
 innovation_burst_count = 5
 failsafe_burst_count   = 5
+saturation_requests_degraded = false # opt-in: control saturation alone requests DEGRADED
 
 [fc.fdir.redlines]
 body_rate_rad_s = 4.0

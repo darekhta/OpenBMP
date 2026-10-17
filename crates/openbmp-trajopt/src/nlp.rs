@@ -1300,7 +1300,7 @@ mod tests {
         }
 
         fn mu_m3_s2(&self) -> f64 {
-            3.986_004_418e14
+            openbmp_physics::frames::WGS84_MU_M3_S2
         }
     }
 

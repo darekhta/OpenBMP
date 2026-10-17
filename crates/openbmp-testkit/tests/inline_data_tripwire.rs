@@ -150,9 +150,6 @@ const TRIPWIRES: &[Tripwire] = &[
             "docs/data-provenance.md",
             "crates/openbmp-physics/src/gravity.rs",
             "crates/openbmp-scenario/src/document.rs",
-            "crates/openbmp-runner/src/celestial.rs",
-            "crates/openbmp-runner/src/point_mass.rs",
-            "crates/openbmp-scenario/src/scenario.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],
     },
@@ -170,8 +167,6 @@ const TRIPWIRES: &[Tripwire] = &[
             "crates/openbmp-physics/src/frames.rs",
             // Minimal compile-time geometry scalar, cited and bit-pinned to the
             // canonical TOML; owning policy deviation is recorded in WP-20.1.
-            "crates/openbmp-runner/src/celestial.rs",
-            "crates/openbmp-runner/src/point_mass.rs",
             "crates/openbmp-scenario/src/scenario.rs",
             "crates/openbmp-testkit/tests/inline_data_tripwire.rs",
         ],

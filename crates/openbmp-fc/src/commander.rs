@@ -23,7 +23,7 @@ use openbmp_mission::{
 
 use crate::bus::Bus;
 use crate::error::{CommanderError, ControllerError};
-use crate::fdir::FDIR_BIT_ALLOCATION_INFEASIBLE;
+use crate::fdir::{FDIR_BIT_ALLOCATION_INFEASIBLE, FDIR_BIT_AUTOPILOT_SATURATION};
 use crate::nav_metrics;
 use crate::params::ParamSection;
 use crate::scheduler::{Job, JobContext};
@@ -47,12 +47,15 @@ pub struct CommanderParams {
     /// Minimum vertical velocity (m/s) before transitioning into the
     /// in-flight state.
     pub liftoff_velocity_m_s: f64,
-    /// Consecutive commander ticks with allocation-infeasible-only
+    /// Consecutive commander ticks with degraded-only
     /// FDIR before entering the canonical `health.degraded` region.
     pub fdir_degraded_confirm_ticks: u32,
-    /// Consecutive commander ticks with non-allocation or mixed FDIR
+    /// Consecutive commander ticks with other or mixed FDIR
     /// before requesting the SAFE ladder.
     pub fdir_safe_confirm_ticks: u32,
+    /// Treat control saturation alone as DEGRADED, retaining control authority.
+    /// Disabled by default; sensor faults and mixed fault masks still request SAFE.
+    pub saturation_requests_degraded: bool,
 }
 
 impl Default for CommanderParams {
@@ -63,6 +66,7 @@ impl Default for CommanderParams {
             liftoff_velocity_m_s: 1.0,
             fdir_degraded_confirm_ticks: 1,
             fdir_safe_confirm_ticks: 1,
+            saturation_requests_degraded: false,
         }
     }
 }
@@ -255,8 +259,8 @@ impl Commander {
         if let Ok(Some((fdir, _))) = bus.latest::<FdirStatus>()
             && fdir.triggered
         {
-            // FDIR trip blocks arming. Allocation infeasibility maps
-            // to DEGRADED; other FDIR faults request the SAFE ladder.
+            // Every FDIR trip blocks arming. The configured degraded mask
+            // demotes health; other faults request the SAFE ladder.
             match self.confirm_fdir_health_request(fdir) {
                 FdirHealthRequest::Degraded => self.request_degraded_state(),
                 FdirHealthRequest::Safe => self.request_safe_state(),
@@ -269,7 +273,7 @@ impl Commander {
     }
 
     fn evaluate_fdir_health_region(&mut self, bus: &Bus) {
-        // While armed, allocation infeasibility enters DEGRADED;
+        // While armed, degraded-only FDIR faults retain control;
         // other FDIR trips request SAFE. The scenario decides what
         // SAFE maps to via an `EventTrigger::SafeStateRequested`
         // binding.
@@ -358,10 +362,14 @@ impl Commander {
         )
     }
 
-    fn fdir_has_only_allocation_infeasible(fdir: FdirStatus) -> bool {
-        fdir.tripped_mask != 0
-            && (fdir.tripped_mask & FDIR_BIT_ALLOCATION_INFEASIBLE) != 0
-            && (fdir.tripped_mask & !FDIR_BIT_ALLOCATION_INFEASIBLE) == 0
+    fn fdir_has_only_degraded_faults(&self, fdir: FdirStatus) -> bool {
+        let degraded_mask = FDIR_BIT_ALLOCATION_INFEASIBLE
+            | if self.params.saturation_requests_degraded {
+                FDIR_BIT_AUTOPILOT_SATURATION
+            } else {
+                0
+            };
+        fdir.tripped_mask != 0 && (fdir.tripped_mask & !degraded_mask) == 0
     }
 
     fn confirm_fdir_health_request(&mut self, fdir: FdirStatus) -> FdirHealthRequest {
@@ -369,7 +377,7 @@ impl Commander {
             self.reset_fdir_health_confirmation();
             return FdirHealthRequest::None;
         }
-        if Self::fdir_has_only_allocation_infeasible(fdir) {
+        if self.fdir_has_only_degraded_faults(fdir) {
             self.fdir_degraded_burst = self.fdir_degraded_burst.saturating_add(1);
             self.fdir_safe_burst = 0;
             if self.fdir_degraded_burst >= self.params.fdir_degraded_confirm_ticks.max(1) {
@@ -969,6 +977,39 @@ mod tests {
             commander.region_state(CanonicalRegions::health()),
             Some(CanonicalRegionStates::health_degraded())
         );
+    }
+
+    #[test]
+    fn saturation_policy_preserves_default_safe_and_mixed_fault_escalation() {
+        for allow_degraded in [false, true] {
+            for mask in [
+                FDIR_BIT_AUTOPILOT_SATURATION,
+                FDIR_BIT_AUTOPILOT_SATURATION | FDIR_BIT_ALLOCATION_INFEASIBLE,
+                FDIR_BIT_AUTOPILOT_SATURATION | crate::fdir::FDIR_BIT_IMU,
+            ] {
+                let (graph, bindings, pad) = build_graph();
+                let mut commander = commander_from_graph_with_params(
+                    graph,
+                    bindings,
+                    pad,
+                    CommanderParams {
+                        saturation_requests_degraded: allow_degraded,
+                        ..CommanderParams::default()
+                    },
+                );
+                let request = commander.confirm_fdir_health_request(FdirStatus {
+                    triggered: true,
+                    tripped_mask: mask,
+                    ticks_since_trip: 1,
+                });
+                let expected = if allow_degraded && mask & crate::fdir::FDIR_BIT_IMU == 0 {
+                    FdirHealthRequest::Degraded
+                } else {
+                    FdirHealthRequest::Safe
+                };
+                assert_eq!(request, expected);
+            }
+        }
     }
 
     #[test]

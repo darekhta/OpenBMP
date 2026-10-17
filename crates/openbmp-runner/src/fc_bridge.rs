@@ -583,7 +583,14 @@ impl FcBridge {
                 },
             ),
         };
-        let runner = FcRunner::new_with_resolved_files(
+        let mut health_params = crate::fc::build_health_params(&fc_config.health);
+        if let Some(sensors) = &scenario.document.sensors {
+            health_params.require_barometer =
+                sensors.values().any(|sensor| sensor.kind == "barometer");
+            health_params.require_magnetometer =
+                sensors.values().any(|sensor| sensor.kind == "magnetometer");
+        }
+        let runner = FcRunner::new_with_health_params(
             fc_config,
             &scenario.document.vehicle.assembly.engines,
             fc_mission,
@@ -592,6 +599,7 @@ impl FcBridge {
             allocator,
             estimator_seed,
             resolved_files,
+            health_params,
         )
         .map_err(|err| RunnerError::UnsupportedScenario {
             what: format!("flight-controller construction failed: {err}"),

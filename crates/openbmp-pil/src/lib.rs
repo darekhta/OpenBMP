@@ -1531,6 +1531,9 @@ mod tests {
     fn register_output_topics(fc: &FlightController) {
         fc.bus().register::<ActuatorCommand>().unwrap();
         fc.bus().register::<EffectorCommandSet>().unwrap();
+        fc.bus()
+            .register::<openbmp_fc::topics::PropellantSafingCommand>()
+            .unwrap();
         fc.bus().register::<EngineDemand>().unwrap();
         fc.bus().register::<EngineCommandSet>().unwrap();
         fc.bus().register::<FdirStatus>().unwrap();

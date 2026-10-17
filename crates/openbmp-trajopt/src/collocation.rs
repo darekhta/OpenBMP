@@ -8069,6 +8069,8 @@ fn dot(left: &[f64], right: &[f64]) -> f64 {
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+// Exact comparisons verify copied boundaries, sparse coefficients, and clamped values.
+#[allow(clippy::float_cmp)]
 mod tests {
     use serde::Deserialize;
     use std::io::{Error, ErrorKind};
@@ -8527,7 +8529,7 @@ mod tests {
                 || (3.0 * self.exit_time_s - 2.0).abs() > 1.0e-12
                 || (9.0 * self.state_bound - 1.0).abs() > 1.0e-12
                 || (self.expected_cost - 4.0).abs() > 1.0e-12
-                || self.segment_count % 3 != 0
+                || !self.segment_count.is_multiple_of(3)
             {
                 return Err(Error::new(
                     ErrorKind::InvalidData,
@@ -12255,12 +12257,12 @@ mod tests {
         assert!(kkt.solve_ldlt(&[0.0]).is_err());
         assert!(
             hessian
-                .solve_conjugate_gradient(&vec![0.0; 6], &vec![0.0; 6], 0, 1.0e-9)
+                .solve_conjugate_gradient(&[0.0; 6], &[0.0; 6], 0, 1.0e-9)
                 .is_err()
         );
         assert!(
             hessian
-                .solve_conjugate_gradient(&vec![0.0; 6], &vec![0.0; 6], 4, -1.0)
+                .solve_conjugate_gradient(&[0.0; 6], &[0.0; 6], 4, -1.0)
                 .is_err()
         );
 

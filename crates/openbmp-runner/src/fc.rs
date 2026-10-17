@@ -201,6 +201,35 @@ impl FcRunner {
         estimator_seed: EstimatorSeed,
         resolved_files: &BTreeMap<String, ResolvedFile>,
     ) -> Result<Self, openbmp_fc::ControllerError> {
+        Self::new_with_health_params(
+            config,
+            engines,
+            mission,
+            autopilot_lqr_context,
+            loop_step_dt_s,
+            allocator,
+            estimator_seed,
+            resolved_files,
+            build_health_params(&config.health),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::expect_used
+    )]
+    pub(crate) fn new_with_health_params(
+        config: &FcConfig,
+        engines: &[EngineConfig],
+        mission: FcRunnerMission,
+        autopilot_lqr_context: Option<FcAutopilotLqrContext>,
+        loop_step_dt_s: f64,
+        allocator: Option<openbmp_fc::allocation::ControlAllocator>,
+        estimator_seed: EstimatorSeed,
+        resolved_files: &BTreeMap<String, ResolvedFile>,
+        health_params: HealthParams,
+    ) -> Result<Self, openbmp_fc::ControllerError> {
         let mut fc = FlightControllerBuilder::new()
             .frame_budget_us(config.frame_budget_us)
             .build();
@@ -332,7 +361,13 @@ impl FcRunner {
             mission.regions,
             mission.bindings,
             mission.start_phase,
-            CommanderParams::default(),
+            CommanderParams {
+                saturation_requests_degraded: config
+                    .fdir
+                    .as_ref()
+                    .is_some_and(|fdir| fdir.saturation_requests_degraded),
+                ..CommanderParams::default()
+            },
         )
         .map_err(openbmp_fc::ControllerError::from)?;
         fc.scheduler_mut().register_periodic(
@@ -398,7 +433,7 @@ impl FcRunner {
             job_schedule.health_period_ticks,
             job_schedule.health_budget_us,
             next_priority,
-            Box::new(HealthMonitor::new(build_health_params(&config.health))),
+            Box::new(HealthMonitor::new(health_params)),
         )?;
         next_priority = next_priority.saturating_add(5);
 
@@ -1641,6 +1676,10 @@ impl Estimator for BoxedEstimator {
         self.0.update_mag(sample)
     }
 
+    fn update_star_tracker(&mut self, sample: &StarTrackerSample) -> Result<(), EstimatorError> {
+        self.0.update_star_tracker(sample)
+    }
+
     fn attitude(&self) -> AttitudeEstimate {
         self.0.attitude()
     }
@@ -1736,6 +1775,7 @@ fn build_single_estimator(
             let mut params = MekfParams::default();
             apply_mekf_overrides(&mut params, mekf_cfg);
             let mut mekf = apply_mekf_mag_model(Mekf::new(params), Some(mekf_cfg))?;
+            mekf.set_reference_position(seed.position_eci_m);
             mekf.seed(seed.attitude_body_to_eci);
             Ok(Box::new(mekf))
         }
@@ -2198,7 +2238,7 @@ fn build_minimum_snap_trajectory(
     MinimumSnapTrajectory::new(waypoints)
 }
 
-fn build_health_params(cfg: &FcHealthConfig) -> HealthParams {
+pub(crate) fn build_health_params(cfg: &FcHealthConfig) -> HealthParams {
     HealthParams {
         imu_stale_after_s: cfg.imu_stale_after_s,
         gnss_stale_after_s: cfg.gnss_stale_after_s,
@@ -2756,6 +2796,7 @@ mod tests {
     #[test]
     fn build_fdir_params_applies_redline_iloads() {
         let cfg = FcFdirConfig {
+            saturation_requests_degraded: false,
             detector_kind: FcFdirDetectorKind::BurstCounter,
             innovation_threshold: None,
             innovation_burst_count: None,
@@ -3210,6 +3251,68 @@ mod tests {
             EstimatorSeed::default(),
             resolved_files,
         )
+    }
+
+    #[test]
+    fn boxed_estimator_forwards_star_tracker_measurements() {
+        let config = attitude_hold_test_config();
+        let seed = EstimatorSeed {
+            attitude_body_to_eci: UnitQuaternion::from_euler_angles(0.02, 0.0, 0.0),
+            ..EstimatorSeed::default()
+        };
+        let mut estimator =
+            BoxedEstimator(build_single_estimator(&config, FcEstimatorKind::Ekf, seed).unwrap());
+        estimator
+            .update_star_tracker(&StarTrackerSample {
+                time: SimTime::ZERO,
+                q_eci_to_body_xyzw: [0.0, 0.0, 0.0, 1.0],
+                healthy: true,
+            })
+            .unwrap();
+        assert!(estimator.status().star_tracker_chi2 > 0.0);
+        assert!(estimator.attitude().q_body_to_eci_xyzw[0].abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn mekf_magnetic_prediction_uses_scenario_seed_position() {
+        use openbmp_physics::magnetic::MagneticFieldEci;
+
+        let mut config = attitude_hold_test_config();
+        config.estimator = FcEstimatorKind::Mekf;
+        config.ekf = None;
+        config.mekf = Some(FcMekfConfig {
+            mag_field: Some(FcMagFieldKind::Wmm2025),
+            ..FcMekfConfig::default()
+        });
+        let magnetic = build_wmm_2025(DEFAULT_WMM_2025_EPOCH_DECIMAL_YEAR).unwrap();
+        for position_eci_m in [
+            Vector3::new(0.0, 0.0, 1_000.0),
+            Vector3::new(openbmp_physics::WGS84_A_M, 100_000.0, 200_000.0),
+        ] {
+            let seed = EstimatorSeed {
+                position_eci_m,
+                attitude_body_to_eci: UnitQuaternion::from_euler_angles(0.1, -0.2, 0.3),
+                ..EstimatorSeed::default()
+            };
+            let mut estimator =
+                build_single_estimator(&config, FcEstimatorKind::Mekf, seed).unwrap();
+            estimator
+                .update_mag(&MagnetometerSample {
+                    time: SimTime::ZERO,
+                    field_body_nt: seed.attitude_body_to_eci.inverse()
+                        * magnetic.field_eci_nt(position_eci_m, SimTime::ZERO),
+                    hard_iron_body_nt: Vector3::zeros(),
+                    healthy: true,
+                })
+                .unwrap();
+            let status = estimator.status();
+            assert!(status.mag_updated_this_tick);
+            assert!(!status.innovation_rejected);
+            assert!(
+                status.mag_chi2 < 1.0e-12,
+                "seeded magnetic innovation: {status:?}"
+            );
+        }
     }
 
     fn attitude_hold_test_config() -> FcConfig {

@@ -2564,7 +2564,7 @@ impl SolverClusterSchedule {
     /// # Errors
     ///
     /// Returns [`AerodbError::InvalidInput`] for invalid roots, invalid submit
-    /// commands, timeouts, nonzero submit exits, or unparseable submit output.
+    /// commands, timeouts, nonzero submit exits, or unparsable submit output.
     pub fn submit_with_root(
         &self,
         root: impl AsRef<Path>,
@@ -3118,7 +3118,7 @@ impl DeckBuilder {
     /// Bake a reduced `(CN, CD, CM)` [`AeroDeck`] from a strict normalized
     /// external-solver coefficient CSV.
     ///
-    /// The CSV must use [`SOLVER_COEFFICIENT_CSV_SCHEMA_V1`] in every row, have
+    /// The CSV must use `openbmp.aerodb_solver_coefficients.csv.v1` in every row, have
     /// exactly the expected header, carry sequential `node_index` values, echo
     /// each [`RunNode`] condition exactly, and provide finite `CN`, `CD`, and
     /// `CM` values. The `solver`, `case_id`, and `provenance` columns are
@@ -3187,7 +3187,7 @@ impl DeckBuilder {
     /// explicit body-axis `(CX, CY, CZ, Cl, Cm, Cn)` coefficients from a strict
     /// normalized external-solver coefficient CSV.
     ///
-    /// The CSV must use [`SOLVER_SIX_COEFFICIENT_CSV_SCHEMA_V1`] in every row,
+    /// The CSV must use `openbmp.aerodb_solver_six_coefficients.csv.v1` in every row,
     /// have exactly the expected header, carry sequential `node_index` values,
     /// echo each [`RunNode`] condition exactly, and provide finite body-axis
     /// force/moment coefficients. Legacy reduced tables are derived as
@@ -3267,7 +3267,7 @@ impl DeckBuilder {
     /// Integrate normalized surface-Cp CSV rows into per-node force/moment load
     /// reports.
     ///
-    /// The CSV must use [`SURFACE_CP_CSV_SCHEMA_V1`] in every row, have exactly
+    /// The CSV must use `openbmp.aerodb_surface_cp.csv.v1` in every row, have exactly
     /// the expected header, and contain rows ordered by run-matrix node and then
     /// mesh triangle index. Each row must echo the node condition exactly,
     /// provide a finite `cp`, and carry nonblank solver/case/provenance fields.
@@ -3369,7 +3369,7 @@ impl DeckBuilder {
     /// Bake a reduced `(CN, CD, CM)` [`AeroDeck`] from a normalized surface-Cp
     /// CSV over a [`PanelMesh`].
     ///
-    /// The CSV must use [`SURFACE_CP_CSV_SCHEMA_V1`] in every row, have exactly
+    /// The CSV must use `openbmp.aerodb_surface_cp.csv.v1` in every row, have exactly
     /// the expected header, and contain rows ordered by run-matrix node and then
     /// mesh triangle index. Each row must echo the node condition exactly,
     /// provide a finite `cp`, and carry nonblank solver/case/provenance fields.
@@ -4548,7 +4548,7 @@ pub fn attach_six_sigma_tables_from_gci_toml(
 /// Attach reduced-deck sigma tables from a strict external-solver coefficient
 /// CSV document.
 ///
-/// The CSV must use [`GCI_SIGMA_CSV_SCHEMA_V1`] in every row, have exactly the
+/// The CSV must use `openbmp.aerodb_gci_sigma.csv.v1` in every row, have exactly the
 /// expected header, carry sequential `node_index` values in reduced-deck
 /// row-major order, and provide fine/medium/coarse CN/CD/CM values plus
 /// explicit source terms. `refinement_ratio` and `safety_factor` are shared by
@@ -4610,7 +4610,7 @@ pub fn attach_reduced_sigma_tables_from_gci_csv(
 /// Attach six-channel sigma tables from a strict external-solver coefficient
 /// CSV document.
 ///
-/// The CSV must use [`SIX_GCI_SIGMA_CSV_SCHEMA_V1`] in every row, have exactly
+/// The CSV must use `openbmp.aerodb_six_gci_sigma.csv.v1` in every row, have exactly
 /// the expected header, carry sequential `node_index` values in reduced-deck
 /// row-major order, and provide fine/medium/coarse CX/CY/CZ/Cl/Cm/Cn values
 /// plus explicit source terms.

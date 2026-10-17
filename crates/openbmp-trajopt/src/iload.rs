@@ -504,6 +504,8 @@ pub fn decode_iload_payload(bytes: &[u8]) -> Result<ILoadPayload, TrajoptError> 
 }
 
 #[cfg(test)]
+// Exact comparisons verify copied boundaries, sparse coefficients, and clamped values.
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use openbmp_physics::WGS84_A_M;

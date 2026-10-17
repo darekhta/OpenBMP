@@ -29,6 +29,7 @@ serde           = { workspace = true }
 thiserror       = { workspace = true }
 
 [dev-dependencies]
+nalgebra    = { workspace = true }
 num-complex = { workspace = true, features = ["std"] }
 toml        = { workspace = true }
 

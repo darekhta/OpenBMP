@@ -5941,6 +5941,8 @@ fn validate_positive(reason: &'static str, value: f64) -> Result<(), TrajoptErro
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+// Exact comparisons verify copied boundaries, sparse coefficients, and clamped values.
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use serde::Deserialize;
@@ -6221,7 +6223,7 @@ mod tests {
             ..time_search_settings()
         };
         assert!(matches!(
-            solve_scvx_time_of_flight_search(settings, |time| scalar_integrator_time_problem(time)),
+            solve_scvx_time_of_flight_search(settings, scalar_integrator_time_problem),
             Err(TrajoptError::InvalidPayload { .. })
         ));
         assert!(matches!(
@@ -6234,7 +6236,7 @@ mod tests {
             ..time_search_settings()
         };
         assert!(matches!(
-            solve_scvx_time_of_flight_search(settings, |time| scalar_integrator_time_problem(time)),
+            solve_scvx_time_of_flight_search(settings, scalar_integrator_time_problem),
             Err(TrajoptError::InvalidPayload { .. })
         ));
         assert!(matches!(
@@ -9705,10 +9707,9 @@ mod tests {
 
         let mut target = vec![0.0; ScvxPoweredLandingStateLayout::DIMENSION];
         target[ScvxPoweredLandingStateLayout::MASS] = fixture.vehicle.dry_mass;
-        for component in 0..3 {
-            target[ScvxPoweredLandingStateLayout::VELOCITY_ECI + component] =
-                fixture.boundary_conditions.final_velocity[component];
-        }
+        target[ScvxPoweredLandingStateLayout::VELOCITY_ECI
+            ..ScvxPoweredLandingStateLayout::VELOCITY_ECI + 3]
+            .copy_from_slice(&fixture.boundary_conditions.final_velocity);
         target[ScvxPoweredLandingStateLayout::QUATERNION_BODY_TO_ECI_WXYZ
             ..ScvxPoweredLandingStateLayout::QUATERNION_BODY_TO_ECI_WXYZ + 4]
             .copy_from_slice(
@@ -9951,15 +9952,15 @@ mod tests {
         control_right: &[f64],
     ) -> Vec<f64> {
         let mut predicted = segment.affine.clone();
-        for row in 0..state_dimension {
+        for (row, prediction) in predicted.iter_mut().enumerate().take(state_dimension) {
             for (col, value) in state.iter().enumerate().take(state_dimension) {
-                predicted[row] += segment.state_transition[row * state_dimension + col] * value;
+                *prediction += segment.state_transition[row * state_dimension + col] * value;
             }
             for (col, value) in control_left.iter().enumerate().take(control_dimension) {
-                predicted[row] += segment.control_left[row * control_dimension + col] * value;
+                *prediction += segment.control_left[row * control_dimension + col] * value;
             }
             for (col, value) in control_right.iter().enumerate().take(control_dimension) {
-                predicted[row] += segment.control_right[row * control_dimension + col] * value;
+                *prediction += segment.control_right[row * control_dimension + col] * value;
             }
         }
         predicted

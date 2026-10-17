@@ -1,3 +1,15 @@
+[files]
+# Third-party minified code retains upstream identifiers.
+extend-exclude = ["web/ascent/vendor/*.min.js"]
+
+[default.extend-identifiers]
+# External CFD/Three.js names and existing shader/HUD identifiers.
+nuTilda = "nuTilda"
+metalness = "metalness"
+muc = "muc"
+thr = "thr"
+THR = "THR"
+
 [default.extend-words]
 AAS = "AAS"
 Commun = "Commun"
@@ -18,6 +30,7 @@ NEES = "NEES"
 NIS = "NIS"
 ND = "ND"
 PN = "PN"
+NTO = "NTO"
 Plas = "Plas"
 SITL = "SITL"
 Shepard = "Shepard"
@@ -32,3 +45,4 @@ precessed = "precessed"
 precessing = "precessing"
 precesses = "precesses"
 Rech = "Rech"
+RTO = "RTO"

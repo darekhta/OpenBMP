@@ -9161,6 +9161,8 @@ fn validate_finite(reason: &'static str, values: &[f64]) -> Result<(), TrajoptEr
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
+// Exact comparisons verify copied boundaries, sparse coefficients, and clamped values.
+#[allow(clippy::float_cmp)]
 mod tests {
     use serde::Deserialize;
     use std::io::{Error, ErrorKind};
@@ -9687,10 +9689,10 @@ mod tests {
     fn lgr_grid_matches_three_point_closed_form_reference() {
         let grid = legendre_gauss_radau_grid(3).expect("LGR grid builds");
         let sqrt_6 = 6.0_f64.sqrt();
-        let expected_nodes = vec![-1.0, (1.0 - sqrt_6) / 5.0, (1.0 + sqrt_6) / 5.0];
-        let expected_weights = vec![
+        let expected_nodes = [-1.0, (1.0 - sqrt_6) / 5.0, (1.0 + sqrt_6) / 5.0];
+        let expected_weights = [
             0.222_222_222_222_222_2,
-            1.024_971_652_376_843_1,
+            1.024_971_652_376_843,
             0.752_806_125_400_935_6,
         ];
 
@@ -9707,7 +9709,7 @@ mod tests {
             );
         }
         assert_eq!(grid.endpoint, 1.0);
-        let expected_support = vec![-1.0, expected_nodes[1], expected_nodes[2], 1.0];
+        let expected_support = [-1.0, expected_nodes[1], expected_nodes[2], 1.0];
         for (actual, expected) in grid.support_nodes.iter().zip(expected_support.iter()) {
             assert!(
                 (actual - expected).abs() < 1.0e-14,

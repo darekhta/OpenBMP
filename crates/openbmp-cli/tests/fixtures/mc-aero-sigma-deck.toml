@@ -1,0 +1,30 @@
+
+openbmp.aero_deck = 1
+
+reference.area_m2 = 1.0
+reference.length_m = 1.0
+provenance = "synthetic sigma deck"
+validation = "validated-toy"
+
+[grid]
+mach = [0.0, 1.0, 2.0]
+alpha_deg = [0.0]
+beta_deg = [0.0]
+
+[coefficients.cn]
+data = [0.05, 0.1, 0.2]
+
+[coefficients.cd]
+data = [0.25, 0.3, 0.4]
+
+[coefficients.cm]
+data = [0.0, 0.0, 0.0]
+
+[uncertainty.cn]
+data = [0.05, 0.05, 0.05]
+
+[uncertainty.cd]
+data = [0.01, 0.01, 0.01]
+
+[uncertainty.cm]
+data = [0.0, 0.0, 0.0]

@@ -19,7 +19,7 @@
 //! 3. Packs each device's `(phase, c_d, drag_area)` state and any
 //!    active inflation opening-load diagnostics into a
 //!    `BTreeMap<RecoveryId, RecoverySnapshot>` via
-//!    [`RecoveryRack::snapshot_map_with_opening_load_context`] and
+//!    `RecoveryRack::snapshot_map_with_opening_load_context` and
 //!    pushes it into the kernel via `set_recovery_snapshot(...)`.
 //!
 //! The rack leaves the kernel hot path's force evaluation untouched

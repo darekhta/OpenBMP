@@ -22169,6 +22169,10 @@ pub struct FcFdirConfig {
     pub innovation_burst_count: Option<u32>,
     /// Consecutive failsafe breaches before burst-counter trips.
     pub failsafe_burst_count: Option<u32>,
+    /// Request DEGRADED for saturation alone, preserving control authority
+    /// through expected constrained maneuvers. Mixed sensor faults still request SAFE.
+    #[serde(default)]
+    pub saturation_requests_degraded: bool,
     /// CUSUM drift term.
     pub cusum_drift: Option<f64>,
     /// CUSUM trip threshold.

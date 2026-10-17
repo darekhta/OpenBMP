@@ -21,37 +21,7 @@ const MC_ACOUSTICS_RESPONSE_SCENARIO_TEMPLATE: &str =
     include_str!("fixtures/mc-acoustics-response-campaign.toml");
 const THERMOCHEM_ENGINE_DECK: &str =
     include_str!("../../openbmp-runner/tests/fixtures/thermochem/synthetic-grain.toml");
-const AERO_SIGMA_DECK_TOML: &str = r#"
-openbmp.aero_deck = 1
-
-reference.area_m2 = 1.0
-reference.length_m = 1.0
-provenance = "synthetic sigma deck"
-validation = "validated-toy"
-
-[grid]
-mach = [0.0, 1.0, 2.0]
-alpha_deg = [0.0]
-beta_deg = [0.0]
-
-[coefficients.cn]
-data = [0.05, 0.1, 0.2]
-
-[coefficients.cd]
-data = [0.25, 0.3, 0.4]
-
-[coefficients.cm]
-data = [0.0, 0.0, 0.0]
-
-[uncertainty.cn]
-data = [0.05, 0.05, 0.05]
-
-[uncertainty.cd]
-data = [0.01, 0.01, 0.01]
-
-[uncertainty.cm]
-data = [0.0, 0.0, 0.0]
-"#;
+const AERO_SIGMA_DECK_TOML: &str = include_str!("fixtures/mc-aero-sigma-deck.toml");
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -125,54 +95,7 @@ fn aero_deck_draw_overlay_options<'a>(
 }
 
 fn write_aero_deck_draw_base_scenario(path: &Path) {
-    let scenario = r#"
-openbmp.scenario = 3
-
-[meta]
-name = "aero-deck-draw-campaign"
-description = "synthetic aero deck draw campaign smoke test"
-validation = "experimental"
-provenance = "synthetic"
-
-[time]
-start_s = 0.0
-stop_s = 0.02
-dt_s = 0.01
-seed = 1
-
-[vehicle]
-kind = "point_mass"
-initial_position_eci_m = [0.0, 0.0, 0.0]
-initial_velocity_eci_m_s = [0.0, 0.0, 50.0]
-
-[vehicle.assembly]
-id = "body"
-
-[[vehicle.assembly.bodies]]
-id = "main"
-geometry = { kind = "reference", length_m = 2.4, area_m2 = 0.031415926535897934 }
-dry_mass_kg = 1.0
-
-[environment]
-frame_profile = "toy-fixed-earth"
-gravity = "constant"
-gravity_m_s2 = 9.80665
-atmosphere = "us_standard_1976"
-wind = "none"
-
-[forces]
-models = ["gravity", "aero"]
-
-[aero]
-deck = "deck.toml"
-
-[telemetry]
-output.csv = "out/aero-deck-draw-campaign.csv"
-
-[validation]
-require_finite_state = true
-require_monotonic_time = true
-"#;
+    let scenario = include_str!("fixtures/mc-aero-deck-draw-campaign.toml");
     fs::write(path, scenario).expect("write aero deck draw base scenario");
 }
 
@@ -188,40 +111,7 @@ mach_length = 1.5
 }
 
 fn aero_grid_sigma_deck_with_correlation_toml() -> &'static str {
-    r#"
-openbmp.aero_deck = 1
-
-reference.area_m2 = 1.0
-reference.length_m = 1.0
-provenance = "synthetic grid sigma deck"
-validation = "validated-toy"
-
-[grid]
-mach = [0.0, 1.0, 2.0]
-alpha_deg = [-5.0, 5.0]
-beta_deg = [0.0, 3.0]
-
-[coefficients.cn]
-data = [0.05, 0.055, 0.07, 0.075, 0.1, 0.105, 0.12, 0.125, 0.2, 0.205, 0.22, 0.225]
-
-[coefficients.cd]
-data = [0.25, 0.251, 0.26, 0.261, 0.3, 0.301, 0.31, 0.311, 0.4, 0.401, 0.41, 0.411]
-
-[coefficients.cm]
-data = [0.0, 0.001, -0.002, -0.001, 0.01, 0.011, 0.008, 0.009, 0.02, 0.021, 0.018, 0.019]
-
-[uncertainty.cn]
-data = [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
-
-[uncertainty.cd]
-data = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
-
-[uncertainty.cm]
-data = [0.005, 0.005, 0.005, 0.005, 0.005, 0.005, 0.005, 0.005, 0.005, 0.005, 0.005, 0.005]
-
-[uncertainty.correlation]
-mach_length = 1.5
-"#
+    include_str!("fixtures/mc-aero-grid-sigma-deck.toml")
 }
 
 fn aero_six_sigma_deck_with_correlation_toml() -> String {

@@ -2751,13 +2751,13 @@ impl<M: Motor> RigidMassResourceModel<M> {
                     ),
                 });
             };
-            // Mass-loss RATE: -mass_flow is exactly the propellant
-            // leaving the engine, whether it is self-contained or
-            // tank-coupled. The rate path carries no separate tank term,
-            // so (unlike the absolute mass_properties path) tank-coupled
-            // engines are NOT skipped here. The kernel reseeds the
-            // integrated mass from the absolute partition at separation,
-            // keeping the two paths consistent.
+            // Tank snapshots already report their total drain (engine feed,
+            // venting, and RCS). Count that loss once, consistently with the
+            // absolute mass path above. Only self-contained engines remove
+            // mass directly here.
+            if self.resources.tank_coupled_engines.contains(id) {
+                continue;
+            }
             mass_rate_kg_s -= snap.mass_flow_kg_per_s;
         }
         for (id, route) in &self.resources.tank_routes {
@@ -9814,6 +9814,16 @@ mod tests {
             }
         }
 
+        if max_steps.is_none() {
+            assert!(
+                matches!(
+                    session.kernel.stop_reason(),
+                    Some(StopReason::EndTime { .. })
+                ),
+                "full-duration TVC probe stopped early: {:?}",
+                session.kernel.stop_reason()
+            );
+        }
         assert!(step_count > 0, "Phalcon-9 TVC probe must advance");
         assert!(
             max_lateral_thrust_n > 1.0,
@@ -14263,7 +14273,7 @@ fuel_tank = "payload_tank"
                 reaction_force_body_n: Vector3::zeros(),
                 reaction_moment_body_n_m: Vector3::zeros(),
                 fluid_remaining_kg: 5.0,
-                mass_rate_kg_s: 0.0,
+                mass_rate_kg_s: -2.0,
             },
         )]);
         let props = model
@@ -17572,9 +17582,8 @@ require_monotonic_time = true
     fn tank_coupled_engine_mass_is_not_double_counted() {
         // An engine that draws from a tank must NOT also subtract its
         // integrated consumed_kg in the absolute mass path — the tank's
-        // mass_kg already reflects depletion. The mass RATE, which has
-        // no tank term, still uses -mass_flow. Regression for a
-        // negative departing-stage mass at separation.
+        // mass_kg already reflects depletion. The tank rate includes
+        // engine feed and other drains; it must also be counted once.
         let body = body_id_from_scenario_text("core");
         let engine = EngineId::from_path("vehicle.assembly.engines.main");
         let tank = TankId::from_path("vehicle.assembly.tanks.prop");
@@ -17630,7 +17639,7 @@ require_monotonic_time = true
                 lifecycle_state_index: 2,
             },
         )]);
-        let tank_snapshot = BTreeMap::from([(
+        let mut tank_snapshot = BTreeMap::from([(
             tank,
             openbmp_sim::TankSnapshot {
                 mass_kg: 70.0,
@@ -17639,7 +17648,7 @@ require_monotonic_time = true
                 reaction_force_body_n: Vector3::zeros(),
                 reaction_moment_body_n_m: Vector3::zeros(),
                 fluid_remaining_kg: 70.0,
-                mass_rate_kg_s: 0.0,
+                mass_rate_kg_s: -3.0,
             },
         )]);
 
@@ -17656,7 +17665,7 @@ require_monotonic_time = true
             .unwrap();
         assert!((props.mass_kg() - 90.0).abs() < 1.0e-9);
 
-        // Rate still tracks the engine mass-flow (the tank drain).
+        // Rate tracks the tank drain once, not engine + tank (-6 kg/s).
         let rate = model
             .mass_properties_rate_from_snapshots(
                 SimTime::ZERO,
@@ -17667,6 +17676,32 @@ require_monotonic_time = true
             )
             .unwrap();
         assert_eq!(rate.mass_rate_kg_s.to_bits(), (-3.0_f64).to_bits());
+        // Additional vent loss belongs to the tank; a zero drain must not
+        // reuse an old engine flow. The rate matches finite-differenced mass.
+        for drain in [-5.0_f64, 0.0] {
+            tank_snapshot.get_mut(&tank).unwrap().mass_rate_kg_s = drain;
+            let rate = model
+                .mass_properties_rate_from_snapshots(
+                    SimTime::ZERO,
+                    Some(body),
+                    &engine_snapshot,
+                    &tank_snapshot,
+                    &BTreeMap::new(),
+                )
+                .unwrap();
+            tank_snapshot.get_mut(&tank).unwrap().mass_kg = 70.0 + drain;
+            let next = model
+                .mass_properties_from_snapshots(
+                    SimTime::from_seconds(1.0),
+                    Some(body),
+                    &engine_snapshot,
+                    &tank_snapshot,
+                    &BTreeMap::new(),
+                )
+                .unwrap();
+            assert_eq!(rate.mass_rate_kg_s.to_bits(), drain.to_bits());
+            assert!((next.mass_kg() - props.mass_kg() - drain).abs() < 1.0e-12);
+        }
     }
 
     #[test]

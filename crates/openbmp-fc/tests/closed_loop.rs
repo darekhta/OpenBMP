@@ -266,7 +266,13 @@ fn closed_loop_pipeline_runs_deterministically() {
     fc.bus().register::<FailsafeFlags>().unwrap();
     fc.bus().register::<ReferenceState>().unwrap();
     fc.bus().register::<ActuatorCommand>().unwrap();
+    fc.bus()
+        .register::<openbmp_fc::topics::EffectorAvailability>()
+        .unwrap();
     fc.bus().register::<EffectorCommandSet>().unwrap();
+    fc.bus()
+        .register::<openbmp_fc::topics::PropellantSafingCommand>()
+        .unwrap();
     fc.bus().register::<EngineDemand>().unwrap();
     fc.bus().register::<EngineCommandSet>().unwrap();
     fc.bus().register::<FdirStatus>().unwrap();
@@ -412,7 +418,13 @@ fn deterministic_replay_reproduces_actuator_stream() {
         fc.bus().register::<FailsafeFlags>().unwrap();
         fc.bus().register::<ReferenceState>().unwrap();
         fc.bus().register::<ActuatorCommand>().unwrap();
+        fc.bus()
+            .register::<openbmp_fc::topics::EffectorAvailability>()
+            .unwrap();
         fc.bus().register::<EffectorCommandSet>().unwrap();
+        fc.bus()
+            .register::<openbmp_fc::topics::PropellantSafingCommand>()
+            .unwrap();
         fc.bus().register::<EngineDemand>().unwrap();
         fc.bus().register::<EngineCommandSet>().unwrap();
         fc.bus().register::<FdirStatus>().unwrap();

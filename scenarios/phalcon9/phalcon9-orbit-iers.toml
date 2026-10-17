@@ -487,7 +487,10 @@ baro_stale_after_s  = 10.0
 mag_stale_after_s   = 0.2
 overrun_burst_count = 5
 
+# Expected PID clamping during ballistic coast/reacquisition requests DEGRADED.
+# Sensor faults retain the default SAFE response.
 [fc.fdir]
+saturation_requests_degraded = true
 detector_kind          = "burst_counter"
 innovation_threshold   = 25.0
 innovation_burst_count  = 5

@@ -9,7 +9,7 @@
 //! The closed-form small-angle frequency reproduces the Abramson cylindrical
 //! relation `omega_n^2 = a / L_n`, where `a` is the axial (thrust) acceleration
 //! and `L_n` is the equivalent pendulum length supplied per fill level by the
-//! [`openbmp-vehicle`] Abramson model. This crate stays at the L2
+//! `openbmp-vehicle` Abramson model. This crate stays at the L2
 //! spatial-vector layer: it consumes pendulum length / mass / geometry and is
 //! unaware of tank tables, which a higher layer (the runner) supplies.
 //!
@@ -108,7 +108,7 @@ impl PendulumSloshBody {
     /// supplied axial acceleration, matching the Abramson pendulum relation
     /// `omega_n^2 = a / L_n`. Returns `0.0` for non-positive acceleration
     /// (free-fall / pre-ignition), mirroring
-    /// [`openbmp-vehicle`]'s `omega_n_squared_rad2_s2`.
+    /// `openbmp-vehicle`'s `omega_n_squared_rad2_s2`.
     #[must_use]
     pub fn small_angle_frequency_rad_s(&self, axial_accel_m_s2: f64) -> f64 {
         if axial_accel_m_s2 <= 0.0 || self.pendulum_length_m <= 0.0 {

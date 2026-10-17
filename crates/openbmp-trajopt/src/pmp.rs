@@ -1032,6 +1032,8 @@ where
 }
 
 #[cfg(test)]
+// Exact comparisons verify copied boundaries, sparse coefficients, and clamped values.
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 

@@ -31,6 +31,12 @@ pub struct HealthParams {
     /// Maximum tolerable interval (s) between mag samples before
     /// flagging the mag unhealthy.
     pub mag_stale_after_s: f64,
+    /// Require a configured barometer to publish within its stale threshold.
+    /// Disable only when the installation declares no barometer.
+    pub require_barometer: bool,
+    /// Require a configured magnetometer to publish within its stale threshold.
+    /// Disable only when the installation declares no magnetometer.
+    pub require_magnetometer: bool,
     /// Number of consecutive scheduler overruns before flagging the
     /// scheduler unhealthy.
     pub overrun_burst_count: u32,
@@ -52,6 +58,8 @@ impl Default for HealthParams {
             gnss_stale_after_s: 0.5,
             baro_stale_after_s: 0.2,
             mag_stale_after_s: 0.2,
+            require_barometer: true,
+            require_magnetometer: true,
             overrun_burst_count: 5,
             actuator_stale_after_s: 0.2,
             watchdog_stale_after_s: 1.0,
@@ -170,8 +178,10 @@ impl Job for HealthMonitor {
 
         flags.imu_unhealthy = self.imu.is_stale(now, self.params.imu_stale_after_s);
         flags.gnss_unhealthy = self.gnss.is_stale(now, self.params.gnss_stale_after_s);
-        flags.baro_unhealthy = self.baro.is_stale(now, self.params.baro_stale_after_s);
-        flags.mag_unhealthy = self.mag.is_stale(now, self.params.mag_stale_after_s);
+        flags.baro_unhealthy = self.params.require_barometer
+            && self.baro.is_stale(now, self.params.baro_stale_after_s);
+        flags.mag_unhealthy = self.params.require_magnetometer
+            && self.mag.is_stale(now, self.params.mag_stale_after_s);
         flags.actuator_unhealthy = self
             .actuator
             .is_stale_after_first_publish(now, self.params.actuator_stale_after_s);
@@ -241,6 +251,63 @@ mod tests {
     use crate::bus::Bus;
     use crate::clock::{Clock as _, SimulatedClock};
     use crate::scheduler::JobContext;
+
+    #[test]
+    fn optional_sensor_staleness_follows_declared_requirements() {
+        for required in [false, true] {
+            let bus = Bus::new();
+            bus.register::<BarometerSample>().unwrap();
+            bus.register::<MagnetometerSample>().unwrap();
+            bus.register::<FailsafeFlags>().unwrap();
+            let clock = SimulatedClock::new();
+            clock.set(SimTime::from_seconds(1.0), StepIndex::new(1));
+            let mut health = HealthMonitor::new(HealthParams {
+                imu_stale_after_s: 10.0,
+                gnss_stale_after_s: 10.0,
+                require_barometer: required,
+                require_magnetometer: required,
+                ..HealthParams::default()
+            });
+            health
+                .run(&JobContext {
+                    bus: &bus,
+                    clock: &clock,
+                })
+                .unwrap();
+            let (flags, _) = bus.latest::<FailsafeFlags>().unwrap().unwrap();
+            assert_eq!(flags.baro_unhealthy, required);
+            assert_eq!(flags.mag_unhealthy, required);
+            assert!(!flags.imu_unhealthy);
+            assert!(!flags.gnss_unhealthy);
+        }
+    }
+
+    #[test]
+    fn unhealthy_optional_sample_is_still_reported() {
+        let bus = Bus::new();
+        bus.register::<MagnetometerSample>().unwrap();
+        bus.register::<FailsafeFlags>().unwrap();
+        bus.publish(MagnetometerSample {
+            time: SimTime::ZERO,
+            field_body_nt: nalgebra::Vector3::zeros(),
+            hard_iron_body_nt: nalgebra::Vector3::zeros(),
+            healthy: false,
+        })
+        .unwrap();
+        let clock = SimulatedClock::new();
+        let mut health = HealthMonitor::new(HealthParams {
+            require_magnetometer: false,
+            ..HealthParams::default()
+        });
+        health
+            .run(&JobContext {
+                bus: &bus,
+                clock: &clock,
+            })
+            .unwrap();
+        let (flags, _) = bus.latest::<FailsafeFlags>().unwrap().unwrap();
+        assert!(flags.mag_unhealthy);
+    }
 
     #[test]
     fn imu_stale_after_threshold_when_no_publishes() {

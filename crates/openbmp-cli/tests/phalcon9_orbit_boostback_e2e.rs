@@ -160,7 +160,16 @@ fn phalcon9_boostback_ascends_to_orbit_and_booster_burns_retrograde() {
         .collect();
     assert!(!active_indices.is_empty(), "boostback engine must light");
     let first_active = *active_indices.first().expect("first active");
-    let last_active = *active_indices.last().expect("last active");
+    // The same restartable engine also fires during terminal recovery.
+    // Measure the first contiguous burn: landing thrust is a separate maneuver.
+    let last_active = active_indices
+        .iter()
+        .copied()
+        .enumerate()
+        .take_while(|(offset, index)| *index == first_active + offset)
+        .map(|(_, index)| index)
+        .last()
+        .expect("boostback burn end");
     let burn_start = &rows[first_active];
     let burn_end = &rows[last_active];
     assert!(

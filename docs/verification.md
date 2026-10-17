@@ -93,6 +93,37 @@ and simulation timestamp, and omit incomplete samples. The voted-sensor
 scratch-buffer check bounds each scan to its own job implementation, so a
 neighboring constructor cannot masquerade as a per-tick allocation.
 
+The WMM ECI adapter uses the dipole model's bounded startup fallback below
+half an Earth radius. Local toy-frame positions are not physical WMM inputs:
+evaluating the harmonic expansion there can produce enormous finite fields
+and a false magnetometer FDIR trip. A unit test covers origin and local ascent
+coordinates, alongside the unchanged WMM reference-data checks. The full-duration
+Phalcon-9 TVC regression must reach its end-time stop after 4000 steps; an early
+ground-impact stop does not satisfy the regression.
+The attitude-only MEKF also receives the scenario's initial position for its
+magnetic prediction. A runner unit test checks matching magnetic innovations
+for both local and geocentric seeds. Boxed estimators forward star-tracker
+updates; a regression checks both the innovation and attitude correction.
+
+Scenario sensor declarations determine whether the health monitor requires
+barometer and magnetometer samples. Absent channels do not create stale-data
+faults; configured stale channels and explicitly unhealthy samples still do.
+
+Tank-coupled engine mass loss comes from the tank's drain rate once. Adding
+engine flow to that same rate double-counts propellant and can drive integrated
+vehicle mass below dry mass. Regression checks compare the absolute mass
+difference with the reported rate, including vent loss and stopped drain.
+
+The synthetic orbital scenarios explicitly request DEGRADED for control
+saturation alone, retaining feedback through ballistic coast and attitude
+reacquisition. The default remains SAFE. Commander regressions check both
+policies and ensure a mixed IMU/control fault still requests SAFE. Sensor
+fault detection, mixer phase gating, and propellant safing remain active.
+
+Controller-comparison goldens are regenerated only after the independent
+L1/PID performance and robustness assertions pass with the corrected magnetic
+initialization.
+
 ## Requirements Traceability
 
 Machine-readable requirements live in [`../requirements.toml`](../requirements.toml).

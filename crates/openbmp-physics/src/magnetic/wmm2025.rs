@@ -16,6 +16,9 @@
 //! WMM 2025 is authoritative for decimal years `[2025.0, 2030.0)`.
 //! Outside this range the model fails closed with
 //! [`PhysicsError::OutOfEnvelope`].
+//! The total [`MagneticFieldEci`] adapter uses the dipole's bounded
+//! startup fallback below half an Earth radius, where local toy-frame
+//! coordinates are not meaningful inputs to the WMM harmonic expansion.
 //!
 //! # Convention
 //!
@@ -382,6 +385,9 @@ impl MagneticModel for Wmm2025 {
 impl MagneticFieldEci for Wmm2025 {
     fn field_eci_nt(&self, position_eci_m: Vector3<f64>, time: SimTime) -> Vector3<f64> {
         let fallback = || EarthDipoleField::default().field_eci_nt(position_eci_m, time);
+        if position_eci_m.norm() < crate::earth::MEAN_RADIUS_M * 0.5 {
+            return fallback();
+        }
         let (lat, lon, h) = ecef_to_geodetic(position_eci_m);
         let Ok(ned) = self.field_geodetic_ned_nt(lat, lon, h, time) else {
             return fallback();
@@ -628,5 +634,21 @@ mod tests {
         assert!(approx_eq(eci.x, -ned.z, 1.0e-9));
         assert!(approx_eq(eci.y, ned.y, 1.0e-9));
         assert!(approx_eq(eci.z, ned.x, 1.0e-9));
+    }
+
+    #[test]
+    fn magnetic_field_eci_uses_bounded_dipole_for_local_startup_coordinates() {
+        let model = Wmm2025::new_for_decimal_year(EPOCH_DECIMAL_YEAR).unwrap();
+        let dipole = EarthDipoleField::default();
+        for position in [
+            Vector3::zeros(),
+            Vector3::new(0.05, 0.2, 35.0),
+            Vector3::new(-100.0, 200.0, 5_000.0),
+            Vector3::new(crate::earth::MEAN_RADIUS_M * 0.5 - 1.0, 0.0, 0.0),
+        ] {
+            let field = model.field_eci_nt(position, SimTime::ZERO);
+            assert_eq!(field, dipole.field_eci_nt(position, SimTime::ZERO));
+            assert!(field.iter().all(|component| component.is_finite()));
+        }
     }
 }

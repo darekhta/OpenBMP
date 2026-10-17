@@ -1,0 +1,47 @@
+
+openbmp.scenario = 3
+
+[meta]
+name = "aero-deck-draw-campaign"
+description = "synthetic aero deck draw campaign smoke test"
+validation = "experimental"
+provenance = "synthetic"
+
+[time]
+start_s = 0.0
+stop_s = 0.02
+dt_s = 0.01
+seed = 1
+
+[vehicle]
+kind = "point_mass"
+initial_position_eci_m = [0.0, 0.0, 0.0]
+initial_velocity_eci_m_s = [0.0, 0.0, 50.0]
+
+[vehicle.assembly]
+id = "body"
+
+[[vehicle.assembly.bodies]]
+id = "main"
+geometry = { kind = "reference", length_m = 2.4, area_m2 = 0.031415926535897934 }
+dry_mass_kg = 1.0
+
+[environment]
+frame_profile = "toy-fixed-earth"
+gravity = "constant"
+gravity_m_s2 = 9.80665
+atmosphere = "us_standard_1976"
+wind = "none"
+
+[forces]
+models = ["gravity", "aero"]
+
+[aero]
+deck = "deck.toml"
+
+[telemetry]
+output.csv = "out/aero-deck-draw-campaign.csv"
+
+[validation]
+require_finite_state = true
+require_monotonic_time = true
