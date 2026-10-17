@@ -304,6 +304,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Test requirements checker
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - run: python3 scripts/check_requirements_traceability.py
 
   # ----------------------------------------------------------------------
