@@ -232,7 +232,10 @@ pub struct NormalResponse {
     pub normal_force_n: f64,
     /// Elastic potential energy stored in the normal law.
     pub elastic_energy_j: f64,
-    /// Power dissipated by the normal damping law.
+    /// Power dissipated by normal damping and unilateral force clamping.
+    ///
+    /// Includes the loss of stored elastic energy while the force is clamped
+    /// to zero during release.
     pub damping_power_w: f64,
 }
 
@@ -272,7 +275,10 @@ impl KelvinVoigtNormal {
         let damping_force_n = -self.damping_n_s_m * kin.normal_velocity_m_s;
         let normal_force_n = (elastic_force_n + damping_force_n).max(0.0);
         let elastic_energy_j = 0.5 * self.stiffness_n_m * x * x;
-        let damping_power_w = (self.damping_n_s_m * kin.penetration_rate_m_s().powi(2)).max(0.0);
+        // Balance actual contact work against the change in spring energy,
+        // including release while the unilateral force is clamped to zero.
+        let damping_power_w =
+            ((normal_force_n - elastic_force_n) * kin.penetration_rate_m_s()).max(0.0);
         NormalResponse {
             normal_force_n,
             elastic_energy_j,
@@ -384,8 +390,9 @@ impl HuntCrossleyNormal {
         let elastic_force_n = self.stiffness_n_m_3_2 * x_3_2;
         let multiplier = (1.0 + self.damping_factor_s_m * penetration_rate_m_s).max(0.0);
         let normal_force_n = elastic_force_n * multiplier;
-        let damping_power_w =
-            (normal_force_n - elastic_force_n).max(0.0) * penetration_rate_m_s.max(0.0);
+        // Both factors are negative on unloading, so damping still dissipates
+        // energy. Clamp only the final power, not its individual factors.
+        let damping_power_w = ((normal_force_n - elastic_force_n) * penetration_rate_m_s).max(0.0);
         NormalResponse {
             normal_force_n,
             elastic_energy_j: 0.4 * self.stiffness_n_m_3_2 * x_3_2 * x,
@@ -886,6 +893,33 @@ mod tests {
     }
 
     #[test]
+    fn kelvin_voigt_dissipation_closes_power_balance_through_release() {
+        let model = KelvinVoigtNormal::new(100.0, 10.0).unwrap();
+        let penetration_m = 0.05;
+        let elastic_force_n = 100.0 * penetration_m;
+
+        // Compression, unloading with positive force, and force-clamped release.
+        for (normal_velocity_m_s, expected_power_w) in [(-1.0, 10.0), (0.25, 0.625), (1.0, 5.0)] {
+            let kin = ContactKinematics::new(-penetration_m, normal_velocity_m_s, [0.0, 0.0, 0.0])
+                .unwrap();
+            let response = model.evaluate(kin);
+            let body_power_w = response.normal_force_n * normal_velocity_m_s;
+            let elastic_power_w = -elastic_force_n * normal_velocity_m_s;
+
+            assert_abs_diff_eq!(
+                response.damping_power_w,
+                expected_power_w,
+                epsilon = 1.0e-14
+            );
+            assert_abs_diff_eq!(
+                body_power_w + elastic_power_w + response.damping_power_w,
+                0.0,
+                epsilon = 1.0e-14
+            );
+        }
+    }
+
+    #[test]
     fn hertz_elastic_energy_matches_integral() {
         let model = HertzNormal::new(5_000.0).unwrap();
         let kin = ContactKinematics::new(-0.04, 0.0, [0.0, 0.0, 0.0]).unwrap();
@@ -916,6 +950,32 @@ mod tests {
             elastic_force * 1.3,
             max_relative = 1.0e-14
         );
+    }
+
+    #[test]
+    fn hunt_crossley_dissipation_closes_power_balance_through_release() {
+        let model = HuntCrossleyNormal::new(1_000.0, 2.0).unwrap();
+        let penetration_m = 0.04;
+        let elastic_force_n = 8.0;
+
+        for (normal_velocity_m_s, expected_power_w) in [(-0.25, 1.0), (0.25, 1.0), (1.0, 8.0)] {
+            let kin = ContactKinematics::new(-penetration_m, normal_velocity_m_s, [0.0, 0.0, 0.0])
+                .unwrap();
+            let response = model.evaluate(kin);
+            let body_power_w = response.normal_force_n * normal_velocity_m_s;
+            let elastic_power_w = -elastic_force_n * normal_velocity_m_s;
+
+            assert_abs_diff_eq!(
+                response.damping_power_w,
+                expected_power_w,
+                epsilon = 1.0e-14
+            );
+            assert_abs_diff_eq!(
+                body_power_w + elastic_power_w + response.damping_power_w,
+                0.0,
+                epsilon = 1.0e-14
+            );
+        }
     }
 
     #[test]

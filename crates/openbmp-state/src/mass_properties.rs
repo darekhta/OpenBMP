@@ -19,8 +19,8 @@ use crate::error::StateError;
 /// the center of mass in the body-fixed frame. `inertia_body` is the
 /// 3-by-3 inertia tensor in the body frame, in kg*m^2. A valid inertia
 /// tensor is finite, symmetric, strictly positive-definite, and has
-/// positive diagonal moments that satisfy the rigid-body triangle
-/// inequalities.
+/// positive principal moments that satisfy the rigid-body triangle
+/// inequalities, independently of the body's choice of axes.
 #[derive(Copy, Clone, Debug)]
 pub struct MassProperties {
     /// Total mass.
@@ -99,9 +99,14 @@ impl MassProperties {
     /// 2. Center of mass has finite components.
     /// 3. Inertia tensor has finite components.
     /// 4. Inertia diagonal is strictly positive.
-    /// 5. Inertia diagonal satisfies rigid-body triangle inequalities.
-    /// 6. Inertia tensor is symmetric within `symmetry_tolerance`.
-    /// 7. Symmetric inertia tensor is strictly positive-definite.
+    /// 5. Inertia tensor is symmetric within `symmetry_tolerance`.
+    /// 6. Symmetric inertia tensor is strictly positive-definite.
+    /// 7. Principal moments satisfy rigid-body triangle inequalities.
+    ///
+    /// Matrix checks use the symmetric part, scaled by its largest input
+    /// component to avoid determinant overflow and underflow. The triangle
+    /// check permits `symmetry_tolerance` in kg*m^2 and a small relative
+    /// roundoff margin, including the equality case for planar bodies.
     ///
     /// # Errors
     ///
@@ -129,12 +134,6 @@ impl MassProperties {
         if ixx <= 0.0 || iyy <= 0.0 || izz <= 0.0 {
             return Err(StateError::InertiaDiagonalNotPositive { ixx, iyy, izz });
         }
-        if ixx + iyy + symmetry_tolerance < izz
-            || ixx + izz + symmetry_tolerance < iyy
-            || iyy + izz + symmetry_tolerance < ixx
-        {
-            return Err(StateError::InertiaTriangleInequalityViolated { ixx, iyy, izz });
-        }
         let pairs = [(0usize, 1usize), (0, 2), (1, 2)];
         let max_asymmetry = pairs
             .iter()
@@ -146,16 +145,50 @@ impl MassProperties {
                 max_asymmetry,
             });
         }
-        let leading_minor_1 = ixx;
-        let leading_minor_2 = self.inertia_body[(0, 0)] * self.inertia_body[(1, 1)]
-            - self.inertia_body[(0, 1)] * self.inertia_body[(1, 0)];
-        let determinant = self.inertia_body.determinant();
+        // Scaling is positive and finite because the diagonal checks passed.
+        // All entries now have magnitude <= 1, so finite tensors cannot slip
+        // through comparisons involving NaN from overflowing raw products.
+        let scale = self
+            .inertia_body
+            .iter()
+            .map(|value| value.abs())
+            .fold(0.0_f64, f64::max);
+        let mut inertia = self.inertia_body / scale;
+        for (i, j) in pairs {
+            let symmetric = 0.5 * (inertia[(i, j)] + inertia[(j, i)]);
+            inertia[(i, j)] = symmetric;
+            inertia[(j, i)] = symmetric;
+        }
+        let leading_minor_1 = inertia[(0, 0)];
+        let leading_minor_2 = inertia[(0, 0)] * inertia[(1, 1)] - inertia[(0, 1)] * inertia[(1, 0)];
+        let determinant = inertia.determinant();
         if leading_minor_1 <= 0.0 || leading_minor_2 <= 0.0 || determinant <= 0.0 {
             return Err(StateError::InertiaNotPositiveDefinite {
                 leading_minor_1,
                 leading_minor_2,
                 determinant,
             });
+        }
+
+        // For a realizable rigid body, C = tr(I)/2 * identity - I is the
+        // second-moment matrix integral(r r^T dm), hence positive semidefinite.
+        // Its eigenvalues are (Ij + Ik - Ii)/2, so checking C enforces every
+        // principal-moment triangle inequality even away from principal axes.
+        // Shift C by the allowed margin and use fixed-size Cholesky. Direct
+        // determinant expansion can lose the shift through cancellation for
+        // slender planar bodies, spuriously rejecting a valid PSD tensor.
+        // Bound the dimensionless tolerance before addition (a large physical
+        // tolerance divided by a tiny inertia scale can otherwise overflow).
+        let margin = 0.5 * (symmetry_tolerance / scale).min(6.0) + 32.0 * f64::EPSILON;
+        let mut second_moment = -inertia;
+        for i in 0..3 {
+            let j = (i + 1) % 3;
+            let k = (i + 2) % 3;
+            second_moment[(i, i)] =
+                0.5 * (inertia[(j, j)] + inertia[(k, k)] - inertia[(i, i)]) + margin;
+        }
+        if second_moment.cholesky().is_none() {
+            return Err(StateError::InertiaTriangleInequalityViolated { ixx, iyy, izz });
         }
         Ok(())
     }
@@ -268,6 +301,137 @@ mod tests {
         let m = MassProperties::new(unit_kg(), body_origin(), inertia);
         let err = m.require_valid(1.0e-12).unwrap_err();
         assert!(matches!(err, StateError::InertiaNotPositiveDefinite { .. }));
+    }
+
+    #[test]
+    fn require_valid_rejects_unphysical_principal_moments() {
+        // Body-axis diagonal moments satisfy every triangle inequality,
+        // but principal moments (0.1, 1.0, 1.9) do not. Rotating a tensor
+        // must not hide its physically impossible mass distribution.
+        let inertia = Matrix3::new(1.0, 0.9, 0.0, 0.9, 1.0, 0.0, 0.0, 0.0, 1.0);
+        let m = MassProperties::new(unit_kg(), body_origin(), inertia);
+        assert!(matches!(
+            m.require_valid(0.0),
+            Err(StateError::InertiaTriangleInequalityViolated { .. })
+        ));
+    }
+
+    #[test]
+    fn require_valid_accepts_rotated_planar_inertia() {
+        // Principal moments (1, 2, 3) describe a planar mass distribution.
+        // The limiting triangle equality remains valid off the principal axes.
+        let inertia = Matrix3::new(1.5, 0.5, 0.0, 0.5, 1.5, 0.0, 0.0, 0.0, 3.0);
+        let m = MassProperties::new(unit_kg(), body_origin(), inertia);
+        assert!(m.require_valid(0.0).is_ok());
+    }
+
+    #[test]
+    fn require_valid_accepts_slender_rotated_planar_inertia() {
+        // C = u*u^T + 1e-5*w*w^T, with orthogonal unit directions
+        // u = (1, 2, 3)/sqrt(14), w = (2, -1, 0)/sqrt(5). Therefore
+        // I = tr(C)*identity - C has principal moments (1e-5, 1, 1.00001).
+        // Expanding det(C) loses the tiny positive roundoff margin through
+        // cancellation even though this planar mass distribution is valid.
+        let inertia = Matrix3::new(
+            0.9285734285714287,
+            -0.14285314285714287,
+            -0.2142857142857143,
+            -0.14285314285714287,
+            0.7142937142857143,
+            -0.4285714285714286,
+            -0.2142857142857143,
+            -0.4285714285714286,
+            0.35715285714285716,
+        );
+        let m = MassProperties::new(unit_kg(), body_origin(), inertia);
+        assert!(m.require_valid(0.0).is_ok());
+    }
+
+    #[test]
+    fn triangle_check_includes_the_full_second_moment_determinant() {
+        // C has diagonal 1 and off-diagonal -0.6. All its 1x1 and 2x2
+        // principal minors are positive, but det(C) < 0. The corresponding
+        // inertia is SPD with impossible principal moments (1.4, 1.4, 3.2).
+        let inertia = Matrix3::new(2.0, 0.6, 0.6, 0.6, 2.0, 0.6, 0.6, 0.6, 2.0);
+        let m = MassProperties::new(unit_kg(), body_origin(), inertia);
+        assert!(matches!(
+            m.require_valid(0.0),
+            Err(StateError::InertiaTriangleInequalityViolated { .. })
+        ));
+    }
+
+    #[test]
+    fn triangle_tolerance_retains_physical_units() {
+        let tolerance = 1.0e-8;
+        let within = MassProperties::with_diagonal_inertia(
+            unit_kg(),
+            body_origin(),
+            1.0,
+            1.0,
+            2.0 + 0.5 * tolerance,
+        );
+        assert!(within.require_valid(tolerance).is_ok());
+        let outside = MassProperties::with_diagonal_inertia(
+            unit_kg(),
+            body_origin(),
+            1.0,
+            1.0,
+            2.0 + 2.0 * tolerance,
+        );
+        assert!(matches!(
+            outside.require_valid(tolerance),
+            Err(StateError::InertiaTriangleInequalityViolated { .. })
+        ));
+    }
+
+    #[test]
+    fn require_valid_is_independent_of_inertia_scale() {
+        // Scaling length or mass preserves positive definiteness and the
+        // principal-moment triangle inequalities. Raw determinant products
+        // overflow/underflow even though every input component is finite.
+        for scale in [1.0e-200, 1.0, 1.0e200] {
+            let m = MassProperties::with_diagonal_inertia(
+                unit_kg(),
+                body_origin(),
+                scale,
+                2.0 * scale,
+                3.0 * scale,
+            );
+            assert!(m.require_valid(0.0).is_ok(), "scale {scale}");
+
+            let indefinite = Matrix3::new(1.0, 1.1, 0.0, 1.1, 1.0, 0.0, 0.0, 0.0, 1.0) * scale;
+            let m = MassProperties::new(unit_kg(), body_origin(), indefinite);
+            assert!(
+                matches!(
+                    m.require_valid(0.0),
+                    Err(StateError::InertiaNotPositiveDefinite { .. })
+                ),
+                "scale {scale}"
+            );
+
+            let unphysical = Matrix3::new(1.0, 0.9, 0.0, 0.9, 1.0, 0.0, 0.0, 0.0, 1.0) * scale;
+            let m = MassProperties::new(unit_kg(), body_origin(), unphysical);
+            assert!(
+                matches!(
+                    m.require_valid(0.0),
+                    Err(StateError::InertiaTriangleInequalityViolated { .. })
+                ),
+                "scale {scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn require_valid_rejects_indefinite_inertia_with_overflowing_raw_minors() {
+        // Both raw Ixx*Iyy - Ixy*Iyx and the determinant become NaN
+        // through infinity subtraction. NaN <= 0 is false, so the old
+        // unscaled checks silently accepted this indefinite tensor.
+        let inertia = Matrix3::new(1.0, 1.1, 0.0, 1.1, 1.0, 0.0, 0.0, 0.0, 1.0) * 1.0e200;
+        let m = MassProperties::new(unit_kg(), body_origin(), inertia);
+        assert!(matches!(
+            m.require_valid(0.0),
+            Err(StateError::InertiaNotPositiveDefinite { .. })
+        ));
     }
 
     #[test]

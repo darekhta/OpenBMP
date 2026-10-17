@@ -26,11 +26,12 @@
 
 use nalgebra::Vector3;
 use openbmp_aero::{
-    AeroContext, AeroSixCoefficients, LocalInclinationPanels, PanelMesh, PanelMeshBvh, PanelSolution,
+    AeroContext, AeroSixCoefficients, LocalInclinationPanels, PanelMesh, PanelMeshBvh,
+    PanelSolution,
 };
 use serde::Deserialize;
 
-use crate::{lint_condition_only_run_matrix_toml, AerodbError};
+use crate::{AerodbError, lint_condition_only_run_matrix_toml};
 
 /// Schema tag for an ingested proximity-interference deck TOML document.
 const PROXIMITY_DECK_SCHEMA_V1: &str = "openbmp.stagesep_proximity.v1";
@@ -120,9 +121,10 @@ impl ProximityInterferenceDeck {
     /// [`Self::new`] validation error.
     pub fn load_toml_str(s: &str) -> Result<Self, AerodbError> {
         lint_condition_only_run_matrix_toml(s)?;
-        let parsed: ProximityDeckToml = toml::from_str(s).map_err(|_| AerodbError::MalformedToml {
-            reason: "stagesep proximity deck TOML failed strict parsing",
-        })?;
+        let parsed: ProximityDeckToml =
+            toml::from_str(s).map_err(|_| AerodbError::MalformedToml {
+                reason: "stagesep proximity deck TOML failed strict parsing",
+            })?;
         if parsed.schema != PROXIMITY_DECK_SCHEMA_V1 {
             return Err(AerodbError::MalformedToml {
                 reason: "stagesep proximity deck schema tag is unsupported",
@@ -224,18 +226,41 @@ impl ProximityInterferenceDeck {
             });
         }
         let axis = separation_axis_unit / axis_norm;
-        Self::build_from_pair(separations_m, machs, runoff_tolerance, |separation_m, mach| {
-            let ctx = flow_context(mach, alpha_deg, beta_deg, dynamic_pressure_pa);
-            let combined = combined_shadow_bvh(&affected.geometry, other_mesh, axis * separation_m)?;
-            let proximity =
-                affected.solve_about_cg_with_shadow_bvh(&ctx, cg_body_m, axial_stations_m, &combined)?;
-            let isolated =
-                affected.solve_about_cg_with_bvh_shadowing(&ctx, cg_body_m, axial_stations_m)?;
-            Ok((
-                six_from_solution(&proximity, dynamic_pressure_pa, reference_area_m2, reference_length_m),
-                six_from_solution(&isolated, dynamic_pressure_pa, reference_area_m2, reference_length_m),
-            ))
-        })
+        Self::build_from_pair(
+            separations_m,
+            machs,
+            runoff_tolerance,
+            |separation_m, mach| {
+                let ctx = flow_context(mach, alpha_deg, beta_deg, dynamic_pressure_pa);
+                let combined =
+                    combined_shadow_bvh(&affected.geometry, other_mesh, axis * separation_m)?;
+                let proximity = affected.solve_about_cg_with_shadow_bvh(
+                    &ctx,
+                    cg_body_m,
+                    axial_stations_m,
+                    &combined,
+                )?;
+                let isolated = affected.solve_about_cg_with_bvh_shadowing(
+                    &ctx,
+                    cg_body_m,
+                    axial_stations_m,
+                )?;
+                Ok((
+                    six_from_solution(
+                        &proximity,
+                        dynamic_pressure_pa,
+                        reference_area_m2,
+                        reference_length_m,
+                    ),
+                    six_from_solution(
+                        &isolated,
+                        dynamic_pressure_pa,
+                        reference_area_m2,
+                        reference_length_m,
+                    ),
+                ))
+            },
+        )
     }
 
     /// Interpolated proximity increment at a separation distance and Mach.
@@ -315,7 +340,11 @@ fn bracket(grid: &[f64], value: f64) -> (usize, f64) {
     (i, t)
 }
 
-fn require_increasing(grid: &[f64], min_len: usize, field: &'static str) -> Result<(), AerodbError> {
+fn require_increasing(
+    grid: &[f64],
+    min_len: usize,
+    field: &'static str,
+) -> Result<(), AerodbError> {
     if grid.len() < min_len {
         return Err(AerodbError::InvalidInput { field });
     }
@@ -339,8 +368,7 @@ fn six_is_finite(c: &AeroSixCoefficients) -> bool {
 }
 
 fn six_max_abs(c: &AeroSixCoefficients) -> f64 {
-    c.cx
-        .abs()
+    c.cx.abs()
         .max(c.cy.abs())
         .max(c.cz.abs())
         .max(c.cl.abs())
@@ -490,9 +518,18 @@ mod tests {
             // Outward-facing winding (reversed vs the aero crate's BVH-only box
             // fixture, which uses inward normals) so windward panels are kept.
             vec![
-                [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
-                [0, 7, 3], [0, 4, 7], [1, 6, 5], [1, 2, 6],
-                [0, 5, 4], [0, 1, 5], [3, 6, 2], [3, 7, 6],
+                [0, 2, 1],
+                [0, 3, 2],
+                [4, 5, 6],
+                [4, 6, 7],
+                [0, 7, 3],
+                [0, 4, 7],
+                [1, 6, 5],
+                [1, 2, 6],
+                [0, 5, 4],
+                [0, 1, 5],
+                [3, 6, 2],
+                [3, 7, 6],
             ],
         )
         .unwrap()
@@ -513,7 +550,8 @@ mod tests {
         let isolated = affected
             .solve_about_cg_with_bvh_shadowing(&ctx, Vector3::zeros(), &[])
             .unwrap();
-        let combined = combined_shadow_bvh(&affected.geometry, &other, Vector3::new(3.0, 0.0, 0.0)).unwrap();
+        let combined =
+            combined_shadow_bvh(&affected.geometry, &other, Vector3::new(3.0, 0.0, 0.0)).unwrap();
         let proximity = affected
             .solve_about_cg_with_shadow_bvh(&ctx, Vector3::zeros(), &[], &combined)
             .unwrap();
@@ -557,7 +595,10 @@ mod tests {
         let deck = build().unwrap();
         // No occlusion at any separation -> increments are ~0.
         let near = deck.increment_at(4.0, 6.0);
-        assert!(six_max_abs(&near) < 1.0e-9, "lateral separation should not interfere: {near:?}");
+        assert!(
+            six_max_abs(&near) < 1.0e-9,
+            "lateral separation should not interfere: {near:?}"
+        );
         // Deterministic.
         assert_eq!(deck, build().unwrap());
     }
@@ -716,9 +757,14 @@ cn = 0.0
     fn rejects_invalid_grids_and_undecayed_runoff() {
         let good = vec![six(0.1, -0.2, 0.05), six(0.0, 0.0, 0.0)];
         // Non-increasing separation.
-        assert!(ProximityInterferenceDeck::new(vec![5.0, 1.0], vec![2.0], good.clone(), 1e-9).is_err());
+        assert!(
+            ProximityInterferenceDeck::new(vec![5.0, 1.0], vec![2.0], good.clone(), 1e-9).is_err()
+        );
         // Too few separations.
-        assert!(ProximityInterferenceDeck::new(vec![1.0], vec![2.0], vec![six(0.0, 0.0, 0.0)], 1e-9).is_err());
+        assert!(
+            ProximityInterferenceDeck::new(vec![1.0], vec![2.0], vec![six(0.0, 0.0, 0.0)], 1e-9)
+                .is_err()
+        );
         // Increment count mismatch: 2 separations x 2 Mach needs 4 increments.
         assert!(
             ProximityInterferenceDeck::new(vec![1.0, 5.0], vec![2.0, 4.0], good.clone(), 1e-9)
@@ -732,7 +778,8 @@ cn = 0.0
             six(0.0, 0.0, 0.0),
         ];
         assert!(
-            ProximityInterferenceDeck::new(vec![1.0, 5.0], vec![2.0, 4.0], undecayed, 1e-9).is_err()
+            ProximityInterferenceDeck::new(vec![1.0, 5.0], vec![2.0, 4.0], undecayed, 1e-9)
+                .is_err()
         );
     }
 

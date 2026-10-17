@@ -508,9 +508,7 @@ pub fn scenario_atmosphere_kind(document: &ScenarioDocument) -> &str {
 mod tests {
     use super::*;
     use openbmp_core::Position3;
-    use openbmp_physics::{
-        LocalGeodeticOrigin, WGS84_A_M, WGS84_J2, WGS84_MU_M3_S2, WGS84_OMEGA_RAD_S,
-    };
+    use openbmp_physics::{LocalGeodeticOrigin, WGS84_A_M, WGS84_OMEGA_RAD_S};
     use openbmp_scenario::Scenario;
 
     fn zero_gravity() -> RuntimeGravity {
@@ -645,66 +643,22 @@ mod tests {
 
     #[test]
     fn environment_sample_reports_tesseral_gravity() {
-        let scenario_toml = format!(
-            r#"
-openbmp.scenario = 3
-
-[meta]
-name = "tesseral-environment-test"
-description = "Synthetic runtime-environment tesseral gravity test."
-validation = "validated-toy"
-provenance = "synthetic runner unit test"
-
-[time]
-start_s = 0.0
-stop_s = 1.0
-dt_s = 1.0
-seed = 1
-
-[vehicle]
-kind = "point_mass"
-initial_position_eci_m = [6900000.0, 400000.0, 300000.0]
-initial_velocity_eci_m_s = [0.0, 0.0, 0.0]
-
-[vehicle.assembly]
-id = "tesseral-environment-test"
-
-[[vehicle.assembly.bodies]]
-id = "mass"
-geometry = {{ kind = "reference", length_m = 1.0, area_m2 = 1.0 }}
-dry_mass_kg = 1.0
-dry_cg_body_m = [0.0, 0.0, 0.0]
-
-[environment]
-frame_profile = "wgs84-uniform-rotation"
-gravity = "tesseral"
-mu_m3_s2 = {mu_m3_s2}
-r_e_m = {r_e_m}
-tesseral_degree = 2
-tesseral_order = 2
-tesseral_c20 = {tesseral_c20}
-tesseral_c21 = 2.0e-7
-tesseral_s21 = -3.0e-7
-tesseral_c22 = 1.0e-7
-tesseral_s22 = -2.0e-7
-atmosphere = "none"
-wind = "none"
-
-[forces]
-models = ["gravity"]
-
-[telemetry]
-output.csv = "out/tesseral-environment-test.csv"
-
-[validation]
-require_finite_state = true
-require_monotonic_time = true
-"#,
-            mu_m3_s2 = WGS84_MU_M3_S2,
-            r_e_m = WGS84_A_M,
-            tesseral_c20 = -WGS84_J2,
-        );
-        let scenario = Scenario::from_toml_str(&scenario_toml).unwrap();
+        let scenario = Scenario::from_toml_str(
+            &include_str!("../tests/fixtures/tesseral-environment.toml")
+                .split_once('\n')
+                .unwrap()
+                .1
+                .replace(
+                    "\"@WGS84_MU_M3_S2@\"",
+                    &format!("{:.9e}", openbmp_physics::WGS84_MU_M3_S2),
+                )
+                .replace("\"@WGS84_A_M@\"", &format!("{:.1}", WGS84_A_M))
+                .replace(
+                    "\"@NEG_WGS84_J2@\"",
+                    &format!("{:.9e}", -openbmp_physics::WGS84_J2),
+                ),
+        )
+        .unwrap();
         let frame = FrameContext::wgs84_uniform_rotation(None);
         let environment =
             RuntimeEnvironment::from_document(&scenario.document, &BTreeMap::new(), &frame)

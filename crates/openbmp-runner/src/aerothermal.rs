@@ -666,68 +666,7 @@ mod tests {
     use openbmp_core::SimTime;
     use openbmp_scenario::Scenario;
 
-    const AEROTHERMAL_UQ_SCENARIO: &str = r#"
-openbmp.scenario = 3
-
-[meta]
-name = "aerothermal-uq-test"
-description = "Synthetic aerothermal UQ smoke test."
-validation = "validated-toy"
-
-[time]
-start_s = 0.0
-stop_s = 0.1
-dt_s = 0.1
-seed = 1
-
-[vehicle]
-kind = "point_mass"
-initial_position_eci_m = [0.0, 0.0, 80000.0]
-initial_velocity_eci_m_s = [7600.0, 0.0, -100.0]
-
-[vehicle.assembly]
-id = "aerothermal-uq-test"
-
-[[vehicle.assembly.bodies]]
-id = "capsule"
-geometry = { kind = "cylinder", length_m = 1.0, diameter_m = 1.0 }
-dry_mass_kg = 100.0
-dry_cg_body_m = [0.0, 0.0, 0.0]
-
-[environment]
-frame_profile = "toy-fixed-earth"
-gravity = "constant"
-gravity_m_s2 = 0.0
-atmosphere = "piecewise_exponential"
-wind = "none"
-
-[atmosphere]
-kind = "piecewise_exponential"
-
-[aerothermal]
-stagnation_kind = "sutton_graves"
-nose_radius_m = 0.5
-wall_temperature_k = 1500.0
-wall_catalysis = "fully_catalytic"
-
-[aerothermal.uq]
-deck_id = "sutton_graves_earth.v1"
-q_conv_lower_w_m2 = 900000.0
-q_conv_nominal_w_m2 = 1000000.0
-q_conv_upper_w_m2 = 1200000.0
-credibility_level = 2
-evidence = "docs/parity/04-aerothermal-realgas-and-tps.md#sutton-graves"
-
-[forces]
-models = ["gravity", "aerothermal_diagnostics"]
-
-[telemetry]
-output.csv = "out/aerothermal-uq-test.csv"
-
-[validation]
-require_finite_state = true
-require_monotonic_time = true
-"#;
+    const AEROTHERMAL_UQ_SCENARIO: &str = include_str!("../tests/fixtures/aerothermal-uq.toml");
 
     const AEROTHERMAL_RADIATIVE_SCENARIO: &str = r#"
 openbmp.scenario = 3
@@ -789,7 +728,8 @@ require_monotonic_time = true
 
     #[test]
     fn aerothermal_upstream_uq_budget_reads_declared_q_conv_band() {
-        let scenario = Scenario::from_toml_str(AEROTHERMAL_UQ_SCENARIO).unwrap();
+        let scenario =
+            Scenario::from_toml_str(AEROTHERMAL_UQ_SCENARIO.split_once('\n').unwrap().1).unwrap();
         let budget = upstream_uq_budget(&scenario.document).unwrap();
 
         assert_eq!(budget.sources.len(), 1);

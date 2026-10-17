@@ -722,6 +722,37 @@ impl<S: SimState> Integrator<S> for ProfiledIntegrator {
             Self::ProfiledSourceTerm { trajectory, .. } => trajectory.advance(state, derive_fn, dt),
         }
     }
+
+    fn advance_with_accepted_steps<F, O>(
+        &self,
+        state: &S,
+        derive_fn: F,
+        dt: Duration,
+        accepted_step: O,
+    ) -> Result<S, IntegratorError>
+    where
+        F: Fn(&S, openbmp_core::SimTime) -> Result<S::Derivative, ModelEvalError>,
+        O: FnMut(&S) -> Result<(), ModelEvalError>,
+    {
+        match self {
+            Self::Rk4(i) => i.advance_with_accepted_steps(state, derive_fn, dt, accepted_step),
+            Self::Dopri54Fixed(i) => {
+                i.advance_with_accepted_steps(state, derive_fn, dt, accepted_step)
+            }
+            Self::Dopri54Adaptive(i) => {
+                i.advance_with_accepted_steps(state, derive_fn, dt, accepted_step)
+            }
+            Self::Dopri853Fixed(i) => {
+                i.advance_with_accepted_steps(state, derive_fn, dt, accepted_step)
+            }
+            Self::Dopri853Adaptive(i) => {
+                i.advance_with_accepted_steps(state, derive_fn, dt, accepted_step)
+            }
+            Self::ProfiledSourceTerm { trajectory, .. } => {
+                trajectory.advance_with_accepted_steps(state, derive_fn, dt, accepted_step)
+            }
+        }
+    }
 }
 
 /// One scalar implicit-Euler sub-step with Newton iteration:

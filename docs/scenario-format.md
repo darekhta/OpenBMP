@@ -2648,9 +2648,15 @@ For `friction_law = "anchored_stiction"`, replace
 `friction_coefficient` and `friction_regularization_speed_m_s` with
 `static_friction_coefficient`, `kinetic_friction_coefficient`,
 `tangential_stiffness_n_m`, optional `tangential_damping_n_s_m`, and
-`restick_speed_m_s`. The runner routes this through a time-gated anchor state
-so repeated RK-stage force evaluations at the same timestamp do not advance
-the tangential anchor twice.
+`restick_speed_m_s`. The runner shares one committed anchor state between force
+evaluation and diagnostics. RK trial stages never advance it; each accepted
+fixed/adaptive substep does. A failed enclosing kernel step restores the
+preceding history. Energy audits retain accepted substep work and discrete
+anchor release even between telemetry rows.
+Force-phase overrides freeze disabled contact/gear history and exclude their
+forces and work until reactivation. Permanent crush is retained. An external
+phase switch does not supply a separate physical switching-work model to the
+energy audit.
 
 `[[contact.mechanism]]` entries are schema-level scalar mechanism fixtures for
 angular stops, backlash, and engage-once latches. They are validated and traced
@@ -5645,6 +5651,11 @@ tesseral_c22 = 1.0e-7
 tesseral_s22 = 0.0
 tesseral_tide_system = "tide_free" # optional; defaults to tide_free
 ```
+
+The WGS84 GM, reference radius, and zonal coefficient in this example cite
+the canonical [gravity coefficient table](../data/gravity/wgs84-j2.toml)
+and its [NIMA TR 8350.2 provenance](../data/gravity/provenance.md).
+The sectoral coefficient is a synthetic example value.
 
 Selects the current bounded degree-2 Earth-fixed tesseral/sectoral
 gravity path. The runner builds `openbmp_physics::TesseralGravity`,

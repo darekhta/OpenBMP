@@ -26,13 +26,13 @@
 )]
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 use openbmp_core::{Duration, Position3, SimTime, Velocity3};
 use openbmp_sim::{
-    AlwaysContinue, ConstantGravityForce, ConstantMass, EndTime, NullEnvironment, Rk4FixedStep,
-    SimulationConfig, SimulationKernel,
+    AlwaysContinue, ConstantGravityForce, ConstantMass, Dopri54FixedStep, EndTime, Integrator,
+    NullEnvironment, PointMassDerivative, Rk4FixedStep, SimulationConfig, SimulationKernel,
 };
-use openbmp_state::PointMassState;
+use openbmp_state::{MassProperties, PointMassState};
 use std::hint::black_box;
 use uom::si::f64::Mass;
 use uom::si::mass::kilogram;
@@ -114,5 +114,53 @@ fn bench_run_to_end(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_single_step, bench_run_to_end);
+fn bench_mass_properties_validation(c: &mut Criterion) {
+    let properties = MassProperties::new(
+        Mass::new::<kilogram>(1.0),
+        Position3::origin(),
+        Matrix3::new(2.0, 0.2, 0.1, 0.2, 2.5, 0.3, 0.1, 0.3, 3.0),
+    );
+    c.bench_function("state_validation/non_diagonal_inertia", |b| {
+        b.iter(|| {
+            black_box(&properties)
+                .require_valid(black_box(1.0e-12))
+                .expect("valid inertia")
+        });
+    });
+}
+
+fn bench_dopri54_time_dependent_step(c: &mut Criterion) {
+    let state = PointMassState::new(
+        SimTime::from_seconds(2.0),
+        Position3::origin(),
+        Velocity3::zero(),
+        Mass::new::<kilogram>(1.0),
+    );
+    c.bench_function("integrator_step/dopri54_time_dependent_acceleration", |b| {
+        b.iter(|| {
+            let next = Dopri54FixedStep
+                .advance(
+                    black_box(&state),
+                    |s, _t| {
+                        Ok(PointMassDerivative {
+                            velocity_m_s: s.velocity.vector,
+                            acceleration_m_s2: Vector3::new(s.time.as_seconds(), 0.0, 0.0),
+                            mass_rate_kg_s: 0.0,
+                        })
+                    },
+                    black_box(Duration::from_seconds(0.01)),
+                )
+                .expect("step");
+            black_box(next);
+        });
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_single_step,
+    bench_run_to_end,
+    bench_mass_properties_validation,
+    bench_dopri54_time_dependent_step
+);
 criterion_main!(benches);

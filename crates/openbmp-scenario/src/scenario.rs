@@ -5731,7 +5731,9 @@ bogus_field = 1
 
     #[test]
     fn tesseral_gravity_is_v3_only_and_validates_under_v3() {
-        let tesseral_block = "gravity       = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 2\ntesseral_order = 2\ntesseral_c20 = -1.082626683e-3\ntesseral_c21 = 2.0e-7\ntesseral_s21 = -3.0e-7\ntesseral_c22 = 1.0e-7\ntesseral_s22 = -2.0e-7\ntesseral_tide_system = \"tide_free\"\n";
+        let tesseral_block = format!(
+            "gravity       = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 2\ntesseral_order = 2\ntesseral_c20 = -{WGS84_J2_DEFAULT:.9e}\ntesseral_c21 = 2.0e-7\ntesseral_s21 = -3.0e-7\ntesseral_c22 = 1.0e-7\ntesseral_s22 = -2.0e-7\ntesseral_tide_system = \"tide_free\"\n"
+        );
         let toml_v2 = MINIMAL.replace(
             "gravity       = \"constant\"",
             "gravity       = \"tesseral\"",
@@ -5742,7 +5744,7 @@ bogus_field = 1
             .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
             .replace(
                 "gravity       = \"constant\"\ngravity_m_s2  = 9.80665\n",
-                tesseral_block,
+                &tesseral_block,
             );
         let scenario = Scenario::from_toml_str(&toml_v3).expect("tesseral must validate under v3");
         assert_eq!(scenario.document.environment.gravity, "tesseral");
@@ -5755,7 +5757,7 @@ bogus_field = 1
             .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
             .replace(
                 "gravity       = \"constant\"\ngravity_m_s2  = 9.80665\n",
-                "gravity       = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 1\ntesseral_order = 0\ntesseral_c20 = -1.082626683e-3\ntesseral_c21 = 0.0\ntesseral_s21 = 0.0\ntesseral_c22 = 0.0\ntesseral_s22 = 0.0\n",
+                &format!("gravity       = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 1\ntesseral_order = 0\ntesseral_c20 = -{WGS84_J2_DEFAULT:.9e}\ntesseral_c21 = 0.0\ntesseral_s21 = 0.0\ntesseral_c22 = 0.0\ntesseral_s22 = 0.0\n"),
             );
         let err = Scenario::from_toml_str(&base).unwrap_err();
         assert!(
@@ -5782,7 +5784,7 @@ bogus_field = 1
             .replace("openbmp.scenario = 2", "openbmp.scenario = 3")
             .replace(
                 "gravity       = \"constant\"\ngravity_m_s2  = 9.80665\n",
-                "gravity       = \"third_body\"\ngravity_base  = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 2\ntesseral_order = 1\ntesseral_c20 = -1.082626683e-3\ntesseral_c21 = 2.0e-7\ntesseral_s21 = -3.0e-7\ntesseral_c22 = 0.0\ntesseral_s22 = 0.0\nthird_bodies  = [\"moon\"]\nephemeris     = \"low_precision_sun_moon\"\n",
+                &format!("gravity       = \"third_body\"\ngravity_base  = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 2\ntesseral_order = 1\ntesseral_c20 = -{WGS84_J2_DEFAULT:.9e}\ntesseral_c21 = 2.0e-7\ntesseral_s21 = -3.0e-7\ntesseral_c22 = 0.0\ntesseral_s22 = 0.0\nthird_bodies  = [\"moon\"]\nephemeris     = \"low_precision_sun_moon\"\n"),
             );
         let scenario =
             Scenario::from_toml_str(&toml_v3).expect("third_body tesseral base validates");

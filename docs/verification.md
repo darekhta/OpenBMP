@@ -37,6 +37,62 @@ No OpenBMP artifact uses labels such as `flight-qualified`, `certified`,
 | Provenance check | `openbmp check-provenance` | Data source review | Every PR once data exists |
 | Supply-chain check | `cargo deny`, `cargo audit`, `cargo machete` | Dependency policy | Every PR or dependency PR |
 
+## Numerical and Contact Regression Checks
+
+`openbmp-sim/tests/stage_time.rs` checks a non-autonomous analytic trajectory,
+`a(t) = t`, starting at a nonzero time. Every RK stage must carry the same
+timestamp as the derivative callback's evaluation time. The checks cover RK4,
+fixed and adaptive DOPRI5/DOP853, and adaptive dense-output midpoints. This
+guards against advancing every intermediate state's clock by the full step
+while evaluating the derivative at a fractional-stage time.
+
+`openbmp-state` checks inertia in arbitrary body axes: positive definiteness
+and principal-moment triangle inequalities must both hold. Tests cover rotated
+planar bodies, off-diagonal counterexamples, and uniform scaling that would
+overflow or underflow raw determinant products.
+
+`openbmp-contact` checks instantaneous power balance through compression,
+unloading, and unilateral force clamping. The scalar-stop restitution check
+compares numerical impacts at two time steps with release at zero normal force,
+including critical and overdamped cases. These checks retain the existing
+normal-force laws; they correct the associated energy and restitution audit.
+Anchor release tests also account for stored tangential spring energy on
+stick-to-slip transitions and contact loss, including zero elapsed time.
+
+The runner's landing-gear unit tests check the crush core's elastic yield
+travel, irreversible deformation, unloading/reloading, and work balance.
+Permanent crush telemetry must survive loss of contact. Constitutive history
+is committed through the integrator's accepted-substep observer, with a
+checkpoint restored if the enclosing kernel step fails. Trial force queries
+remain read-only. Tests exercise a rejected deeper compression, an interior
+adaptive compression peak, repeated force/torque queries, body ownership,
+rollback, and accumulation of plastic work between telemetry rows.
+Runner regressions also check that disabled force phases cannot pre-crush a
+leg or preload a friction anchor, and that a replacing multibody authority
+commits history from its actual endpoint rather than a discarded trajectory.
+
+`openbmp-sim/tests/accepted_steps.rs` verifies observer behavior for fixed and
+adaptive methods, rejected trials, model errors, and state-dependent history
+updates. A no-op observer preserves the ordinary trajectory bits. Kernel
+tests cover primary/separated body routing and a late event-environment error
+without partial advancement of separated bodies.
+
+Contact force views and diagnostics share the same committed stiction state.
+The contact and gear audits integrate continuous powers at accepted substeps
+and retain discrete release/plastic energy independently of telemetry cadence.
+The synthetic crush-only drop checks a closed-form split of 1125 J incident
+kinetic energy into 925 J plastic work and 200 J recoverable rebound energy,
+including time-step refinement and both adaptive Dormand--Prince methods.
+Phase-disabled constitutive history is frozen. The audit does not invent a
+physical actuator or energy-transfer model for an externally selected force
+phase change; a discontinuous change in the active elastic potential can
+therefore appear in its closure residual.
+
+PIL packet tests retain the complete eight-field air-data sample, its SI units
+and simulation timestamp, and omit incomplete samples. The voted-sensor
+scratch-buffer check bounds each scan to its own job implementation, so a
+neighboring constructor cannot masquerade as a per-tick allocation.
+
 ## Requirements Traceability
 
 Machine-readable requirements live in [`../requirements.toml`](../requirements.toml).

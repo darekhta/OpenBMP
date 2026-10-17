@@ -16,7 +16,11 @@ L1 state types crate. Sits between `openbmp-core` (foundation) and
   point-mass promotion to rigid-body state.
 - Validation: literal finiteness checks, structural validity checks,
   quaternion normalisation, positive mass, symmetric positive-definite
-  inertia, and rigid-body inertia triangle inequalities.
+  inertia, and rigid-body triangle inequalities for principal moments in
+  any body-frame basis. Tensor validation uses scaled matrices to avoid
+  overflow/underflow in determinant products. A fixed-size Cholesky check
+  of the shifted second-moment tensor preserves planar triangle equalities
+  within the requested tolerance and floating-point roundoff.
 
 ## Inputs and Outputs
 

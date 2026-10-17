@@ -192,12 +192,18 @@ pub fn run(
     let aerothermal_sink = aerothermal_driver
         .as_ref()
         .map(crate::aerothermal::LiveAerothermalDriver::sink);
+    let contact_evaluator = document
+        .contact
+        .as_ref()
+        .map(crate::contact::ContactDiagnosticsEvaluator::from_config)
+        .transpose()?;
     let kernel_vehicle = build_vehicle(
         document,
         &loaded_models,
         &assembly,
         resolved_files,
         aerothermal_sink.clone(),
+        contact_evaluator.as_ref(),
     )?;
     // The runner-side breakdown vehicle is a *separate* construction
     // of the same models. `KernelVehicle::evaluate_force_breakdown`
@@ -212,6 +218,7 @@ pub fn run(
         &assembly,
         resolved_files,
         aerothermal_sink,
+        contact_evaluator.as_ref(),
     )?;
     let mass_model = BoxedMassModel(build_mass_model(document, &loaded_models, &assembly)?);
 
@@ -253,15 +260,23 @@ pub fn run(
     {
         kernel.set_external_mission_state(Some(initial_phase));
     }
+    if let Some(contact) = &contact_evaluator {
+        contact
+            .set_active(
+                breakdown_vehicle
+                    .model_active(kernel.current_phase().map(|phase| phase.value()), "contact"),
+                kernel.current_time(),
+            )
+            .map_err(openbmp_sim::SimulationError::from)?;
+        let state = kernel.current_state();
+        contact
+            .commit_accepted(state.position.vector, state.velocity.vector, state.time)
+            .map_err(openbmp_sim::SimulationError::from)?;
+    }
     let channel_set = PointMassChannelSet::new(document)?;
     let mut acoustics_report = crate::acoustics::evaluate_document(document, resolved_files)?;
     let plume_evaluator =
         crate::plume::PointMassPlumeEvaluator::maybe_new(document, loaded_models.motor.as_ref())?;
-    let contact_evaluator = document
-        .contact
-        .as_ref()
-        .map(crate::contact::ContactDiagnosticsEvaluator::from_config)
-        .transpose()?;
     let mut contact_accumulator = document
         .contact
         .as_ref()
@@ -546,7 +561,55 @@ pub fn run(
                 recovery_rack.snapshot_map_with_opening_load_context(context)?,
             );
         }
-        kernel.step()?;
+        if let Some(contact) = &contact_evaluator {
+            let checkpoint = contact
+                .snapshot()
+                .map_err(openbmp_sim::SimulationError::from)?;
+            let result = (|| -> Result<(), openbmp_sim::SimulationError> {
+                // FC authority may have changed the phase before this step.
+                contact.set_active(
+                    breakdown_vehicle
+                        .model_active(kernel.current_phase().map(|phase| phase.value()), "contact"),
+                    kernel.current_time(),
+                )?;
+                let state = kernel.current_state();
+                contact.commit_accepted(
+                    state.position.vector,
+                    state.velocity.vector,
+                    state.time,
+                )?;
+                kernel.step_with_accepted_steps(|state, _active_body| {
+                    contact.commit_accepted(
+                        state.position.vector,
+                        state.velocity.vector,
+                        state.time,
+                    )
+                })?;
+                contact.retime_accepted(kernel.current_time())?;
+                // Kernel mission events apply after the preceding interval.
+                // Start the next force gate at this endpoint with zero elapsed time.
+                contact.set_active(
+                    breakdown_vehicle
+                        .model_active(kernel.current_phase().map(|phase| phase.value()), "contact"),
+                    kernel.current_time(),
+                )?;
+                let state = kernel.current_state();
+                contact.commit_accepted(
+                    state.position.vector,
+                    state.velocity.vector,
+                    state.time,
+                )?;
+                Ok(())
+            })();
+            if let Err(err) = result {
+                contact
+                    .restore(checkpoint)
+                    .map_err(openbmp_sim::SimulationError::from)?;
+                return Err(err.into());
+            }
+        } else {
+            kernel.step()?;
+        }
         let mission_fired = kernel.drain_mission_fired_events();
         let script_fired = kernel.drain_script_fired_events();
         crate::acoustics::observe_source_engine_ignitions(&mut acoustics_report, &script_fired);
@@ -949,6 +1012,7 @@ fn build_vehicle(
     assembly: &Assembly,
     resolved_files: &BTreeMap<String, ResolvedFile>,
     aerothermal_sink: Option<crate::aerothermal::LiveAerothermalSink>,
+    contact_evaluator: Option<&crate::contact::ContactDiagnosticsEvaluator>,
 ) -> Result<KernelVehicle<PointMassState>, RunnerError> {
     let mut named: Vec<NamedForceModel<PointMassState>> = Vec::new();
 
@@ -1050,13 +1114,10 @@ fn build_vehicle(
             }
             "contact" => {
                 let contact =
-                    document
-                        .contact
-                        .as_ref()
-                        .ok_or_else(|| RunnerError::UnsupportedScenario {
-                            what: "forces includes `contact` but [contact] block is missing"
-                                .to_owned(),
-                        })?;
+                    contact_evaluator.ok_or_else(|| RunnerError::UnsupportedScenario {
+                        what: "forces includes `contact` but shared contact runtime is missing"
+                            .to_owned(),
+                    })?;
                 let adapter = crate::contact::build_half_space_contact_force_adapter(
                     contact,
                     POINT_MASS_CONTACT_MODEL_ID,
@@ -2992,10 +3053,10 @@ dry_cg_body_m = [0.0, 0.0, 0.0]
 frame_profile = "wgs84-uniform-rotation"
 gravity = "tesseral"
 mu_m3_s2 = 3.986004418e14
-r_e_m = 6378137.0
+r_e_m = "@WGS84_A_M@"
 tesseral_degree = 2
 tesseral_order = 2
-tesseral_c20 = -1.082626683e-3
+tesseral_c20 = "@NEG_WGS84_J2@"
 tesseral_c21 = 2.0e-7
 tesseral_s21 = -3.0e-7
 tesseral_c22 = 1.0e-7
@@ -7667,6 +7728,68 @@ require_monotonic_time = true
     }
 
     #[test]
+    fn point_mass_phase_disabled_contact_has_no_anchor_preload_or_work() {
+        let scenario_toml = CONTACT_POINT_MASS_SCENARIO
+            .replace("gravity_m_s2 = 9.80665", "gravity_m_s2 = 0.0")
+            .replace(
+                "initial_velocity_eci_m_s = [0.0, 0.0, 0.0]",
+                "initial_velocity_eci_m_s = [0.1, 0.0, 0.0]",
+            )
+            .replace(
+                "friction_coefficient = 0.0",
+                "friction_law = \"anchored_stiction\"\nstatic_friction_coefficient = 0.5\nkinetic_friction_coefficient = 0.25\ntangential_stiffness_n_m = 1000.0\ntangential_damping_n_s_m = 0.0\nrestick_speed_m_s = 1.0",
+            )
+            .replace(
+                "models = [\"gravity\", \"contact\"]",
+                "models = [\"gravity\"]\n\n[[forces.phase_override]]\nphase = \"contact_enabled\"\nmodels = [\"gravity\", \"contact\"]",
+            )
+            + r#"
+
+[mission]
+initial_phase = "contact_disabled"
+
+[[mission.phases]]
+id = "contact_disabled"
+label = "contact disabled"
+
+[[mission.phases]]
+id = "contact_enabled"
+label = "contact enabled"
+
+[[mission.events]]
+id = "enable_contact"
+trigger = { kind = "at_time", time_s = 0.002 }
+action = { kind = "emit_telemetry_marker", tag = "enable_contact" }
+once = true
+
+[[mission.transitions]]
+from = "contact_disabled"
+to = "contact_enabled"
+event = "enable_contact"
+"#;
+        let scenario = Scenario::from_toml_str(&scenario_toml).expect("scenario must parse");
+        let resolved_files = scenario.resolved_files().expect("resolve files");
+        let outcome = run(&scenario, &resolved_files, None).expect("contact run succeeds");
+        let normal_force = f64_column(&outcome, "force.contact.z_n");
+        assert_abs_diff_eq!(normal_force[0], 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(normal_force[1], 0.0, epsilon = 0.0);
+        assert!((normal_force[2] - 20.0).abs() < 1.0e-12);
+        let tangential_force = f64_column(&outcome, "force.contact.x_n");
+        assert!(
+            tangential_force[2].abs() <= 0.0,
+            "first activation must not inherit an anchor loaded while the force was disabled"
+        );
+        assert_abs_diff_eq!(
+            first_row_f64(&outcome, "contact.normal_force_n"),
+            0.0,
+            epsilon = 0.0
+        );
+        let report = outcome.contact.as_ref().expect("contact report");
+        assert_abs_diff_eq!(report.energy.contact_work_on_vehicle_j, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(report.energy.dissipated_energy_j, 0.0, epsilon = 0.0);
+    }
+
+    #[test]
     fn point_mass_contact_anchored_stiction_reports_sticking_rest() {
         let scenario_toml = CONTACT_POINT_MASS_SCENARIO
             .replace("gravity_m_s2 = 9.80665", "gravity_m_s2 = 20.0")
@@ -7854,8 +7977,18 @@ require_monotonic_time = true
 
     #[test]
     fn point_mass_wires_frame_coupled_tesseral_gravity() {
-        let scenario = Scenario::from_toml_str(TESSERAL_POINT_MASS_SCENARIO)
-            .expect("tesseral scenario must parse");
+        let scenario = Scenario::from_toml_str(
+            &TESSERAL_POINT_MASS_SCENARIO
+                .replace(
+                    "\"@WGS84_A_M@\"",
+                    &format!("{:.1}", openbmp_physics::WGS84_A_M),
+                )
+                .replace(
+                    "\"@NEG_WGS84_J2@\"",
+                    &format!("{:.9e}", -openbmp_physics::WGS84_J2),
+                ),
+        )
+        .expect("tesseral scenario must parse");
         let resolved_files = scenario.resolved_files().expect("resolve files");
         let outcome = run(&scenario, &resolved_files, None).expect("tesseral run succeeds");
 

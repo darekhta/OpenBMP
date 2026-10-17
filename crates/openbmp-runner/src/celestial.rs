@@ -1508,7 +1508,7 @@ lod_s = 0.0010342
         let toml = SPK_THIRD_BODY_SCENARIO
             .replace(
                 "gravity_base  = \"point_mass\"\nmu_m3_s2      = 3.986004418e14",
-                "gravity_base  = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = 6378137.0\ntesseral_degree = 2\ntesseral_order = 2\ntesseral_c20 = -1.082626683e-3\ntesseral_c21 = 2.0e-7\ntesseral_s21 = -3.0e-7\ntesseral_c22 = 1.0e-7\ntesseral_s22 = -2.0e-7",
+                &format!("gravity_base  = \"tesseral\"\nmu_m3_s2      = 3.986004418e14\nr_e_m         = {radius:.1}\ntesseral_degree = 2\ntesseral_order = 2\ntesseral_c20 = -{j2:.9e}\ntesseral_c21 = 2.0e-7\ntesseral_s21 = -3.0e-7\ntesseral_c22 = 1.0e-7\ntesseral_s22 = -2.0e-7", radius = openbmp_physics::WGS84_A_M, j2 = openbmp_physics::WGS84_J2),
             )
             .replace(
                 "ephemeris     = \"spk\"\nephemeris_file = \"synthetic.bsp\"",
@@ -1542,7 +1542,7 @@ lod_s = 0.0010342
         let mut files = BTreeMap::new();
         files.insert(
             "environment.egm2008_coefficients_file".to_owned(),
-            resolved_file("egm70.gfc", SYNTHETIC_EGM2008_DEGREE70_GFC),
+            resolved_file("egm70.gfc", &synthetic_egm2008_degree70_gfc()),
         );
 
         let gravity = build_egm2008_gravity(&scenario.document, &files).unwrap();
@@ -1563,7 +1563,7 @@ lod_s = 0.0010342
             "environment.egm2008_coefficients_file".to_owned(),
             resolved_file(
                 "egm10.gfc",
-                &SYNTHETIC_EGM2008_DEGREE70_GFC.replace("max_degree 70", "max_degree 10"),
+                &synthetic_egm2008_degree70_gfc().replace("max_degree 70", "max_degree 10"),
             ),
         );
         assert!(matches!(
@@ -1890,10 +1890,12 @@ require_finite_state = true
 require_monotonic_time = true
 "#;
 
-    const SYNTHETIC_EGM2008_DEGREE70_GFC: &str = r#"
+    fn synthetic_egm2008_degree70_gfc() -> String {
+        format!(
+            r#"
 modelname synthetic_egm2008_degree70
-earth_gravity_constant 398600441800000.0
-radius 6378137.0
+earth_gravity_constant {mu:.1}
+radius {radius:.1}
 max_degree 70
 norm fully_normalized
 tide_system tide_free
@@ -1901,7 +1903,11 @@ end_of_head
 gfc 0 0 1.0 0.0
 gfc 2 0 -4.84165143790815e-4 0.0
 gfc 2 2 1.0e-7 -2.0e-7
-"#;
+"#,
+            mu = openbmp_physics::WGS84_MU_M3_S2,
+            radius = openbmp_physics::WGS84_A_M
+        )
+    }
 
     const SPK_THIRD_BODY_SCENARIO: &str = r#"
 openbmp.scenario = 3

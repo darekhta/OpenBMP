@@ -486,6 +486,15 @@ The tripwires fail the build on:
    | WGS84 J2 (unnormalised) | `1.082626683` | `data/gravity/wgs84-j2.toml`, `docs/scenario-format.md`, `docs/data-provenance.md`, `crates/openbmp-physics/src/gravity.rs`, `crates/openbmp-scenario/src/document.rs`, `crates/openbmp-testkit/tests/inline_data_tripwire.rs` |
    | WGS84 equatorial radius | `6378137.0` | `data/gravity/wgs84-j2.toml`, `docs/data-provenance.md`, `crates/openbmp-physics/src/frames.rs`, `crates/openbmp-testkit/tests/inline_data_tripwire.rs` |
 
+   Explicit citation entries also cover the WGS84 GM and radius in
+   `data/afts/closed-form-iip-tolerance-v1.toml` (see its sibling provenance)
+   and the cited tesseral configuration in `docs/scenario-format.md`.
+   The radius alone is also permitted in `crates/openbmp-comm/src/lib.rs`
+   as the minimal compile-time geometry scalar required by its crate layer;
+   `wgs84_geometry_constants_match_canonical_data` pins its bits to the
+   canonical gravity TOML, and WP-20.1 records this narrow policy deviation.
+   These entries do not exempt other source files or benchmark literals.
+
    The Rust-side constants are intentionally written with Rust numeric
    separators where that improves readability. The tripwire normalises
    underscores before matching, so `3.986_004_418e14`,

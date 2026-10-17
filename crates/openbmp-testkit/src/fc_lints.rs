@@ -229,6 +229,48 @@ mod tests {
         }
     }
 
+    fn job_impl_source<'a>(source: &'a str, start: &str) -> Option<&'a str> {
+        // These rustfmt-formatted impls are top-level items. Bound the scan
+        // by their own unindented closing brace, not the next sensor's docs:
+        // inserting AirData between Barometer and GNSS otherwise pulls its
+        // allocation-at-construction code into the barometer hot-path scan.
+        source_between(source, start, "\n}\n")
+    }
+
+    #[test]
+    fn voted_ingest_scan_excludes_the_following_constructor() {
+        let source = r"impl<S, V> Job for VotedBarometerIngest<S, V> {
+    fn run(&mut self) {
+        self.pressures.clear();
+    }
+}
+impl<S, V> VotedAirDataIngest<S, V> {
+    fn new() { let buffer = Vec::with_capacity(3); }
+}
+";
+        let section = job_impl_source(source, "impl<S, V> Job for VotedBarometerIngest")
+            .expect("barometer job impl");
+        assert!(section.contains("self.pressures.clear()"));
+        assert!(!section.contains("Vec::with_capacity"));
+    }
+
+    #[test]
+    fn voted_ingest_scan_keeps_allocations_inside_nested_run_blocks() {
+        let source = r"impl<S, V> Job for VotedBarometerIngest<S, V> {
+    fn run(&mut self) {
+        if ready {
+            let scratch = Vec::with_capacity(3);
+        }
+        self.pressures.clear();
+    }
+}
+";
+        let section = job_impl_source(source, "impl<S, V> Job for VotedBarometerIngest")
+            .expect("barometer job impl");
+        assert!(section.contains("Vec::with_capacity"));
+        assert!(section.contains("self.pressures.clear()"));
+    }
+
     #[test]
     fn voted_sensor_ingest_reuses_scratch_buffers_per_tick() {
         let ingest =
@@ -239,40 +281,47 @@ mod tests {
             (
                 "barometer",
                 "impl<S, V> Job for VotedBarometerIngest",
-                "/// Voted ingest job for redundant air-data lanes.",
+                &["pressures", "biases", "sample_lanes"][..],
             ),
             (
                 "airdata",
                 "impl<S, V> Job for VotedAirDataIngest",
-                "/// Voted ingest job for redundant GNSS lanes.",
+                &[
+                    "static_pressures",
+                    "impact_pressures",
+                    "machs",
+                    "calibrated_airspeeds",
+                    "true_airspeeds",
+                    "angles_of_attack",
+                    "sideslips",
+                    "pressure_altitudes",
+                    "sample_lanes",
+                ][..],
             ),
             (
                 "gnss",
                 "impl<S, V> Job for VotedGnssIngest",
-                "/// Voted ingest job for redundant magnetometer lanes.",
+                &["positions", "velocities", "biases", "sample_lanes"][..],
             ),
             (
                 "magnetometer",
                 "impl<S, V> Job for VotedMagnetometerIngest",
-                "",
+                &["fields", "hard_irons", "sample_lanes"][..],
             ),
         ];
 
-        for (name, start, end) in sections {
-            let section = if end.is_empty() {
-                let start_idx = ingest.find(start).expect("voted sensor ingest job start");
-                &ingest[start_idx..]
-            } else {
-                source_between(&ingest, start, end).expect("voted sensor ingest job section")
-            };
+        for (name, start, buffers) in sections {
+            let section = job_impl_source(&ingest, start).expect("voted sensor ingest job impl");
             assert!(
                 !section.contains("Vec::with_capacity"),
                 "{name} voted ingest must allocate scratch buffers at construction, not per tick"
             );
-            assert!(
-                section.contains(".clear()"),
-                "{name} voted ingest should clear and reuse scratch buffers each tick"
-            );
+            for buffer in buffers {
+                assert!(
+                    section.contains(&format!("self.{buffer}.clear()")),
+                    "{name} voted ingest should clear and reuse {buffer} each tick"
+                );
+            }
         }
     }
 }

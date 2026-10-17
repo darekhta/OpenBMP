@@ -110,6 +110,10 @@ impl AnchoredStictionFriction {
     /// integrates anchor displacement explicitly, breaks when the trial
     /// spring-damper force exceeds `mu_s * normal_force_n`, and re-sticks from
     /// sliding only when tangential speed is inside the Karnopp window.
+    /// Discarding an anchor dissipates its stored energy, including contact
+    /// loss or a shrinking friction cone at zero elapsed time. On a step that
+    /// breaks to sliding, only the pre-step anchor energy is released: the
+    /// rejected trial spring displacement does not contribute spring work.
     ///
     /// # Errors
     ///
@@ -130,8 +134,12 @@ impl AnchoredStictionFriction {
         let speed_m_s = norm(tangential_velocity_m_s);
 
         if normal_force_n <= 0.0 {
+            let released_energy_j = self.anchor_energy_j(state.anchor_displacement_m);
             *state = AnchoredStictionState::new();
-            return Ok(AnchoredStictionResponse::free());
+            return Ok(AnchoredStictionResponse {
+                dissipated_energy_j: released_energy_j,
+                ..AnchoredStictionResponse::free()
+            });
         }
 
         if matches!(state.mode, StictionMode::Free) {
@@ -151,6 +159,7 @@ impl AnchoredStictionFriction {
         match state.mode {
             StictionMode::Free => Ok(AnchoredStictionResponse::free()),
             StictionMode::Sticking => {
+                let previous_anchor_displacement_m = state.anchor_displacement_m;
                 state.anchor_displacement_m = [
                     state.anchor_displacement_m[0] + tangential_velocity_m_s[0] * dt_s,
                     state.anchor_displacement_m[1] + tangential_velocity_m_s[1] * dt_s,
@@ -180,15 +189,24 @@ impl AnchoredStictionFriction {
                             * dt_s,
                     })
                 } else {
+                    let released_energy_j = self.anchor_energy_j(previous_anchor_displacement_m);
                     state.mode = StictionMode::Sliding;
                     state.anchor_displacement_m = [0.0, 0.0, 0.0];
-                    Ok(self.sliding_response(normal_force_n, tangential_velocity_m_s, dt_s))
+                    let mut response =
+                        self.sliding_response(normal_force_n, tangential_velocity_m_s, dt_s);
+                    response.dissipated_energy_j += released_energy_j;
+                    Ok(response)
                 }
             }
             StictionMode::Sliding => {
                 Ok(self.sliding_response(normal_force_n, tangential_velocity_m_s, dt_s))
             }
         }
+    }
+
+    fn anchor_energy_j(self, anchor_displacement_m: ContactVector3) -> f64 {
+        let displacement_m = norm(anchor_displacement_m);
+        0.5 * self.tangential_stiffness_n_m * displacement_m * displacement_m
     }
 
     fn sliding_response(
@@ -234,7 +252,9 @@ pub struct AnchoredStictionResponse {
     pub static_limit_n: f64,
     /// Elastic energy stored in the tangential anchor.
     pub elastic_energy_j: f64,
-    /// Non-negative work dissipated during the sub-step.
+    /// Non-negative work dissipated during the sub-step, including stored
+    /// anchor energy discarded on release. Release can produce a non-zero
+    /// increment even when the elapsed step size is zero.
     pub dissipated_energy_j: f64,
 }
 
@@ -512,6 +532,83 @@ mod tests {
         assert_abs_diff_eq!(response.static_limit_n, 6.0, epsilon = 1.0e-15);
         assert_eq!(state.mode(), StictionMode::Sliding);
         assert_abs_diff_eq!(state.anchor_displacement_m()[0], 0.0, epsilon = 0.0);
+    }
+
+    #[test]
+    fn stiction_anchor_reset_conserves_energy_on_sliding() {
+        let model = AnchoredStictionFriction::new(0.6, 0.4, 100.0, 0.0, 1.0).unwrap();
+        let mut loaded_state = AnchoredStictionState::new();
+        let loaded = model
+            .evaluate(&mut loaded_state, 10.0, [1.0, 0.0, 0.0], 0.02)
+            .unwrap();
+        assert!(loaded.sticking);
+        assert_abs_diff_eq!(loaded.elastic_energy_j, 0.02, epsilon = 1.0e-15);
+
+        // A shrinking normal load can release the anchor without motion or
+        // elapsed time. A moving release also dissipates kinetic-friction work.
+        for (normal_force_n, speed_m_s, dt_s) in
+            [(1.0, 0.0, 0.0), (1.0, 0.0, 0.01), (10.0, 10.0, 0.01)]
+        {
+            let mut state = loaded_state;
+            let response = model
+                .evaluate(&mut state, normal_force_n, [speed_m_s, 0.0, 0.0], dt_s)
+                .unwrap();
+            assert_eq!(response.mode, StictionMode::Sliding);
+            let friction_work_j = response.friction_force_n[0] * speed_m_s * dt_s;
+            assert_abs_diff_eq!(
+                response.elastic_energy_j + response.dissipated_energy_j + friction_work_j,
+                loaded.elastic_energy_j,
+                epsilon = 1.0e-14
+            );
+
+            // Reset energy must be reported only once. In the moving case,
+            // the discarded trial spring displacement must not create energy.
+            let repeated = model
+                .evaluate(&mut state, normal_force_n, [speed_m_s, 0.0, 0.0], dt_s)
+                .unwrap();
+            let repeated_work_j = repeated.friction_force_n[0] * speed_m_s * dt_s;
+            assert_abs_diff_eq!(
+                repeated.elastic_energy_j + repeated.dissipated_energy_j + repeated_work_j,
+                0.0,
+                epsilon = 1.0e-14
+            );
+        }
+    }
+
+    #[test]
+    fn stiction_anchor_reset_conserves_energy_on_contact_loss() {
+        let model = AnchoredStictionFriction::new(0.6, 0.4, 100.0, 0.0, 1.0).unwrap();
+        let mut loaded_state = AnchoredStictionState::new();
+        let loaded = model
+            .evaluate(&mut loaded_state, 10.0, [1.0, 0.0, 0.0], 0.02)
+            .unwrap();
+        assert!(loaded.sticking);
+        assert!(loaded.elastic_energy_j > 0.0);
+
+        for dt_s in [0.0, 0.01] {
+            let mut state = loaded_state;
+            let response = model
+                .evaluate(&mut state, 0.0, [3.0, 4.0, 0.0], dt_s)
+                .unwrap();
+            assert_eq!(response.mode, StictionMode::Free);
+            assert_abs_diff_eq!(norm(response.friction_force_n), 0.0, epsilon = 0.0);
+            assert_abs_diff_eq!(
+                response.elastic_energy_j + response.dissipated_energy_j,
+                loaded.elastic_energy_j,
+                epsilon = 1.0e-14
+            );
+
+            let repeated = model
+                .evaluate(&mut state, 0.0, [3.0, 4.0, 0.0], dt_s)
+                .unwrap();
+            assert_abs_diff_eq!(repeated.dissipated_energy_j, 0.0, epsilon = 0.0);
+            let recontact = model
+                .evaluate(&mut state, 10.0, [0.0, 0.0, 0.0], dt_s)
+                .unwrap();
+            assert!(recontact.sticking);
+            assert_abs_diff_eq!(recontact.elastic_energy_j, 0.0, epsilon = 0.0);
+            assert_abs_diff_eq!(recontact.dissipated_energy_j, 0.0, epsilon = 0.0);
+        }
     }
 
     #[test]

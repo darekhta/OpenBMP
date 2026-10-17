@@ -8,11 +8,24 @@ use std::path::Path;
 use openbmp_scenario::AftsZoneColorConfig;
 use openbmp_sil::{AftsZoneStimulus, AftsZoneStimulusVertex, MissionPackage, SilStimulation};
 
-const POINT_MASS_SCENARIO: &str = include_str!("fixtures/afts-stimulus-point-mass.toml");
+fn point_mass_scenario() -> String {
+    let reference: toml::Value =
+        toml::from_str(include_str!("../../../data/gravity/wgs84-j2.toml"))
+            .expect("canonical WGS84 coefficients parse");
+    let mu = reference["gravitational_parameter_m3_s2"]
+        .as_float()
+        .expect("WGS84 GM scalar");
+    include_str!("fixtures/afts-stimulus-point-mass.toml")
+        // Keep the serialized scenario bytes unchanged by the fixture label.
+        .split_once('\n')
+        .expect("synthetic fixture header")
+        .1
+        .replace("\"@WGS84_MU_M3_S2@\"", &format!("{mu:.9e}"))
+}
 
 fn write_package(dir: &Path) -> (MissionPackage, std::path::PathBuf) {
     let scenario_path = dir.join("scenario.toml");
-    fs::write(&scenario_path, POINT_MASS_SCENARIO).expect("write scenario");
+    fs::write(&scenario_path, point_mass_scenario()).expect("write scenario");
     let manifest_path = dir.join("mission-package.toml");
     fs::write(
         &manifest_path,

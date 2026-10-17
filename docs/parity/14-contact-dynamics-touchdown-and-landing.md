@@ -463,6 +463,23 @@ coordinate matches the leg id; the current massless rack evaluates that
 mechanism on prismatic displacement/rate and transmits only positive
 compressive generalized force into the external-normal gear load. It is not yet
 an authoritative multibody tree joint.
+
+In the runner, total crush-stage travel `s` includes the recoverable elastic
+travel `F_crush/k_elastic`. A plastic update uses
+`p_new = max(p_old, s - F_crush/k_elastic)`, dissipates
+`F_crush * (p_new - p_old)`, and retains elastic energy `F^2/(2*k_elastic)`.
+Loss of ground contact unloads the spring but preserves the permanent stroke
+in telemetry. Unit tests cover below-yield loading and a loading/unloading
+cycle with an exact piecewise-linear work balance.
+
+Force and moment evaluations use the last accepted plastic history without
+mutating it. The integrator's accepted-substep observer commits each successful
+fixed/adaptive endpoint; a checkpoint restores history and energy counters if
+the enclosing kernel step later fails. Accepted intermediate compression peaks
+remain irreversible even when the telemetry endpoint has unloaded. Contact
+work, damping and plastic work are accumulated at these accepted endpoints,
+independently of telemetry spacing. The synthetic crush-only drop and a
+prescribed loading/unloading cycle exercise this coupling.
 Gear-load *line loads* into the airframe are recovered through doc `02`'s
 LTM/OTM machinery, and "touchdown" joins doc `02`'s CLA flight-event forcing
 library as a load event.
@@ -933,7 +950,8 @@ sibling notation (`WP-NN.t`, doc `NN`).
   `RestDetector`; and `HousnerRockingBlock` threshold/frequency/period
   anchors. Schema-v3 `[contact]` can select
   `friction_law = "anchored_stiction"`, and point-mass/rigid-body contact
-  force adapters route it through a time-gated anchor state. Runner contact
+  force adapters share an anchor state committed only at accepted integration
+  substeps, with rollback on a failed enclosing step. Runner contact
   diagnostics carry tangential speed and sticking state, include tangential
   anchor energy in the contact energy audit, and classify rest through a
   kinetic-energy floor plus consecutive sticking hold.

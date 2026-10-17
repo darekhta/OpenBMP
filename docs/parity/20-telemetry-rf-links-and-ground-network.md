@@ -356,6 +356,17 @@ Executed in `depends_on` order, one PR each, green on the `13` §2 gate set.
   (`[comm.sites]`), gated telemetry channels.
 - **approach:** §3.2 on `08` transforms; fixed-step event extraction; mask
   decks pinned.
+- **compile-time scalar exception:** WP-20.1 retains only the existing
+  public WGS84 semi-major-axis and flattening constants needed by the
+  standalone `openbmp-comm` geometry API, under the minimal crate-layering
+  exception in [the data-provenance policy](../data-provenance.md#adding-a-new-tripwire-entry).
+  Both cite NIMA TR 8350.2, 3rd ed. (2000), table 3.1 beside their
+  declarations. The unit test `wgs84_geometry_constants_match_canonical_data`
+  parses the [canonical WGS84 data](../../data/gravity/wgs84-j2.toml) and
+  checks exact floating-point bits for the radius and the reciprocal of
+  inverse flattening. This preserves compile-time geometry without a
+  production TOML dependency; it does not permit inline coefficient tables
+  or benchmark data.
 - **acceptance:**
   - `[comm]` off by default; canonical goldens byte-identical
   - analytic overflight range/Doppler < 1e-9 rel; fixed-Earth line-scan

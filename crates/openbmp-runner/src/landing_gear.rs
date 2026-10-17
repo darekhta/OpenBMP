@@ -45,6 +45,11 @@ pub(crate) struct LandingGearRuntime {
     inner: Arc<Mutex<LandingGearRuntimeInner>>,
 }
 
+/// Transaction checkpoint for the whole kernel step, including accepted
+/// adaptive substeps that may precede a later model or state error.
+#[derive(Debug)]
+pub(crate) struct LandingGearCheckpoint(LandingGearRuntimeInner);
+
 impl std::fmt::Debug for LandingGearRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let leg_count = self.inner.lock().map_or(0, |inner| inner.legs.len());
@@ -93,6 +98,11 @@ impl LandingGearRuntime {
         Ok(Self {
             inner: Arc::new(Mutex::new(LandingGearRuntimeInner {
                 ground_half_space,
+                accepted_samples: legs
+                    .iter()
+                    .map(|leg| InternalLegSample::zero(leg.id.clone()).public)
+                    .collect(),
+                accepted_energy: vec![LandingGearLegEnergy::default(); legs.len()],
                 legs,
                 last: None,
             })),
@@ -112,7 +122,7 @@ impl LandingGearRuntime {
                 model: LANDING_GEAR_INTERNAL_MODEL_ID,
                 reason: Cow::Borrowed("landing gear runtime lock poisoned"),
             })?;
-        inner.evaluate(state, time, active_body, true)
+        inner.evaluate(state, time, active_body)
     }
 
     fn moment_eval(
@@ -134,21 +144,137 @@ impl LandingGearRuntime {
         {
             return Ok(last.evaluation.clone());
         }
-        inner.evaluate(state, time, active_body, false)
+        inner.evaluate(state, time, active_body)
     }
 
-    /// Latest per-leg samples, in scenario-declared order.
-    pub(crate) fn samples(&self) -> Result<Vec<LandingGearLegSample>, RunnerError> {
+    /// Commit only a state accepted by the integrator. Probes used to form a
+    /// Runge--Kutta stage never change the irreversible crush coordinates.
+    pub(crate) fn commit_accepted(
+        &self,
+        state: &RigidBodyState,
+        active_body: Option<BodyId>,
+    ) -> Result<(), ModelEvalError> {
+        let mut inner = self.inner.lock().map_err(|_| landing_gear_lock_error())?;
+        // Keep the entire rack unchanged if evaluation of a later leg fails.
+        let mut next = inner.clone();
+        for ((leg, sample), energy) in next
+            .legs
+            .iter_mut()
+            .zip(&mut next.accepted_samples)
+            .zip(&mut next.accepted_energy)
+        {
+            if active_body.is_some_and(|body| body != leg.owner) {
+                continue;
+            }
+            let pending_energy_j = sample.plastic_dissipated_energy_j;
+            *sample = leg
+                .evaluate(state, next.ground_half_space, active_body, true)?
+                .public;
+            energy.record(state.time.as_seconds(), sample);
+            sample.plastic_dissipated_energy_j += pending_energy_j;
+        }
+        next.last = None;
+        *inner = next;
+        Ok(())
+    }
+
+    /// Set the force/power boundary for an interval without advancing plastic
+    /// history. A phase-disabled rack preserves permanent crush but exerts no
+    /// force and performs no work. Re-enabling starts from that frozen history.
+    pub(crate) fn begin_interval(
+        &self,
+        state: &RigidBodyState,
+        active_body: Option<BodyId>,
+        active: bool,
+    ) -> Result<(), ModelEvalError> {
+        let mut inner = self.inner.lock().map_err(|_| landing_gear_lock_error())?;
+        let mut next = inner.clone();
+        for ((leg, sample), energy) in next
+            .legs
+            .iter_mut()
+            .zip(&mut next.accepted_samples)
+            .zip(&mut next.accepted_energy)
+        {
+            if active_body.is_some_and(|body| body != leg.owner) {
+                continue;
+            }
+            let pending_energy_j = sample.plastic_dissipated_energy_j;
+            *sample = if active {
+                leg.evaluate(state, next.ground_half_space, active_body, false)?
+                    .public
+            } else {
+                let mut inactive = leg
+                    .evaluate(state, next.ground_half_space, active_body, false)?
+                    .public;
+                inactive.force_n = 0.0;
+                inactive.force_body_n = [0.0; 3];
+                inactive.tangential_force_body_n = [0.0; 3];
+                inactive.elastic_energy_j = 0.0;
+                inactive.dissipated_power_w = 0.0;
+                inactive.contact_power_on_vehicle_w = 0.0;
+                inactive.in_contact = false;
+                inactive
+            };
+            sample.plastic_dissipated_energy_j = pending_energy_j;
+            energy.previous = Some(LandingGearEnergySample {
+                time_s: state.time.as_seconds(),
+                dissipated_power_w: sample.dissipated_power_w,
+                contact_power_on_vehicle_w: sample.contact_power_on_vehicle_w,
+            });
+        }
+        next.last = None;
+        *inner = next;
+        Ok(())
+    }
+
+    pub(crate) fn checkpoint(&self) -> Result<LandingGearCheckpoint, ModelEvalError> {
+        let inner = self.inner.lock().map_err(|_| landing_gear_lock_error())?;
+        Ok(LandingGearCheckpoint(inner.clone()))
+    }
+
+    pub(crate) fn restore(&self, checkpoint: LandingGearCheckpoint) -> Result<(), ModelEvalError> {
+        *self.inner.lock().map_err(|_| landing_gear_lock_error())? = checkpoint.0;
+        Ok(())
+    }
+
+    pub(crate) fn energy_integrals(&self) -> Result<LandingGearEnergyIntegrals, RunnerError> {
         let inner = self
             .inner
             .lock()
             .map_err(|_| RunnerError::UnsupportedScenario {
                 what: "landing gear runtime lock poisoned".to_owned(),
             })?;
-        Ok(inner
-            .last
-            .as_ref()
-            .map_or_else(Vec::new, |last| last.evaluation.samples.clone()))
+        Ok(inner.accepted_energy.iter().fold(
+            LandingGearEnergyIntegrals::default(),
+            |mut total, leg| {
+                total.contact_work_on_vehicle_j += leg.integrals.contact_work_on_vehicle_j;
+                total.dissipated_energy_j += leg.integrals.dissipated_energy_j;
+                total
+            },
+        ))
+    }
+
+    /// Accepted per-leg samples, draining the plastic work accumulated since
+    /// the preceding telemetry row. Trial force/torque queries cannot consume it.
+    pub(crate) fn take_samples(&self) -> Result<Vec<LandingGearLegSample>, RunnerError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| RunnerError::UnsupportedScenario {
+                what: "landing gear runtime lock poisoned".to_owned(),
+            })?;
+        let samples = inner.accepted_samples.clone();
+        for sample in &mut inner.accepted_samples {
+            sample.plastic_dissipated_energy_j = 0.0;
+        }
+        Ok(samples)
+    }
+}
+
+fn landing_gear_lock_error() -> ModelEvalError {
+    ModelEvalError::InvalidState {
+        model: LANDING_GEAR_INTERNAL_MODEL_ID,
+        reason: Cow::Borrowed("landing gear runtime lock poisoned"),
     }
 }
 
@@ -158,6 +284,8 @@ const LANDING_GEAR_INTERNAL_MODEL_ID: ModelId = ModelId::new(390);
 struct LandingGearRuntimeInner {
     ground_half_space: HalfSpace,
     legs: Vec<RuntimeLeg>,
+    accepted_samples: Vec<LandingGearLegSample>,
+    accepted_energy: Vec<LandingGearLegEnergy>,
     last: Option<CachedEvaluation>,
 }
 
@@ -167,29 +295,29 @@ impl LandingGearRuntimeInner {
         state: &RigidBodyState,
         time: SimTime,
         active_body: Option<BodyId>,
-        mutate: bool,
     ) -> Result<LandingGearEvaluation, ModelEvalError> {
         let signature = EvaluationSignature::new(state, time, active_body);
         let mut force_eci = Vector3::zeros();
         let mut moment_body = Vector3::zeros();
+        #[cfg(test)]
         let mut samples = Vec::with_capacity(self.legs.len());
         for leg in &mut self.legs {
-            let sample = leg.evaluate(state, self.ground_half_space, active_body, mutate)?;
+            let sample = leg.evaluate(state, self.ground_half_space, active_body, false)?;
             force_eci += sample.force_eci_n;
             moment_body += sample.moment_body_n_m;
+            #[cfg(test)]
             samples.push(sample.public);
         }
         let evaluation = LandingGearEvaluation {
             force_eci_n: force_eci,
             moment_body_n_m: moment_body,
+            #[cfg(test)]
             samples,
         };
-        if mutate {
-            self.last = Some(CachedEvaluation {
-                signature,
-                evaluation: evaluation.clone(),
-            });
-        }
+        self.last = Some(CachedEvaluation {
+            signature,
+            evaluation: evaluation.clone(),
+        });
         Ok(evaluation)
     }
 }
@@ -366,7 +494,7 @@ impl RuntimeLeg {
         if raw_stroke_m <= 0.0 {
             let prismatic_state = self.prismatic_state(0.0, 0.0)?;
             let prismatic_mechanism = self.prismatic_mechanism_sample(prismatic_state, mutate)?;
-            return Ok(InternalLegSample::zero_with_gap_and_contact_point(
+            let mut sample = InternalLegSample::zero_with_gap_and_contact_point(
                 self.id.clone(),
                 gap_m,
                 foot_body,
@@ -374,7 +502,11 @@ impl RuntimeLeg {
                 kinematics.tangential_speed_m_s(),
                 prismatic_state,
                 prismatic_mechanism,
-            ));
+            );
+            // Loss of contact unloads the elastic stage, but cannot undo
+            // permanent crushing recorded during the preceding contact.
+            sample.public.crushed_m = self.crush.map_or(0.0, CrushCore::crushed_m);
+            return Ok(sample);
         }
 
         let oleo_stroke_max = self.leg.oleo().map_or(0.0, OleoStage::stroke_max_m);
@@ -419,25 +551,30 @@ impl RuntimeLeg {
             let crush_stroke_m = (stroke_m - oleo_stroke_max)
                 .max(0.0)
                 .min(crush.stroke_max_m());
-            let pre_force_n = crush.force_at_stroke_n(crush_stroke_m).map_err(|err| {
-                ModelEvalError::InvalidState {
-                    model: LANDING_GEAR_INTERNAL_MODEL_ID,
-                    reason: Cow::Owned(err.to_string()),
-                }
-            })?;
-            let mut crush_force_n = pre_force_n;
-            if mutate && crush_stroke_m > crush.crushed_m() {
-                let energy_j = (crush_stroke_m - crush.crushed_m()) * crush.f_crush_n();
+            // Only travel beyond the elastic yield stroke is permanent.
+            // Retaining F_y / k of elastic travel keeps the plateau force
+            // continuous through a state update and allows elastic unloading.
+            let yield_stroke_m = crush.f_crush_n() / crush.k_elastic_n_m();
+            let plastic_stroke_m = (crush_stroke_m - yield_stroke_m).max(0.0);
+            if mutate && plastic_stroke_m > crush.crushed_m() {
+                let energy_j = (plastic_stroke_m - crush.crushed_m()) * crush.f_crush_n();
                 let response = crush.absorb_energy_j(energy_j).map_err(|err| {
                     ModelEvalError::InvalidState {
                         model: LANDING_GEAR_INTERNAL_MODEL_ID,
                         reason: Cow::Owned(err.to_string()),
                     }
                 })?;
-                crush_force_n = crush_force_n.max(response.force_n);
                 plastic_dissipated_energy_j += response.absorbed_energy_j;
             }
+            let crush_force_n = crush.force_at_stroke_n(crush_stroke_m).map_err(|err| {
+                ModelEvalError::InvalidState {
+                    model: LANDING_GEAR_INTERNAL_MODEL_ID,
+                    reason: Cow::Owned(err.to_string()),
+                }
+            })?;
             force_n += crush_force_n;
+            let elastic_stroke_m = crush_force_n / crush.k_elastic_n_m();
+            elastic_energy_j += 0.5 * crush_force_n * elastic_stroke_m;
         }
         if let Some(mechanism) = &prismatic_mechanism {
             force_n += mechanism.compressive_force_n;
@@ -698,6 +835,7 @@ struct CachedEvaluation {
 struct LandingGearEvaluation {
     force_eci_n: Vector3<f64>,
     moment_body_n_m: Vector3<f64>,
+    #[cfg(test)]
     samples: Vec<LandingGearLegSample>,
 }
 
@@ -782,7 +920,8 @@ pub struct LandingGearLegSample {
     pub elastic_energy_j: f64,
     /// Instantaneous oleo damping dissipation power in watts.
     pub dissipated_power_w: f64,
-    /// Irreversible crush energy increment consumed by this evaluation.
+    /// Irreversible crush work since the preceding telemetry row, including
+    /// every accepted adaptive substep. Force probes always report zero.
     pub plastic_dissipated_energy_j: f64,
     /// Instantaneous gear-force power on the vehicle in watts.
     pub contact_power_on_vehicle_w: f64,
@@ -997,6 +1136,39 @@ struct LandingGearEnergySample {
     contact_power_on_vehicle_w: f64,
 }
 
+/// Accepted-substep integrals, independent of the telemetry sampling interval.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LandingGearEnergyIntegrals {
+    pub(crate) contact_work_on_vehicle_j: f64,
+    pub(crate) dissipated_energy_j: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LandingGearLegEnergy {
+    previous: Option<LandingGearEnergySample>,
+    integrals: LandingGearEnergyIntegrals,
+}
+
+impl LandingGearLegEnergy {
+    fn record(&mut self, time_s: f64, sample: &LandingGearLegSample) {
+        let current = LandingGearEnergySample {
+            time_s,
+            dissipated_power_w: sample.dissipated_power_w,
+            contact_power_on_vehicle_w: sample.contact_power_on_vehicle_w,
+        };
+        if let Some(previous) = self.previous {
+            let dt_s = (time_s - previous.time_s).max(0.0);
+            self.integrals.contact_work_on_vehicle_j += 0.5
+                * (previous.contact_power_on_vehicle_w + current.contact_power_on_vehicle_w)
+                * dt_s;
+            self.integrals.dissipated_energy_j +=
+                0.5 * (previous.dissipated_power_w + current.dissipated_power_w) * dt_s;
+        }
+        self.integrals.dissipated_energy_j += sample.plastic_dissipated_energy_j;
+        self.previous = Some(current);
+    }
+}
+
 /// Run-level landing-gear touchdown report emitted outside telemetry bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LandingGearRunReport {
@@ -1038,7 +1210,7 @@ pub(crate) struct LandingGearRunAccumulator {
     final_elastic_energy_j: f64,
     contact_work_on_vehicle_j: f64,
     dissipated_energy_j: f64,
-    previous_energy_sample: Option<LandingGearEnergySample>,
+    initial_energy_integrals: Option<LandingGearEnergyIntegrals>,
     final_summary: Option<LandingGearStepSummary>,
     final_legs: Vec<LandingGearLegSample>,
 }
@@ -1065,7 +1237,7 @@ impl LandingGearRunAccumulator {
             final_elastic_energy_j: 0.0,
             contact_work_on_vehicle_j: 0.0,
             dissipated_energy_j: 0.0,
-            previous_energy_sample: None,
+            initial_energy_integrals: None,
             final_summary: None,
             final_legs: Vec::new(),
         })
@@ -1073,9 +1245,10 @@ impl LandingGearRunAccumulator {
 
     pub(crate) fn record(
         &mut self,
-        time_s: f64,
+        _time_s: f64,
         _mass_kg: f64,
         samples: &[LandingGearLegSample],
+        energy_integrals: LandingGearEnergyIntegrals,
     ) -> Result<(), RunnerError> {
         let summary = LandingGearStepSummary::from_samples(samples);
         self.samples = self.samples.saturating_add(1);
@@ -1090,21 +1263,13 @@ impl LandingGearRunAccumulator {
             .get_or_insert(summary.elastic_energy_j);
         self.final_elastic_energy_j = summary.elastic_energy_j;
 
-        let energy_sample = LandingGearEnergySample {
-            time_s,
-            dissipated_power_w: summary.dissipated_power_w,
-            contact_power_on_vehicle_w: summary.contact_power_on_vehicle_w,
-        };
-        if let Some(previous) = self.previous_energy_sample {
-            let dt_s = (energy_sample.time_s - previous.time_s).max(0.0);
-            self.contact_work_on_vehicle_j += 0.5
-                * (previous.contact_power_on_vehicle_w + energy_sample.contact_power_on_vehicle_w)
-                * dt_s;
-            self.dissipated_energy_j +=
-                0.5 * (previous.dissipated_power_w + energy_sample.dissipated_power_w) * dt_s;
-        }
-        self.dissipated_energy_j += summary.plastic_dissipated_energy_j;
-        self.previous_energy_sample = Some(energy_sample);
+        let initial = *self
+            .initial_energy_integrals
+            .get_or_insert(energy_integrals);
+        self.contact_work_on_vehicle_j =
+            energy_integrals.contact_work_on_vehicle_j - initial.contact_work_on_vehicle_j;
+        self.dissipated_energy_j =
+            energy_integrals.dissipated_energy_j - initial.dissipated_energy_j;
 
         // Use a unit-mass normal kinetic-energy proxy so rest classification
         // depends only on footpad normal speed, not on vehicle mass scaling.
@@ -1567,6 +1732,314 @@ mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
 
+    fn crush_only_leg() -> RuntimeLeg {
+        RuntimeLeg::from_config(
+            &LandingGearLegConfig {
+                id: "crush".to_owned(),
+                mounted_to: "core".to_owned(),
+                attach_body_m: [0.0, 0.0, 0.0],
+                strut_axis_body: [0.0, 0.0, -1.0],
+                free_length_m: 1.0,
+                footpad: ContactGeometryConfig::Point,
+                footpad_radius_m: None,
+                footpad_friction_coefficient: 0.0,
+                footpad_friction_regularization_speed_m_s: 1.0e-3,
+                oleo: None,
+                prismatic_dof: None,
+                crush: Some(openbmp_scenario::LandingGearCrushConfig {
+                    f_crush_n: 1_000.0,
+                    stroke_max_m: 0.5,
+                    k_elastic_n_m: 10_000.0,
+                }),
+            },
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap()
+    }
+
+    fn crush_sample(leg: &mut RuntimeLeg, stroke_m: f64, mutate: bool) -> LandingGearLegSample {
+        leg.evaluate(
+            &test_state(1.0 - stroke_m, 0.0),
+            HalfSpace::new([0.0, 0.0, 1.0], 0.0).unwrap(),
+            None,
+            mutate,
+        )
+        .unwrap()
+        .public
+    }
+
+    fn crush_only_runtime() -> LandingGearRuntime {
+        LandingGearRuntime {
+            inner: Arc::new(Mutex::new(LandingGearRuntimeInner {
+                ground_half_space: HalfSpace::new([0.0, 0.0, 1.0], 0.0).unwrap(),
+                legs: vec![crush_only_leg()],
+                accepted_samples: vec![InternalLegSample::zero("leg".to_owned()).public],
+                accepted_energy: vec![LandingGearLegEnergy::default()],
+                last: None,
+            })),
+        }
+    }
+
+    #[test]
+    fn landing_gear_trial_evaluations_do_not_change_plastic_history() {
+        let runtime = crush_only_runtime();
+        let baseline = test_state(0.95, 0.0);
+        let before = runtime.force_eval(&baseline, baseline.time, None).unwrap();
+        // A rejected trial can probe much deeper than the accepted state.
+        let future = test_state(0.6, 0.0);
+        runtime
+            .force_eval(&future, SimTime::from_seconds(0.1), None)
+            .unwrap();
+        let after = runtime.force_eval(&baseline, baseline.time, None).unwrap();
+        assert_abs_diff_eq!(after.force_eci_n, before.force_eci_n, epsilon = 0.0);
+        assert_abs_diff_eq!(after.samples[0].crushed_m, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(
+            after.samples[0].plastic_dissipated_energy_j,
+            0.0,
+            epsilon = 0.0
+        );
+    }
+
+    #[test]
+    fn landing_gear_accepted_substeps_accumulate_work_once() {
+        let runtime = crush_only_runtime();
+        runtime
+            .commit_accepted(&test_state(0.85, 0.0), None)
+            .unwrap();
+        runtime
+            .commit_accepted(&test_state(0.75, 0.0), None)
+            .unwrap();
+        // Unload before the macro-step telemetry row: the work at the
+        // intervening accepted compression peak must still be reported.
+        let unloaded = test_state(0.90, 0.0);
+        runtime.commit_accepted(&unloaded, None).unwrap();
+        for _ in 0..3 {
+            runtime.force_eval(&unloaded, unloaded.time, None).unwrap();
+            runtime.moment_eval(&unloaded, unloaded.time, None).unwrap();
+            runtime.commit_accepted(&unloaded, None).unwrap();
+        }
+        let samples = runtime.take_samples().unwrap();
+        assert_abs_diff_eq!(samples[0].crushed_m, 0.15, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(
+            samples[0].plastic_dissipated_energy_j,
+            150.0,
+            epsilon = 1.0e-10
+        );
+        assert_abs_diff_eq!(samples[0].force_n, 0.0, epsilon = 0.0);
+        let next = runtime.take_samples().unwrap();
+        assert_abs_diff_eq!(next[0].plastic_dissipated_energy_j, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(next[0].crushed_m, samples[0].crushed_m, epsilon = 0.0);
+    }
+
+    #[test]
+    fn landing_gear_failed_step_restores_history_and_pending_work() {
+        let runtime = crush_only_runtime();
+        let accepted = test_state(0.85, 0.0);
+        runtime.commit_accepted(&accepted, None).unwrap();
+        let before = runtime.force_eval(&accepted, accepted.time, None).unwrap();
+        let checkpoint = runtime.checkpoint().unwrap();
+        runtime
+            .commit_accepted(&test_state(0.65, 0.0), None)
+            .unwrap();
+        // A later model evaluation can fail after an accepted adaptive
+        // substep. Roll back the whole macro-step, including its energy.
+        runtime.restore(checkpoint).unwrap();
+        let after = runtime.force_eval(&accepted, accepted.time, None).unwrap();
+        assert_abs_diff_eq!(after.force_eci_n, before.force_eci_n, epsilon = 0.0);
+        let samples = runtime.take_samples().unwrap();
+        assert_abs_diff_eq!(samples[0].crushed_m, 0.05, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(
+            samples[0].plastic_dissipated_energy_j,
+            50.0,
+            epsilon = 1.0e-10
+        );
+    }
+
+    #[test]
+    fn landing_gear_acceptance_preserves_other_body_samples() {
+        let runtime = crush_only_runtime();
+        let owner = runtime.inner.lock().unwrap().legs[0].owner;
+        runtime
+            .commit_accepted(&test_state(0.85, 0.0), Some(owner))
+            .unwrap();
+        let other = BodyId::new(owner.value().wrapping_add(1));
+        runtime
+            .commit_accepted(&test_state(0.5, 0.0), Some(other))
+            .unwrap();
+        let samples = runtime.take_samples().unwrap();
+        assert_abs_diff_eq!(samples[0].crushed_m, 0.05, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(
+            samples[0].plastic_dissipated_energy_j,
+            50.0,
+            epsilon = 1.0e-10
+        );
+    }
+
+    #[test]
+    fn landing_gear_inactive_interval_preserves_history_without_preload_or_work() {
+        let runtime = crush_only_runtime();
+        let mut disabled = test_state(0.65, -1.0);
+        runtime.begin_interval(&disabled, None, false).unwrap();
+        disabled.time = SimTime::from_seconds(1.0);
+        runtime.begin_interval(&disabled, None, false).unwrap();
+        let inactive = runtime.take_samples().unwrap();
+        assert_abs_diff_eq!(inactive[0].crushed_m, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(inactive[0].force_n, 0.0, epsilon = 0.0);
+        let paused_energy = runtime.energy_integrals().unwrap();
+        assert_abs_diff_eq!(paused_energy.contact_work_on_vehicle_j, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(paused_energy.dissipated_energy_j, 0.0, epsilon = 0.0);
+
+        let mut active = test_state(0.85, 0.0);
+        active.time = SimTime::from_seconds(1.0);
+        runtime.begin_interval(&active, None, true).unwrap();
+        runtime.commit_accepted(&active, None).unwrap();
+        disabled.time = SimTime::from_seconds(2.0);
+        runtime.begin_interval(&disabled, None, false).unwrap();
+        let paused = runtime.take_samples().unwrap();
+        assert_abs_diff_eq!(paused[0].crushed_m, 0.05, epsilon = 1.0e-14);
+        assert_abs_diff_eq!(
+            paused[0].plastic_dissipated_energy_j,
+            50.0,
+            epsilon = 1.0e-10
+        );
+        assert_abs_diff_eq!(paused[0].force_n, 0.0, epsilon = 0.0);
+    }
+
+    #[test]
+    fn landing_gear_adaptive_cycle_retains_an_interior_compression_peak() {
+        use openbmp_sim::{Dopri54Adaptive, Dopri853Adaptive, Integrator, RigidBodyDerivative};
+
+        fn check(integrator: impl Integrator<RigidBodyState>) {
+            let runtime = crush_only_runtime();
+            let initial = test_state(1.0, -1.6);
+            runtime.commit_accepted(&initial, None).unwrap();
+            let mut accepted_count = 0;
+            // Prescribed loading/unloading x(t)=1-1.6t+1.6t²: the peak
+            // stroke is 0.4 m at t=0.5, while both macro endpoints have
+            // zero stroke. Only accepted internal states carry its history.
+            let end = integrator
+                .advance_with_accepted_steps(
+                    &initial,
+                    |state, _| {
+                        let mut derivative = RigidBodyDerivative::zero();
+                        derivative.velocity_m_s_eci = state.velocity.vector;
+                        derivative.acceleration_m_s2_eci.z = 3.2;
+                        Ok(derivative)
+                    },
+                    openbmp_core::Duration::from_seconds(1.0),
+                    |state| {
+                        accepted_count += 1;
+                        runtime.commit_accepted(state, None)
+                    },
+                )
+                .unwrap();
+            assert!(accepted_count >= 100);
+            assert_abs_diff_eq!(end.position.vector.z, 1.0, epsilon = 1.0e-12);
+            let samples = runtime.take_samples().unwrap();
+            assert_abs_diff_eq!(samples[0].crushed_m, 0.3, epsilon = 1.0e-12);
+            assert_abs_diff_eq!(
+                samples[0].plastic_dissipated_energy_j,
+                300.0,
+                epsilon = 1.0e-9
+            );
+            assert_abs_diff_eq!(samples[0].force_n, 0.0, epsilon = 0.0);
+            let energy = runtime.energy_integrals().unwrap();
+            assert_abs_diff_eq!(energy.dissipated_energy_j, 300.0, epsilon = 1.0e-9);
+            assert_abs_diff_eq!(energy.contact_work_on_vehicle_j, -300.0, epsilon = 0.5);
+        }
+        check(Dopri54Adaptive::new(1.0e-9, 1.0e-9, 1.0e-6, 0.01).unwrap());
+        check(Dopri853Adaptive::new(1.0e-9, 1.0e-9, 1.0e-6, 0.01).unwrap());
+    }
+
+    #[test]
+    fn landing_gear_crush_below_yield_remains_elastic() {
+        let mut leg = crush_only_leg();
+        let trial = crush_sample(&mut leg, 0.01, false);
+        let committed = crush_sample(&mut leg, 0.01, true);
+        let repeated = crush_sample(&mut leg, 0.01, false);
+
+        for sample in [trial, committed, repeated] {
+            assert_abs_diff_eq!(sample.force_n, 100.0, epsilon = 1.0e-10);
+            assert_abs_diff_eq!(sample.crushed_m, 0.0, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(sample.elastic_energy_j, 0.5, epsilon = 1.0e-12);
+            assert_abs_diff_eq!(sample.plastic_dissipated_energy_j, 0.0, epsilon = 1.0e-15);
+        }
+    }
+
+    #[test]
+    fn landing_gear_crush_loading_and_unloading_preserve_elastic_travel() {
+        let mut leg = crush_only_leg();
+        // (total stroke, force, permanent stroke, elastic energy, plastic increment)
+        let loading_cycle = [
+            (0.05, 500.0, 0.0, 12.5, 0.0),
+            (0.15, 1_000.0, 0.05, 50.0, 50.0),
+            (0.15, 1_000.0, 0.05, 50.0, 0.0),
+            (0.10, 500.0, 0.05, 12.5, 0.0),
+            (0.05, 0.0, 0.05, 0.0, 0.0),
+            (0.125, 750.0, 0.05, 28.125, 0.0),
+            (0.20, 1_000.0, 0.10, 50.0, 50.0),
+        ];
+        for (stroke, force, crushed, elastic, dissipated) in loading_cycle {
+            let sample = crush_sample(&mut leg, stroke, true);
+            let repeated = crush_sample(&mut leg, stroke, false);
+            assert_abs_diff_eq!(sample.force_n, force, epsilon = 1.0e-10);
+            assert_abs_diff_eq!(sample.crushed_m, crushed, epsilon = 1.0e-15);
+            assert_abs_diff_eq!(sample.elastic_energy_j, elastic, epsilon = 1.0e-10);
+            assert_abs_diff_eq!(
+                sample.plastic_dissipated_energy_j,
+                dissipated,
+                epsilon = 1.0e-10
+            );
+            assert_abs_diff_eq!(repeated.force_n, sample.force_n, epsilon = 1.0e-10);
+            assert_abs_diff_eq!(
+                repeated.elastic_energy_j,
+                sample.elastic_energy_j,
+                epsilon = 1.0e-10
+            );
+            assert_abs_diff_eq!(repeated.plastic_dissipated_energy_j, 0.0, epsilon = 0.0);
+        }
+    }
+
+    #[test]
+    fn landing_gear_crush_telemetry_retains_permanent_stroke_after_liftoff() {
+        let mut leg = crush_only_leg();
+        let compressed = crush_sample(&mut leg, 0.15, true);
+        let separated = crush_sample(&mut leg, -0.05, true);
+
+        assert!(compressed.crushed_m > 0.0);
+        assert!(!separated.in_contact);
+        assert_abs_diff_eq!(separated.force_n, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(separated.elastic_energy_j, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(separated.plastic_dissipated_energy_j, 0.0, epsilon = 0.0);
+        assert_abs_diff_eq!(separated.crushed_m, compressed.crushed_m, epsilon = 0.0);
+    }
+
+    #[test]
+    fn landing_gear_crush_cycle_work_equals_stored_and_dissipated_energy() {
+        let mut leg = crush_only_leg();
+        let mut previous = crush_sample(&mut leg, 0.0, true);
+        let mut work_j = 0.0;
+        let mut dissipated_j = 0.0;
+        // Include each yield/unloading breakpoint so trapezoidal integration
+        // is exact for the piecewise-linear elasto-plastic force law.
+        for stroke in [0.05, 0.10, 0.15, 0.20, 0.15, 0.10, 0.15, 0.20, 0.25] {
+            let sample = crush_sample(&mut leg, stroke, true);
+            work_j +=
+                0.5 * (previous.force_n + sample.force_n) * (sample.stroke_m - previous.stroke_m);
+            dissipated_j += sample.plastic_dissipated_energy_j;
+            assert_abs_diff_eq!(
+                work_j,
+                sample.elastic_energy_j + dissipated_j,
+                epsilon = 1.0e-10
+            );
+            previous = sample;
+        }
+        assert_abs_diff_eq!(work_j, 200.0, epsilon = 1.0e-10);
+        assert_abs_diff_eq!(dissipated_j, 150.0, epsilon = 1.0e-10);
+        assert_abs_diff_eq!(previous.elastic_energy_j, 50.0, epsilon = 1.0e-10);
+    }
+
     #[test]
     fn landing_gear_runtime_reports_four_leg_loads() {
         let config = LandingGearConfig {
@@ -1605,10 +2078,11 @@ mod tests {
             .unwrap();
 
         assert!(eval.force_eci_n.z > 0.0);
-        assert_eq!(runtime.samples().unwrap().len(), 4);
+        runtime.commit_accepted(&state, None).unwrap();
+        assert_eq!(runtime.take_samples().unwrap().len(), 4);
         assert!(
             runtime
-                .samples()
+                .take_samples()
                 .unwrap()
                 .iter()
                 .all(|sample| sample.in_contact)

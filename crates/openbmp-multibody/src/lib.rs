@@ -5177,11 +5177,8 @@ mod tests {
             parent: Some(BodyIndex::new(0)),
             joint: Joint::revolute(Vector3::new(0.0, 0.0, 1.0)).unwrap(),
             inertia: point_mass_spatial_inertia(3.0, Vector3::new(2.0, 0.3, -0.1)),
-            parent_to_body: PluckerTransform::new(
-                Matrix3::identity(),
-                Vector3::new(0.1, 0.2, 0.5),
-            )
-            .unwrap(),
+            parent_to_body: PluckerTransform::new(Matrix3::identity(), Vector3::new(0.1, 0.2, 0.5))
+                .unwrap(),
         };
         let tree = MultibodyTree::new(vec![root, child]).unwrap();
         let mut state = MultibodyState::new(
@@ -5199,8 +5196,8 @@ mod tests {
         for _ in 0..5_000 {
             state = rk4_unforced_step(&tree, &state, 1.0e-3);
             let energy = tree.kinetic_energy_at_state(&state).unwrap();
-            max_relative_energy_drift = max_relative_energy_drift
-                .max(((energy - initial_energy) / initial_energy).abs());
+            max_relative_energy_drift =
+                max_relative_energy_drift.max(((energy - initial_energy) / initial_energy).abs());
             let momentum = tree.system_spatial_momentum_at_state(&state).unwrap();
             max_linear_momentum_drift =
                 max_linear_momentum_drift.max((momentum.force_n() - p0).norm());

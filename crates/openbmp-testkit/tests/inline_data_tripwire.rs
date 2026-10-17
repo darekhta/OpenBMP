@@ -129,6 +129,9 @@ const TRIPWIRES: &[Tripwire] = &[
         allow_list: &[
             "data/afts/closed-form-iip-tolerance-v1.toml",
             "data/gravity/wgs84-j2.toml",
+            // Existing analytic oracle cites the canonical WGS84 input table in
+            // data/afts/provenance.md; this is a data citation, not a Rust copy.
+            // Documented tesseral configuration cites the same canonical table.
             "docs/scenario-format.md",
             "docs/data-provenance.md",
             "crates/openbmp-physics/src/frames.rs",
@@ -160,10 +163,13 @@ const TRIPWIRES: &[Tripwire] = &[
         allow_list: &[
             "data/afts/closed-form-iip-tolerance-v1.toml",
             "data/gravity/wgs84-j2.toml",
+            // Same explicit data/documentation citations as the GM entry above.
             "docs/scenario-format.md",
             "docs/data-provenance.md",
             "crates/openbmp-comm/src/lib.rs",
             "crates/openbmp-physics/src/frames.rs",
+            // Minimal compile-time geometry scalar, cited and bit-pinned to the
+            // canonical TOML; owning policy deviation is recorded in WP-20.1.
             "crates/openbmp-runner/src/celestial.rs",
             "crates/openbmp-runner/src/point_mass.rs",
             "crates/openbmp-scenario/src/scenario.rs",

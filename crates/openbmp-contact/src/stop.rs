@@ -1,7 +1,5 @@
 //! Scalar one-sided penalty stops.
 
-use core::f64::consts::PI;
-
 use crate::{
     ContactError,
     error::{require_finite, require_non_negative, require_positive},
@@ -127,9 +125,13 @@ impl ScalarStop {
 
     /// Returns the closed-form Kelvin-Voigt impact restitution for this stop.
     ///
-    /// The expression is the underdamped linear oscillator result
-    /// `exp(-zeta*pi/sqrt(1-zeta^2))`; critically damped and overdamped stops
-    /// return zero restitution.
+    /// Release occurs when the spring-damper force first reaches zero on
+    /// unloading; with damping, this precedes zero penetration. For damping ratio
+    /// `zeta < 1`, restitution is
+    /// `exp(-2*zeta*acos(zeta)/sqrt(1-zeta^2))`. At critical damping it is
+    /// `exp(-2)`; for `zeta > 1`, `acos` and `sqrt(1-zeta^2)` are replaced by
+    /// `acosh` and `sqrt(zeta^2-1)`. These expressions describe the clamped
+    /// unilateral law used by [`Self::evaluate`], without external loads.
     ///
     /// # Errors
     ///
@@ -141,10 +143,15 @@ impl ScalarStop {
             self.damping_per_unit_rate / (2.0 * (self.stiffness_per_unit * effective_mass).sqrt());
         if damping_ratio <= 0.0 {
             Ok(1.0)
-        } else if damping_ratio >= 1.0 {
-            Ok(0.0)
+        } else if damping_ratio < 1.0 {
+            let frequency_ratio = ((1.0 - damping_ratio) * (1.0 + damping_ratio)).sqrt();
+            Ok((-2.0 * damping_ratio * damping_ratio.acos() / frequency_ratio).exp())
+        } else if damping_ratio > 1.0 {
+            let inverse_ratio = 1.0 / damping_ratio;
+            let frequency_ratio = ((1.0 - inverse_ratio) * (1.0 + inverse_ratio)).sqrt();
+            Ok((-2.0 * damping_ratio.acosh() / frequency_ratio).exp())
         } else {
-            Ok((-damping_ratio * PI / (1.0 - damping_ratio * damping_ratio).sqrt()).exp())
+            Ok((-2.0_f64).exp())
         }
     }
 
@@ -184,7 +191,7 @@ pub struct ScalarStopResponse {
     pub generalized_force: f64,
     /// Elastic energy stored in the stop spring.
     pub elastic_energy_j: f64,
-    /// Instantaneous non-negative damping power.
+    /// Instantaneous non-negative loss from damping and unilateral clamping.
     pub damping_power_w: f64,
 }
 
@@ -220,16 +227,16 @@ pub(crate) fn evaluate_unilateral_penalty(
         penetration,
         generalized_force: outward_sign * normal_force,
         elastic_energy_j: 0.5 * stiffness_per_unit * penetration * penetration,
-        damping_power_w: if normal_force > 0.0 {
-            damping_per_unit_rate * penetration_rate * penetration_rate
-        } else {
-            0.0
-        },
+        // The elastic energy still decreases during force-clamped release;
+        // account for this loss even though no work is done on the body.
+        damping_power_w: ((normal_force - elastic_force) * penetration_rate).max(0.0),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use core::f64::consts::PI;
+
     use approx::{assert_abs_diff_eq, assert_relative_eq};
 
     use super::*;
@@ -258,6 +265,75 @@ mod tests {
         assert!(response.active);
         assert_abs_diff_eq!(response.penetration, 0.25, epsilon = 1.0e-15);
         assert_abs_diff_eq!(response.generalized_force, -50.0, epsilon = 1.0e-15);
+    }
+
+    #[test]
+    fn scalar_stop_dissipation_closes_power_balance_for_both_sides() {
+        for outward_sign in [-1.0, 1.0] {
+            let stop = if outward_sign > 0.0 {
+                ScalarStop::lower(0.0, 100.0, 10.0).unwrap()
+            } else {
+                ScalarStop::upper(0.0, 100.0, 10.0).unwrap()
+            };
+            for normal_velocity in [-1.0, 0.25, 1.0] {
+                let coordinate_rate = outward_sign * normal_velocity;
+                let response = stop
+                    .evaluate(-outward_sign * 0.05, coordinate_rate)
+                    .unwrap();
+                let body_power_w = response.generalized_force * coordinate_rate;
+                let elastic_power_w = -100.0 * 0.05 * normal_velocity;
+                assert_abs_diff_eq!(
+                    body_power_w + elastic_power_w + response.damping_power_w,
+                    0.0,
+                    epsilon = 1.0e-14
+                );
+            }
+        }
+    }
+
+    fn integrated_restitution(stop: ScalarStop, mass: f64, dimensionless_step: f64) -> f64 {
+        let omega = (stop.stiffness_per_unit() / mass).sqrt();
+        let dt = dimensionless_step / omega;
+        // Start infinitesimally inside the stop to avoid its force jump at
+        // exactly zero penetration obscuring the release convergence check.
+        let mut coordinate = -f64::EPSILON;
+        let mut velocity = -1.0;
+        for _ in 0..100_000 {
+            let acceleration = |q, v| stop.evaluate(q, v).unwrap().generalized_force / mass;
+            let a1 = acceleration(coordinate, velocity);
+            let v2 = velocity + 0.5 * dt * a1;
+            let a2 = acceleration(coordinate + 0.5 * dt * velocity, v2);
+            let v3 = velocity + 0.5 * dt * a2;
+            let a3 = acceleration(coordinate + 0.5 * dt * v2, v3);
+            let v4 = velocity + dt * a3;
+            let a4 = acceleration(coordinate + dt * v3, v4);
+            coordinate += (dt / 6.0) * (velocity + 2.0 * v2 + 2.0 * v3 + v4);
+            velocity += (dt / 6.0) * (a1 + 2.0 * a2 + 2.0 * a3 + a4);
+            if coordinate >= 0.0 && velocity > 0.0 {
+                return velocity;
+            }
+        }
+        unreachable!("impact must separate within the integration window");
+    }
+
+    #[test]
+    fn scalar_stop_restitution_matches_unilateral_release_across_damping_regimes() {
+        let mass = 2.0_f64;
+        let stiffness = 4_000.0_f64;
+        for damping_ratio in [0.08, 0.5, 1.0, 2.0] {
+            let damping = 2.0 * damping_ratio * (stiffness * mass).sqrt();
+            let stop = ScalarStop::lower(0.0, stiffness, damping).unwrap();
+            let expected = stop.closed_form_restitution(mass).unwrap();
+            let coarse = integrated_restitution(stop, mass, 0.002);
+            let fine = integrated_restitution(stop, mass, 0.0005);
+
+            assert!(
+                fine > 0.0,
+                "unilateral release still rebounds at zeta={damping_ratio}"
+            );
+            assert_relative_eq!(fine, expected, max_relative = 1.0e-6);
+            assert!((fine - expected).abs() <= (coarse - expected).abs() + 1.0e-12);
+        }
     }
 
     #[test]

@@ -1964,7 +1964,8 @@ oscillator fixture matched against an independent ideal Karnopp reference, a
 consecutive-hold rest detector, and Housner rocking-block threshold and period
 anchors (`REQ-CONTACT-004`). Schema-v3 `[contact]` can now select
 `friction_law = "anchored_stiction"` and the runner contact adapters route it
-through time-gated anchor state; contact diagnostics now carry tangential
+through shared accepted-substep anchor state with failed-step rollback;
+contact diagnostics now carry tangential
 speed/sticking state and runner rest classification uses a kinetic-energy floor
 plus consecutive sticking hold (`REQ-CONTACT-005`).
 WP-14.4: **implemented** — `openbmp-vehicle` now exposes validated

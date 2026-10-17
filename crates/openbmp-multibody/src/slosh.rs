@@ -70,7 +70,10 @@ impl PendulumSloshBody {
     /// direction that is not perpendicular to the swing axis;
     /// [`MultibodyError::NonFinite`] if the hinge offset is non-finite.
     pub fn tree_body_spec(&self) -> Result<TreeBodySpec, MultibodyError> {
-        require_positive(self.pendulum_length_m, "slosh pendulum length must be positive")?;
+        require_positive(
+            self.pendulum_length_m,
+            "slosh pendulum length must be positive",
+        )?;
         require_positive(self.slosh_mass_kg, "slosh mass must be positive")?;
         if !self.hinge_offset_parent_m.iter().all(|v| v.is_finite()) {
             return Err(MultibodyError::NonFinite {
@@ -78,7 +81,10 @@ impl PendulumSloshBody {
             });
         }
         let swing = unit_axis(self.swing_axis_body, "slosh swing axis must be non-zero")?;
-        let hang = unit_axis(self.hang_direction_body, "slosh hang direction must be non-zero")?;
+        let hang = unit_axis(
+            self.hang_direction_body,
+            "slosh hang direction must be non-zero",
+        )?;
         if swing.dot(&hang).abs() > HANG_SWING_PERP_TOL {
             return Err(MultibodyError::InvalidParameter {
                 reason: "slosh hang direction must be perpendicular to the swing axis",
@@ -87,7 +93,8 @@ impl PendulumSloshBody {
 
         let com_body = hang * self.pendulum_length_m;
         let inertia = point_mass_spatial_inertia(self.slosh_mass_kg, com_body)?;
-        let parent_to_body = PluckerTransform::new(Matrix3::identity(), self.hinge_offset_parent_m)?;
+        let parent_to_body =
+            PluckerTransform::new(Matrix3::identity(), self.hinge_offset_parent_m)?;
         Ok(TreeBodySpec {
             id: self.id,
             parent: Some(self.parent),
@@ -178,7 +185,12 @@ fn skew(v: Vector3<f64>) -> Matrix3<f64> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::float_cmp, clippy::panic, clippy::unwrap_used)]
+#[allow(
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
     use crate::{MultibodyState, MultibodyTree};

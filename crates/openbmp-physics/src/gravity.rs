@@ -5330,11 +5330,11 @@ mod tests {
             Err(PhysicsError::InvalidParameter { .. })
         ));
 
-        let missing_mu = fixture
+        let mu_line = fixture
             .lines()
-            .filter(|line| !line.starts_with("earth_gravity_constant "))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .find(|line| line.starts_with("earth_gravity_constant "))
+            .expect("fixture contains the GM metadata header");
+        let missing_mu = fixture.replace(&format!("{mu_line}\n"), "");
         assert!(matches!(
             NormalizedHarmonicField::from_icgem_gfc_str_with_metadata(&missing_mu, 4, 3),
             Err(PhysicsError::InvalidParameter { .. })
