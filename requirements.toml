@@ -11948,6 +11948,7 @@ paths = [
   "crates/openbmp-cli/tests/end_to_end.rs",
   "crates/openbmp-rundata/Cargo.toml",
   "crates/openbmp-rundata/src/lib.rs",
+  "crates/openbmp-rundata/src/index.rs",
   "docs/parity/21-run-data-regression-and-visualization.md",
   "docs/parity/progress.md",
   "requirements.toml",
