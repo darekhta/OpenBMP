@@ -33,6 +33,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
+use super::output::ensure_parent_dir;
 use crate::CliError;
 use crate::commands::run as run_command;
 
@@ -1101,18 +1102,6 @@ fn write_telemetry_csv(table: &TelemetryTable, output_csv: &Path) -> Result<(), 
         source,
     })?;
     table.write_csv(BufWriter::new(file))?;
-    Ok(())
-}
-
-fn ensure_parent_dir(path: &Path) -> Result<(), CliError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent).map_err(|source| CliError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
     Ok(())
 }
 

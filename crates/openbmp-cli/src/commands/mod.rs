@@ -9,6 +9,7 @@ pub mod diff;
 pub mod footprint_mc;
 pub mod mc;
 pub mod migrate;
+mod output;
 pub mod package;
 pub mod provenance;
 pub mod reconstruct;

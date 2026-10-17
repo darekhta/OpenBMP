@@ -26,6 +26,7 @@ use openbmp_uq::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::output::ensure_parent_dir;
 use crate::CliError;
 use crate::commands::campaign;
 
@@ -3645,18 +3646,6 @@ fn write_design_matrix(
         path: output_csv.to_path_buf(),
         source,
     })
-}
-
-fn ensure_parent_dir(path: &Path) -> Result<(), CliError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        create_dir_all(parent).map_err(|source| CliError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

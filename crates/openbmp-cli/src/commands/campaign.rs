@@ -21,6 +21,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table};
 
+use super::output::ensure_parent_dir;
 use crate::CliError;
 use crate::commands::run::{self as run_command, OutputOverrides, RunDataOptions};
 
@@ -735,18 +736,6 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), CliError> {
         path: path.to_path_buf(),
         source,
     })
-}
-
-fn ensure_parent_dir(path: &Path) -> Result<(), CliError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).map_err(|source| CliError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ use openbmp_testkit::verification::{
     OrderVerificationReport, StepError, order_verification_report,
 };
 
+use super::output::ensure_parent_dir;
 use crate::CliError;
 use crate::cli::VerifyOrderMethod;
 
@@ -319,19 +320,6 @@ fn write_report_toml(path: &Path, report: &VerifyOrderCliReport) -> Result<(), C
         path: path.to_path_buf(),
         source,
     })
-}
-
-fn ensure_parent_dir(path: &Path) -> Result<(), CliError> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent).map_err(|source| CliError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    Ok(())
 }
 
 fn toml_string(value: &str) -> String {

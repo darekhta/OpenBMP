@@ -8,7 +8,6 @@
 //! still requires at least one declared telemetry output before CLI
 //! overrides are applied.
 
-use std::fs::{File, create_dir_all};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
@@ -20,6 +19,7 @@ use openbmp_runner as runner;
 use openbmp_scenario::Scenario;
 use sha2::{Digest, Sha256};
 
+use super::output::{ensure_parent_dir, open_for_write};
 use crate::error::CliError;
 
 /// Output-path overrides, one per archive kind.
@@ -670,23 +670,4 @@ fn hex_digest(bytes: &[u8]) -> String {
         out.push(HEX[(byte & 0x0f) as usize] as char);
     }
     out
-}
-
-fn ensure_parent_dir(path: &Path) -> Result<(), CliError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        create_dir_all(parent).map_err(|source| CliError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    Ok(())
-}
-
-fn open_for_write(path: &Path) -> Result<File, CliError> {
-    File::create(path).map_err(|source| CliError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
 }

@@ -1,7 +1,6 @@
 //! `openbmp footprint-mc <scenario.toml>` — run offline footprint
 //! Monte-Carlo post-processing and write declared sample/summary files.
 
-use std::fs::{File, create_dir_all};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -10,6 +9,7 @@ use openbmp_runner::{self as runner, RunnerError};
 use openbmp_scenario::Scenario;
 use sha2::{Digest, Sha256};
 
+use super::output::{ensure_parent_dir, open_for_write};
 use crate::commands::mc::{self, McCredibilityOptions};
 use crate::error::CliError;
 
@@ -255,23 +255,4 @@ fn sha256_hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
-}
-
-fn ensure_parent_dir(path: &Path) -> Result<(), CliError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        create_dir_all(parent).map_err(|source| CliError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    Ok(())
-}
-
-fn open_for_write(path: &Path) -> Result<File, CliError> {
-    File::create(path).map_err(|source| CliError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
 }
