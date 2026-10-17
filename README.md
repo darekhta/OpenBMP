@@ -148,29 +148,19 @@ data provenance rules, and validation labels are documented in
 
 ## Documentation
 
-| Document | Purpose |
-|---|---|
-| [Design Concept](docs/design-concept.md) | Purpose, principles, vehicle classes, capabilities. |
-| [Software Architecture](docs/software-architecture.md) | Layered design, kernel, integrators, frames, models, controller, telemetry. |
-| [Parity Program](docs/parity/00-overview.md) | Capability-parity constitution, per-discipline design specs, and execution playbook. |
-| [Scenario Format](docs/scenario-format.md) | The TOML scenario contract: tables, parsing rules, unit and frame lint. |
-| [Verification](docs/verification.md) | Validation labels, golden telemetry, tolerance tables, fuzzing. |
-| [Scope Boundaries](docs/safety-boundaries.md) | Project scope, validation limits, hardware boundary, and provenance rules. |
-| [Frames and Time](docs/frames-time.md) | Frame profiles, ECI/ECEF/NED conventions, epoch and leap-second handling. |
-| [Data Provenance](docs/data-provenance.md) | Source records, transformation rules, machine checks, inline-data tripwires. |
-| [Supply Chain](docs/supply-chain.md) | Rust dependency policy, SBOM, build-provenance expectations. |
-| [Modeling Guide](docs/modeling-guide.md) | Model-author contract: documentation template, validation evidence. |
-| [Mission Graph Architecture](docs/mission-graph-architecture.md) | Hierarchical mission state machine, orthogonal regions, HAL contract. |
-| [Mission States Vocabulary](docs/mission-states-vocabulary.md) | Canonical state names with citations; rejected operational vocabulary. |
-| [Hypersonic & Re-entry](docs/hypersonic-extensions.md) | High-altitude atmosphere, real-gas, hypersonic aero, aerothermal, ablation. |
-| [Real-Rocket Integration](docs/real-rocket-integration.md) | How a downstream adopter assembles a vehicle on top of OpenBMP. |
-| [Roadmap](docs/roadmap.md) | Capabilities that are shipped, research-grade, or deferred. |
-| [Glossary](docs/glossary.md) | Shared vocabulary for frames, time, determinism, validation, safety. |
-| [Flight Profiles Architecture](docs/flight-profiles-architecture.md) | Umbrella for the multi-phase ascent → coast → entry profile design series. |
-| [Staging and Separation](docs/staging-and-separation.md) | Executing multi-body stage separation: jettison, impulse, simultaneous propagation. |
-| [Ascent Guidance](docs/ascent-guidance.md) | Gravity-turn / pitch-program reference-trajectory generation for powered ascent. |
-| [Ballistic Coast and Apogee](docs/ballistic-coast-and-apogee.md) | Exo-atmospheric coast, apogee detection, and the range-safety landing footprint. |
-| [Descent and Entry Profiles](docs/descent-and-entry-profiles.md) | Wiring Allen-Eggers / Vinh into live entry phases and recovery. |
+Start with the [documentation index](docs/README.md), which groups the
+project documents by purpose and is the central navigation page.
+
+- [Design Concept](docs/design-concept.md) — purpose and principles.
+- [Software Architecture](docs/software-architecture.md) — documented structure
+  and component boundaries.
+- [Scenario Format](docs/scenario-format.md) — configuration reference.
+- [Verification](docs/verification.md) — validation labels and evidence limits.
+- [Roadmap](docs/roadmap.md) — capability status and deferred work.
+
+See the index for specialist references, data-source requirements, and the
+parity program. Keeping the complete catalog there avoids maintaining a second
+copy in this README.
 
 ## Toolchain
 
