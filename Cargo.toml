@@ -124,7 +124,6 @@ console_error_panic_hook = { version = "0.1.7" }
 # --- Test / bench / fuzz
 proptest        = { version = "1.11.0", default-features = false, features = ["std"] }
 insta           = { version = "1.47.2", features = ["yaml"] }
-insta-cmd       = { version = "0.6.0" }
 criterion       = { version = "0.8.2", default-features = false, features = ["plotters"] }
 assert_cmd      = { version = "2.0.16" }
 predicates      = { version = "3.1.3" }

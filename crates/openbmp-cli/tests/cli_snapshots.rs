@@ -1,7 +1,7 @@
 //! Snapshot tests for the `openbmp` binary user surface.
 //!
 //! These spawn the compiled binary and capture stdout / stderr /
-//! exit-code via `assert_cmd` + `insta-cmd`. The goal is to lock in
+//! exit-code via `assert_cmd` + `insta`. The goal is to lock in
 //! the command-line surface — flags, help text shape, error messages
 //! — so a future refactor doesn't accidentally break the
 //! contract.
