@@ -44,6 +44,8 @@ pub enum OpenMctHostError {
 /// `GET /catalog.json` returns the supplied catalog JSON. `GET /replay` must
 /// request a WebSocket upgrade and then receives one text frame per replay
 /// frame followed by a close frame. `GET /` returns a small host page.
+/// Headers, including the terminating empty line, are limited to 8192 bytes.
+/// Bytes after the headers are ignored; this helper serves one request only.
 ///
 /// # Errors
 ///
@@ -117,23 +119,26 @@ fn read_http_request<S: Read>(stream: &mut S) -> Result<Vec<u8>, OpenMctHostErro
     let mut request = Vec::new();
     let mut buffer = [0_u8; 1024];
     loop {
-        let read = stream.read(&mut buffer)?;
+        // The limit includes the terminating empty line. Do not read beyond
+        // the remaining header budget, even when a larger read would finish it.
+        let remaining = MAX_REQUEST_BYTES - request.len();
+        if remaining == 0 {
+            return Err(invalid_request("request header exceeded limit"));
+        }
+        let capacity = buffer.len().min(remaining);
+        let read = stream.read(&mut buffer[..capacity])?;
         if read == 0 {
             break;
         }
         request.extend_from_slice(&buffer[..read]);
-        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+        if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            // This one-request host closes the connection after responding.
+            // Bytes following the headers are not part of HTTP header parsing.
+            request.truncate(end + 4);
             return Ok(request);
         }
-        if request.len() > MAX_REQUEST_BYTES {
-            return Err(OpenMctHostError::InvalidRequest {
-                reason: "request header exceeded limit".to_owned(),
-            });
-        }
     }
-    Err(OpenMctHostError::InvalidRequest {
-        reason: "request ended before headers completed".to_owned(),
-    })
+    Err(invalid_request("request ended before headers completed"))
 }
 
 #[derive(Debug)]
@@ -379,6 +384,61 @@ mod tests {
             replay_time_s: 0.5,
             values: [("altitude_m".to_owned(), 42.0)].into(),
         }]
+    }
+
+    fn padded_request(length: usize) -> Vec<u8> {
+        let mut request = b"GET / HTTP/1.1\r\nX-Padding: ".to_vec();
+        request.resize(length - 4, b'x');
+        request.extend_from_slice(b"\r\n\r\n");
+        request
+    }
+
+    #[test]
+    fn openmct_host_accepts_headers_at_byte_limit() {
+        let request = padded_request(MAX_REQUEST_BYTES);
+        let mut stream = std::io::Cursor::new(request.clone());
+        assert_eq!(read_http_request(&mut stream).unwrap(), request);
+    }
+
+    #[test]
+    fn openmct_host_rejects_headers_beyond_byte_limit() {
+        for length in [MAX_REQUEST_BYTES + 1, MAX_REQUEST_BYTES + 1024] {
+            let mut stream = std::io::Cursor::new(padded_request(length));
+            assert!(matches!(
+                read_http_request(&mut stream),
+                Err(OpenMctHostError::InvalidRequest { reason })
+                    if reason == "request header exceeded limit"
+            ));
+            assert_eq!(stream.position(), MAX_REQUEST_BYTES as u64);
+        }
+    }
+
+    #[test]
+    fn openmct_host_excludes_bytes_after_headers() {
+        let headers = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let mut request = headers.to_vec();
+        request.extend_from_slice(&[0xff, 0x00]);
+        let mut stream = std::io::Cursor::new(request);
+        let request = read_http_request(&mut stream).unwrap();
+        assert_eq!(request, headers);
+        assert_eq!(parse_http_request(&request).unwrap().path, "/");
+    }
+
+    #[test]
+    fn openmct_host_reads_terminator_across_buffer_boundary() {
+        let request = padded_request(1026);
+        let mut stream = std::io::Cursor::new(request.clone());
+        assert_eq!(read_http_request(&mut stream).unwrap(), request);
+    }
+
+    #[test]
+    fn openmct_host_rejects_incomplete_headers() {
+        let mut stream = std::io::Cursor::new(b"GET / HTTP/1.1\r\n");
+        assert!(matches!(
+            read_http_request(&mut stream),
+            Err(OpenMctHostError::InvalidRequest { reason })
+                if reason == "request ended before headers completed"
+        ));
     }
 
     #[test]
