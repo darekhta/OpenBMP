@@ -156,6 +156,8 @@ per mission phase with `[[forces.phase_override]]`, emit live
 
 **Validation and HIL**
 
+- A side-by-side filter-comparison harness (`compare_filters`); no
+  implementation is shipped.
 - Public-benchmark cross-validation against Apollo-class and Stardust re-entry
   trajectories, and against PX4 / ArduPilot flight logs.
 - A concrete socket transport for the abstract HIL message schema (the schema

@@ -1869,10 +1869,9 @@ canonical 15-state error-state academic formulation (position, velocity,
 attitude, accelerometer bias, gyroscope bias) used in NaveGo and the
 NorthStarUAS `insgnss_tools` library; magnetometer, barometer,
 Gauss-Markov bias dynamics, Joseph covariance updates, and WGS84-J2
-gravity are implemented. Filter validation borrows the side-by-side
-filter-comparison harness pattern from those projects: two filters run on
-the same scenario with different noise settings and the testkit emits a
-compare report. References: NaveGo (Rodríguez et al., MATLAB/Octave),
+gravity are implemented. A side-by-side filter-comparison harness inspired by
+those projects remains planned; `openbmp-testkit` does not implement it.
+See the [roadmap](roadmap.md#deferred). References: NaveGo (Rodríguez et al., MATLAB/Octave),
 INSTINCT (University of Stuttgart, C++), `insgnss_tools` (NorthStarUAS,
 C++/Python) — re-implemented in Rust, not imported.
 

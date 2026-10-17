@@ -1,7 +1,7 @@
 # openbmp-testkit
 
-L6 test helpers crate. Used as a `dev-dependency` by every other
-crate.
+L6 shared test and validation helpers. Used as a `dev-dependency` by selected
+workspace crates and directly by CLI validation commands.
 
 **Status:** Implemented shared test helpers.
 
@@ -15,7 +15,6 @@ crate.
   Euler reference helper remains deferred.
 - Tolerance-table parser for `expected.toml` files per
   `docs/verification.md` § Tolerance Tables.
-- `compare_filters` helper (NorthStarUAS pattern).
 - Determinism oracle: byte diff plus a closure-based replay scaffold
   that runs a fixture twice and compares outputs.
 
@@ -32,13 +31,14 @@ types require them.
 
 ## Assumptions
 
-Helpers are test-only and may depend on dev tooling. They still follow the
-determinism profile for generated cases.
+Helpers support tests and host-side validation commands and may depend on
+development tooling. They follow the determinism profile for generated cases.
 
 ## Validity Range
 
-Valid only for test, benchmark, fuzz, and validation code. Runtime crates must
-not depend on `openbmp-testkit` as a normal dependency.
+Valid only for test, benchmark, fuzz, and host-side validation code. Simulation
+and controller runtime crates must not depend on `openbmp-testkit` as a normal
+dependency; host-side CLI validation commands may use it directly.
 
 ## Determinism
 
@@ -57,4 +57,4 @@ derivation.
 
 ## Scope Boundary
 
-Test helpers only; no operational vocabulary.
+Test and host-side validation helpers only; no operational vocabulary.
