@@ -29,5 +29,10 @@ __pycache__/
 crates/*/fuzz/corpus/
 crates/*/fuzz/artifacts/
 
-# Provenance reports generated at release time
+# Release staging and generated workspace SBOMs
 release-artifacts/
+/dist/
+/crates/*/*.cdx.json
+
+# Generated WebAssembly package for the browser demo
+/web/ascent/pkg/
