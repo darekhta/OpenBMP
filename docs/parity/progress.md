@@ -2495,43 +2495,12 @@ committed catalog/replay JSON goldens, check the RFC WebSocket accept key,
 serve catalog HTTP bytes, run a loopback WebSocket replay smoke, and
 compile-check the example behind `--features openmct-host`. This closes
 WP-21.7 as an example shim, not a supported OpenBMP service.
-WP-21.8 campaign manifests: **implemented** — `openbmp-rundata::campaign` now
-exposes `CampaignManifest`, `CampaignScenario`, `CampaignPlan`,
-`CampaignRunSpec`, `CampaignShard`, `CampaignVerdictSummary`,
-`expand_campaign_plan()`, `partition_campaign_runs()`, and
-`aggregate_campaign_verdicts()`. It parses closed TOML manifests, validates
-optional `CampaignOverlayFile` rows including default append mode and explicit
-merge mode, expands
-scenario × seed × overlay matrices into deterministic run specs and labels,
-round-trips a committed plan JSON golden, proves flattened run sets are stable
-across 1/4/16 worker shards, and fails the campaign verdict when any run
-verdict report fails. `openbmp campaign plan` now writes deterministic plan JSON
-and optional worker-shard JSON from those manifests, with binary smoke coverage
-and locked help text. `openbmp campaign run` now executes scenario x seed runs
-through a bounded worker pool with optional overlay TOML files declared by
-manifest-relative `[[overlay_files]]`; default `mode = "append"` preserves
-fragment concatenation, while `mode = "merge"` parses base and overlay TOML
-with `toml_edit`, recursively merges tables, appends matching arrays of tables,
-and rejects malformed merge overlays fail-closed. Overlay runs materialize the
-combined scenario under `runs/<run_key>/scenario.toml` and use that digest in
-the run record. The executor applies manifest seeds to parsed scenarios, writes per-run
-telemetry under `runs/<run_key>/`, writes one local run index per run directory,
-merges records into the shared `run-index.jsonl` in expanded-plan order,
-optionally writes `run-index.parquet`, writes per-run `verdict.json` files when
-rules are declared, writes `summary.json`, aggregates verdicts, and rejects
-selected overlays without files fail-closed. Manifest-relative `trend_specs`
-documents now feed `[[metrics]]` rows into the existing trend-store pipeline
-after the run index is complete, producing `trend-store.json`,
-`drift-report.json`, and `trend-scoreboard.md` plus stable `ci_failures` in the
-campaign summary. Combined verdict/trend `ci_failures` are now serialized at
-the campaign-summary level, and `openbmp campaign run --fail-on-ci-gates`
-returns non-zero after writing artifacts when those gates are nonempty; CI keeps
-that hook visible with a failing-verdict smoke. A worker-count regression proves
-the campaign plan, aggregate JSONL/Parquet indexes, summary, trend artifacts,
-per-run verdicts, local run indexes, and telemetry artifacts are byte-identical
-across 1/4/16 workers. This closes the WP-21.8 acceptance scope without
-claiming keyed or semantic patch operations beyond recursive table merge and
-matching array-of-tables append.
+WP-21.8 campaign manifests: **implemented** — deterministic planning,
+bounded worker execution, append/recursive-merge overlays, and run-index,
+verdict, trend, and CI-gate artifacts. The acceptance contract and verification
+inventory are `REQ-RUNDATA-008` and `V-RUNDATA-008` in
+[`requirements.toml`](../../requirements.toml). Scope excludes keyed or semantic
+TOML patches beyond recursive table merge and matching array-of-tables append.
 
 ### 22 — Acoustics, vibroacoustics & overpressure
 

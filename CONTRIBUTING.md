@@ -81,22 +81,13 @@ reflected in this list in the same PR.
 
 ## Tests
 
-Every change ships its own tests. The test classes per
-[`docs/verification.md`](docs/verification.md) are:
+Every change ships its own tests. Use the
+[test classes](docs/verification.md#test-classes) and
+[golden-update rules](docs/verification.md#golden-telemetry) in the verification guide.
 
-- Unit tests (`cargo nextest`) — small deterministic behavior.
-- Property tests (`proptest`) — invariants, fail-closed behavior.
-- Snapshot tests (`insta`) — structured diagnostic surfaces.
-- Golden scenario tests — byte-stable telemetry for canonical
-  scenarios. Updates require explicit review.
-- Analytic-toy validation — closed-form physics checks.
-- Public-benchmark validation — academic reference cases.
-- Doc tests — every public example compiles and runs.
-
-For new physics models, follow the model README template in
-[`docs/modeling-guide.md`](docs/modeling-guide.md) and document
-**purpose, inputs/outputs, units/frames, validity range, assumptions,
-determinism, validation status, data provenance, and scope boundary**.
+For new physics models, follow the
+[model contract](docs/modeling-guide.md#model-contract) and
+[README template](docs/modeling-guide.md#model-readme-template).
 
 ## Documentation
 
@@ -134,20 +125,8 @@ documentation clarity.
 
 ## Local Verification
 
-Before pushing:
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo nextest run --workspace --all-features --locked
-cargo deny check
-cargo audit
-cargo machete
-cargo hack check --workspace --feature-powerset --locked
-typos
-```
-
-Or use the CI aliases, followed by the spelling check:
+Before pushing, run the CI aliases defined in
+[`.cargo/config.toml`](.cargo/config.toml), followed by the spelling check:
 
 ```bash
 cargo ci-fmt

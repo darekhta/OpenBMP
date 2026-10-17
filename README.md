@@ -173,12 +173,8 @@ in this README.
 - All external crates are pinned in `[workspace.dependencies]` in the root
   [`Cargo.toml`](Cargo.toml).
 
-```bash
-cargo build  --workspace
-cargo nextest run --workspace --all-features
-cargo clippy --workspace --all-targets -- -D warnings
-cargo deny   check
-```
+For the local check sequence, see
+[Contributing: Local Verification](CONTRIBUTING.md#local-verification).
 
 ## Contributing
 
