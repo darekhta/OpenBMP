@@ -12348,6 +12348,7 @@ paths = [
   "crates/openbmp-cli/src/commands/run.rs",
   "crates/openbmp-cli/src/error.rs",
   "crates/openbmp-cli/src/main.rs",
+  "crates/openbmp-cli/src/reports.rs",
   "crates/openbmp-cli/tests/campaign_cli.rs",
   "crates/openbmp-cli/tests/snapshots/cli_snapshots__help.snap",
   "crates/openbmp-rundata/tests/fixtures/campaign-manifest.toml",

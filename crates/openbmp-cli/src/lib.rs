@@ -1,9 +1,10 @@
 //! `openbmp-cli` — library surface for the `openbmp` binary.
 //!
-//! The binary in [`src/main.rs`](crate) parses CLI arguments and
-//! dispatches to one of the four entry functions exposed here. Tests
-//! and downstream consumers may call them directly without spawning a
-//! subprocess.
+//! The `openbmp` binary parses CLI arguments and dispatches to the
+//! command entry functions in [`commands`]. Tests and downstream consumers
+//! may call these functions directly without spawning a subprocess.
+//!
+//! Examples include:
 //!
 //! - [`commands::run::run`] — load a scenario, run it through
 //!   [`openbmp_runner`], write declared telemetry outputs.

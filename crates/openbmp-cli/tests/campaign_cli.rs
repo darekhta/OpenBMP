@@ -192,6 +192,7 @@ fn campaign_run_cli_fail_on_ci_gates_exits_after_writing_summary() {
         .arg("--fail-on-ci-gates")
         .assert()
         .failure()
+        .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("campaign CI gates failed"));
 
     let summary_json = output.join("summary.json");
