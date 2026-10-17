@@ -603,6 +603,11 @@ fn compute_run_id(scenario_sha256_hex: &str, seed: u64, code_id: &str) -> String
     hex_digest(&digest)
 }
 
+// Keep table-cell escaping identical across Markdown report outputs.
+fn markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', " ")
+}
+
 pub(crate) fn require_non_empty(
     field: &'static str,
     value: String,
@@ -651,6 +656,19 @@ mod tests {
     use openbmp_telemetry::{TelemetryChannel, TelemetryRow, TelemetrySchema};
 
     use super::*;
+
+    #[test]
+    fn markdown_cell_escapes_pipes_and_flattens_line_feeds() {
+        assert_eq!(markdown_cell("|first|\nsecond\n"), "\\|first\\| second ");
+        assert_eq!(markdown_cell("\\|"), "\\\\|");
+    }
+
+    #[test]
+    fn markdown_cell_preserves_other_text() {
+        for value in ["", "plain text", "Δοκιμή", "a\\b\r\tc"] {
+            assert_eq!(markdown_cell(value), value);
+        }
+    }
 
     fn fixture_table() -> TelemetryTable {
         let altitude =

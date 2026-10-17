@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::verdict::ChannelMetric;
-use crate::{ChannelDigest, RunIndex, RunRecord, RundataError, require_non_empty};
+use crate::{ChannelDigest, RunIndex, RunRecord, RundataError, markdown_cell, require_non_empty};
 
 /// Trend artifact schema version.
 pub const TREND_SCHEMA_VERSION: &str = "openbmp.rundata.trend.v1";
@@ -865,10 +865,6 @@ fn status_name(status: DriftStatus) -> &'static str {
 
 fn format_f64(value: f64) -> String {
     format!("{value:.17e}")
-}
-
-fn markdown_cell(value: &str) -> String {
-    value.replace('|', "\\|").replace('\n', " ")
 }
 
 #[cfg(test)]

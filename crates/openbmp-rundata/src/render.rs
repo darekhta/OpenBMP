@@ -12,7 +12,7 @@ use openbmp_telemetry::{TelemetryTable, TelemetryValue};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::require_non_empty;
+use crate::{markdown_cell, require_non_empty};
 
 /// Render/booklet artifact schema version.
 pub const RENDER_SCHEMA_VERSION: &str = "openbmp.rundata.render.v1";
@@ -843,10 +843,6 @@ fn numeric_value(value: &TelemetryValue) -> Option<f64> {
 
 fn require_string(field: &'static str, value: String) -> Result<String, RenderError> {
     require_non_empty(field, value).map_err(|_| RenderError::EmptyField { field })
-}
-
-fn markdown_cell(value: &str) -> String {
-    value.replace('|', "\\|").replace('\n', " ")
 }
 
 fn xml_escape(value: &str) -> String {
