@@ -79,6 +79,67 @@ jobs:
         with:
           tool: cargo-nextest@0.9.133
       - run: cargo nextest run --workspace --all-features --locked
+      # Temporary failure-only evidence; remove after the CI regressions are resolved.
+      - name: Diagnose acoustics golden failure
+        if: failure()
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          mkdir -p target/ci-diagnostics/acoustics
+          out=target/ci-diagnostics/acoustics
+          {
+            git rev-parse HEAD
+            rustc -vV
+            cargo -V
+            uname -a
+            lscpu
+            printenv RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_PROFILE_DEV_DEBUG || true
+            cat .cargo/config.toml
+          } > "$out/environment.txt"
+          cat "$out/environment.txt"
+          set +e
+          cargo nextest run --workspace --all-features --locked \
+            -E 'test(=dsm::tests::free_field_dsm_synthetic_worked_example_is_byte_stable)' \
+            > "$out/workspace-exact.log" 2>&1
+          status=$?
+          set -e
+          printf 'workspace-exact exit=%s\n' "$status" | tee "$out/status.txt"
+          cat "$out/workspace-exact.log"
+          # The isolated crate can have a different feature union from workspace CI.
+          # Compare compiler profiles without changing sources or acceptance criteria.
+          for flags in ci project; do
+            for profile in debug release; do
+              for repeat in 1 2; do
+                label="$flags-$profile-$repeat"
+                profile_arg=
+                if [ "$profile" = release ]; then profile_arg=--release; fi
+                rustflags='-D warnings'
+                if [ "$flags" = project ]; then
+                  rustflags='-D warnings -C target-feature=-fma -C force-frame-pointers=yes -C strip=none'
+                fi
+                set +e
+                env -u CARGO_ENCODED_RUSTFLAGS \
+                  RUSTFLAGS="$rustflags" \
+                  CARGO_TARGET_DIR="target/ci-diagnostics/build-$flags" \
+                  cargo test -vv -p openbmp-acoustics --lib --all-features --locked \
+                  $profile_arg \
+                  dsm::tests::free_field_dsm_synthetic_worked_example_is_byte_stable \
+                  -- --exact --nocapture > "$out/$label.log" 2>&1
+                status=$?
+                set -e
+                printf '%s exit=%s\n' "$label" "$status" | tee -a "$out/status.txt"
+                cat "$out/$label.log"
+              done
+            done
+          done
+      - name: Upload acoustics diagnostic evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acoustics-diagnostic-evidence
+          path: target/ci-diagnostics/acoustics
+          if-no-files-found: warn
+          retention-days: 7
 
   # ----------------------------------------------------------------------
   # Coverage (stable line/region floor)
@@ -857,3 +918,98 @@ jobs:
           toolchain: "1.95"
       - uses: Swatinem/rust-cache@v2.9.1
       - run: cargo test -p openbmp-cli --tests --locked
+      # Temporary failure-only evidence; keep the required test above unchanged.
+      - name: Inspect Windows executable stack reserve
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/ci-diagnostics/windows | Out-Null
+          git rev-parse HEAD | Tee-Object target/ci-diagnostics/windows/revision.txt
+          rustc -vV | Tee-Object target/ci-diagnostics/windows/rustc.txt
+          "RUSTFLAGS=$env:RUSTFLAGS" | Tee-Object target/ci-diagnostics/windows/flags.txt
+          "CARGO_PROFILE_DEV_DEBUG=$env:CARGO_PROFILE_DEV_DEBUG" | Tee-Object -Append target/ci-diagnostics/windows/flags.txt
+          @'
+          import pathlib, struct
+          p = pathlib.Path("target/debug/openbmp.exe")
+          b = p.read_bytes()
+          pe = struct.unpack_from("<I", b, 0x3c)[0]
+          assert b[pe:pe+4] == b"PE\0\0"
+          optional = pe + 24
+          magic = struct.unpack_from("<H", b, optional)[0]
+          assert magic == 0x20b, f"Expected PE32+, got {magic:#x}"
+          reserve, commit = struct.unpack_from("<QQ", b, optional + 72)
+          report = f"{p}: stack reserve={reserve} bytes, commit={commit} bytes\n"
+          print(report, end="")
+          pathlib.Path("target/ci-diagnostics/windows/pe-stack.txt").write_text(report)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Emit Windows CLI and runner stack-frame evidence
+        if: failure() && runner.os == 'Windows'
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/ci-diagnostics/windows/assembly | Out-Null
+          cargo rustc -vv -p openbmp-cli --bin openbmp --locked -- --emit=asm 2>&1 |
+            Tee-Object target/ci-diagnostics/windows/cli-compile.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo rustc -vv -p openbmp-runner --lib --locked -- --emit=asm 2>&1 |
+            Tee-Object target/ci-diagnostics/windows/runner-compile.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem target/debug/deps -Filter "*.s" |
+            Where-Object { $_.Name -match '^(openbmp-|openbmp_runner-)' } |
+            Copy-Item -Destination target/ci-diagnostics/windows/assembly
+          @'
+          import pathlib, re
+          root = pathlib.Path("target/ci-diagnostics/windows")
+          frames = []
+          for p in (root / "assembly").glob("*.s"):
+              function = "<unknown>"
+              for line_number, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
+                  m = re.search(r"\.seh_proc\s+(.+)", line)
+                  if m:
+                      function = m.group(1)
+                  m = re.search(r"\.seh_stackalloc\s+(\d+)", line)
+                  if m:
+                      frames.append((int(m.group(1)), p.name, line_number, function))
+          frames.sort(reverse=True)
+          text = "\n".join(
+              f"{size:12d} bytes  {file}:{line}  {name}"
+              for size, file, line, name in frames[:100]
+          ) + "\n"
+          if not frames:
+              text = "No .seh_stackalloc entries found; inspect the emitted assembly.\n"
+          print(text, end="")
+          (root / "largest-frames.txt").write_text(text)
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Capture Windows stack overflow with installed CDB
+        if: failure() && runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/ci-diagnostics/windows | Out-Null
+          $cdb = [IO.Path]::Combine([Environment]::GetFolderPath('ProgramFilesX86'), 'Windows Kits\10\Debuggers\x64\cdb.exe')
+          if (-not (Test-Path $cdb)) {
+            "CDB is not installed. Assembly and PE evidence collected separately; no debugger trace available." |
+              Tee-Object target/ci-diagnostics/windows/debugger-status.txt
+            exit 0
+          }
+          & $cdb -G -logo target/ci-diagnostics/windows/cdb.log -c "sxe sov; g; .exr -1; .ecxr; kv 100; !teb; q" target/debug/openbmp.exe run scenarios/calisto-adaptive/scenario.toml --output-parquet target/ci-diagnostics/windows/calisto.parquet
+          $code = $LASTEXITCODE
+          "CDB exit=$code; inspect cdb.log for exception and stack." |
+            Tee-Object target/ci-diagnostics/windows/debugger-status.txt
+          exit 0
+
+      - name: Upload Windows stack diagnostic evidence
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-stack-diagnostic-evidence
+          path: |
+            target/ci-diagnostics/windows/*.txt
+            target/ci-diagnostics/windows/*.log
+            target/ci-diagnostics/windows/assembly/*.s
+          if-no-files-found: warn
+          retention-days: 7
