@@ -39,6 +39,9 @@ mod tests {
     #[test]
     fn hex_is_lowercase_and_zero_padded() {
         assert_eq!(hex_digest(&[]), "");
-        assert_eq!(hex_digest(&[0x00, 0x01, 0x0f, 0x10, 0xab, 0xff]), "00010f10abff");
+        assert_eq!(
+            hex_digest(&[0x00, 0x01, 0x0f, 0x10, 0xab, 0xff]),
+            "00010f10abff"
+        );
     }
 }
